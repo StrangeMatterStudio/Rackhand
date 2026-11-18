@@ -2,10 +2,10 @@
 
 A self-hosted operations hub for homelabs, written in Rust.
 
-Each site runs a Rackhand hub. A small agent on every VM and hypervisor node reports vitals (CPU, memory, storage,
-services, containers) to its hub. The hub spots trouble and calls out to you, or to an AI assistant through its MCP
-tools, so it can be fixed with stored playbooks. Hubs at different sites find each other through hole punching, with
-relays as a fallback, and keep an eye on each other.
+Each site runs a Rackhand hub. A small probe on every VM and hypervisor node reports vitals (CPU, memory, storage,
+services, containers) and security signals to its hub. The hub spots trouble, calls out to you, fixes routine problems
+with runbooks, and hands the rest to an AI assistant through its MCP tools, under your approval. Hubs at different
+sites find each other through hole punching, with relays as a fallback, and keep an eye on each other.
 
 Status: in design. See `docs/designs/`.
 
