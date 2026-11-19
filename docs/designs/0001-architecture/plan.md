@@ -222,7 +222,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T14 | Spike S9: TrueNAS API | T02 | lab measurement | todo |
 | T15 | Spike S10: threat list and GeoIP terms | T02 | scripted measurement + reading | done (owner decision pending for T69) |
 | T16 | Wire format: framing, limits, close codes, messages | T15 | unit, golden | done |
-| T17 | Net: endpoint, node key, registry, contract harness | T16, T08, T09 | contract | todo |
+| T17 | Net: endpoint, node key, registry, contract harness | T16, T08, T09 | contract | done |
 | T18 | Store: schema, writer task, read pool | T16 | unit | todo |
 | T19 | Time-series encoding and chunks | T18, T05 | unit, property | todo |
 | T20 | Audit log with hash chain and checkpoints | T18 | unit | todo |
@@ -1004,6 +1004,9 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-net --features testing | compile errors: crate::key, relays, testing, close_code missing |
+  | 2026-11-19 | cargo nextest run -p rackhand-net --features testing | 6 passed, 0 failed (iroh pinned =1.5.0) |
+  | 2026-11-19 | cargo xtask ci fast | exit 0; 33 passed; cargo deny limited to the shipped targets, unmaintained notices for direct dependencies only |
 
 ### T18: Store: schema, writer task, read pool
 - **Design refs:** 7.4.1 (database, tables), 7.3.8 (`WriteCmd`, `StoreWriter`), 9 (integrity), 11 (one writer, four
@@ -4205,6 +4208,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D9 | 2026-11-19 | T09, T83 | Full-cone NAT in the network VM | Full cone is a static UDP DNAT of the listener's fixed port at its NAT; plain masquerade on both sides is the symmetric-like case | Linux masquerade never hole punches against masquerade (spike S3) | plan | - |
 | D10 | 2026-11-19 | T16 onward | M1 starts after every spike is done (T16 depends on T15) | M1 steps start once the spikes in their own Depends on are done; T05 (24-hour recording), T06, T10 to T14 finish in parallel | T05 needs 24 h of data and T13, T14 wait for the owner; the gating table already lists which steps each spike gates | plan | - |
 | D11 | 2026-11-19 | T16 | `tests/fixtures/golden/*.bin` and one file per contract | Six .proto files (common, join, probe, peer, operator, tunnel incl. xfer); the MCP auth line and the helper protocol are serde JSON types; tests in `src/tests/` (names `tests::<module>::<name>`); `cargo xtask golden --update` added | MCP and the helper socket are JSON by design (7.3.3, 7.3.6) | plan | - |
+| D12 | 2026-11-19 | T17 | `cargo deny check` over every target and every unmaintained notice | `deny.toml` lists the shipped targets (wasm-only crates under Unlicense drop out) and fails on unmaintained crates only when we depend on them directly; vulnerabilities always fail | iroh-relay pulls wasm-only and unmaintained transitive crates that Rackhand never builds or calls | plan | - |
 
 ## Follow-ups (out of scope)
 

@@ -2,10 +2,22 @@
 
 [graph]
 all-features = true
+# The platforms Rackhand ships for (design 5.2); dependencies only used on other targets (such as wasm) are out.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-pc-windows-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+]
 
 [advisories]
 version = 2
 yanked = "deny"
+# Vulnerabilities always fail. "Unmaintained" notices fail only for crates we depend on directly.
+unmaintained = "workspace"
 
 [licenses]
 version = 2

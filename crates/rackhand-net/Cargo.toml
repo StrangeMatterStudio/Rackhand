@@ -7,5 +7,21 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+testing = ["dep:iroh-relay"]
+
+[dependencies]
+rackhand-proto = { path = "../rackhand-proto" }
+iroh = { workspace = true }
+iroh-relay = { workspace = true, optional = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The crate's own tests use the in-process pair, so the fast tier builds them with `testing` on.
+rackhand-net = { path = ".", features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
 [lints]
 workspace = true
