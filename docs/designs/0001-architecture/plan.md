@@ -233,7 +233,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T25 | Ingest: staging, acks, compaction, recent window, clock | T18, T19, T24 | unit | todo |
 | T26 | Probe contract `rackhand/probe/1` | T17, T23, T25 | contract | todo |
 | T27 | Rollups and retention | T19, T25, T05 | unit | todo |
-| T28 | Detect: threshold rules | T01 | unit | todo |
+| T28 | Detect: threshold rules | T01 | unit | done |
 | T29 | Detect: forecasts | T28 | unit | todo |
 | T30 | Detect: silence | T28 | unit | todo |
 | T31 | Detect: baselines and counted rules | T28 | unit | todo |
@@ -1351,6 +1351,10 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-detect -E 'test(threshold::)' | compile errors: unresolved imports `crate::rules`, `crate::samples`, `crate::threshold` |
+  | 2026-11-19 first run | same | 7 passed, 1 failed: the worked example opened the warning at 3.75 min, because the test had no sample before minute 0 and 16 of 20 samples are enough. Test corrected to the design's example (a normal sample at minute 0, each sample covering the interval that ends at its time); the implementation is unchanged |
+  | 2026-11-19 | cargo nextest run -p rackhand-detect -E 'test(threshold::)' | 8 passed, 0 failed. The 80% test uses 15 of 20 (75%) and 16 of 20, since 79% isn't reachable at 20 expected samples |
+  | 2026-11-19 | cargo xtask ci fast | exit 0 (fmt, clippy, arch-check, nextest 70 passed) |
 
 ### T29: Detect: forecasts
 - **Design refs:** 7.6.2, G2, AC6
