@@ -223,7 +223,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T15 | Spike S10: threat list and GeoIP terms | T02 | scripted measurement + reading | done (owner decision pending for T69) |
 | T16 | Wire format: framing, limits, close codes, messages | T15 | unit, golden | done |
 | T17 | Net: endpoint, node key, registry, contract harness | T16, T08, T09 | contract | done |
-| T18 | Store: schema, writer task, read pool | T16 | unit | todo |
+| T18 | Store: schema, writer task, read pool | T16 | unit | done |
 | T19 | Time-series encoding and chunks | T18, T05 | unit, property | todo |
 | T20 | Audit log with hash chain and checkpoints | T18 | unit | todo |
 | T21 | Vault | T18 | unit | todo |
@@ -1037,6 +1037,9 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-store -E 'test(db::) \| test(writer::) \| test(reader::)' | compile errors: unresolved crate::db and crate::writer |
+  | 2026-11-19 | cargo nextest run -p rackhand-store -E 'test(db::) \| test(writer::) \| test(reader::)' | 6 passed, 0 failed: WAL and user_version 1; newer database refused untouched; 41 tables match 7.4.1; 1000 commands commit in send order; a failing second table rolls back the first; read pool of 4 refuses writes |
+  | 2026-11-19 | cargo xtask ci fast | exit 0; 39 passed |
 
 ### T19: Time-series encoding and chunks
 - **Design refs:** 7.4.1 (`series_chunks`, open chunks of 120 points or one hour), D43, S8 finding
@@ -4209,6 +4212,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D10 | 2026-11-19 | T16 onward | M1 starts after every spike is done (T16 depends on T15) | M1 steps start once the spikes in their own Depends on are done; T05 (24-hour recording), T06, T10 to T14 finish in parallel | T05 needs 24 h of data and T13, T14 wait for the owner; the gating table already lists which steps each spike gates | plan | - |
 | D11 | 2026-11-19 | T16 | `tests/fixtures/golden/*.bin` and one file per contract | Six .proto files (common, join, probe, peer, operator, tunnel incl. xfer); the MCP auth line and the helper protocol are serde JSON types; tests in `src/tests/` (names `tests::<module>::<name>`); `cargo xtask golden --update` added | MCP and the helper socket are JSON by design (7.3.3, 7.3.6) | plan | - |
 | D12 | 2026-11-19 | T17 | `cargo deny check` over every target and every unmaintained notice | `deny.toml` lists the shipped targets (wasm-only crates under Unlicense drop out) and fails on unmaintained crates only when we depend on them directly; vulnerabilities always fail | iroh-relay pulls wasm-only and unmaintained transitive crates that Rackhand never builds or calls | plan | - |
+| D13 | 2026-11-19 | T18 | `WriteCmd` variants carry typed row structs | Each 7.3.8 variant carries a column map (`Row`) for now; a `Batch` variant writes rows to several tables in one transaction; owning systems replace the stubs (and may type the payloads) in their steps | Keeps T18 to the writer's guarantees; the row shapes are owned by the systems built later | plan | - |
 
 ## Follow-ups (out of scope)
 
