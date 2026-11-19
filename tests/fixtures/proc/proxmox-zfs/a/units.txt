@@ -1,0 +1,175 @@
+apparmor.service                                                                              loaded    active   exited  Load AppArmor profiles
+apt-daily-upgrade.service                                                                     loaded    inactive dead    Daily apt upgrade and clean activities
+apt-daily.service                                                                             loaded    inactive dead    Daily apt download activities
+auditd.service                                                                                not-found inactive dead    auditd.service
+auth-rpcgss-module.service                                                                    loaded    inactive dead    Kernel Module supporting RPCSEC_GSS
+blk-availability.service                                                                      loaded    active   exited  Availability of block devices
+chrony.service                                                                                loaded    active   running chrony, an NTP client/server
+connman.service                                                                               not-found inactive dead    connman.service
+console-getty.service                                                                         loaded    inactive dead    Console Getty
+corosync.service                                                                              loaded    inactive dead    Corosync Cluster Engine
+cron.service                                                                                  not-found inactive dead    cron.service
+dbus.service                                                                                  loaded    active   running D-Bus System Message Bus
+display-manager.service                                                                       not-found inactive dead    display-manager.service
+dm-event.service                                                                              loaded    inactive dead    Device-mapper event daemon
+dpkg-db-backup.service                                                                        loaded    inactive dead    Daily dpkg database backup service
+dracut-mount.service                                                                          not-found inactive dead    dracut-mount.service
+e2scrub_all.service                                                                           loaded    inactive dead    Online ext4 Metadata Check for All Filesystems
+e2scrub_reap.service                                                                          loaded    inactive dead    Remove Stale Online ext4 Metadata Check Snapshots
+emergency.service                                                                             loaded    inactive dead    Emergency Shell
+fcoe.service                                                                                  not-found inactive dead    fcoe.service
+frr.service                                                                                   loaded    inactive dead    FRRouting
+fstrim.service                                                                                loaded    inactive dead    Discard unused blocks on filesystems from /etc/fstab
+getty-static.service                                                                          loaded    inactive dead    getty on tty2-tty6 if dbus and logind are not available
+getty@tty1.service                                                                            loaded    active   running Getty on tty1
+glusterd.service                                                                              not-found inactive dead    glusterd.service
+grub-common.service                                                                           loaded    inactive dead    Record successful boot for GRUB
+gssproxy.service                                                                              not-found inactive dead    gssproxy.service
+heartbeat-failed@frr.service                                                                  not-found inactive dead    heartbeat-failed@frr.service
+ifupdown2-pre.service                                                                         loaded    active   exited  Helper to synchronize boot up for ifupdown
+initrd-cleanup.service                                                                        loaded    inactive dead    Cleaning Up and Shutting Down Daemons
+initrd-parse-etc.service                                                                      loaded    inactive dead    Mountpoints Configured in the Real Root
+initrd-switch-root.service                                                                    loaded    inactive dead    Switch Root
+initrd-udevadm-cleanup-db.service                                                             loaded    inactive dead    Cleanup udev Database
+iscsi-shutdown.service                                                                        not-found inactive dead    iscsi-shutdown.service
+iscsid.service                                                                                loaded    inactive dead    iSCSI initiator daemon (iscsid)
+kmod-static-nodes.service                                                                     loaded    active   exited  Create List of Static Device Nodes
+ldconfig.service                                                                              loaded    inactive dead    Rebuild Dynamic Linker Cache
+logrotate.service                                                                             loaded    inactive dead    Rotate log files
+lvm2-lvmpolld.service                                                                         loaded    inactive dead    LVM2 poll daemon
+lvm2-monitor.service                                                                          loaded    active   exited  Monitoring of LVM2 mirrors, snapshots etc. using dmeventd or progress polling
+lxc-monitord.service                                                                          loaded    active   running LXC Container Monitoring Daemon
+lxc-net.service                                                                               loaded    active   exited  LXC network bridge setup
+lxc.service                                                                                   loaded    active   exited  LXC Container Initialization and Autoboot Code
+lxcfs.service                                                                                 loaded    active   running FUSE filesystem for LXC
+man-db.service                                                                                loaded    inactive dead    Daily man-db regeneration
+modprobe@configfs.service                                                                     loaded    inactive dead    Load Kernel Module configfs
+modprobe@drm.service                                                                          loaded    inactive dead    Load Kernel Module drm
+modprobe@efi_pstore.service                                                                   loaded    inactive dead    Load Kernel Module efi_pstore
+modprobe@fuse.service                                                                         loaded    inactive dead    Load Kernel Module fuse
+multipathd.service                                                                            not-found inactive dead    multipathd.service
+netavark-dhcp-proxy.service                                                                   loaded    inactive dead    Netavark DHCP proxy service
+netplan-ovs-cleanup.service                                                                   loaded    inactive dead    OpenVSwitch configuration for cleanup
+networking.service                                                                            loaded    active   exited  Network initialization
+NetworkManager.service                                                                        not-found inactive dead    NetworkManager.service
+nfs-blkmap.service                                                                            loaded    active   running pNFS block layout mapping daemon
+nfs-kernel-server.service                                                                     not-found inactive dead    nfs-kernel-server.service
+nfs-server.service                                                                            not-found inactive dead    nfs-server.service
+nfs-utils.service                                                                             loaded    inactive dead    NFS server and client services
+ntp.service                                                                                   not-found inactive dead    ntp.service
+ntpsec.service                                                                                not-found inactive dead    ntpsec.service
+open-iscsi.service                                                                            loaded    inactive dead    Login to default iSCSI targets
+openntpd.service                                                                              not-found inactive dead    openntpd.service
+ovsdb-server.service                                                                          not-found inactive dead    ovsdb-server.service
+plymouth-quit-wait.service                                                                    not-found inactive dead    plymouth-quit-wait.service
+plymouth-start.service                                                                        not-found inactive dead    plymouth-start.service
+postfix.service                                                                               loaded    active   running Postfix Mail Transport Agent (main/default instance)
+postfix@-.service                                                                             loaded    inactive dead    Postfix Mail Transport Agent (instance -, /etc/postfix-/)
+proxmox-boot-cleanup.service                                                                  loaded    inactive dead    Clean up bootloader next-boot setting
+proxmox-firewall.service                                                                      loaded    active   running Proxmox nftables firewall
+pve-cluster.service                                                                           loaded    active   running The Proxmox VE cluster filesystem
+pve-container@100.service                                                                     loaded    active   running PVE LXC Container: 100
+pve-daily-update.service                                                                      loaded    inactive dead    Daily PVE download activities
+pve-firewall-commit.service                                                                   loaded    active   exited  Commit Proxmox VE Firewall changes
+pve-firewall.service                                                                          loaded    active   running Proxmox VE firewall
+pve-guests.service                                                                            loaded    active   exited  PVE guests
+pve-ha-crm.service                                                                            loaded    active   running PVE Cluster HA Resource Manager Daemon
+pve-ha-lrm.service                                                                            loaded    active   running PVE Local HA Resource Manager Daemon
+pve-lxc-syscalld.service                                                                      loaded    active   running Proxmox VE LXC Syscall Daemon
+pve-query-machine-capabilities.service                                                        loaded    active   exited  PVE Query Machine Capabilities
+pve-sdn-commit.service                                                                        loaded    active   exited  Commit Proxmox VE SDN changes
+pvebanner.service                                                                             loaded    active   exited  Proxmox VE Login Banner
+pvedaemon.service                                                                             loaded    active   running PVE API Daemon
+pvefw-logger.service                                                                          loaded    active   running Proxmox VE firewall logger
+pvenetcommit.service                                                                          loaded    active   exited  Commit Proxmox VE network changes
+pveproxy.service                                                                              loaded    active   running PVE API Proxy Server
+pvescheduler.service                                                                          loaded    active   running Proxmox VE scheduler
+pvestatd.service                                                                              loaded    active   running PVE Status Daemon
+qmeventd.service                                                                              loaded    active   running PVE Qemu Event Daemon
+rbdmap.service                                                                                loaded    active   exited  Map RBD devices
+rc-local.service                                                                              loaded    inactive dead    /etc/rc.local Compatibility
+rescue.service                                                                                loaded    inactive dead    Rescue Shell
+rpc-gssd.service                                                                              loaded    inactive dead    RPC security service for NFS client and server
+rpc-statd-notify.service                                                                      loaded    active   exited  Notify NFS peers of a restart
+rpc-svcgssd.service                                                                           loaded    inactive dead    RPC security service for NFS server
+rpcbind.service                                                                               loaded    active   running RPC bind portmap service
+rrdcached.service                                                                             loaded    active   running Data caching daemon for rrdtool
+serial-getty@ttyS0.service                                                                    loaded    active   running Serial Getty on ttyS0
+smartmontools.service                                                                         loaded    inactive dead    Self Monitoring and Reporting Technology (SMART) Daemon
+smb.service                                                                                   not-found inactive dead    smb.service
+spiceproxy.service                                                                            loaded    active   running PVE SPICE Proxy Server
+ssh.service                                                                                   loaded    active   running OpenBSD Secure Shell server
+sshd-keygen.service                                                                           loaded    inactive dead    Generate sshd host keys on first boot
+sshd@sshd-keygen.service                                                                      loaded    inactive dead    OpenBSD Secure Shell server per-connection daemon
+syslog.service                                                                                not-found inactive dead    syslog.service
+systemd-ask-password-console.service                                                          loaded    inactive dead    Dispatch Password Requests to Console
+systemd-ask-password-wall.service                                                             loaded    inactive dead    Forward Password Requests to Wall
+systemd-battery-check.service                                                                 loaded    inactive dead    Check battery level during early boot
+systemd-binfmt.service                                                                        loaded    active   exited  Set Up Additional Binary Formats
+systemd-bsod.service                                                                          loaded    inactive dead    Display Boot-Time Emergency Messages In Full Screen
+systemd-confext.service                                                                       loaded    inactive dead    Merge System Configuration Images into /etc/
+systemd-firstboot.service                                                                     loaded    inactive dead    First Boot Wizard
+systemd-fsck-root.service                                                                     loaded    inactive dead    File System Check on Root Device
+systemd-fsck@dev-disk-by\x2dpartuuid-0f6986d9\x2d2af0\x2d46c3\x2daf28\x2d177aad664d87.service loaded    active   exited  File System Check on /dev/disk/by-partuuid/0f6986d9-2af0-46c3-af28-177aad664d87
+systemd-growfs-root.service                                                                   loaded    active   exited  Grow Root File System
+systemd-halt.service                                                                          loaded    inactive dead    System Halt
+systemd-hibernate-clear.service                                                               loaded    inactive dead    Clear Stale Hibernate Storage Info
+systemd-hibernate-resume.service                                                              loaded    inactive dead    Resume from hibernation
+systemd-hibernate.service                                                                     loaded    inactive dead    System Hibernate
+systemd-hostnamed.service                                                                     loaded    inactive dead    Hostname Service
+systemd-hwdb-update.service                                                                   loaded    inactive dead    Rebuild Hardware Database
+systemd-hybrid-sleep.service                                                                  loaded    inactive dead    System Hybrid Suspend+Hibernate
+systemd-initctl.service                                                                       loaded    inactive dead    initctl Compatibility Daemon
+systemd-journal-catalog-update.service                                                        loaded    inactive dead    Rebuild Journal Catalog
+systemd-journal-flush.service                                                                 loaded    active   exited  Flush Journal to Persistent Storage
+systemd-journald.service                                                                      loaded    active   running Journal Service
+systemd-kexec.service                                                                         loaded    inactive dead    Reboot via kexec
+systemd-logind.service                                                                        loaded    active   running User Login Management
+systemd-machine-id-commit.service                                                             loaded    inactive dead    Save Transient machine-id to Disk
+systemd-modules-load.service                                                                  loaded    active   exited  Load Kernel Modules
+systemd-networkd-persistent-storage.service                                                   loaded    inactive dead    Enable Persistent Storage in systemd-networkd
+systemd-networkd.service                                                                      loaded    inactive dead    Network Configuration
+systemd-oomd.service                                                                          not-found inactive dead    systemd-oomd.service
+systemd-pcrmachine.service                                                                    loaded    inactive dead    TPM PCR Machine ID Measurement
+systemd-pcrphase-initrd.service                                                               loaded    inactive dead    TPM PCR Barrier (initrd)
+systemd-pcrphase-sysinit.service                                                              loaded    inactive dead    TPM PCR Barrier (Initialization)
+systemd-pcrphase.service                                                                      loaded    inactive dead    TPM PCR Barrier (User)
+systemd-poweroff.service                                                                      loaded    inactive dead    System Power Off
+systemd-pstore.service                                                                        loaded    inactive dead    Platform Persistent Storage Archival
+systemd-quotacheck-root.service                                                               loaded    inactive dead    Root File System Quota Check
+systemd-quotacheck.service                                                                    not-found inactive dead    systemd-quotacheck.service
+systemd-random-seed.service                                                                   loaded    active   exited  Load/Save OS Random Seed
+systemd-reboot.service                                                                        loaded    inactive dead    System Reboot
+systemd-remount-fs.service                                                                    loaded    active   exited  Remount Root and Kernel File Systems
+systemd-repart.service                                                                        not-found inactive dead    systemd-repart.service
+systemd-rfkill.service                                                                        loaded    inactive dead    Load/Save RF Kill Switch Status
+systemd-soft-reboot.service                                                                   loaded    inactive dead    Reboot System Userspace
+systemd-suspend-then-hibernate.service                                                        loaded    inactive dead    System Suspend then Hibernate
+systemd-suspend.service                                                                       loaded    inactive dead    System Suspend
+systemd-sysctl.service                                                                        loaded    active   exited  Apply Kernel Variables
+systemd-sysext.service                                                                        loaded    inactive dead    Merge System Extension Images into /usr/ and /opt/
+systemd-sysusers.service                                                                      loaded    inactive dead    Create System Users
+systemd-timesyncd.service                                                                     not-found inactive dead    systemd-timesyncd.service
+systemd-tmpfiles-clean.service                                                                loaded    inactive dead    Cleanup of Temporary Directories
+systemd-tmpfiles-setup-dev-early.service                                                      loaded    active   exited  Create Static Device Nodes in /dev gracefully
+systemd-tmpfiles-setup-dev.service                                                            loaded    active   exited  Create Static Device Nodes in /dev
+systemd-tmpfiles-setup.service                                                                loaded    active   exited  Create System Files and Directories
+systemd-tpm2-setup-early.service                                                              loaded    inactive dead    Early TPM SRK Setup
+systemd-tpm2-setup.service                                                                    loaded    inactive dead    TPM SRK Setup
+systemd-udev-load-credentials.service                                                         loaded    active   exited  Load udev Rules from Credentials
+systemd-udev-settle.service                                                                   loaded    active   exited  Wait for udev To Complete Device Initialization
+systemd-udev-trigger.service                                                                  loaded    active   exited  Coldplug All udev Devices
+systemd-udevd.service                                                                         loaded    active   running Rule-based Manager for Device Events and Files
+systemd-update-done.service                                                                   loaded    inactive dead    Update is Completed
+systemd-user-sessions.service                                                                 loaded    active   exited  Permit User Sessions
+systemd-vconsole-setup.service                                                                not-found inactive dead    systemd-vconsole-setup.service
+unattended-upgrades.service                                                                   loaded    active   running Unattended Upgrades Shutdown
+user-runtime-dir@1000.service                                                                 loaded    active   exited  User Runtime Directory /run/user/1000
+user@1000.service                                                                             loaded    active   running User Manager for UID 1000
+uuidd.service                                                                                 loaded    inactive dead    Daemon for generating UUIDs
+watchdog-mux.service                                                                          loaded    active   running Proxmox VE watchdog multiplexer
+zfs-import-cache.service                                                                      loaded    active   exited  Import ZFS pools by cache file
+zfs-mount.service                                                                             loaded    active   exited  Mount ZFS filesystems
+zfs-share.service                                                                             loaded    active   exited  ZFS file system shares
+zfs-volume-wait.service                                                                       loaded    active   exited  Wait for ZFS Volume (zvol) links in /dev
+zfs-zed.service                                                                               loaded    active   running ZFS Event Daemon (zed)

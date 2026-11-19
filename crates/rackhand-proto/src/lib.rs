@@ -5,6 +5,7 @@
 //! `Unsupported` value ([`known_or_unsupported`]).
 
 pub mod alpn;
+pub mod catalogue;
 pub mod close;
 pub mod frame;
 pub mod helper;

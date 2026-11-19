@@ -2988,6 +2988,8 @@ name = "rackhand-probe"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
+ "rackhand-proto",
+ "rustix",
  "serde_json",
  "thiserror 2.0.21",
 ]

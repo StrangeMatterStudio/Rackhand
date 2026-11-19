@@ -16,9 +16,14 @@ name = "rackhand-probe"
 path = "src/main.rs"
 
 [dependencies]
+rackhand-proto = { path = "../rackhand-proto" }
 getrandom = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# statvfs without unsafe code.
+rustix = { version = "1", default-features = false, features = ["std", "fs"] }
 
 [lints]
 workspace = true

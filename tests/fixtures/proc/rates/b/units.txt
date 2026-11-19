@@ -1,0 +1,4 @@
+cron.service loaded inactive dead Regular background program processing daemon
+nginx.service loaded failed failed A high performance web server
+postgresql.service loaded activating start PostgreSQL RDBMS
+ssh.service loaded active running OpenBSD Secure Shell server

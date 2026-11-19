@@ -1,0 +1,12 @@
+/dev/sda1 / ext4 rw,relatime 0 0
+tmpfs /run tmpfs rw,nosuid,nodev 0 0
+tmpfs /dev/shm tmpfs rw,nosuid,nodev 0 0
+devtmpfs /dev devtmpfs rw,nosuid 0 0
+proc /proc proc rw,nosuid,nodev,noexec 0 0
+sysfs /sys sysfs rw,nosuid,nodev,noexec 0 0
+overlay /var/lib/docker/overlay2/abc/merged overlay rw,relatime 0 0
+/dev/loop0 /snap/core/1 squashfs ro,nodev 0 0
+/dev/sdb1 /srv ext4 rw,relatime 0 0
+/dev/sda2 /run/media/usb ext4 rw,relatime 0 0
+snapfuse /snap/core22/2216 fuse.snapfuse ro,nodev,relatime 0 0
+/dev/sr0 /media/cdrom iso9660 ro,relatime 0 0

@@ -1,0 +1,4 @@
+cron.service enabled enabled
+nginx.service enabled enabled
+postgresql.service disabled enabled
+ssh.service enabled enabled
