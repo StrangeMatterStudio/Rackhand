@@ -197,8 +197,28 @@ impl Approvals {
         }
     }
 
+    /// Whether the approval would be accepted for this call now, without using it.
+    pub fn check(&self, id: &str, caller: &str, hash: &[u8], now_ms: i64) -> Result<(), ApprovalError> {
+        let stored = self.get(id)?;
+        if stored.requester != caller || stored.hash != hash {
+            return Err(ApprovalError::Mismatch);
+        }
+        match stored.state.as_str() {
+            "approved" => {}
+            "pending" => return Err(ApprovalError::NotApproved),
+            "rejected" => return Err(ApprovalError::Rejected),
+            "used" => return Err(ApprovalError::Used),
+            _ => return Err(ApprovalError::Expired),
+        }
+        if stored.expires_at <= now_ms {
+            return Err(ApprovalError::Expired);
+        }
+        Ok(())
+    }
+
     /// Uses an approval for the repeated call: same caller, same hash, approved, unexpired, unused.
     pub async fn use_approval(&self, id: &str, caller: &str, hash: &[u8], now_ms: i64) -> Result<(), ApprovalError> {
+        self.check(id, caller, hash, now_ms)?;
         let stored = self.get(id)?;
         if stored.requester != caller || stored.hash != hash {
             return Err(ApprovalError::Mismatch);

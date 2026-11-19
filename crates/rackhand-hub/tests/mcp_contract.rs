@@ -437,6 +437,29 @@ async fn auth_line_required_first() {
     let reply = s.line().await;
     assert!(reply.as_ref().is_none_or(|r| r.get("result").is_none()));
     assert!(s.line().await.is_none());
+    // A job token from an endpoint other than the operator that accepted the job (AC70).
+    env.db
+        .writer()
+        .send(WriteCmd::Batch(vec![row(
+            "jobs",
+            &[
+                ("id", t("01JOBCCCCCCCCCCCCCCCCCCCCC")),
+                ("kind", t("assistant")),
+                ("name", t("service-down")),
+                ("requested_by", t("incidents")),
+                ("state", t("running")),
+            ],
+        )]))
+        .await
+        .unwrap();
+    let job =
+        issue_job_token(&env.db, "01JOBCCCCCCCCCCCCCCCCCCCCC", "op1", &["m1"], &["get_incident"], now_ms() + 600_000)
+            .await
+            .unwrap();
+    let mut s = Session::open(&env, &env.bob, &json!({ "auth": job }).to_string()).await;
+    let reply = s.line().await;
+    assert!(reply.as_ref().is_none_or(|r| r.get("result").is_none()));
+    assert!(s.line().await.is_none(), "a job token works only from its operator");
     // The key from its own device works.
     let mut s = Session::with_token(&env, &env.bob, &token).await;
     assert!(!s.tools().await.is_empty());
@@ -814,6 +837,17 @@ async fn personal_key_journal_needs_approval_df_does_not() {
     let mut with_id = journal;
     with_id["approval_id"] = json!(id);
     assert!(s.call("run_diagnostic", with_id).await.is_ok(), "runs once approved");
+    let audited: Vec<String> = env
+        .db
+        .readers()
+        .with(|c| {
+            let mut st =
+                c.prepare("SELECT action FROM audit_log WHERE target = ?1 AND action LIKE 'approval.%' ORDER BY seq")?;
+            let rows = st.query_map([&id], |r| r.get(0))?;
+            rows.collect()
+        })
+        .unwrap();
+    assert_eq!(audited, ["approval.requested", "approval.used"]);
     let df = s.call("run_diagnostic", json!({ "machine": "m1", "name": "df", "args": {} })).await.unwrap();
     assert!(df["output"]["untrusted_output"].is_string());
     assert_eq!(df["sensitive"], false);
@@ -846,6 +880,64 @@ async fn exec_on_quarantined_machine_refused() {
     assert_eq!(out.unwrap_err(), "machine_quarantined");
     // Diagnostics still work on a quarantined machine (7.5.6).
     assert!(s.call("run_diagnostic", json!({ "machine": "m4", "name": "df", "args": {} })).await.is_ok());
+    // A quarantine that failed part-way leaves the machine suspect: still refused.
+    let failed = rackhand_store::RowUpdate {
+        table: "machines",
+        key: ("id", t("m4")),
+        set: [("quarantine", t("failed"))].into_iter().collect(),
+    };
+    env.db
+        .writer()
+        .send(WriteCmd::RegistryChange(rackhand_store::RegistryChange { updates: vec![failed], ..Default::default() }))
+        .await
+        .unwrap();
+    let out = s.call("exec", json!({ "machine": "m4", "command": "uptime", "reason": "r" })).await;
+    assert_eq!(out.unwrap_err(), "machine_quarantined");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn quarantine_runbook_always_high_risk() {
+    let env = env("quarantine-runbook").await;
+    // However low its declared risk, `quarantine` is judged as a quarantine: an approval with step-up.
+    let quarantine = RUNBOOK.replace("name = \"restart-web\"", "name = \"quarantine\"");
+    env.library.save(Kind::Runbook, "quarantine", &quarantine, "admin", 1).await.unwrap();
+    let mut s = job_session(&env, J1, "auto-fix", &["m1"], &["run_runbook"]).await;
+    let id = needs_approval(
+        &mut s,
+        "run_runbook",
+        json!({ "name": "quarantine", "target": "m1", "params": {}, "reason": "r" }),
+    )
+    .await;
+    let (risk, step_up): (String, i64) = env
+        .db
+        .readers()
+        .with(|c| {
+            c.query_row("SELECT risk, step_up FROM approvals WHERE id = ?1", [&id], |r| Ok((r.get(0)?, r.get(1)?)))
+        })
+        .unwrap();
+    assert_eq!((risk.as_str(), step_up), ("high", 1));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn caller_checked_on_every_call() {
+    let env = env("every-call").await;
+    // A job that has finished: its open session can't do anything more.
+    let mut j = job_session(&env, J1, "auto-fix", &["m1"], &["get_incident", "finish_job", "run_diagnostic"]).await;
+    j.call("finish_job", json!({ "outcome": "resolved", "summary": "done" })).await.unwrap();
+    assert_eq!(j.call("get_incident", json!({ "id": "inc1" })).await.unwrap_err(), "deadline_exceeded");
+    assert_eq!(
+        j.call("run_diagnostic", json!({ "machine": "m1", "name": "df", "args": {} })).await.unwrap_err(),
+        "deadline_exceeded"
+    );
+    // A key revoked while its session is open: the next call ends the session.
+    let (key_id, token) =
+        create_personal_key(&env.db, "u-bob", "d-bob", Scope::Read, now_ms() + 3_600_000).await.unwrap();
+    let mut k = Session::with_token(&env, &env.bob, &token).await;
+    assert!(k.call("list_machines", json!({})).await.is_ok());
+    rackhand_hub::mcp::keys::revoke_personal_key(&env.db, &key_id, now_ms()).await.unwrap();
+    let reply = k.request("tools/call", json!({ "name": "list_machines", "arguments": {} })).await;
+    assert!(reply.as_ref().is_none_or(|r| r.get("result").is_none()), "{reply:?}");
+    assert!(k.line().await.is_none(), "closed");
 }
 
 #[tokio::test(flavor = "multi_thread")]

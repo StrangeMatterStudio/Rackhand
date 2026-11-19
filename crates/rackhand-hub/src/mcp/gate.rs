@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use super::ToolError;
 use super::auth::Caller;
+use crate::audit::Audit;
 use crate::library::items::{Kind, Library};
 use crate::policy::approvals::{ApprovalError, ApprovalRequest, Approvals, approval_hash};
 use crate::policy::decide::{Access, Decision, Deny, Requester};
@@ -41,7 +42,8 @@ impl Target {
         let (access, quarantine, roles, tags) = row.ok_or_else(|| ToolError::invalid(format!("no machine `{id}`")))?;
         Ok(Target {
             access: if access == "monitor" { Access::Monitor } else { Access::Managed },
-            quarantined: !matches!(quarantine.as_str(), "none" | "failed"),
+            // Anything but `none`: a quarantine that failed part-way leaves the machine suspect too (7.5.6).
+            quarantined: quarantine != "none",
             roles: serde_json::from_str(&roles).unwrap_or_default(),
             tags: serde_json::from_str(&tags).unwrap_or_default(),
         })
@@ -115,9 +117,18 @@ pub(super) fn gate(decision: Decision) -> Result<Gate, ToolError> {
 }
 
 /// The approval a gated call asks for: its id goes back as `needs_approval`.
-pub(super) async fn request_approval(db: &std::sync::Arc<Db>, req: &ApprovalRequest, now_ms: i64) -> ToolError {
+pub(super) async fn request_approval(
+    db: &std::sync::Arc<Db>,
+    audit: &Audit,
+    req: &ApprovalRequest,
+    now_ms: i64,
+) -> ToolError {
     match Approvals::new(db.clone()).create(req, now_ms, APPROVAL_TTL_MS).await {
         Ok(id) => {
+            let data = json!({ "tool": req.tool, "target": req.target, "step_up": req.step_up });
+            if let Err(e) = audit.append(&req.requester, "approval.requested", Some(&id), &data.to_string()).await {
+                tracing::error!(error = %e, "audit");
+            }
             ToolError::new("needs_approval", "a person must approve this call in the dashboard; repeat it with the id")
                 .with(json!({ "approval_id": id }))
         }
@@ -131,6 +142,7 @@ pub(super) async fn request_approval(db: &std::sync::Arc<Db>, req: &ApprovalRequ
 /// Uses the approval for exactly this call (same caller, same hash), once.
 pub(super) async fn use_approval(
     db: &std::sync::Arc<Db>,
+    audit: &Audit,
     id: &str,
     req: &ApprovalRequest,
     now_ms: i64,
@@ -138,7 +150,12 @@ pub(super) async fn use_approval(
     Approvals::new(db.clone())
         .use_approval(id, &req.requester, &approval_hash(req), now_ms)
         .await
-        .map_err(|e| approval_error(id, &e))
+        .map_err(|e| approval_error(id, &e))?;
+    let data = json!({ "tool": req.tool, "target": req.target });
+    if let Err(e) = audit.append(&req.requester, "approval.used", Some(id), &data.to_string()).await {
+        tracing::error!(error = %e, "audit");
+    }
+    Ok(())
 }
 
 pub(super) fn string_map(value: Option<&Value>) -> Result<std::collections::BTreeMap<String, String>, ToolError> {

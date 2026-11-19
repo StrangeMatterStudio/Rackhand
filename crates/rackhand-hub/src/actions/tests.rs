@@ -303,3 +303,45 @@ async fn concurrent_execs_of_one_job_keep_their_own_rows() {
     commands.sort();
     assert_eq!(commands, ["df -h", "uptime"]);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn busy_machine_doesnt_spend_the_approval() {
+    let runner = Arc::new(Fake { block: true, ..Fake::default() });
+    let (db, actions, _) = setup("busy-approval", "managed", runner.clone()).await;
+    let actions = actions.with_lock_wait(Duration::from_millis(300));
+    let holder = tokio::spawn({
+        let a = actions.clone();
+        async move { a.run(job("admin")).await }
+    });
+    while runner.calls.load(Ordering::SeqCst) == 0 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let approvals = Approvals::new(db.clone());
+    let mut j = job("key:01JKEY");
+    let request = ApprovalRequest {
+        requester: j.requested_by.clone(),
+        tool: "run_runbook".into(),
+        target: Some("m1".into()),
+        args: serde_json::json!({ "name": "restart-web", "params": { "unit": "nginx.service" } }),
+        runbook_rev: Some(1),
+        risk: Risk::Low,
+        step_up: false,
+        reason: "r".into(),
+    };
+    let now = rackhand_store::ids::now_ms();
+    let id = approvals.create(&request, now, 3_600_000).await.unwrap();
+    approvals
+        .decide(&id, &Decider { user: "admin".into(), role: Role::Admin, step_up_fresh: true }, true, now)
+        .await
+        .unwrap();
+    j.approval_id = Some(id.clone());
+    // Busy: the job fails machine_busy, and the approval is still there for a later try.
+    assert_eq!(actions.run(j.clone()).await.unwrap().reason.as_deref(), Some("machine_busy"));
+    let state: String =
+        db.readers().with(|c| c.query_row("SELECT state FROM approvals WHERE id = ?1", [&id], |r| r.get(0))).unwrap();
+    assert_eq!(state, "approved");
+    runner.release.notify_one();
+    holder.await.unwrap().unwrap();
+    runner.release.notify_one();
+    assert_eq!(actions.run(j).await.unwrap().outcome, JobOutcome::Succeeded);
+}

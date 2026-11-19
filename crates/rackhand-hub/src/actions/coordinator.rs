@@ -118,7 +118,8 @@ impl Actions {
         let machine = self.machine(&start.machine_id)?;
         let (rev, runbook) = self.runbook(&start)?;
         check_params(&runbook, &start.params)?;
-        if let Some(approval) = &start.approval_id {
+        // The approval is checked now and used only once the machine is ours: a busy machine doesn't spend it.
+        let approval = start.approval_id.as_ref().map(|id| {
             let request = ApprovalRequest {
                 requester: start.requested_by.clone(),
                 tool: "run_runbook".into(),
@@ -129,12 +130,11 @@ impl Actions {
                 step_up: false,
                 reason: String::new(),
             };
-            Approvals::new(self.inner.db.clone())
-                .use_approval(approval, &start.requested_by, &approval_hash(&request), now_ms())
-                .await
-                .map_err(ActionsError::Approval)?;
-            self.audit(&start.requested_by, "approval.used", approval, serde_json::json!({ "runbook": start.name }))
-                .await;
+            (id.clone(), approval_hash(&request))
+        });
+        let approvals = Approvals::new(self.inner.db.clone());
+        if let Some((id, hash)) = &approval {
+            approvals.check(id, &start.requested_by, hash, now_ms()).map_err(ActionsError::Approval)?;
         }
         let job_id = new_id().to_string();
         let params = serde_json::to_string(&start.params).unwrap_or_else(|_| "{}".into());
@@ -158,6 +158,11 @@ impl Actions {
             self.finish(&job_id, &start.requested_by, JobOutcome::Failed, reason.as_deref()).await?;
             return Ok(JobResult { job_id, outcome: JobOutcome::Failed, reason });
         };
+        if let Some((id, hash)) = &approval {
+            // Used now, once; another call may have used it while this one waited.
+            approvals.use_approval(id, &start.requested_by, hash, now_ms()).await.map_err(ActionsError::Approval)?;
+            self.audit(&start.requested_by, "approval.used", id, serde_json::json!({ "runbook": start.name })).await;
+        }
         jobs::create(&self.inner.db, &row("running")).await?;
         self.audit(
             &start.requested_by,

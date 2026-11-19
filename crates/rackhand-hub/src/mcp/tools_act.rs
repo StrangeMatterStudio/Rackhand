@@ -74,8 +74,8 @@ impl Mcp {
             Gate::Approval { risk, step_up } => {
                 let req = ApprovalRequest { risk, step_up, ..req };
                 match approval_id {
-                    Some(id) => gate::use_approval(&self.inner.db, id, &req, now).await,
-                    None => Err(gate::request_approval(&self.inner.db, &req, now).await),
+                    Some(id) => gate::use_approval(&self.inner.db, &self.inner.audit, id, &req, now).await,
+                    None => Err(gate::request_approval(&self.inner.db, &self.inner.audit, &req, now).await),
                 }
             }
         }
@@ -239,14 +239,21 @@ impl Mcp {
         let commands: Vec<&str> = commands.iter().map(String::as_str).collect();
         let (roles, tags): (Vec<&str>, Vec<&str>) =
             (target.roles.iter().map(String::as_str).collect(), target.tags.iter().map(String::as_str).collect());
-        let decision = decide(&Request {
-            requester: gate::requester(caller),
-            action: Action::Runbook {
+        // Quarantine and its release are judged as such (always high risk, with exclusions), whatever the runbook
+        // declares; any other runbook at the lower of the job's level and its own (new runbooks start at 1, 7.6.8).
+        let action = if matches!(name, "quarantine" | "quarantine-release") {
+            Action::Quarantine
+        } else {
+            Action::Runbook {
                 risk: runbook.risk,
-                level: gate::level(&self.inner.db, caller),
+                level: gate::level(&self.inner.db, caller).min(runbook.autonomy),
                 needs_account: runbook.steps.iter().any(|s| matches!(s.kind, StepKind::Ssh | StepKind::Transfer)),
                 assistant_commands: &commands,
-            },
+            }
+        };
+        let decision = decide(&Request {
+            requester: gate::requester(caller),
+            action,
             target: policy_target(&target, &roles, &tags),
             peer_auto: false,
             auto_rollback: false,
@@ -268,7 +275,7 @@ impl Mcp {
                         step_up,
                         reason: args.get("reason").and_then(Value::as_str).unwrap_or("").into(),
                     };
-                    return Err(gate::request_approval(&self.inner.db, &req, now).await);
+                    return Err(gate::request_approval(&self.inner.db, &self.inner.audit, &req, now).await);
                 }
             },
         };

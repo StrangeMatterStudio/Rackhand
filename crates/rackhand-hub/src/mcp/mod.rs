@@ -239,8 +239,7 @@ impl Mcp {
         let token = read_line(&mut reader).await.and_then(|l| serde_json::from_str::<Value>(&l).ok()).and_then(|v| {
             v.as_object().filter(|o| o.len() == 1).and_then(|o| o.get("auth")?.as_str().map(str::to_string))
         });
-        let caller = token.and_then(|t| auth::authenticate(&self.inner.db, &t, &peer, now_ms()));
-        let Some(caller) = caller else {
+        let Some(token) = token.filter(|t| self.caller(t, &peer).is_some()) else {
             let _ = write_line(&mut writer, &rpc_error(Value::Null, -32001, "unauthorized")).await;
             let _ = writer.shutdown().await;
             return;
@@ -255,6 +254,24 @@ impl Mcp {
             // Notifications (no id) need no answer.
             let Some(id) = msg.get("id").cloned() else { continue };
             let method = msg["method"].as_str().unwrap_or("");
+            // The caller is checked again on every request: a revoked key, a disabled user or a finished job stops
+            // at once, and a changed role takes effect.
+            let caller = match self.caller(&token, &peer) {
+                Some(c) => c,
+                None if token.starts_with(keys::JOB_PREFIX) && method == "tools/call" => {
+                    let ended = ToolError::new("deadline_exceeded", "the job has ended or its token expired");
+                    let reply = json!({ "jsonrpc": "2.0", "id": id, "result": tool_result(Err(ended)) });
+                    if !write_line(&mut writer, &reply).await {
+                        return;
+                    }
+                    continue;
+                }
+                None => {
+                    let _ = write_line(&mut writer, &rpc_error(id, -32001, "unauthorized")).await;
+                    let _ = writer.shutdown().await;
+                    return;
+                }
+            };
             let reply = match method {
                 "initialize" => json!({ "jsonrpc": "2.0", "id": id, "result": {
                     "protocolVersion": PROTOCOL_VERSION,
@@ -275,6 +292,10 @@ impl Mcp {
                 return;
             }
         }
+    }
+
+    fn caller(&self, token: &str, peer: &EndpointId) -> Option<Caller> {
+        auth::authenticate(&self.inner.db, token, peer, now_ms())
     }
 
     fn tools(&self, caller: &Caller) -> Vec<Value> {
