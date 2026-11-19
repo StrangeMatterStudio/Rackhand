@@ -896,8 +896,10 @@ sequenceDiagram
 ```
 
 - **Linux:** `curl -fsSL https://github.com/StrangeMatterStudio/Rackhand/releases/download/v<X>/install.sh | sudo sh -s
-  -- --ticket <ticket> --token <token>`. Trust in the script rests on GitHub's TLS; the script then verifies every binary
-  with the pinned release keys (section 13); trust in the hub comes from the endpoint id in the ticket. The offline variant fetches
+  -- --ticket <ticket> --token <token>`. Trust in the script rests on GitHub's TLS. A POSIX shell can't check minisign
+  signatures, so every release also ships a small static verifier, `rackhand-verify`: the script holds the verifier's
+  SHA-256 for its own release, checks the downloaded verifier against it, and the verifier then checks every other
+  binary against the two pinned release keys (section 13, D105); trust in the hub comes from the endpoint id in the ticket. The offline variant fetches
   from the hub over its self-signed HTTPS and checks the script against a SHA-256 the dashboard puts in the command:
   `curl -fsSLk https://<hub>:8443/install.sh -o /tmp/rackhand-install.sh && echo '<sha256>  /tmp/rackhand-install.sh'
   | sha256sum -c - && sudo sh /tmp/rackhand-install.sh --ticket <ticket> --token <token>`.
@@ -2008,7 +2010,7 @@ Manual checks exist only where real hypervisors, real internet NATs or a real AI
 
 | Risk | Likelihood | Impact | Mitigation |
 | --- | --- | --- | --- |
-| v0.1 is very large | High | High | The plan orders work so each milestone is usable (single-site monitoring first) and ships as a 0.0.x pre-release |
+| v0.1 is very large | High | High | The plan orders work so each milestone is usable (single-site monitoring first); the version stays `0.1.0` and releasing is the maintainer's call after the run (D106) |
 | A compromised hub has root on every machine | Low | Critical | Vault and master key split, `from=`, no assistant account on hubs, step-up, self-watch, peer watch, audit anchors, hardening guide |
 | Prompt injection steers the assistant | Medium | High | No approval tool, hash-bound approvals, scoped exec, untrusted wrapping, level 1 start |
 | eBPF portability | Medium | Medium | CO-RE, sampling fallback, kernel matrix (S1) |
@@ -2157,6 +2159,8 @@ the owner and the document is updated before the work that depends on it starts.
 | D102 | Bus | Report notices coalesce per machine; Actions never waits on Incidents | A slow consumer must not stall ingest or lock two systems | Claude (delegated) | 2026-11-18 |
 | D103 | Container attribution | Connection records and baselines carry the container | The problem statement asks which container talked to a new address | Claude (delegated) | 2026-11-18 |
 | D104 | Quarantine details | Only the probe's port, SSH from the hub, ICMP echo and DHCP stay open; the prior firewall configuration is saved and restored; no assistant `exec` on a quarantined machine | A quarantined machine shouldn't get a wide path to the hub or be released by the assistant | Claude (delegated) | 2026-11-18 |
+| D105 | How the POSIX-sh installer verifies signatures | Each release ships a small static `rackhand-verify`; `install.sh` holds its SHA-256 and checks it, and the verifier checks every other binary against the two pinned keys | A shell can't check minisign signatures; trust in `install.sh` already rests on GitHub's TLS | Owen | 2026-11-18 |
+| D106 | Versions and pre-releases | The version is `0.1.0` from the start (no 0.0.x pre-releases); the implementation plan builds and verifies artifacts but schedules no release, which stays the maintainer's call | The maintainers' versioning rule starts at 0.1.0; signing is offline (D90) | Owen | 2026-11-18 |
 
 ## 19. Deferred decisions
 
@@ -2203,3 +2207,4 @@ None.
 | 2026-11-18 | Closure check fixes: range acks and epoch restart, hub-wide replay budget, compaction into open chunks and re-rollups, lossless bus with reconciliation, command wrapper instead of sudo regex, update guard processes, versioned key updates, transfer write path, peer backup export, baseline seeding, narrower exemptions, desktop summary mode, generic public wording, Windows tests manual, ACs 48 to 57 | Closure review and Owen's answers | Owen (review pending) |
 | 2026-11-18 | Third review: `monitor` access level; spikes moved into the plan; release signing keys offline with a standby; helper boundary (no URL over the socket, root-only directories, root-owned hub pin); signed command list and leading-dash rule; fixed guest binding; per-epoch label tables and decompression cap; rules counted in samples with a clear margin; incident attempt limits; detached package steps; unprivileged hub with a root updater; sign-in limits per account; retention and caps for every table and the recent window; MCP bindings; bus coalescing; container attribution; quarantine narrowing and restore; table and wording fixes; spike S11; E49 to E66; ACs 58 to 73 | Review findings and Owen's answers (D87, D88, D90) | Owen (review pending) |
 | 2026-11-18 | Approved as a whole, including every decision marked "Claude (delegated)" (D41 to D86, D89, D91 to D104); next step is the implementation plan, whose first steps are the spikes (D87) | Owner approval | Owen |
+| 2026-11-18 | Planning findings: the installer verifies signatures through a small verifier binary (D105, 7.3.12); the version is 0.1.0 with no scheduled pre-releases (D106, section 17) | Gaps found while writing the implementation plan | Owen |

@@ -39,7 +39,7 @@ directories under `/tmp` (the Windows drive mounted in WSL doesn't keep Unix mod
 | `CARGO_TARGET_DIR` on the Linux filesystem | build speed | `echo $CARGO_TARGET_DIR` | a path under `$HOME`, not under `/mnt/` |
 | GitHub CLI signed in with `repo` and `workflow` scopes | CI runs, PR | `gh auth status` (from PowerShell) | signed in to github.com |
 | Push access | commit and push after each step | `git push --dry-run origin design/0001-architecture` (from PowerShell) | no error |
-| Zeus runner profiles for Rackhand (added in T04) | CI tiers on studio runners | `gh variable list --repo StrangeMatterStudio/Rackhand` (from PowerShell) | `RACKHAND_CI_LINUX`, `RACKHAND_CI_DOCKER`, `RACKHAND_CI_KVM` set for the runners that exist |
+| Runner profiles for Rackhand (added in T04) | CI tiers on self-hosted runners | `gh variable list --repo StrangeMatterStudio/Rackhand` (from PowerShell) | `RACKHAND_CI_LINUX`, `RACKHAND_CI_DOCKER`, `RACKHAND_CI_KVM` set for the runners that exist |
 | Owner's lab: Proxmox VE 8 and 9 hosts, a TrueNAS instance, a Claude Code login, a Windows 10/11 machine | spikes S1, S4, S5, S9; lab and Windows manual checks | confirmed by the owner (2026-11-18) | available |
 
 One-time setup the owner runs in WSL (needs the sudo password, so the run can't do it):
@@ -78,7 +78,7 @@ step's regression is the fast tier.
 ## Approach and ordering
 
 1. **Prerequisites (T01 to T04).** The workspace matching the crate table in design 7.2, the test tiers, both CI
-   workflows with the AC44 guard test, and the Zeus runner profiles.
+   workflows with the AC44 guard test, and the runner profiles.
 2. **Spikes (T05 to T15), all before any feature work (D87).** Each spike answers the questions listed in design
    section 17 with a scripted measurement against a stated threshold. Spike code is throwaway and is not committed;
    the commit holds the finding (appended under the spike in design section 17, with a change-log row) and redacted
@@ -136,16 +136,24 @@ lab or Windows check. Those steps are marked `unverified` with the manual check 
 (MV1 to MV17) at a time of their choosing. Spike steps T10 (Proxmox kernel part), T12, T13 and T14 do need the owner,
 and the run pauses there if the lab isn't ready.
 
+**Versions and releases (D106).** The workspace version is `0.1.0` throughout. The run builds and verifies release
+artifacts (T91) but schedules no release: publishing one, and signing it offline, are the maintainer's decisions after
+the run.
+
+**Large steps.** T22, T36, T55, T59, T68, T72 and T89 are larger than one commit should be. The run splits each into
+consecutive commits (`T22a`, `T22b`, ...), each with its own tests seen failing first, and records every split as a
+plan-level deviation (owner decision, 2026-11-18).
+
 **What the run never does:** hold or use a release signing key (D90, design section 13), publish a release, change
-the Zeus platform configuration, or touch the owner's lab beyond the test guests the owner names for a check.
+the runner service's configuration, or touch the owner's lab beyond the test guests the owner names for a check.
 
 **Evidence** committed to the repository uses documentation IP ranges and invented names (D71, D82). No lab host
 names, addresses or account names appear in this plan, the run log or the evidence.
 
-**Notes on studio rules** (raised with the owner at plan review; the design wins where it is explicit):
-- The design's `ci-github-hosted.yml` (D37, section 13) is off by default and exists for forks. The studio rule says
+**Notes on the maintainers' rules** (raised with the owner at plan review; the design wins where it is explicit):
+- The design's `ci-github-hosted.yml` (D37, section 13) is off by default and exists for forks. The maintainers' rule says
   never to use GitHub-hosted labels. This plan follows the design and reports the conflict.
-- During initial development the schema has one baseline migration that is edited in place, per the studio rule
+- During initial development the schema has one baseline migration that is edited in place, per the maintainers' rule
   "write no migrations during initial development". Forward-only migrations (design 13) begin with the first
   released version.
 
@@ -153,7 +161,7 @@ names, addresses or account names appear in this plan, the run log or the eviden
 
 | After step | Why |
 | --- | --- |
-| None | Studio rule: once a plan is approved, run it to completion. The run still pauses for a spike finding that contradicts the design (design-level deviation), for the owner-run setup in T04, and for the lab spikes T10, T12, T13 and T14 if the lab isn't ready. |
+| None | The maintainers' rule: once a plan is approved, run it to completion. The run still pauses for a spike finding that contradicts the design (design-level deviation), for the owner-run setup in T04, and for the lab spikes T10, T12, T13 and T14 if the lab isn't ready. |
 
 ## Steps overview
 
@@ -162,7 +170,7 @@ names, addresses or account names appear in this plan, the run log or the eviden
 | T01 | Workspace scaffold and dependency-rule check | - | unit (xtask), static | todo |
 | T02 | Test tiers and `cargo xtask ci` | T01 | scripted | todo |
 | T03 | CI workflows and the guard test | T02 | unit (xtask), lint | todo |
-| T04 | Zeus runner profiles for Rackhand | T03 | scripted (CI run), owner setup | todo |
+| T04 | Runner profiles for Rackhand | T03 | scripted (CI run), owner setup | todo |
 | T05 | Spike S8: time-series encoding | T02 | scripted measurement | todo |
 | T06 | Spike S6: probe footprint | T02 | scripted measurement | todo |
 | T07 | Spike S7: git mirror library | T02 | scripted measurement | todo |
@@ -269,7 +277,7 @@ names, addresses or account names appear in this plan, the run log or the eviden
   `cargo xtask arch-check` fails on any dependency that breaks the 7.2 rules.
 - **Depends on:** none
 - **Changes:**
-  - `Cargo.toml` (workspace, shared lints, `resolver = "2"`), `rust-toolchain.toml` (the stable version installed at
+  - `Cargo.toml` (workspace version `0.1.0` (D106), shared lints, `resolver = "2"`), `rust-toolchain.toml` (the stable version installed at
     preflight, at least iroh 1.x's MSRV; components `rustfmt`, `clippy`), `rustfmt.toml`, `clippy.toml`, `deny.toml`
     (allowed licenses compatible with MIT OR Apache-2.0), `.cargo/config.toml` (`xtask` alias).
   - Crates: `crates/rackhand-proto`, `rackhand-net`, `rackhand-detect`, `rackhand-runbook`, `rackhand-drivers`,
@@ -278,8 +286,8 @@ names, addresses or account names appear in this plan, the run log or the eviden
     `bus`), `rackhand-relay`, `rackhand-operator`, `rackhand-probe` (with `src/helper`), `rackhand-cli`, `rackhand`
     (binary), `xtask`.
   - `xtask/src/arch.rs`: reads `cargo metadata` and scans `use crate::<module>` in `rackhand-hub`; rules from 7.2.
-  - `CLAUDE.md` (build and test commands, studio rules that apply, where the design and plan live) and
-    `.claude/settings.json` enabling the `coding`, `design` and `studio` plugins (studio repository baseline).
+  - `CLAUDE.md` (build and test commands, the maintainers' rules that apply, where the design and plan live) and
+    `.claude/settings.json` enabling the maintainers' Claude Code plugins (their repository baseline).
   - `.gitignore`: add `spikes/` (spike code is never committed) and `target/`.
 - **Tests to write first:**
   | Test | Asserts | Covers |
@@ -355,7 +363,7 @@ names, addresses or account names appear in this plan, the run log or the eviden
 
 ### T03: CI workflows and the guard test
 - **Design refs:** 13 (CI), 5.3, D37, D81, AC44
-- **Goal:** `ci.yml` runs every tier on the studio's self-hosted runners only for upstream pushes, manual runs and
+- **Goal:** `ci.yml` runs every tier on the maintainers' self-hosted runners only for upstream pushes, manual runs and
   same-repository pull requests; `ci-github-hosted.yml` runs only when `RACKHAND_GITHUB_HOSTED` is `true`; a test
   proves both conditions against recorded event payloads.
 - **Depends on:** T02
@@ -366,7 +374,7 @@ names, addresses or account names appear in this plan, the run log or the eviden
     `github.repository == 'StrangeMatterStudio/Rackhand' && (github.event_name == 'push' || github.event_name ==
     'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'pull_request' &&
     github.event.pull_request.head.repo.full_name == github.repository))`. Toolchains install under `$HOME` (no sudo
-    on studio runners); `CARGO_HOME` and `CARGO_TARGET_DIR` use the per-repository `/cache` mount; `CARGO_BUILD_JOBS`
+    on these runners); `CARGO_HOME` and `CARGO_TARGET_DIR` use the per-repository `/cache` mount; `CARGO_BUILD_JOBS`
     is capped to fit the profile's memory. Each label set is also gated by a repository variable (`RACKHAND_CI_LINUX`,
     `RACKHAND_CI_DOCKER`, `RACKHAND_CI_KVM`), set to `true` in T04 once that runner exists, so no job queues for a
     runner that isn't there. A small `runners` job per label set prints kernel, CPU, memory, Docker and `/dev/kvm`.
@@ -398,26 +406,26 @@ names, addresses or account names appear in this plan, the run log or the eviden
   - [ ] New tests pass; `actionlint` clean
   - [ ] Regression suite passes
   - [ ] Evidence recorded below
-- **Risk / rollback:** the studio rule against GitHub-hosted labels conflicts with `ci-github-hosted.yml`; it is off by
+- **Risk / rollback:** the maintainers' rule against GitHub-hosted labels conflicts with `ci-github-hosted.yml`; it is off by
   default and the conflict is reported to the owner. Revert the commit.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
 
-### T04: Zeus runner profiles for Rackhand
+### T04: Runner profiles for Rackhand
 - **Design refs:** 13 (CI), 14 (tiers), D37, D81
-- **Goal:** the studio's Zeus runners pick up every Rackhand CI job: the existing `[self-hosted, sm-linux]` profile
+- **Goal:** the maintainers' self-hosted runners pick up every Rackhand CI job: the existing `[self-hosted, sm-linux]` profile
   for the fast and Windows tiers, a Docker profile for the integration tier, and a KVM profile for the network, eBPF
   and performance tiers, and this public repository may use the runner group.
 - **Depends on:** T03
 - **Changes:**
-  - Owner, in Zeus's platform configuration (not in this repository): profile `linux-docker` with labels
+  - Owner, in the runner service's configuration (not in this repository): profile `linux-docker` with labels
     `[self-hosted, sm-linux-docker]`, `docker: true`, at least 4 CPUs, 8 GB memory and 40 GB disk; profile `linux-kvm`
     with labels `[self-hosted, sm-linux-kvm]`, `/dev/kvm` passed into the runner container, at least 4 CPUs, 8 GB
-    memory; runner time limits of at least 60 minutes for `it`, `net` and `ebpf`. Zeus profiles have no device option
-    today, so `linux-kvm` needs a Zeus change; until it exists, the `net`, `ebpf` and `perf` tiers run in WSL and the
+    memory; runner time limits of at least 60 minutes for `it`, `net` and `ebpf`. The runner service's profiles have no
+    device option today, so `linux-kvm` needs a change to that service; until it exists, the `net`, `ebpf` and `perf` tiers run in WSL and the
     evidence says so.
-  - Owner, in GitHub organization settings: the runner group Zeus uses allows public repositories, limited to
+  - Owner, in GitHub organization settings: the runner group the runner service uses allows public repositories, limited to
     `StrangeMatterStudio/Rackhand` among public ones. The guard from T03 and the organization's "require approval for
     outside contributors" setting keep fork code off the runners.
   - Then, for each label set that has a working runner: `gh variable set RACKHAND_CI_LINUX --body true` (and
@@ -436,7 +444,7 @@ names, addresses or account names appear in this plan, the run log or the eviden
 - **Regression:** `cargo xtask ci fast`: exit 0.
 - **Manual verification:** MV1 (the owner creates the profiles and the runner group setting).
 - **Done when:**
-  - [ ] the `runners` jobs green on all three label sets (or `sm-linux-kvm` recorded as pending a Zeus change, with
+  - [ ] the `runners` jobs green on all three label sets (or `sm-linux-kvm` recorded as pending a runner-service change, with
     the KVM tiers running in WSL meanwhile and `RACKHAND_CI_KVM` left unset)
   - [ ] `ci.yml` green on a push of this branch for every job whose runner exists
   - [ ] Evidence recorded below
@@ -856,7 +864,7 @@ Only additions to that list are written out below.
   ```
   Expected: 6 passed, 0 failed.
 - **Manual verification:** None.
-- **Risk / rollback:** the baseline schema is edited in place until the first release (studio rule). Revert.
+- **Risk / rollback:** the baseline schema is edited in place until the first release (the maintainers' rule). Revert.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
@@ -1617,7 +1625,7 @@ Only additions to that list are written out below.
 
 ### T44: Linux and Alpine installer and enrollment
 - **Design refs:** 7.3.12 (enrollment flow, Linux command, offline variant, access levels), 7.3.7 (accounts, keys,
-  sudoers), FR-21, D27, D55, D62, D88, D90, E64, AC35, AC58 (accounts part)
+  sudoers), FR-21, D27, D55, D62, D88, D90, D105, E64, AC35, AC58 (accounts part)
 - **Goal:** `install.sh` verifies the probe against the two pinned release keys, then enrolls a Debian or Alpine
   machine:
   - as `managed`: both accounts, keys with `from=`, sudoers checked with `visudo -c`, and the signed command list;
@@ -1627,8 +1635,9 @@ Only additions to that list are written out below.
 - **Depends on:** T35, T43
 - **Changes:** `crates/rackhand-release/` (signature verification against the two pinned public keys, shared later by
   the helper and the updater; T91 adds manifests and reproducible builds); `rackhand-verify`, a small static binary from
-  that crate that the installer uses, because a POSIX shell can't check minisign signatures itself (the exact trust
-  chain for this verifier is open question Q1, asked at plan review); `packaging/install.sh` (POSIX sh);
+  that crate, built for every release (D105): `install.sh` holds the verifier's SHA-256 for its own release, checks
+  the downloaded verifier against it, and the verifier then checks every other binary against the two pinned keys,
+  because a POSIX shell can't check minisign signatures itself; `packaging/install.sh` (POSIX sh);
   `crates/rackhand-probe/src/enroll.rs` (join client; writes `probe.toml`); test release keys in `tests/keys/` (test
   only, never valid for real releases). The hub's SSH test is a `ssh -o BatchMode=yes` check until T53 replaces it with
   the SSH system.
@@ -1639,6 +1648,7 @@ Only additions to that list are written out below.
   | `it::install::alpine_managed_enrolls_and_reports` | the same on Alpine with OpenRC; `sudo` and `bash` added | AC35 |
   | `it::install::monitor_has_no_accounts_keys_or_command_list` | no hub users, no hub key, no sudoers file and no `commands.json`; reports arrive | AC58, D88 |
   | `it::install::bad_signature_stops_before_installing` | a tampered binary: non-zero exit, nothing installed | AC35 |
+  | `it::install::verifier_hash_mismatch_stops` | a verifier whose SHA-256 differs from the one in `install.sh`: non-zero exit, nothing installed | AC35, D105 |
   | `it::install::standby_key_signature_accepted` | a binary signed with the standby test key installs | E64, AC67 |
   | `it::install::offline_variant_checks_script_hash` | a wrong SHA-256 stops it | 7.3.12 |
   | `it::install::role_hub_machine_gets_no_assistant_account` | no `rackhand-ai` | D62 |
@@ -1647,7 +1657,7 @@ Only additions to that list are written out below.
   ```bash
   cargo xtask it-images && cargo nextest run -p rackhand-it -E 'test(install::)'
   ```
-  Expected: 7 passed, 0 failed.
+  Expected: 8 passed, 0 failed.
 - **Regression (in addition):** `cargo xtask ci it`: exit 0.
 - **Manual verification:** None (the Windows installer is T90).
 - **Risk / rollback:** revert.
@@ -3429,7 +3439,7 @@ Only additions to that list are written out below.
   ```
   Expected: 2 passed; `docs-check` reports every command found.
 - **Manual verification:** None.
-- **Done when (in addition):** Athena "Rackhand" space pages are a follow-up (out of this repository).
+- **Done when (in addition):** pages in the maintainers' documentation space are a follow-up (out of this repository).
 - **Risk / rollback:** revert.
 - **Evidence:**
   | When | Command | Result |
@@ -3662,7 +3672,7 @@ evidence redacted per D71.
 
 | ID | Step | Why not automated | Steps | Expected | Verified by / date | Result |
 | --- | --- | --- | --- | --- | --- | --- |
-| MV1 | T04 | Changes Zeus platform configuration and GitHub organization settings, outside this repository | Add the `linux-docker` and `linux-kvm` profiles; allow the repository in the runner group; set the three repository variables | The `runners` jobs green on all three label sets | Owen | |
+| MV1 | T04 | Changes the runner service's configuration and GitHub organization settings, outside this repository | Add the `linux-docker` and `linux-kvm` profiles; allow the repository in the runner group; set the three repository variables | The `runners` jobs green on all three label sets | Owen | |
 | MV2 | T10, T68 | Needs a real Proxmox host kernel and LXCs | Run the S1 binary, later the probe, on a Proxmox host; connect from inside an unprivileged LXC | The connection is attributed to the LXC's cgroup | Owen | |
 | MV3 | T11 | Needs a host with a ZFS ARC | Run the S11 memory script on a Proxmox host with ZFS | `mem.available_pct` per the chosen formula stays above the warning line on a healthy host | Owen | |
 | MV4 | T12 | Needs PVE 8 and 9 nodes and an API token | Owner creates the token and names a test guest; run the S4 script | Every operation works with the minimal role; firewall round trip identical | Owen | |
@@ -3691,12 +3701,12 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 
 ## Follow-ups (out of scope)
 
-- Zeus: a runner profile with `/dev/kvm` (a platform change), if it doesn't exist by T04.
+- The runner service: a profile with `/dev/kvm` (a platform change), if it doesn't exist by T04.
 - A self-hosted Windows runner, which would move AC35 (Windows) and AC56 from manual to automated (D81).
-- The Athena "Rackhand" space: README, usage and setup pages once there is a release to document.
-- Mirroring this plan's milestones as tasks on the Orbit "Rackhand" board.
-- The first release: the maintainer signs offline (D90); this plan builds and verifies the artifacts but never signs or
-  publishes.
+- The maintainers' documentation space: README, usage and setup pages once there is a release to document.
+- Mirroring this plan's milestones as tasks on the maintainers' task board.
+- The first release (`0.1.0`, D106): the maintainer signs offline (D90); this plan builds and verifies the artifacts
+  but never signs or publishes.
 - The maintainer's own lab rollout (which hosts, which sites) belongs in private notes, not in this repository.
 
 ## Final verification
@@ -3712,7 +3722,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | Licenses and advisories | `cargo deny check && cargo audit` | | |
 | Reproducible release build | `cargo xtask release repro` | | |
 | Workflow guards | `actionlint && cargo xtask ci-guard` | | |
-| CI on studio runners | `ci.yml` green on the branch head | | |
+| CI on self-hosted runners | `ci.yml` green on the branch head | | |
 | All acceptance tests | every AC row above `done`, or `unverified` with its MV pending | | |
 | Manual verifications | MV1 to MV17 recorded | | |
 | Traceability complete | every row in the matrix has a step and a passing test or a recorded MV | | |
