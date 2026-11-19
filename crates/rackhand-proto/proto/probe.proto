@@ -1,0 +1,168 @@
+// rackhand/probe/1 (design 7.3.2). Stream 0: control (both ways). Stream 1: live reports. Stream 2: replay batches.
+syntax = "proto3";
+package rackhand.probe;
+
+import "common.proto";
+
+enum Capability {
+  CAPABILITY_UNSPECIFIED = 0;
+  CAPABILITY_EBPF = 1;
+  CAPABILITY_SAMPLING = 2;
+  CAPABILITY_HELPER = 3;
+  CAPABILITY_CONTAINERS = 4;
+  CAPABILITY_REMOTE_TUNNEL = 5;
+}
+
+// probe -> hub, stream 0
+message Hello {
+  rackhand.common.SemVer probe_version = 1;
+  bytes machine_id = 2;
+  uint64 epoch = 3;
+  rackhand.common.OsInfo os = 4;
+  string boot_id = 5;
+  repeated Capability capabilities = 6;
+  repeated rackhand.common.IfaceInfo interfaces = 7;
+  repeated rackhand.common.LabelEntry label_table = 8;
+}
+
+message SeqRange {
+  uint64 from = 1;
+  uint64 to = 2; // inclusive
+}
+
+message EpochRanges {
+  uint64 epoch = 1;
+  repeated SeqRange ranges = 2;
+}
+
+// probe -> hub, stream 0
+message DataDropped {
+  uint64 epoch = 1;
+  uint64 from_seq = 2;
+  uint64 to_seq = 3;
+}
+
+message ProbeToHub {
+  oneof msg {
+    Hello hello = 1;
+    DataDropped data_dropped = 2;
+  }
+}
+
+// hub -> probe, stream 0
+message Welcome {
+  rackhand.common.SemVer hub_version = 1;
+  rackhand.common.ProbeConfig config = 2;
+  uint64 config_rev = 3;
+  optional EpochRanges received = 4;
+  int64 server_time_ms = 5;
+}
+
+message Ack {
+  uint64 epoch = 1;
+  repeated SeqRange ranges = 2;
+}
+
+message ConfigUpdate {
+  rackhand.common.ProbeConfig config = 1;
+  uint64 config_rev = 2;
+}
+
+message UpdateAvailable {
+  rackhand.common.SemVer version = 1;
+  string url = 2;
+  bytes sha256 = 3;
+  bytes signature = 4;
+}
+
+message KeysUpdate { rackhand.common.SignedPayload keys = 1; }
+
+message HubToProbe {
+  oneof msg {
+    Welcome welcome = 1;
+    Ack ack = 2;
+    ConfigUpdate config_update = 3;
+    UpdateAvailable update_available = 4;
+    KeysUpdate keys_update = 5;
+  }
+}
+
+// streams 1 and 2
+message Sample {
+  uint32 metric = 1; // catalogue id (7.4.2)
+  uint32 labels_id = 2;
+  double value = 3;
+}
+
+enum ServiceStatus {
+  SERVICE_STATUS_UNSPECIFIED = 0;
+  SERVICE_STATUS_ACTIVE = 1;
+  SERVICE_STATUS_INACTIVE = 2;
+  SERVICE_STATUS_FAILED = 3;
+  SERVICE_STATUS_ACTIVATING = 4;
+}
+
+message ServiceState {
+  string name = 1;
+  ServiceStatus status = 2;
+  bool enabled = 3;
+  int64 since_ms = 4;
+}
+
+message ContainerState {
+  string id = 1;
+  string name = 2;
+  string image = 3;
+  string state = 4;
+  string health = 5;
+  uint32 restart_count = 6;
+  int64 started_at_ms = 7;
+}
+
+message UpdateSummary {
+  uint32 pending = 1;
+  uint32 security = 2;
+  bool reboot_required = 3;
+  repeated string packages = 4;
+}
+
+message ProbeEvent {
+  string kind = 1; // e.g. "exec_from_tmp", "new_listen_port", "auth"
+  int64 at_ms = 2;
+  map<string, string> fields = 3;
+}
+
+enum Proto {
+  PROTO_UNSPECIFIED = 0;
+  PROTO_TCP = 1;
+  PROTO_UDP = 2;
+}
+
+message ConnRecord {
+  string container = 1;
+  string exe = 2;
+  bytes dest_ip = 3; // 4 or 16 bytes
+  uint32 dest_port = 4;
+  Proto proto = 5;
+  uint32 count = 6;
+  uint64 bytes = 7;
+  uint32 pid = 8;
+  string user = 9;
+  bool folded = 10; // overflow record without a destination
+}
+
+message Report {
+  uint64 epoch = 1;
+  uint64 seq = 2;
+  int64 sampled_at_ms = 3;
+  repeated Sample vitals = 4;
+  repeated rackhand.common.LabelEntry label_sets = 5;
+  repeated ServiceState services = 6;
+  repeated ContainerState containers = 7;
+  optional UpdateSummary updates = 8;
+  repeated ProbeEvent events = 9;
+  repeated ConnRecord connections = 10;
+}
+
+// At most 100 reports or 4 MB; the frame body is zstd-compressed.
+message ReplayBatch { repeated Report reports = 1; }

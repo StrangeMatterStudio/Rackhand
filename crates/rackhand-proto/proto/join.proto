@@ -1,0 +1,95 @@
+// rackhand/join/1 (design 7.3.1): one request, one response on one bidirectional stream.
+syntax = "proto3";
+package rackhand.join;
+
+import "common.proto";
+
+message JoinRequest {
+  oneof kind {
+    MachineJoin machine = 1;
+    DeviceJoin device = 2;
+    OperatorJoin operator = 3;
+    PeerJoin peer = 4;
+  }
+}
+
+message MachineJoin {
+  string token = 1;
+  rackhand.common.HostFacts facts = 2;
+  repeated rackhand.common.SshHostKey ssh_host_keys = 3; // none for monitor
+  rackhand.common.ProbeMode mode = 4;
+  rackhand.common.Access access = 5;
+}
+
+message DeviceJoin {
+  string invite_secret = 1;
+  string device_name = 2;
+}
+
+message OperatorJoin {
+  string invite_secret = 1;
+  string operator_name = 2;
+  repeated rackhand.common.RunnerInfo runners = 3;
+}
+
+message PeerJoin {
+  string invite_secret = 1;
+  string site = 2;
+  rackhand.common.SemVer hub_version = 3;
+  repeated rackhand.common.RelayUrl relays = 4;
+}
+
+message JoinResponse {
+  oneof kind {
+    MachineJoined machine = 1;
+    DeviceJoined device = 2;
+    OperatorJoined operator = 3;
+    PeerJoined peer = 4;
+    JoinFailed error = 5;
+  }
+}
+
+message MachineJoined {
+  bytes machine_id = 1;
+  rackhand.common.ProbeConfig config = 2;
+  rackhand.common.Access access = 3;
+  optional ManagedSetup managed = 4; // absent for monitor
+  repeated string hub_addrs = 5;
+}
+
+// What the installer needs to create the hub's accounts (7.3.7).
+message ManagedSetup {
+  string automation_pubkey = 1;
+  optional string assistant_pubkey = 2; // absent on role hub (D62)
+  string sudoers = 3;
+  rackhand.common.SignedPayload commands = 4;
+}
+
+message DeviceJoined {
+  string user = 1;
+  string hub_site = 2;
+}
+
+message OperatorJoined { string hub_site = 1; }
+
+message PeerJoined {
+  string site = 1;
+  rackhand.common.SemVer hub_version = 2;
+  repeated rackhand.common.RelayUrl relays = 3;
+}
+
+enum JoinError {
+  JOIN_ERROR_UNSPECIFIED = 0;
+  JOIN_ERROR_EXPIRED = 1;
+  JOIN_ERROR_USED = 2;
+  JOIN_ERROR_WRONG_KIND = 3;
+  JOIN_ERROR_SITE_NAME_TAKEN = 4;
+  JOIN_ERROR_RATE_LIMITED = 5;
+  JOIN_ERROR_INVALID = 6;
+  JOIN_ERROR_UNSUPPORTED = 7;
+}
+
+message JoinFailed {
+  JoinError code = 1;
+  string message = 2;
+}

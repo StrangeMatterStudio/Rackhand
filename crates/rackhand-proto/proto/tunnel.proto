@@ -1,0 +1,55 @@
+// rackhand/tunnel/1 and rackhand/xfer/1 (design 7.3.11).
+syntax = "proto3";
+package rackhand.tunnel;
+
+message TunnelOpen {
+  bytes target = 1;
+  uint32 port = 2;
+  string purpose = 3;
+}
+
+enum TunnelError {
+  TUNNEL_ERROR_UNSPECIFIED = 0;
+  TUNNEL_ERROR_OUT_OF_SCOPE = 1;
+  TUNNEL_ERROR_PORT_NOT_ALLOWED = 2;
+  TUNNEL_ERROR_MACHINE_UNREACHABLE = 3;
+  TUNNEL_ERROR_UNSUPPORTED = 4;
+}
+
+// After `TunnelOpened`, the stream carries raw bytes in both directions.
+message TunnelReply {
+  oneof reply {
+    bool opened = 1;
+    TunnelError error = 2;
+  }
+}
+
+enum XferKind {
+  XFER_KIND_UNSPECIFIED = 0;
+  XFER_KIND_FILE = 1;
+  XFER_KIND_STREAM = 2; // a backup tool's stdout, piped into the receiving command
+}
+
+// Content-addressed, BLAKE3-verified, 1 MiB chunks, resumable from the last verified chunk.
+message XferOffer {
+  bytes transfer_id = 1;
+  XferKind kind = 2;
+  bytes blake3 = 3; // whole file; empty for streams
+  uint64 size = 4;
+  uint32 chunk_size = 5;
+  bytes target = 6;
+  string dest = 7; // file destination, or the receiving command for streams
+}
+
+message XferResume { uint64 next_chunk = 1; }
+
+message XferChunk {
+  uint64 index = 1;
+  bytes blake3 = 2;
+  bytes data = 3;
+}
+
+message XferDone {
+  bool ok = 1;
+  string error = 2;
+}

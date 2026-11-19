@@ -221,7 +221,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T13 | Spike S5: Claude Code headless | T02 | scripted measurement (owner's login) | todo |
 | T14 | Spike S9: TrueNAS API | T02 | lab measurement | todo |
 | T15 | Spike S10: threat list and GeoIP terms | T02 | scripted measurement + reading | done (owner decision pending for T69) |
-| T16 | Wire format: framing, limits, close codes, messages | T15 | unit, golden | todo |
+| T16 | Wire format: framing, limits, close codes, messages | T15 | unit, golden | done |
 | T17 | Net: endpoint, node key, registry, contract harness | T16, T08, T09 | contract | todo |
 | T18 | Store: schema, writer task, read pool | T16 | unit | todo |
 | T19 | Time-series encoding and chunks | T18, T05 | unit, property | todo |
@@ -967,6 +967,9 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-proto | compile errors: unresolved crate::frame, zstd, close, helper, signed, join, samples, known_or_unsupported |
+  | 2026-11-19 | cargo xtask golden --update; cargo nextest run -p rackhand-proto | 39 golden files written; 8 passed, 0 failed |
+  | 2026-11-19 | cargo xtask ci fast | exit 0; 27 passed; clippy, fmt, arch-check, cargo deny clean |
 
 ### T17: Net: endpoint, node key, registry, contract harness
 - **Design refs:** 7.1 (endpoint ids, registry), 7.3 (registry check per ALPN, close codes), 7.3.10 (own relays first,
@@ -4198,6 +4201,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D8 | 2026-11-19 | T08, T09, T10 | Spike support in xtask lands with the first spike that uses it | `ci net --spike` and `ci ebpf --spike` (build `spikes/<id>`, run `measure` in the VM with a writable out dir, then `report` on the host) commit with L1, which edits the same file | L1 was in progress in `tiers.rs` | plan | - |
 | D9 | 2026-11-19 | T09, T83 | Full-cone NAT in the network VM | Full cone is a static UDP DNAT of the listener's fixed port at its NAT; plain masquerade on both sides is the symmetric-like case | Linux masquerade never hole punches against masquerade (spike S3) | plan | - |
 | D10 | 2026-11-19 | T16 onward | M1 starts after every spike is done (T16 depends on T15) | M1 steps start once the spikes in their own Depends on are done; T05 (24-hour recording), T06, T10 to T14 finish in parallel | T05 needs 24 h of data and T13, T14 wait for the owner; the gating table already lists which steps each spike gates | plan | - |
+| D11 | 2026-11-19 | T16 | `tests/fixtures/golden/*.bin` and one file per contract | Six .proto files (common, join, probe, peer, operator, tunnel incl. xfer); the MCP auth line and the helper protocol are serde JSON types; tests in `src/tests/` (names `tests::<module>::<name>`); `cargo xtask golden --update` added | MCP and the helper socket are JSON by design (7.3.3, 7.3.6) | plan | - |
 
 ## Follow-ups (out of scope)
 

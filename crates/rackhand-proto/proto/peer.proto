@@ -1,0 +1,132 @@
+// rackhand/peer/1 (design 7.3.4).
+syntax = "proto3";
+package rackhand.peer;
+
+import "common.proto";
+
+message PeerHello {
+  string site = 1;
+  rackhand.common.SemVer hub_version = 2;
+  repeated rackhand.common.RelayUrl relays = 3;
+}
+
+enum Health {
+  HEALTH_UNSPECIFIED = 0;
+  HEALTH_OK = 1;
+  HEALTH_WARNING = 2;
+  HEALTH_CRITICAL = 3;
+  HEALTH_SILENT = 4;
+  HEALTH_QUARANTINED = 5;
+  HEALTH_MAINTENANCE = 6;
+}
+
+message MachineSummary {
+  bytes id = 1;
+  string name = 2;
+  string kind = 3;
+  Health health = 4;
+  int64 last_seen_ms = 5;
+}
+
+message IncidentSummary {
+  bytes id = 1;
+  string severity = 2;
+  string title = 3;
+  bytes machine_id = 4;
+  int64 opened_at_ms = 5;
+}
+
+message HubHealth {
+  rackhand.common.SemVer version = 1;
+  bool db_ok = 2;
+  double disk_free_pct = 3;
+  uint32 operators_online = 4;
+  bool notifiers_ok = 5;
+  bool self_check_ok = 6;
+}
+
+message PeerSeen {
+  string site = 1;
+  int64 last_heard_ms = 2;
+}
+
+// Unidirectional stream, every 30 s.
+message SiteSummary {
+  string site = 1;
+  int64 generated_at_ms = 2;
+  repeated MachineSummary machines = 3;
+  repeated IncidentSummary open_incidents = 4;
+  HubHealth hub_health = 5;
+  repeated PeerSeen peers_seen = 6;
+  bytes audit_head = 7;
+}
+
+message VitalsQuery {
+  bytes machine = 1;
+  string metric = 2;
+  rackhand.common.Labels labels = 3;
+  int64 from_ms = 4;
+  int64 to_ms = 5;
+  uint32 step_s = 6;
+}
+
+message PeerQuery {
+  oneof kind {
+    VitalsQuery vitals = 1;
+    bytes incident = 2;
+    bytes machine = 3;
+    bytes job_log = 4;
+  }
+}
+
+message Point {
+  int64 at_ms = 1;
+  double value = 2;
+  optional double min = 3;
+  optional double max = 4;
+}
+
+message Series { repeated Point points = 1; }
+
+message JobLogChunk {
+  bytes data = 1;
+  bool last = 2;
+}
+
+message PeerAnswer {
+  oneof kind {
+    Series vitals = 1;
+    bytes incident = 2; // JSON detail, schema owned by the answering hub's version
+    bytes machine = 3;
+    JobLogChunk job_log_chunk = 4;
+    string denied = 5;
+  }
+}
+
+message ActionRequest {
+  bytes request_id = 1;
+  string requested_by = 2; // informational only
+  string runbook = 3;
+  bytes target = 4;
+  map<string, string> params = 5;
+  string reason = 6;
+}
+
+enum JobOutcome {
+  JOB_OUTCOME_UNSPECIFIED = 0;
+  JOB_OUTCOME_SUCCEEDED = 1;
+  JOB_OUTCOME_FAILED = 2;
+  JOB_OUTCOME_CANCELLED = 3;
+}
+
+message ActionRequestStatus {
+  oneof status {
+    bool queued = 1;
+    bool needs_approval = 2;
+    bytes running_job = 3;
+    JobOutcome done = 4;
+    string rejected = 5;
+  }
+}
+
+message PeerUnlink { string reason = 1; }

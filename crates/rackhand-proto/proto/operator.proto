@@ -1,0 +1,83 @@
+// rackhand/operator/1 (design 7.3.5).
+syntax = "proto3";
+package rackhand.operator;
+
+import "common.proto";
+
+message OperatorHello {
+  rackhand.common.SemVer operator_version = 1;
+  repeated rackhand.common.RunnerInfo runners = 2;
+  uint32 max_jobs = 3;
+  repeated bytes running = 4;
+}
+
+message JobOffer {
+  bytes job_id = 1;
+  bytes incident_id = 2;
+  string playbook = 3;
+  uint64 playbook_rev = 4;
+  string brief_markdown = 5;
+  repeated string allowed_tools = 6;
+  uint32 autonomy = 7;
+  repeated bytes hosts = 8;
+  int64 deadline_ms = 9;
+  uint32 max_turns = 10;
+  string job_token = 11;
+}
+
+message JobReply {
+  oneof reply {
+    bool accepted = 1;
+    string declined = 2; // reason
+  }
+}
+
+enum JobEventKind {
+  JOB_EVENT_KIND_UNSPECIFIED = 0;
+  JOB_EVENT_KIND_MESSAGE = 1;
+  JOB_EVENT_KIND_TOOL_CALL = 2;
+  JOB_EVENT_KIND_TOOL_RESULT = 3;
+  JOB_EVENT_KIND_ERROR = 4;
+}
+
+message JobEvent {
+  bytes job_id = 1;
+  int64 at_ms = 2;
+  JobEventKind kind = 3;
+  string text = 4;
+}
+
+enum Outcome {
+  OUTCOME_UNSPECIFIED = 0;
+  OUTCOME_RESOLVED = 1;
+  OUTCOME_NEEDS_HUMAN = 2;
+  OUTCOME_FAILED = 3;
+  OUTCOME_TIMED_OUT = 4;
+}
+
+message JobDone {
+  bytes job_id = 1;
+  Outcome outcome = 2;
+  string summary = 3;
+}
+
+message JobCancel {
+  bytes job_id = 1;
+  string reason = 2;
+}
+
+message OperatorToHub {
+  oneof msg {
+    OperatorHello hello = 1;
+    JobReply reply = 2;
+    JobEvent event = 3;
+    JobDone done = 4;
+  }
+}
+
+message HubToOperator {
+  oneof msg {
+    JobOffer offer = 1;
+    JobCancel cancel = 2;
+  }
+}

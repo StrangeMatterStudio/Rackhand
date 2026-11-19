@@ -1,0 +1,87 @@
+// Shared types for every Rackhand contract (design 7.3). Ids are ULIDs as 16 bytes; versions are SemVer strings.
+syntax = "proto3";
+package rackhand.common;
+
+message SemVer { string version = 1; }
+
+message Labels { map<string, string> labels = 1; }
+
+// One entry of a probe's label table (7.3.2).
+message LabelEntry {
+  uint32 id = 1;
+  map<string, string> labels = 2;
+}
+
+message RelayUrl { string url = 1; }
+
+message SshHostKey {
+  string algorithm = 1;
+  string public_key = 2;
+}
+
+message HostFacts {
+  string hostname = 1;
+  string os_name = 2;
+  string os_version = 3;
+  string kernel = 4;
+  string arch = 5;
+  string machine_role = 6; // "hub", "hypervisor", "relay", "operator", or empty
+  repeated IfaceInfo interfaces = 7;
+}
+
+message IfaceInfo {
+  string name = 1;
+  string mac = 2;
+  repeated string addrs = 3;
+}
+
+message OsInfo {
+  string name = 1;
+  string version = 2;
+  string kernel = 3;
+  string arch = 4;
+  bool systemd = 5;
+}
+
+enum ProbeMode {
+  PROBE_MODE_UNSPECIFIED = 0;
+  PROBE_MODE_LOCAL = 1;
+  PROBE_MODE_REMOTE = 2;
+}
+
+enum Access {
+  ACCESS_UNSPECIFIED = 0;
+  ACCESS_MANAGED = 1;
+  ACCESS_MONITOR = 2;
+}
+
+message RunnerInfo {
+  string name = 1;
+  string version = 2;
+}
+
+// Probe settings sent by the hub (7.8).
+message ProbeConfig {
+  uint32 interval_s = 1;
+  uint32 max_connection_tuples = 2;
+  bool per_core_cpu = 3;
+  repeated string extra_mount_excludes = 4;
+  repeated string extra_iface_excludes = 5;
+  repeated string watched_services = 6;
+  bool ebpf_enabled = 7;
+  uint32 buffer_max_mb = 8;
+}
+
+// Hub-signed, versioned payload with an expiry (7.3.3, 7.3.7): `payload` is an encoded `SignedEnvelope`.
+message SignedPayload {
+  bytes payload = 1;
+  bytes hub_signature = 2;
+}
+
+message SignedEnvelope {
+  string kind = 1; // "keys", "commands", "join"
+  uint64 version = 2;
+  int64 signed_at_ms = 3;
+  int64 expires_at_ms = 4;
+  bytes body = 5;
+}
