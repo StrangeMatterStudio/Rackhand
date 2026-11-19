@@ -217,7 +217,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T09 | Spike S3: iroh path detection | T02 | scripted measurement (network VM) | done |
 | T10 | Spike S1: aya eBPF | T02, L1 | scripted measurement (eBPF VMs, local Proxmox) | done (owner decision pending for T68) |
 | T11 | Spike S11: collectors on current distributions | T02, L1 | scripted measurement (containers, local Proxmox) | done |
-| T12 | Spike S4: Proxmox privileges, firewall, upgrade command | T02, L1 | scripted measurement (local Proxmox) | todo |
+| T12 | Spike S4: Proxmox privileges, firewall, upgrade command | T02, L1 | scripted measurement (local Proxmox) | done (owner decision pending for T72) |
 | T13 | Spike S5: Claude Code headless | T02 | scripted measurement (owner's login) | todo |
 | T14 | Spike S9: TrueNAS API | T02 | lab measurement | todo |
 | T15 | Spike S10: threat list and GeoIP terms | T02 | scripted measurement + reading | done (owner decision pending for T69) |
@@ -848,13 +848,17 @@ Every spike step follows the same rules:
 - **Regression:** `cargo xtask ci fast`: exit 0.
 - **Manual verification:** None here; MV4 repeats the privilege check on the owner's real nodes in L9.
 - **Done when:**
-  - [ ] Report committed (redacted); 7.8.6 updated; finding in design 17
-  - [ ] If conntrack can't be flushed through the API, the owner decides how (design-level)
-  - [ ] Spike code deleted; the script's tokens deleted from the lab nodes
+  - [x] Report committed (redacted); 7.8.6 updated; finding in design 17
+  - [x] If conntrack can't be flushed through the API, the owner decides how (design-level)
+  - [x] Spike code deleted; the script's tokens deleted from the lab nodes
 - **Risk / rollback:** lab guests only; the script refuses any node or guest outside the lab.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 first run | spikes/s4/run.sh --nodes pve8,pve9 --report docs/designs/0001-architecture/spikes/s4.md --check | exit 1: `clone` failed even with the full role on both. Diagnosed by hand: the clone and the delete both work with the role; the spike sent `purge=1` in a DELETE body, which the API doesn't take. Moved it to the query string |
+  | 2026-11-19 | spikes/s4/run.sh --nodes pve8,pve9 --report docs/designs/0001-architecture/spikes/s4.md --check | exit 0 ("S4 OK"): every operation works with the 7.8.6 role on PVE 8.4.21 and 9.2.31; firewall round trip identical; no conntrack path in the API; the admin guides use a full upgrade |
+  | 2026-11-19 | NIC flag measurement (pings from the lab hub to ct-test) | with the guest firewall DROP: answers with `firewall=0`, silent with `firewall=1`, answers after restore; both versions |
+  | 2026-11-19 | report | `spikes/s4.md`, 7.8.6, the finding in design 17 and the change log; the spike's users, roles and tokens are gone from both nodes (`pveum user list`: root@pam only); spike code deleted. Conntrack flush: owner decision before T72 |
 
 ### T13: Spike S5: Claude Code headless
 - **Design refs:** 7.3.5 (Claude Code runner), D38, D39, S5

@@ -60,3 +60,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-19 | T11 done: journal-only auth events read on Debian 12 and Ubuntu 24.04; `mem.available_*` counts the ZFS ARC above `c_min` (design 7.4.2 and 17); report `spikes/s11.md` |
 | 2026-11-19 | T50 done: runbook and playbook model, command templates and `rackhand hub runbook check` (D23) |
 | 2026-11-19 | T54 done: policy decisions, exec step-up patterns, quarantine exclusions and approvals (D24) |
+| 2026-11-19 | T12 done: the 7.8.6 role confirmed on PVE 8 and 9; guest rules need the datacenter firewall and the device flag; no conntrack flush in the API (owner decision before T72); report `spikes/s4.md` |

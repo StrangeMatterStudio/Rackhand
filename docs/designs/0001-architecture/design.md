@@ -1654,8 +1654,10 @@ IPs), relay lists (URLs the admin adds), n0's public relays and DNS discovery.
 #### 7.8.6 Proxmox API role
 
 `Rackhand` role: `VM.Audit`, `VM.Snapshot`, `VM.Snapshot.Rollback`, `VM.PowerMgmt`, `VM.Config.Network`,
-`VM.Allocate`, `VM.Clone`, `Datastore.Audit`, `Datastore.AllocateSpace`, `Sys.Audit`, `SDN.Use`. The exact list,
-including what the guest firewall and conntrack flush need, is confirmed in spike S4 against PVE 8 and 9.
+`VM.Allocate`, `VM.Clone`, `Datastore.Audit`, `Datastore.AllocateSpace`, `Sys.Audit`, `SDN.Use`. Spike S4 confirmed
+the list against PVE 8 and 9: the guest firewall needs `VM.Audit` and `VM.Config.Network` (and `SDN.Use` for the device
+flag), and a rollback of a running container on PVE 9 needs `VM.PowerMgmt`. Guest rules apply only with the datacenter
+firewall on and the device's `firewall=1`. The API can't flush conntrack (owner decision pending before T72).
 
 #### 7.8.7 Runbook format
 
@@ -2062,6 +2064,11 @@ the owner and the document is updated before the work that depends on it starts.
   and the datacenter firewall prerequisite; whether each network device's own firewall setting must be on for guest
   rules to apply, and saving and restoring it; and which upgrade command Proxmox requires on its own hosts (a full
   upgrade or a plain one), for `patch-proxmox-host` and for the helper's count of pending updates there.
+  **Finding (2026-11-19):** the 7.8.6 role works for snapshot, rollback, power, guest firewall, the device flag and full
+  clone on PVE 8.4 and 9.2; saving and restoring a guest's firewall configuration is exact. Guest rules apply only with
+  the datacenter firewall on and the device's `firewall=1` (measured by pings from the hub). The API has no way to
+  flush conntrack, so how a quarantine cuts existing connections is the owner's decision before T72. Proxmox hosts
+  take a full upgrade (`apt full-upgrade` or `dist-upgrade`). Report: `spikes/s4.md`.
 - **S5** Claude Code headless: stdio MCP only, `--allowedTools` limited to MCP tools, stream-json events, kill at
   deadline; the flag that limits a run to the given MCP config; any extra flag stream-json needs in a non-interactive
   run; and running with a configuration directory that holds only the provider credential.
@@ -2260,3 +2267,4 @@ None.
 | 2026-11-19 | S6 finding: probe footprint inside the 5.2 budgets; current-thread runtime and iroh `tls-ring` only (section 17) | Spike S6 finding | Implementation run |
 | 2026-11-19 | S1 finding: aya capture works on 5.10, 6.1 and 7.0 with LXC attribution from the host; an MIT-only program is refused (GPL-only helper), so the eBPF program's licence is the owner's decision before T68 (section 17) | Spike S1 finding | Implementation run |
 | 2026-11-19 | S11 finding: journal-only authentication events read with `journalctl -o json`; `mem.available_*` counts the ZFS ARC above `c_min` (7.4.2, section 17) | Spike S11 finding | Implementation run |
+| 2026-11-19 | S4 finding: the 7.8.6 role confirmed on PVE 8 and 9; guest rules need the datacenter firewall and the device flag; conntrack can't be flushed through the API (owner decision pending before T72); Proxmox hosts take a full upgrade (7.8.6, section 17) | Spike S4 finding | Implementation run |
