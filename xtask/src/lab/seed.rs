@@ -68,7 +68,7 @@ fn meta_data(m: &Machine) -> String {
     format!("instance-id: rackhand-lab-{}\nlocal-hostname: {}\n", m.name, m.name)
 }
 
-fn user_data(lab: &Lab, m: &Machine) -> Result<String> {
+pub(crate) fn user_data(lab: &Lab, m: &Machine) -> Result<String> {
     let key = qemu::public_key()?;
     let alpine = m.image.starts_with("alpine");
     let site_nic = std::fs::read(workspace_root().join("lab/provision/site-nic.sh"))?;

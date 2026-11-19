@@ -1,8 +1,9 @@
 #!/bin/bash
 # Installs Proxmox VE on a lab Debian machine (plan L1), following Proxmox's "Install Proxmox VE on Debian" guides.
-# Usage: sudo proxmox.sh <phase 1|2> <major 8|9> <site address> <prefix> <site MAC> <ct address> <vm address>
-# Phase 1: repository and the Proxmox kernel (then reboot). Phase 2: proxmox-ve, vmbr0 on the site NIC, a ZFS pool on
-# the extra disk, and the test guests ct-test (100, unprivileged LXC) and vm-test (200, small Alpine VM).
+# Usage: sudo proxmox.sh <phase 1|2|3> <major 8|9> <site address> <prefix> <site MAC> <ct address> <vm address>
+# Phase 1: repository and the Proxmox kernel (then reboot). Phase 2: proxmox-ve and the network configuration (vmbr0 on
+# the site NIC; then reboot). Phase 3: a ZFS pool on the extra disk and the test guests ct-test (100, unprivileged LXC)
+# and vm-test (200, small Alpine VM).
 set -euxo pipefail
 phase="$1"; major="$2"; address="$3"; prefix="$4"; mac="$5"; ct_ip="$6"; vm_ip="$7"
 export DEBIAN_FRONTEND=noninteractive
@@ -15,6 +16,8 @@ if [ "$phase" = 1 ]; then
   systemctl disable --now systemd-resolved 2>/dev/null || true
   rm -f /etc/resolv.conf
   echo "nameserver 10.0.2.3" > /etc/resolv.conf
+  # A console-only root password for debugging the lab node over `lab console` (sshd keeps refusing root passwords).
+  echo 'root:rackhand-lab-console' | chpasswd
   # Proxmox's grub-pc asks for the install device; answer for the lab disk.
   echo "grub-pc grub-pc/install_devices multiselect /dev/vda" | debconf-set-selections
   if [ "$major" = 8 ]; then
@@ -38,7 +41,7 @@ EOF
   exit 0
 fi
 
-# Phase 2
+if [ "$phase" = 2 ]; then
 echo "postfix postfix/main_mailer_type select Local only" | debconf-set-selections
 echo "postfix postfix/mailname string $host.lab.invalid" | debconf-set-selections
 apt-get install -y proxmox-ve postfix open-iscsi chrony
@@ -73,9 +76,20 @@ iface vmbr0 inet static
     bridge-ports $nic
     bridge-stp off
     bridge-fd 0
+    # QEMU's multicast socket NIC hands every frame back to its sender too, so learning on this port would move the
+    # guests' MACs onto it and blackhole their traffic. Unknown destinations are flooded instead.
+    post-up bridge link set dev $nic learning off
 EOF
-systemctl disable --now systemd-networkd 2>/dev/null || true
-ifreload -a || systemctl restart networking
+# Installing proxmox-ve leaves an interfaces.new that pvenetcommit moves over /etc/network/interfaces at boot.
+rm -f /etc/network/interfaces.new
+systemctl disable systemd-networkd systemd-networkd.socket 2>/dev/null || true
+echo "uplink=$uplink site=$nic"
+cat /etc/network/interfaces
+exit 0
+fi
+
+# Phase 3, after rebooting into the Proxmox network configuration.
+ip -4 addr; ip route
 
 # ZFS pool on the extra disk for guests (and for the S11 ARC reading)
 if ! zpool list tank >/dev/null 2>&1; then
@@ -85,7 +99,7 @@ pvesm status | grep -q '^tank ' || pvesm add zfspool tank --pool tank --content 
 
 # Test guests
 pveam update
-template="$(pveam available --section system | awk '/alpine-3\.[0-9]+-default/ {print $2}' | sort -V | tail -1)"
+template="$(pveam available --section system | awk '/alpine-3\.[0-9]+-default_.*_amd64\.tar/ {print $2}' | sort -V | tail -1)"
 [ -f "/var/lib/vz/template/cache/$template" ] || pveam download local "$template"
 if ! pct status 100 >/dev/null 2>&1; then
   pct create 100 "local:vztmpl/$template" --hostname ct-test --unprivileged 1 --memory 256 --swap 0 \

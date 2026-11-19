@@ -87,8 +87,14 @@ pub fn start(lab: &Lab, machine: &Machine, disk: &Path, seed_url: Option<&str>) 
         .arg(dir.join("qemu.pid"))
         .arg("-qmp")
         .arg(format!("unix:{},server=on,wait=off", qmp.display()))
-        .arg("-serial")
-        .arg(format!("file:{}", dir.join("serial.log").display()))
+        // The console is a socket (for `lab console`) that is also logged to serial.log.
+        .arg("-chardev")
+        .arg(format!(
+            "socket,id=con,path={},server=on,wait=off,logfile={},logappend=on",
+            dir.join("console.sock").display(),
+            dir.join("serial.log").display()
+        ))
+        .args(["-serial", "chardev:con"])
         .arg("-drive")
         .arg(format!("file={},if=virtio,cache=writeback,discard=unmap", disk.display()));
     if machine.extra_disk_gb.is_some() {
@@ -147,6 +153,53 @@ fn read_return(reader: &mut impl BufRead) -> Result<serde_json::Value> {
         }
         return Ok(value);
     }
+}
+
+/// Logs in as root on a Proxmox lab node's serial console and runs `command` (for when SSH is down).
+pub fn console(name: &str, command: &str) -> Result<String> {
+    use std::io::Read;
+    let sock = machine_dir(name).join("console.sock");
+    let mut stream = UnixStream::connect(&sock).with_context(|| format!("connecting to {}", sock.display()))?;
+    stream.set_read_timeout(Some(Duration::from_millis(500)))?;
+    let mut seen = String::new();
+    let mut wait_for = |stream: &mut UnixStream, needle: &str, secs: u64| -> Result<String> {
+        let start = Instant::now();
+        let mut buf = [0u8; 4096];
+        while start.elapsed() < Duration::from_secs(secs) {
+            match stream.read(&mut buf) {
+                Ok(n) if n > 0 => seen.push_str(&String::from_utf8_lossy(&buf[..n])),
+                _ => {}
+            }
+            if let Some(pos) = seen.find(needle) {
+                let out = seen[..pos].to_string();
+                seen = seen[pos + needle.len()..].to_string();
+                return Ok(out);
+            }
+        }
+        bail!(
+            "console: no `{needle}` within {secs}s; last output: {}",
+            seen.chars().rev().take(300).collect::<String>().chars().rev().collect::<String>()
+        )
+    };
+    // A serial getty drops input typed faster than it reads, so type one character at a time.
+    let type_slowly = |stream: &mut UnixStream, text: &str| -> Result<()> {
+        for b in text.bytes() {
+            stream.write_all(&[b])?;
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        Ok(())
+    };
+    type_slowly(&mut stream, "\r")?;
+    wait_for(&mut stream, "login:", 15)?;
+    type_slowly(&mut stream, "root\r")?;
+    wait_for(&mut stream, "assword:", 10)?;
+    type_slowly(&mut stream, "rackhand-lab-console\r")?;
+    wait_for(&mut stream, "# ", 15)?;
+    type_slowly(&mut stream, &format!("{command}\r"))?;
+    // The command's output ends at the next shell prompt.
+    let out = wait_for(&mut stream, "\n\u{1b}[?2004hroot@", 120).or_else(|_| wait_for(&mut stream, "\nroot@", 5))?;
+    type_slowly(&mut stream, "exit\r")?;
+    Ok(out.split_once('\n').map(|(_, rest)| rest.to_string()).unwrap_or(out))
 }
 
 /// Runs a command on a machine over SSH as the lab user.

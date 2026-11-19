@@ -81,6 +81,12 @@ pub fn run(args: &[String]) -> Result<()> {
             }
             Ok(())
         }
+        Some("console") => {
+            let name = arg(1).context("machine")?;
+            let rest: Vec<&str> = args.iter().skip(2).map(String::as_str).skip_while(|a| *a == "--").collect();
+            print!("{}", qemu::console(name, &rest.join(" "))?);
+            Ok(())
+        }
         Some("ssh") => {
             let machine = lab.machine(arg(1).context("machine")?)?;
             println!(
@@ -147,9 +153,38 @@ fn doctor(lab: &Lab) -> Result<()> {
     Ok(())
 }
 
+/// A hash of what a base image is provisioned from; `base.provisioned` holds it, so changing a provision script or
+/// the image provisions that machine's base again.
+pub(crate) fn stamp(image: &str, parts: &[&[u8]]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for part in std::iter::once(image.as_bytes()).chain(parts.iter().copied()) {
+        h.update((part.len() as u64).to_le_bytes());
+        h.update(part);
+    }
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+pub(crate) fn is_provisioned(dir: &std::path::Path, stamp: &str) -> bool {
+    std::fs::read_to_string(dir.join("base.provisioned")).is_ok_and(|s| s.trim() == stamp)
+}
+
+fn provision_stamp(lab: &Lab, m: &Machine) -> Result<String> {
+    let user_data = seed::user_data(lab, m)?;
+    let mut parts = vec![user_data.into_bytes()];
+    if m.proxmox.is_some() {
+        parts.push(std::fs::read(workspace_root().join("lab/provision/proxmox.sh"))?);
+    }
+    Ok(stamp(&m.image, &parts.iter().map(Vec::as_slice).collect::<Vec<_>>()))
+}
+
+fn provisioned(lab: &Lab, m: &Machine) -> bool {
+    provision_stamp(lab, m).is_ok_and(|s| is_provisioned(&qemu::machine_dir(&m.name), &s))
+}
+
 fn status(lab: &Lab) -> Result<()> {
     for m in &lab.machines {
-        let provisioned = qemu::machine_dir(&m.name).join("base.provisioned").exists();
+        let provisioned = provisioned(lab, m);
         println!(
             "{:<10} {:<8} {}",
             m.name,
@@ -189,8 +224,11 @@ pub fn up(lab: &Lab, profile: &str) -> Result<()> {
     lab.check_budget(profile, mem_available_mb()? + running, BUILD_RESERVE_MB)?;
     qemu::ensure_key()?;
 
-    let to_provision: Vec<&Machine> =
-        machines.iter().copied().filter(|m| !qemu::machine_dir(&m.name).join("base.provisioned").exists()).collect();
+    let to_provision: Vec<&Machine> = machines.iter().copied().filter(|m| !provisioned(lab, m)).collect();
+    for m in to_provision.iter().filter(|m| qemu::is_running(&m.name)) {
+        println!("stopping {} (its provisioning changed)", m.name);
+        qemu::stop(m)?;
+    }
     if !to_provision.is_empty() {
         let server = seed::Server::start()?;
         std::thread::scope(|scope| -> Result<()> {
@@ -288,7 +326,7 @@ fn provision(lab: &Lab, m: &Machine, server: &seed::Server) -> Result<()> {
         provision_proxmox(lab, m, major)?;
     }
     qemu::stop(m)?;
-    std::fs::write(dir.join("base.provisioned"), b"ok")?;
+    std::fs::write(dir.join("base.provisioned"), provision_stamp(lab, m)?)?;
     println!("{} provisioned", m.name);
     Ok(())
 }
@@ -312,12 +350,17 @@ fn provision_proxmox(lab: &Lab, m: &Machine, major: u32) -> Result<()> {
     let _ = qemu::ssh_output(m, "sudo systemctl reboot");
     qemu::wait_ssh_gone(m, Duration::from_secs(120))?;
     qemu::wait_ssh(m, Duration::from_secs(600))?;
-    println!("{}: installing Proxmox VE {major} (phase 2)", m.name);
-    qemu::scp_to(m, &script, "/tmp/proxmox.sh")?;
-    run_logged(m, &format!("sudo bash /tmp/proxmox.sh 2 {args}"), "proxmox-2.log")?;
-    let _ = qemu::ssh_output(m, "sudo systemctl reboot");
-    qemu::wait_ssh_gone(m, Duration::from_secs(120))?;
-    qemu::wait_ssh(m, Duration::from_secs(600))?;
+    for phase in [2, 3] {
+        println!("{}: installing Proxmox VE {major} (phase {phase})", m.name);
+        qemu::scp_to(m, &script, "/tmp/proxmox.sh")?;
+        run_logged(m, &format!("sudo bash /tmp/proxmox.sh {phase} {args}"), &format!("proxmox-{phase}.log"))?;
+        if phase == 2 {
+            let _ = qemu::ssh_output(m, "sudo systemctl reboot");
+            qemu::wait_ssh_gone(m, Duration::from_secs(120))?;
+            qemu::wait_ssh(m, Duration::from_secs(600))
+                .context("no SSH after switching to the Proxmox network configuration; see `lab console`")?;
+        }
+    }
     let version = qemu::ssh(m, "sudo pveversion")?;
     println!("{}: {}", m.name, version.trim());
     Ok(())

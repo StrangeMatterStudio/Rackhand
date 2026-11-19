@@ -62,3 +62,23 @@ fn site_networks_use_documentation_ranges() {
         }
     }
 }
+
+#[test]
+fn provision_stamp_follows_the_inputs() {
+    use super::is_provisioned;
+    let stamp =
+        |image: &str, parts: &[&str]| super::stamp(image, &parts.iter().map(|p| p.as_bytes()).collect::<Vec<_>>());
+    let a = stamp("debian-12", &["user-data", "script 1"]);
+    assert_eq!(a, stamp("debian-12", &["user-data", "script 1"]), "stable");
+    assert_ne!(a, stamp("debian-12", &["user-data", "script 2"]), "a changed script re-provisions");
+    assert_ne!(a, stamp("debian-13", &["user-data", "script 1"]), "a changed image re-provisions");
+    assert_ne!(a, stamp("debian-12", &["user-data", "script", " 1"]), "parts are delimited");
+    let dir = std::env::temp_dir().join(format!("rackhand-lab-stamp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(!is_provisioned(&dir, &a), "never provisioned");
+    std::fs::write(dir.join("base.provisioned"), b"ok").unwrap();
+    assert!(!is_provisioned(&dir, &a), "a stamp from before stamps were hashed is stale");
+    std::fs::write(dir.join("base.provisioned"), &a).unwrap();
+    assert!(is_provisioned(&dir, &a));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
