@@ -6,7 +6,9 @@
 //! output is returned inside `{"untrusted_output": ...}`.
 
 pub mod auth;
+mod gate;
 pub mod keys;
+mod tools_act;
 mod tools_read;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -60,11 +62,18 @@ pub trait Observations: Send + Sync + std::fmt::Debug {
 pub struct ToolError {
     pub code: &'static str,
     pub message: String,
+    /// More for the caller, such as `needs_approval`'s `approval_id`.
+    pub data: Option<Value>,
 }
 
 impl ToolError {
     pub fn new(code: &'static str, message: impl Into<String>) -> ToolError {
-        ToolError { code, message: message.into() }
+        ToolError { code, message: message.into(), data: None }
+    }
+
+    pub fn with(mut self, data: Value) -> ToolError {
+        self.data = Some(data);
+        self
     }
 
     pub fn invalid(message: impl Into<String>) -> ToolError {
@@ -108,6 +117,8 @@ struct Inner {
     db: Arc<Db>,
     audit: Audit,
     observations: Arc<dyn Observations>,
+    actions: Option<crate::actions::Actions>,
+    library: Option<crate::library::items::Library>,
     /// Call times per token, for the rate limit.
     calls: Mutex<HashMap<String, VecDeque<i64>>>,
 }
@@ -161,7 +172,10 @@ fn tool_result(result: Result<Value, ToolError>) -> Value {
             json!({ "content": [{ "type": "text", "text": v.to_string() }], "structuredContent": v, "isError": false })
         }
         Err(e) => {
-            let v = json!({ "error": e.code, "message": e.message });
+            let mut v = json!({ "error": e.code, "message": e.message });
+            if let (Some(Value::Object(extra)), Some(obj)) = (e.data, v.as_object_mut()) {
+                obj.extend(extra);
+            }
             json!({ "content": [{ "type": "text", "text": v.to_string() }], "structuredContent": v, "isError": true })
         }
     }
@@ -169,7 +183,32 @@ fn tool_result(result: Result<Value, ToolError>) -> Value {
 
 impl Mcp {
     pub fn new(db: Arc<Db>, audit: Audit, observations: Arc<dyn Observations>) -> Mcp {
-        Mcp { inner: Arc::new(Inner { db, audit, observations, calls: Mutex::new(HashMap::new()) }) }
+        Mcp {
+            inner: Arc::new(Inner {
+                db,
+                audit,
+                observations,
+                actions: None,
+                library: None,
+                calls: Mutex::new(HashMap::new()),
+            }),
+        }
+    }
+
+    /// Actions, for the tools that run something; before serving.
+    pub fn with_actions(mut self, actions: crate::actions::Actions) -> Mcp {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.actions = Some(actions);
+        }
+        self
+    }
+
+    /// The Library, for `propose_library_change`; before serving.
+    pub fn with_library(mut self, library: crate::library::items::Library) -> Mcp {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.library = Some(library);
+        }
+        self
     }
 
     /// The router handler for `rackhand/mcp/1`.
@@ -276,11 +315,11 @@ impl Mcp {
         result
     }
 
-    async fn dispatch(&self, _caller: &Caller, tool: &str, args: &Value, now: i64) -> Result<Value, ToolError> {
+    async fn dispatch(&self, caller: &Caller, tool: &str, args: &Value, now: i64) -> Result<Value, ToolError> {
         if READ_TOOLS.contains(&tool) {
             return tools_read::call(&self.inner.db, self.inner.observations.as_ref(), tool, args, now);
         }
-        // The request and job tools come with their gating (T75).
-        Err(ToolError::new("tool_not_allowed", format!("`{tool}` isn't served yet")))
+        // Boxed: the act tools' futures are large, and a session serves many calls.
+        Box::pin(self.act(caller, tool, args, now)).await
     }
 }

@@ -629,6 +629,12 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
             tx.commit()?;
             Ok(n)
         }
+        WriteCmd::AppendIncidentEvent(row) => {
+            let tx = conn.transaction()?;
+            let n = write_row(&tx, &RowWrite::insert("incident_events", row))?;
+            tx.commit()?;
+            Ok(n)
+        }
         WriteCmd::PutMcpKey(row) => insert_or_update(conn, "mcp_keys", "id", "hash", row),
         WriteCmd::PutJobToken(row) => insert_or_update(conn, "job_tokens", "job_id", "hash", row),
         WriteCmd::PutPolicy(row) => upsert_one(conn, "policies", "id", row),

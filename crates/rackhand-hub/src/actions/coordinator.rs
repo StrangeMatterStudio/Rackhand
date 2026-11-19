@@ -329,6 +329,31 @@ impl Actions {
         Ok(job_id)
     }
 
+    /// The assistant ends its job (`finish_job`): `resolved` succeeds, anything else fails with that outcome. Its
+    /// token stops working, since a token only works while its job runs.
+    pub async fn finish_assistant(&self, job_id: &str, outcome: &str, summary: &str) -> Result<(), ActionsError> {
+        let running: Option<i64> = self.inner.db.readers().with(|c| {
+            c.query_row(
+                "SELECT 1 FROM jobs WHERE id = ?1 AND kind = 'assistant' AND state = 'running'",
+                [job_id],
+                |r| r.get(0),
+            )
+            .optional()
+        })?;
+        if running.is_none() {
+            return Err(ActionsError::UnknownJob);
+        }
+        let result = if outcome == "resolved" { JobOutcome::Succeeded } else { JobOutcome::Failed };
+        self.audit(
+            &format!("job:{job_id}"),
+            "job.summary",
+            job_id,
+            serde_json::json!({ "outcome": outcome, "summary": summary }),
+        )
+        .await;
+        self.finish(job_id, &format!("job:{job_id}"), result, Some(outcome)).await
+    }
+
     /// An assistant `exec` on a machine (7.3.7): the command string as-is, as the assistant identity, recorded as a step
     /// of its job. It waits for the machine like a job does.
     pub async fn exec(
