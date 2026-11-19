@@ -9,6 +9,8 @@ publish = false
 
 [dependencies]
 rackhand-store = { path = "../rackhand-store" }
+rackhand-net = { path = "../rackhand-net" }
+rackhand-proto = { path = "../rackhand-proto" }
 rusqlite = { workspace = true }
 chacha20poly1305 = { workspace = true }
 sha2 = { workspace = true }
@@ -16,9 +18,19 @@ zeroize = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 jiff = { workspace = true }
+iroh = { workspace = true }
+prost = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ulid = { workspace = true }
+getrandom = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+rackhand-net = { path = "../rackhand-net", features = ["testing"] }
+iroh-relay = { workspace = true }
+ed25519-dalek = { workspace = true }
 
 [lints]
 workspace = true

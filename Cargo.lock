@@ -2771,12 +2771,23 @@ name = "rackhand-hub"
 version = "0.1.0"
 dependencies = [
  "chacha20poly1305",
+ "ed25519-dalek 2.2.0",
+ "getrandom 0.3.4",
+ "iroh",
+ "iroh-relay",
  "jiff",
+ "prost",
+ "rackhand-net",
+ "rackhand-proto",
  "rackhand-store",
  "rusqlite",
+ "serde",
+ "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "tokio",
+ "tracing",
+ "ulid",
  "zeroize",
 ]
 

@@ -35,6 +35,40 @@ impl RowWrite {
     }
 }
 
+/// An update of chosen columns of the one row whose `key` column has the given value; it fails if no row matches.
+#[derive(Debug, Clone)]
+pub struct RowUpdate {
+    pub table: &'static str,
+    pub key: (&'static str, Value),
+    pub set: Row,
+}
+
+/// A join token to use up (7.3.1): it must exist, be unused, unexpired at `now_ms` and of `kind`.
+#[derive(Debug, Clone)]
+pub struct ConsumeToken {
+    pub hash: Vec<u8>,
+    pub kind: String,
+    pub now_ms: i64,
+}
+
+/// Why a join token wasn't used up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenRefusal {
+    Unknown,
+    Used,
+    Expired,
+    WrongKind,
+}
+
+/// The Registry's writes: optionally uses up a join token, then inserts and updates rows, all in one transaction, so
+/// a token can't join twice and a refused join changes nothing.
+#[derive(Debug, Clone, Default)]
+pub struct RegistryChange {
+    pub consume: Option<ConsumeToken>,
+    pub writes: Vec<RowWrite>,
+    pub updates: Vec<RowUpdate>,
+}
+
 /// The write operations of design 7.3.8. Each system sends commands only for the tables it owns (7.2). A variant's
 /// handler returns [`StoreError::Unimplemented`] until the step that builds its owning system.
 #[derive(Debug, Clone)]
@@ -70,7 +104,7 @@ pub enum WriteCmd {
     PutQuarantineRule(Row),
     PutWindow(Row),
     // Registry, Peers, Assist, MCP, Web
-    RegistryChange(Row),
+    RegistryChange(RegistryChange),
     PutPeerSummary(Row),
     PutJobToken(Row),
     PutMcpKey(Row),
@@ -168,6 +202,10 @@ pub enum StoreError {
     MissingColumn(&'static str),
     #[error("the store writer has stopped")]
     WriterStopped,
+    #[error("join token refused: {0:?}")]
+    TokenRefused(TokenRefusal),
+    #[error("no `{0}` row to update")]
+    NoSuchRow(&'static str),
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
 }
@@ -239,6 +277,45 @@ fn write_row(tx: &rusqlite::Transaction<'_>, w: &RowWrite) -> Result<usize, Stor
     Ok(tx.execute(&sql, rusqlite::params_from_iter(values))?)
 }
 
+fn consume_token(tx: &rusqlite::Transaction<'_>, t: &ConsumeToken) -> Result<usize, StoreError> {
+    use rusqlite::OptionalExtension;
+    let found: Option<(String, i64, Option<i64>)> = tx
+        .query_row("SELECT kind, expires_at, used_at FROM join_tokens WHERE hash = ?1", [&t.hash], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .optional()?;
+    let refusal = match found {
+        None => Some(TokenRefusal::Unknown),
+        Some((kind, _, _)) if kind != t.kind => Some(TokenRefusal::WrongKind),
+        Some((_, _, Some(_))) => Some(TokenRefusal::Used),
+        Some((_, expires_at, None)) if expires_at <= t.now_ms => Some(TokenRefusal::Expired),
+        Some(_) => None,
+    };
+    if let Some(r) = refusal {
+        return Err(StoreError::TokenRefused(r));
+    }
+    Ok(tx.execute(
+        "UPDATE join_tokens SET used_at = ?1 WHERE hash = ?2 AND used_at IS NULL",
+        rusqlite::params![t.now_ms, t.hash],
+    )?)
+}
+
+fn update_row(tx: &rusqlite::Transaction<'_>, u: &RowUpdate) -> Result<usize, StoreError> {
+    check_ident(u.table)?;
+    check_ident(u.key.0)?;
+    let cols: Vec<&str> = u.set.keys().copied().collect();
+    for c in &cols {
+        check_ident(c)?;
+    }
+    let sets: Vec<String> = cols.iter().enumerate().map(|(i, c)| format!("\"{c}\" = ?{}", i + 1)).collect();
+    let sql = format!("UPDATE {} SET {} WHERE \"{}\" = ?{}", u.table, sets.join(", "), u.key.0, cols.len() + 1);
+    let values: Vec<&Value> = u.set.values().chain(std::iter::once(&u.key.1)).collect();
+    match tx.execute(&sql, rusqlite::params_from_iter(values))? {
+        0 => Err(StoreError::NoSuchRow(u.table)),
+        n => Ok(n),
+    }
+}
+
 fn replace_one(conn: &mut Connection, table: &'static str, row: Row) -> Result<usize, StoreError> {
     let tx = conn.transaction()?;
     let n = write_row(&tx, &RowWrite::replace(table, row))?;
@@ -297,6 +374,21 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
             let removed = tx.execute("DELETE FROM audit_log WHERE seq <= ?1", [through])?;
             tx.commit()?;
             Ok(removed + 1)
+        }
+        WriteCmd::RegistryChange(change) => {
+            let tx = conn.transaction()?;
+            let mut n = 0;
+            if let Some(token) = &change.consume {
+                n += consume_token(&tx, token)?;
+            }
+            for w in &change.writes {
+                n += write_row(&tx, w)?;
+            }
+            for u in &change.updates {
+                n += update_row(&tx, u)?;
+            }
+            tx.commit()?;
+            Ok(n)
         }
         WriteCmd::PutScheduleState(row) => replace_one(conn, "schedule_state", row),
         WriteCmd::PutWindow(row) => replace_one(conn, "windows", row),

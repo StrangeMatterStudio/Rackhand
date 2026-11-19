@@ -209,7 +209,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T02 | Test tiers and `cargo xtask ci` | T01 | scripted | done |
 | T03 | CI workflows and the guard test | T02 | unit (xtask), lint | done |
 | T04 | Runner profiles for Rackhand | T03 | scripted (CI run), owner setup | unverified (MV1) |
-| L1 | Local lab harness | T02 | unit (xtask) + live (local lab) | in progress |
+| L1 | Local lab harness | T02 | unit (xtask) + live (local lab) | done |
 | T05 | Spike S8: time-series encoding | T02 | scripted measurement | todo |
 | T06 | Spike S6: probe footprint | T02 | scripted measurement | done |
 | T07 | Spike S7: git mirror library | T02 | scripted measurement | done |
@@ -240,7 +240,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T32 | Incidents: lifecycle and evaluation | T25, T24, T28 to T31 | unit | todo |
 | T33 | Notify: Discord, SMTP, grouping, retries | T32 | unit (HTTP and SMTP fakes) | todo |
 | T34 | Scheduler and windows | T24 | unit | done |
-| T35 | Join contract and Registry | T17, T18, T21 | contract | todo |
+| T35 | Join contract and Registry | T17, T18, T21 | contract | done |
 | T36 | Web foundation and first run | T18, T20, T21 | unit (HTTP) | todo |
 | T37 | Sign-in, second factor, step-up and limits | T36 | unit (HTTP) | todo |
 | T38 | Passkeys, OIDC and account settings | T37 | unit (HTTP, fake provider) | todo |
@@ -592,10 +592,10 @@ ranges for its site networks; the real lab's details live only in the untracked 
 - **Regression:** `cargo xtask ci fast`: exit 0.
 - **Manual verification:** None.
 - **Done when:**
-  - [ ] New tests observed failing before the implementation
-  - [ ] New tests and the regression suite pass
-  - [ ] Nested Proxmox result recorded (LXC guests run; VM guests with hardware virtualization or emulation)
-  - [ ] Evidence recorded below
+  - [x] New tests observed failing before the implementation
+  - [x] New tests and the regression suite pass
+  - [x] Nested Proxmox result recorded (LXC guests run; VM guests with hardware virtualization or emulation)
+  - [x] Evidence recorded below
 - **Risk / rollback:** nested Proxmox (three virtualization levels deep under WSL) may not run. If `pve8` or `pve9`
   can't run an LXC guest, the run records a plan-level deviation: T10, T11 and T12 use the owner's real lab as first
   planned (MV2, MV3 and MV4 back to the owner), and the Proxmox tests in L3 to L5 and L8 move to L9. The lab needs
@@ -603,6 +603,12 @@ ranges for its site networks; the real lab's details live only in the untracked 
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p xtask -E 'test(lab::)' | compile errors: unresolved `config` and `images` (run log) |
+  | 2026-11-19 | cargo nextest run -p xtask -E 'test(lab::)' | 6 passed, 0 failed (the 4 planned, the seed encoder test, and `provision_stamp_follows_the_inputs`, seen failing first: unresolved `stamp`, `is_provisioned`) |
+  | 2026-11-19 | cargo xtask lab fetch | exit 0; alpine-3.20, debian-12, debian-13 and ubuntu-24.04 verified against images.toml |
+  | 2026-11-19 first full run | cargo xtask ci live --target local --milestone lab | 5 of 6 passed: `proxmox_nodes_run_an_lxc_guest` failed (pve9 had the arm64 template); `proxmox_vm_guest_boots` passed only after 518 s on a lucky ping, because the bridges learned guest MACs on the uplink port (QEMU's multicast socket NIC hands frames back to their sender) |
+  | 2026-11-19 | cargo xtask ci live --target local --milestone lab | 7 passed, 0 failed (`proxmox_guests_answer_every_time` added: 10 of 10 pings to each of the four guests, and learning off on each node's uplink). Proxmox VE 8.4.21 (kernel 6.8.12) and 9.2.31 (kernel 7.0.14); ct-test runs on both; vm-test runs on both with hardware virtualization (nested KVM) |
+  | 2026-11-19 | cargo xtask ci fast | exit 0 (111 passed) |
 
 ### Spikes (D87)
 
@@ -1582,6 +1588,9 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-hub --test join_contract | compile errors: unresolved imports `rackhand_hub::registry::{Registry, join_server, machines, tokens}` |
+  | 2026-11-19 | cargo nextest run -p rackhand-hub --test join_contract && cargo nextest run -p rackhand-hub -E 'test(registry::)' | 9 passed, then 1 passed; 0 failed. The contract runs over real endpoints and a local relay; the rate limit is tested on the handler with explicit times and addresses; a two-join race on one token gives one join and one `used`; the level change keeps the machine's window and tags; the hashed-token test scans `hub.db` and `hub.db-wal` |
+  | 2026-11-19 | cargo xtask ci fast | exit 0 (fmt, clippy, arch-check, nextest 111 passed) |
 
 ### T36: Web foundation and first run
 - **Design refs:** 7.7.1 (stack, first-run page), 7.7.2 (sessions, cookies, roles), 10 (CSRF, CSP, escaping), D9, D49
@@ -4248,6 +4257,9 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D17 | 2026-11-19 | T31 | Baseline details as 7.6.4 | Hours are counted in UTC (hour of week 0 is Monday 00:00); a baseline warning clears after 2 samples in a row back inside the band; a deviation freezes the hour-of-day and hour-of-week buckets of the hour it is in, until 2 hours after its last deviating sample | 7.6.4 doesn't say which clock, how a baseline warning clears, or which buckets freeze; these follow the threshold rules and the schema's per-bucket `frozen_until_ms` | design gap | pending |
 | D18 | 2026-11-19 | T34 | `windows.rrule` holds a daily or weekly rule, start time and duration (format not set) | The text is `daily HH:MM <minutes>m` or `weekly <mon..sun> HH:MM <minutes>m` (at most 7 days); timezones come from jiff with its bundled database. With no saved state a window already open fires once, and a window missed entirely while the hub was down is skipped; periodic tasks run at start and collapse missed runs into one | The design names the parts but not the text or the restart rules; the restart rule makes `schedule_state` the only thing preventing a second run, as `state_survives_restart_without_double_firing` checks | plan | - |
 | D19 | 2026-11-19 | T28 | `worked_example_opens_warning_at_5_and_critical_at_27_and_resolves` as first written: the series starts at 86% at minute 0 | The test starts with one normal sample at minute 0, each sample covering the interval that ends at its time | With 80% presence, a series that starts in breach with no history fires a 5-minute rule after 16 of 20 samples (3.75 minutes); the design's example assumes normal readings before minute 0. The implementation is unchanged and the 80% test still checks the boundary | plan | - |
+| D20 | 2026-11-19 | T35 | A failed join counts against 10 per minute per remote address | Direct callers are counted per IP (any port); relayed callers per relay, since the relay is the only address the hub sees; at most 4096 addresses are tracked, dropping the one idle longest | The design doesn't say what the remote address of a relayed caller is; an endpoint id costs nothing to change, so counting by it limits nothing. Counting per relay means failures through one relay can delay other joins through it for a minute. For the owner to confirm | design gap | pending |
+| D21 | 2026-11-19 | T35 | Registry tables written by plain row commands; join writes the host keys | `WriteCmd::RegistryChange` carries a typed change: an optional token to use up (checked for kind, use and expiry in the same transaction) plus inserts and column updates (never a row replace, so a machine's policy, tags and guest binding survive). The join hands a managed machine's host keys to the SSH system through a `Joined` event, since SSH owns `ssh_host_keys`; the keys, sudoers and command list come from a `ManagedSetupSource` that T51 and T53 provide. Joins register machines for `probe`, devices for `tunnel` and `xfer`, operators for `operator` and `mcp`, peers for `peer` and `xfer`. Tokens are 26 Crockford base32 characters (128 bits), hashed upper case | Single use under concurrency, ownership per 7.2, and the ALPN users in 7.3.2 to 7.3.11 | plan | - |
+| D22 | 2026-11-19 | L1 | Proxmox nodes snapshotted as `pristine`; 6 live tests | The provisioned base image is the pristine state (`lab reset` drops the overlay); `base.provisioned` holds a hash of the image, the cloud-init seed and `proxmox.sh`, so a changed input provisions that base again. The site NIC's bridge port has learning off. A seventh live test checks that every guest answers steadily | QEMU's multicast socket NIC hands frames back to their sender, which made the bridges learn guest MACs on the uplink; one lucky ping had passed the VM test | plan | - |
 
 ## Follow-ups (out of scope)
 

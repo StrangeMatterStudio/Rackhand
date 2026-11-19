@@ -85,11 +85,17 @@ const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ"; // Crockford ba
 pub fn recovery_code(key: &MasterKey) -> String {
     let mut data = key.bytes().to_vec();
     data.extend_from_slice(&Sha256::digest(key.bytes())[..2]);
+    let out = crockford(&data);
+    out.as_bytes().chunks(5).map(|c| String::from_utf8_lossy(c).to_string()).collect::<Vec<_>>().join("-")
+}
+
+/// Crockford base32, upper case, no padding.
+pub(crate) fn crockford(data: &[u8]) -> String {
     let mut bits = 0u32;
     let mut nbits = 0;
     let mut out = String::new();
     for byte in data {
-        bits = (bits << 8) | u32::from(byte);
+        bits = (bits << 8) | u32::from(*byte);
         nbits += 8;
         while nbits >= 5 {
             nbits -= 5;
@@ -99,7 +105,7 @@ pub fn recovery_code(key: &MasterKey) -> String {
     if nbits > 0 {
         out.push(ALPHABET[((bits << (5 - nbits)) & 31) as usize] as char);
     }
-    out.as_bytes().chunks(5).map(|c| String::from_utf8_lossy(c).to_string()).collect::<Vec<_>>().join("-")
+    out
 }
 
 pub fn restore_from_recovery_code(code: &str) -> Result<MasterKey, VaultError> {

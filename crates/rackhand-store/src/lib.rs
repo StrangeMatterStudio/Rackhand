@@ -7,7 +7,9 @@ pub mod reader;
 pub mod writer;
 
 pub use db::{Db, OpenError, SCHEMA_VERSION};
-pub use writer::{Row, RowWrite, StoreError, StoreWriter, WriteAck, WriteCmd};
+pub use writer::{
+    ConsumeToken, RegistryChange, Row, RowUpdate, RowWrite, StoreError, StoreWriter, TokenRefusal, WriteAck, WriteCmd,
+};
 
 #[cfg(test)]
 mod tests {
