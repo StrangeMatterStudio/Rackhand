@@ -65,6 +65,7 @@ struct Inner {
     registry: Option<Arc<crate::registry::Registry>>,
     passkeys: Option<auth::passkey::Passkeys>,
     oidc_flows: Mutex<HashMap<String, auth::oidc::Flow>>,
+    library: Option<crate::library::items::Library>,
 }
 
 #[derive(Clone)]
@@ -107,6 +108,7 @@ impl Web {
             registry: None,
             passkeys: None,
             oidc_flows: Mutex::new(HashMap::new()),
+            library: None,
         }))
     }
 
@@ -114,6 +116,14 @@ impl Web {
     pub fn with_host_keys(mut self, keys: Arc<crate::ssh::hostkeys::HostKeys>) -> Web {
         if let Some(inner) = Arc::get_mut(&mut self.0) {
             inner.host_keys = Some(keys);
+        }
+        self
+    }
+
+    /// The Library whose changes the git mirror follows; before the router is built.
+    pub fn with_library(mut self, library: crate::library::items::Library) -> Web {
+        if let Some(inner) = Arc::get_mut(&mut self.0) {
+            inner.library = Some(library);
         }
         self
     }

@@ -265,7 +265,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T55 | Actions and Executor | T52 to T54, T24 | unit + integration | done |
 | T56 | Library and git mirror | T50, T21, T07 | unit + integration | done |
 | T57 | Incident routing to runbooks and attempt limits | T32, T55 | unit | todo |
-| T58 | Dashboard: approvals, jobs, library, patching | T55, T56, T37 | unit (HTTP) | todo |
+| T58 | Dashboard: approvals, jobs, library, patching | T55, T56, T37 | unit (HTTP) | done |
 | T59 | Patching | T55, T34, T47, T12 | unit + integration + live (L4, L9) | todo |
 | T60 | Hypervisor and hub-host patching | T59 | unit + integration + live (L4, L9) | todo |
 | T61 | Remaining built-in runbooks and key rotation | T55, T43 | unit + integration | todo |
@@ -1820,6 +1820,11 @@ Only additions to that list are written out below.
   | `web::first_run_setup_code_guessing_limited` | first-run attempts count against the source limiter | 7.7.2 |
   | `collect::series_cap_keeps_net_and_diskio_before_extra_mounts` | on a host with 300 mounts, network and disk I/O series survive the cap | 7.4.2 |
   | `it::receive::root_not_owned_by_root_refused` | a transfer root writable by another user is refused | 7.3.11 |
+
+  Carried in from T58:
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `hub_cmd::dashboard_decision_publishes_approval_decided` (carried in from T58) | approving or rejecting in the dashboard publishes `ApprovalDecided` on the Bus | 7.3.8 |
 - **Fails first:** compile errors; then the container tests fail because there is no unit file.
 - **Verification:**
   ```bash
@@ -2543,6 +2548,9 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-hub -E 'test(pages::)' | 8 failed: no such routes (404 where the pages were expected) |
+  | 2026-11-19 | cargo nextest run -p rackhand-hub -E 'test(pages::approval) \| test(pages::high_risk) \| test(pages::viewer) \| test(pages::second_decision) \| test(pages::job_page) \| test(pages::library) \| test(pages::nothing_waiting) \| test(pages::policy_and_window)' | 8 passed: an approval shows its id, tool, target, every argument, runbook revision, risk, requester, reason and SHA-256; a high-risk approve without a fresh step-up goes to `/step-up` and stays pending, then approves (audited); a viewer and a responder deciding high risk get 403, and a viewer sees no buttons; the second decision gets 409 "already decided"; a job page shows the command, `exit code 3`, the 1 MiB marker, and escapes the output; the library shows a line diff between revisions, a change that doesn't validate is refused (400) with its text kept, and an assistant's draft is applied by an admin (a responder gets 403); "Nothing waiting" when empty; an admin's policy and window are rows and a revision of `config/policies.toml` that the mirror renders, a bad window rule is 400, and a responder gets 403 |
+  | 2026-11-19 | cargo xtask ci fast; cargo xtask arch-check | exit 0 (230 passed); no violations |
 
 ### T59: Patching
 - **Design refs:** FR-13, G4, 7.5.3 (steps 1 to 6 and 9), D28, D45, D54, D66, D67, E9, E10, E11, E12, AC19, AC20, AC63,
@@ -2585,6 +2593,11 @@ Only additions to that list are written out below.
   | Test | Asserts | Covers |
   | --- | --- | --- |
   | `it::executor::reboot_if_required_reboots_only_when_flagged` | the step reboots when the latest report has `reboot_required` and waits for the next report; otherwise it does nothing | 7.8.7 |
+
+  Carried in from T58:
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `pages::patching_shows_pending_updates_per_machine` (carried in from T58) | the patching page lists each machine's pending updates from its latest report, and the holds | 7.7.1 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
@@ -4429,6 +4442,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D36 | 2026-11-19 | T63 | `crates/rackhand-runbook/builtin/diagnostics.toml`; `actions/diagnostics.rs`; templates in `commands.json` generation | As planned, plus: Linux and Alpine commands only (the Windows ones run through the dispatcher's scripts, T90: `Unsupported` until then); a diagnostic doesn't wait for the machine's job lock, since it is read-only and a detached step can hold a machine for long (E55); within a job it is a step of that job (output stored there only), otherwise it is audited without its output; the hub keeps stdout then stderr, and `du_top` is sorted by size, `top_processes` cut to 20 and `dmesg_tail` to 200 lines by the hub; the diagnostics' templates are added by the hub's `signed_command_list`, not by the runbook crate's `command_list`. The container image has a stand-in `docker` CLI | Read-only work shouldn't queue behind a stuck package step | plan | - |
 | D37 | 2026-11-19 | T74 | 5.3: rmcp for the MCP server; `mcp/{server, auth, tools_read, keys}.rs` | The hub speaks the part of MCP it serves (initialize, ping, `tools/list`, `tools/call`, the stdio framing after the auth line) in `mcp/mod.rs`: the current rmcp (3.11) needs Rust 1.88, above the workspace's 1.85, and the framing is the design's own. `get_vitals` and the services, containers and updates of `get_machine` come through an `Observations` interface that the time-series store and ingest fill (tests carried into T25 and T27). Devices are admitted to `rackhand/mcp/1` too (people reach MCP from their device). Personal keys start `rk_` and job tokens `rj_`; a job token works only from its operator's endpoint and while its job runs. The request and job tools are listed for the callers that may use them and come with their gating in T75 | The design's MSRV and framing; series and facts aren't stored yet | design | pending (confirm not using rmcp in the hub; the CLI and operator may still use it) |
 | D38 | 2026-11-19 | T75 | `mcp/{tools_act.rs, gate.rs}`; the three tools | As planned, plus: `add_incident_note` writes through `incidents::notes` (Incidents owns `incident_events`; the `AppendIncidentEvent` handler is added); `finish_job` takes `resolved`, `unresolved` or `handed_over` and ends the job through Actions (only `resolved` succeeds); an approval asked for over MCP lasts an hour; the hash covers the call's arguments but not its `reason`; `run_runbook` answers when the job has ended (a long runbook holds the call); `exec` runs for at most 10 minutes; runbooks other than `quarantine-release` are refused on a quarantined machine (any state but `none`); the caller is checked on every request; `quarantine` and `quarantine-release` are judged as quarantine; a runbook runs at the lower of the job's level and its own `autonomy` | The design gives the rules, not these limits | plan | - |
+| D39 | 2026-11-19 | T58 | `web/pages/{approvals, jobs, library, patching}.rs` | As planned, plus `policy/store.rs`: Policy owns `policies` and `windows`, so it writes them and renders `config/policies.toml` (policies and windows) as a new revision on every change. The patching page shows policies (holds are `patch = hold`), windows and the latest `patch-*` jobs; pending updates per machine need the reports' facts (carried into T59). A decision in the dashboard doesn't publish `ApprovalDecided` yet: the Web has no Bus handle until the composition (T41) | Ownership per 7.2; facts and the Bus arrive later | plan | - |
 
 ## Follow-ups (out of scope)
 

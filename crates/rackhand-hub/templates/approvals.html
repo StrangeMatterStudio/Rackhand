@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Approvals: Rackhand{% endblock %}
+{% block nav %}<nav><a href="/">Overview</a> <a href="/approvals">Approvals</a> <a href="/jobs">Jobs</a> <a href="/library">Library</a> <a href="/patching">Patching</a></nav>{% endblock %}
+{% block content %}
+<h1>Approvals</h1>
+{% if waiting.is_empty() %}
+<p>Nothing waiting.</p>
+{% endif %}
+{% for a in waiting %}
+<section class="approval">
+<h2>{{ a.tool }} on {{ a.target }}</h2>
+<dl>
+<dt>Risk</dt><dd>{{ a.risk }}{% if a.step_up %} (step-up){% endif %}</dd>
+<dt>Requested by</dt><dd>{{ a.requested_by }}</dd>
+<dt>Reason</dt><dd>{{ a.reason }}</dd>
+{% if let Some(rev) = a.rev %}<dt>Runbook</dt><dd>revision {{ rev }}</dd>{% endif %}
+<dt>Arguments</dt><dd><pre>{{ a.args }}</pre></dd>
+<dt>Approval</dt><dd><code>{{ a.id }}</code></dd>
+<dt>SHA-256</dt><dd><code>{{ a.hash }}</code></dd>
+</dl>
+{% if a.can_decide %}
+<form method="post" action="/approvals/{{ a.id }}/approve"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Approve</button></form>
+<form method="post" action="/approvals/{{ a.id }}/reject"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Reject</button></form>
+{% endif %}
+</section>
+{% endfor %}
+<form method="post" action="/sign-out"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Sign out</button></form>
+{% endblock %}

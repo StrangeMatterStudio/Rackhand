@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Jobs: Rackhand{% endblock %}
+{% block nav %}<nav><a href="/">Overview</a> <a href="/approvals">Approvals</a> <a href="/jobs">Jobs</a> <a href="/library">Library</a> <a href="/patching">Patching</a></nav>{% endblock %}
+{% block content %}
+<h1>Jobs</h1>
+{% if runs.is_empty() %}<p>No jobs yet.</p>{% endif %}
+<table>
+<tr><th>Job</th><th>Kind</th><th>Target</th><th>State</th><th>Outcome</th><th>Requested by</th></tr>
+{% for r in runs %}
+<tr><td><a href="/jobs/{{ r.id }}">{{ r.name }}</a></td><td>{{ r.kind }}</td><td>{{ r.target }}</td><td>{{ r.state }}</td><td>{{ r.outcome }}</td><td>{{ r.requested_by }}</td></tr>
+{% endfor %}
+</table>
+<form method="post" action="/sign-out"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Sign out</button></form>
+{% endblock %}

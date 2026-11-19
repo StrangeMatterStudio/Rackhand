@@ -5,6 +5,7 @@ pub mod decide;
 pub mod exclusions;
 pub mod exec_patterns;
 pub mod risk;
+pub mod store;
 
 #[cfg(test)]
 mod tests {

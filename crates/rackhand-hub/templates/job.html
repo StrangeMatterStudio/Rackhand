@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}{{ run.name }}: Rackhand{% endblock %}
+{% block nav %}<nav><a href="/">Overview</a> <a href="/approvals">Approvals</a> <a href="/jobs">Jobs</a> <a href="/library">Library</a> <a href="/patching">Patching</a></nav>{% endblock %}
+{% block content %}
+<h1>{{ run.name }}</h1>
+<p>{{ run.kind }} job on {{ run.target }}, requested by {{ run.requested_by }}: {{ run.state }}{% if !run.outcome.is_empty() %} ({{ run.outcome }}){% endif %}</p>
+{% for s in steps %}
+<section class="step">
+<h2>{{ s.id }}: {{ s.state }}{% if let Some(code) = s.exit_code %}, exit code {{ code }}{% endif %}</h2>
+{% if !s.command.is_empty() %}<p><code>{{ s.command }}</code></p>{% endif %}
+{% if !s.stdout.is_empty() %}<pre class="output">{{ s.stdout }}</pre>{% endif %}
+{% if !s.stderr.is_empty() %}<pre class="output error">{{ s.stderr }}</pre>{% endif %}
+</section>
+{% endfor %}
+<form method="post" action="/sign-out"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Sign out</button></form>
+{% endblock %}

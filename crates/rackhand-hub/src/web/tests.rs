@@ -704,3 +704,355 @@ mod settings {
         assert_eq!(send(&app.router, post("/settings/oidc", &admin, &plain)).await.status(), StatusCode::BAD_REQUEST);
     }
 }
+
+mod pages {
+    use super::*;
+    use crate::library::items::{Kind, Library};
+    use crate::policy::approvals::{ApprovalRequest, Approvals, approval_hash};
+    use rackhand_runbook::runbook::Risk;
+
+    fn request(risk: Risk) -> ApprovalRequest {
+        ApprovalRequest {
+            requester: "job:01JASSISTANTJOBAAAAAAAAAAA".into(),
+            tool: "run_runbook".into(),
+            target: Some("m1".into()),
+            args: serde_json::json!({ "name": "restart-web", "params": { "unit": "nginx.service" } }),
+            runbook_rev: Some(3),
+            risk,
+            step_up: risk == Risk::High,
+            reason: "nginx keeps failing its health check".into(),
+        }
+    }
+
+    async fn approval(app: &App, risk: Risk) -> String {
+        Approvals::new(app.db.clone()).create(&request(risk), now_ms(), 3_600_000).await.unwrap()
+    }
+
+    fn state(app: &App, id: &str) -> String {
+        app.db.readers().with(|c| c.query_row("SELECT state FROM approvals WHERE id = ?1", [id], |r| r.get(0))).unwrap()
+    }
+
+    async fn decide(app: &App, cookie: &str, id: &str, verb: &str) -> Response<Body> {
+        let csrf = csrf_of(app, cookie).await;
+        send(&app.router, post(&format!("/approvals/{id}/{verb}"), cookie, &[("csrf", csrf.as_str())])).await
+    }
+
+    async fn machine(app: &App) {
+        app.db
+            .writer()
+            .send(WriteCmd::Batch(vec![RowWrite::insert(
+                "machines",
+                Row::from([
+                    ("id", Value::Text("m1".into())),
+                    ("site_id", Value::Text(site_id(&app.db))),
+                    ("name", Value::Text("web".into())),
+                    ("kind", Value::Text("linux".into())),
+                ]),
+            )]))
+            .await
+            .unwrap();
+    }
+
+    fn site_id(db: &Db) -> String {
+        db.readers().with(|c| c.query_row("SELECT id FROM sites LIMIT 1", [], |r| r.get(0))).unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn approval_shows_exact_arguments_and_hash() {
+        let app = app("approval-page").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let id = approval(&app, Risk::Normal).await;
+        let responder = session_for(&app.db, Role::Responder).await;
+        let html = text(send(&app.router, get("/approvals", &responder)).await).await;
+        let hash: String = approval_hash(&request(Risk::Normal)).iter().map(|b| format!("{b:02x}")).collect();
+        for shown in [
+            id.as_str(),
+            "run_runbook",
+            "m1",
+            "restart-web",
+            "unit",
+            "nginx.service",
+            "normal",
+            "job:01JASSISTANTJOBAAAAAAAAAAA",
+            "nginx keeps failing its health check",
+            "revision 3",
+            hash.as_str(),
+        ] {
+            assert!(html.contains(shown), "{shown} not on the page");
+        }
+        assert!(html.contains(&format!("action=\"/approvals/{id}/approve\"")) && html.contains("/reject\""));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn high_risk_approve_prompts_step_up() {
+        let app = app("approval-high").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let id = approval(&app, Risk::High).await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let resp = decide(&app, &admin, &id, "approve").await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(location(&resp).as_deref(), Some("/step-up"), "a step-up first");
+        assert_eq!(state(&app, &id), "pending");
+        let token = admin.split_once('=').unwrap().1;
+        let hash: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+        session::set_step_up(&app.db, &hash, now_ms()).await.unwrap();
+        let resp = decide(&app, &admin, &id, "approve").await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(location(&resp).as_deref(), Some("/approvals"));
+        assert_eq!(state(&app, &id), "approved");
+        let audited: i64 = app
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row(
+                    "SELECT count(*) FROM audit_log WHERE action = 'approval.approved' AND target = ?1",
+                    [&id],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(audited, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn viewer_cannot_approve_responder_cannot_approve_high() {
+        let app = app("approval-roles").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let normal = approval(&app, Risk::Normal).await;
+        let high = approval(&app, Risk::High).await;
+        let viewer = session_for(&app.db, Role::Viewer).await;
+        assert_eq!(decide(&app, &viewer, &normal, "approve").await.status(), StatusCode::FORBIDDEN);
+        let responder = session_for(&app.db, Role::Responder).await;
+        assert_eq!(decide(&app, &responder, &high, "approve").await.status(), StatusCode::FORBIDDEN);
+        assert_eq!((state(&app, &normal), state(&app, &high)), ("pending".to_string(), "pending".to_string()));
+        // A responder may approve normal risk, and the viewer's page shows no buttons.
+        assert_eq!(decide(&app, &responder, &normal, "approve").await.status(), StatusCode::SEE_OTHER);
+        let page = text(send(&app.router, get("/approvals", &viewer)).await).await;
+        assert!(!page.contains("/approve\""), "no approve button for a viewer");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn second_decision_shows_already_decided() {
+        let app = app("approval-twice").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let id = approval(&app, Risk::Normal).await;
+        let first = session_for(&app.db, Role::Admin).await;
+        let second = session_for(&app.db, Role::Admin).await;
+        assert_eq!(decide(&app, &first, &id, "approve").await.status(), StatusCode::SEE_OTHER);
+        let late = decide(&app, &second, &id, "reject").await;
+        assert_eq!(late.status(), StatusCode::CONFLICT);
+        assert!(text(late).await.contains("already decided"));
+        assert_eq!(state(&app, &id), "approved");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn job_page_shows_commands_exit_codes_output() {
+        let app = app("job-page").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        machine(&app).await;
+        let mut output = vec![b'a'; 1000];
+        output.extend_from_slice(crate::ssh::client::TRUNCATED.as_bytes());
+        app.db
+            .writer()
+            .send(WriteCmd::Batch(vec![
+                RowWrite::insert(
+                    "jobs",
+                    Row::from([
+                        ("id", Value::Text("01JOBPAGEAAAAAAAAAAAAAAAAA".into())),
+                        ("kind", Value::Text("runbook".into())),
+                        ("name", Value::Text("restart-web".into())),
+                        ("target", Value::Text("m1".into())),
+                        ("requested_by", Value::Text("admin".into())),
+                        ("state", Value::Text("failed".into())),
+                        ("outcome", Value::Text("exit_code 3".into())),
+                        ("started_at", Value::Integer(now_ms())),
+                    ]),
+                ),
+                RowWrite::insert(
+                    "job_steps",
+                    Row::from([
+                        ("job_id", Value::Text("01JOBPAGEAAAAAAAAAAAAAAAAA".into())),
+                        ("step_id", Value::Text("restart".into())),
+                        ("state", Value::Text("failed".into())),
+                        (
+                            "command",
+                            Value::Text(
+                                "sudo /usr/local/lib/rackhand/run /usr/bin/systemctl restart nginx.service".into(),
+                            ),
+                        ),
+                        ("exit_code", Value::Integer(3)),
+                        ("stdout", Value::Blob(output)),
+                        ("stderr", Value::Blob(b"<script>alert(1)</script>".to_vec())),
+                    ]),
+                ),
+            ]))
+            .await
+            .unwrap();
+        let viewer = session_for(&app.db, Role::Viewer).await;
+        let list = text(send(&app.router, get("/jobs", &viewer)).await).await;
+        assert!(list.contains("restart-web") && list.contains("/jobs/01JOBPAGEAAAAAAAAAAAAAAAAA"));
+        let page = text(send(&app.router, get("/jobs/01JOBPAGEAAAAAAAAAAAAAAAAA", &viewer)).await).await;
+        assert!(page.contains("systemctl restart nginx.service"));
+        assert!(page.contains("exit code 3"), "{page}");
+        assert!(page.contains("[rackhand: output truncated at 1 MiB]"));
+        assert!(!page.contains("<script>alert(1)"), "output is escaped");
+        assert_eq!(
+            send(&app.router, get("/jobs/01JNOSUCHJOBAAAAAAAAAAAAAA", &viewer)).await.status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    const RB1: &str = "name = \"restart-web\"\ndescription = \"Restart the web service\"\nidentity = \"automation\"\nrisk = \"low\"\nautonomy = 1\n[[step]]\nid = \"restart\"\nkind = \"ssh\"\ncmd = [\"sudo\", \"/usr/local/lib/rackhand/run\", \"/usr/bin/systemctl\", \"restart\", \"nginx.service\"]\n";
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn library_diff_and_validation_errors() {
+        let app = app("library-page").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let save = |content: String| {
+            let router = app.router.clone();
+            let admin = admin.clone();
+            async move {
+                let csrf = {
+                    let html = text(router.clone().oneshot(get("/library", &admin)).await.unwrap()).await;
+                    field(&html, "csrf")
+                };
+                router
+                    .oneshot(post(
+                        "/library/runbook/restart-web",
+                        &admin,
+                        &[("csrf", csrf.as_str()), ("content", content.as_str())],
+                    ))
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(save(RB1.to_string()).await.status(), StatusCode::SEE_OTHER);
+        assert_eq!(save(RB1.replace("nginx.service", "apache2.service")).await.status(), StatusCode::SEE_OTHER);
+        let diff = text(send(&app.router, get("/library/runbook/restart-web?diff=1", &admin)).await).await;
+        assert!(diff.contains("revision 1") && diff.contains("revision 2"), "{diff}");
+        assert!(diff.contains("class=\"del\"") && diff.contains("nginx.service"));
+        assert!(diff.contains("class=\"add\"") && diff.contains("apache2.service"));
+        // A runbook that doesn't validate isn't stored; the error is shown with the content kept.
+        let bad = save(RB1.replace("risk = \"low\"\n", "")).await;
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+        let shown = text(bad).await;
+        assert!(shown.contains("risk"), "{shown}");
+        assert!(shown.contains("Restart the web service"), "the content is kept for fixing");
+        let (rev, _) = Library::current_in(&app.db, Kind::Runbook, "restart-web").unwrap().unwrap();
+        assert_eq!(rev, 2);
+        // A draft from an assistant is listed and applied by an admin.
+        let (library, _) = Library::new(app.db.clone(), Audit::new(app.db.writer()));
+        let draft = library
+            .propose(
+                Kind::Runbook,
+                "restart-web",
+                &RB1.replace("nginx.service", "caddy.service"),
+                "job:01JDRAFT",
+                "caddy",
+                now_ms(),
+            )
+            .await
+            .unwrap();
+        let page = text(send(&app.router, get("/library", &admin)).await).await;
+        assert!(page.contains(&draft) && page.contains("job:01JDRAFT"));
+        let csrf = csrf_of(&app, &admin).await;
+        let resp =
+            send(&app.router, post(&format!("/library/drafts/{draft}/apply"), &admin, &[("csrf", csrf.as_str())]))
+                .await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert!(
+            Library::current_in(&app.db, Kind::Runbook, "restart-web").unwrap().unwrap().1.contains("caddy.service")
+        );
+        // A responder can read but not edit.
+        let responder = session_for(&app.db, Role::Responder).await;
+        let csrf = csrf_of(&app, &responder).await;
+        let resp = send(
+            &app.router,
+            post("/library/runbook/restart-web", &responder, &[("csrf", csrf.as_str()), ("content", RB1)]),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn nothing_waiting_empty_state() {
+        let app = app("approvals-empty").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let viewer = session_for(&app.db, Role::Viewer).await;
+        let page = text(send(&app.router, get("/approvals", &viewer)).await).await;
+        assert!(page.contains("Nothing waiting"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn policy_and_window_editing_admin_only_revisioned() {
+        let app = app("policies").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        machine(&app).await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let csrf = csrf_of(&app, &admin).await;
+        let policy = [
+            ("csrf", csrf.as_str()),
+            ("name", "web-servers"),
+            ("patch", "auto"),
+            ("auto_reboot", "on"),
+            ("snapshot", "required"),
+            ("quarantine", "approval"),
+            ("peer_requests", "approval"),
+        ];
+        assert_eq!(send(&app.router, post("/policies", &admin, &policy)).await.status(), StatusCode::SEE_OTHER);
+        let (patch, reboot): (String, i64) = app
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row("SELECT patch, auto_reboot FROM policies WHERE name = 'web-servers'", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+            })
+            .unwrap();
+        assert_eq!((patch.as_str(), reboot), ("auto", 1));
+        let csrf = csrf_of(&app, &admin).await;
+        let window = [
+            ("csrf", csrf.as_str()),
+            ("machine", "m1"),
+            ("rrule", "weekly sun 03:00 120m"),
+            ("timezone", "Europe/Berlin"),
+        ];
+        assert_eq!(send(&app.router, post("/windows", &admin, &window)).await.status(), StatusCode::SEE_OTHER);
+        let windows: i64 = app
+            .db
+            .readers()
+            .with(|c| c.query_row("SELECT count(*) FROM windows WHERE machine_id = 'm1'", [], |r| r.get(0)))
+            .unwrap();
+        assert_eq!(windows, 1);
+        // Both are a revision of `config/policies.toml`, which the git mirror carries.
+        let config = crate::library::config::current(&app.db, "policies").unwrap().unwrap();
+        assert!(config.contains("web-servers") && config.contains("weekly sun 03:00 120m"), "{config}");
+        let files = crate::library::mirror::render(&app.db).unwrap();
+        assert!(files.get("config/policies.toml").is_some_and(|f| f.contains("web-servers")));
+        let revs: i64 = app
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row(
+                    "SELECT count(*) FROM library_revisions WHERE kind = 'config' AND name = 'policies'",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(revs, 2, "one revision per change");
+        let patching = text(send(&app.router, get("/patching", &admin)).await).await;
+        assert!(patching.contains("web-servers") && patching.contains("weekly sun 03:00 120m"));
+        // A bad rule is refused; a responder can't edit either.
+        let csrf = csrf_of(&app, &admin).await;
+        let bad =
+            [("csrf", csrf.as_str()), ("machine", "m1"), ("rrule", "every sunday"), ("timezone", "Europe/Berlin")];
+        assert_eq!(send(&app.router, post("/windows", &admin, &bad)).await.status(), StatusCode::BAD_REQUEST);
+        let responder = session_for(&app.db, Role::Responder).await;
+        let csrf = csrf_of(&app, &responder).await;
+        let mut theirs = policy.to_vec();
+        theirs[0] = ("csrf", csrf.as_str());
+        assert_eq!(send(&app.router, post("/policies", &responder, &theirs)).await.status(), StatusCode::FORBIDDEN);
+    }
+}

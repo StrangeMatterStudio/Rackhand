@@ -1,9 +1,13 @@
 //! Page handlers, called by the gate once its checks have passed.
 
 mod account;
+mod approvals;
 mod first_run;
+mod jobs;
+mod library;
 mod machines;
 mod overview;
+mod patching;
 mod settings;
 mod users;
 
@@ -48,6 +52,18 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
         Page::OidcStart => auth::oidc::start(web, ctx).await,
         Page::OidcCallback => auth::oidc::callback(web, ctx).await,
         Page::SettingsOidc => settings::oidc(web, ctx).await,
+        Page::Approvals => approvals::page(web, ctx),
+        Page::ApprovalApprove => approvals::decide(web, ctx, true).await,
+        Page::ApprovalReject => approvals::decide(web, ctx, false).await,
+        Page::Jobs => jobs::list(web, ctx),
+        Page::Job => jobs::detail(web, ctx),
+        Page::Library => library::list(web, ctx),
+        Page::LibraryItem => library::item(web, ctx),
+        Page::LibrarySave => library::save(web, ctx).await,
+        Page::DraftApply => library::apply_draft(web, ctx).await,
+        Page::Patching => patching::page(web, ctx),
+        Page::PolicySave => patching::save_policy(web, ctx).await,
+        Page::WindowSave => patching::save_window(web, ctx).await,
     }
 }
 
