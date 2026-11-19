@@ -234,6 +234,8 @@ async fn machine_managed_join_returns_managed_setup() {
         [format!("enrolled {}", client.id())]
     );
     assert_eq!(hub.registry.admission(alpn::PROBE, &client.id()), Admission::Allowed);
+    let reloaded = Registry::load(hub.db.clone()).unwrap();
+    assert_eq!(reloaded.admission(alpn::PROBE, &client.id()), Admission::Allowed, "after a restart");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -374,6 +376,18 @@ async fn device_operator_and_peer_invites_join() {
         assert_eq!(hub.registry.admission(a, &peer.id()), Admission::Allowed);
     }
     assert_eq!(hub.query("SELECT site FROM peers"), ["lab-b"]);
+
+    // A restarted hub loads the same admission from its tables.
+    let reloaded = Registry::load(hub.db.clone()).unwrap();
+    for (id, alpns) in [
+        (device.id(), [alpn::TUNNEL, alpn::XFER]),
+        (operator.id(), [alpn::OPERATOR, alpn::MCP]),
+        (peer.id(), [alpn::PEER, alpn::XFER]),
+    ] {
+        for a in alpns {
+            assert_eq!(reloaded.admission(a, &id), Admission::Allowed, "{} after reload", String::from_utf8_lossy(a));
+        }
+    }
 }
 
 fn peer_req(invite: &Token, site: &str) -> Req {

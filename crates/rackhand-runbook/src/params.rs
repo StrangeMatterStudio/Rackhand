@@ -60,24 +60,32 @@ impl Param {
         }
     }
 
+    /// The anchored regex. The declared pattern must compile on its own first: one like `a)|(.*` would otherwise close
+    /// the wrapping group and escape the anchors.
     pub(crate) fn compile(&self) -> Result<Regex, ParamError> {
-        Regex::new(&self.regex()).map_err(|e| ParamError::BadPattern(e.to_string()))
+        let bad = |e: regex::Error| ParamError::BadPattern(e.to_string());
+        if let Some(p) = &self.pattern {
+            Regex::new(p).map_err(bad)?;
+        }
+        Regex::new(&self.regex()).map_err(bad)
     }
 }
 
+/// Checks a value the way the command wrapper does: the leading-dash rule, the type, then the same anchored regex that
+/// goes into `commands.json`.
 pub fn check_value(param: &Param, value: &str) -> Result<(), ParamError> {
     if value.starts_with('-') && !param.allow_leading_dash {
         return Err(ParamError::LeadingDash);
     }
     let typed = match param.kind {
         ParamType::String => true,
-        ParamType::Int => value.trim_start_matches('-').parse::<u64>().is_ok() && !value.contains('+'),
+        ParamType::Int => value.trim_start_matches('-').bytes().all(|b| b.is_ascii_digit()) && !value.is_empty(),
         ParamType::Bool => value == "true" || value == "false",
     };
     if !typed {
         return Err(ParamError::WrongType);
     }
-    if param.pattern.is_some() && !param.compile()?.is_match(value) {
+    if !param.compile()?.is_match(value) {
         return Err(ParamError::NoMatch);
     }
     Ok(())

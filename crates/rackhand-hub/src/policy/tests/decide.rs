@@ -231,6 +231,10 @@ fn exec_step_up_patterns() {
         "shutdown -h now",
         "systemctl poweroff",
         "cd /tmp && poweroff",
+        "sudo -u root shutdown -r now",
+        "bash -c 'mkfs.ext4 /dev/sdb1'",
+        "env FOO=1 nohup qm destroy 200",
+        "xargs -a list.txt rm -rf /srv",
     ];
     for cmd in step_up {
         let d = decide(&req(Requester::AssistantJob, Action::Exec { command: cmd, level: 3 }, ORDINARY));

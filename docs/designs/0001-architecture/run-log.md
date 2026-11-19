@@ -61,3 +61,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-19 | T50 done: runbook and playbook model, command templates and `rackhand hub runbook check` (D23) |
 | 2026-11-19 | T54 done: policy decisions, exec step-up patterns, quarantine exclusions and approvals (D24) |
 | 2026-11-19 | T12 done: the 7.8.6 role confirmed on PVE 8 and 9; guest rules need the datacenter firewall and the device flag; no conntrack flush in the API (owner decision before T72); report `spikes/s4.md` |
+| 2026-11-19 | Review fixes: T50 anchored patterns could be escaped; T54 step-up patterns now match at any word position; T35 admission checked after reload; S4 upgrade wording; S11 also defines `mem.used_*` as total minus available. Open before L3: `lab reset` keeps `extra.qcow2` (the ZFS pool), so it must become an overlay too |

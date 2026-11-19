@@ -1059,7 +1059,7 @@ the epoch's label table in a file beside them.
 | --- | --- | --- |
 | `cpu.busy_pct`, `cpu.iowait_pct`, `cpu.steal_pct` | % | none (per-core `cpu.core_busy_pct` with `core`, off by default) |
 | `load.1m`, `load.5m`, `load.15m`, `load.15m_per_core` | ratio | none |
-| `mem.used_bytes`, `mem.used_pct`, `mem.available_bytes`, `mem.available_pct`, `mem.cached_bytes` | bytes, % | none (on ZFS hosts, available counts the ARC above `c_min`: S11) |
+| `mem.used_bytes`, `mem.used_pct`, `mem.available_bytes`, `mem.available_pct`, `mem.cached_bytes` | bytes, % | none (on ZFS hosts, available counts the ARC above `c_min`, and used is total minus available: S11) |
 | `swap.used_bytes`, `swap.used_pct` | bytes, % | none |
 | `disk.used_bytes`, `disk.total_bytes`, `disk.used_pct`, `disk.inodes_used_pct` | bytes, % | `mount` |
 | `diskio.read_bps`, `diskio.write_bps`, `diskio.read_iops`, `diskio.write_iops`, `diskio.busy_pct` | B/s, ops/s, % | `device` |

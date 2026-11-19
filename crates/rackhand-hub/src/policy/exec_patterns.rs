@@ -9,26 +9,19 @@ fn segments(command: &str) -> impl Iterator<Item = &str> {
     command.split([';', '&', '|', '\n']).map(str::trim).filter(|s| !s.is_empty())
 }
 
-/// The words of a simple command, without quotes or wrappers such as `sudo`, `env`, `nohup` and `VAR=value`.
+/// The words of a simple command, without quotes.
 fn words(segment: &str) -> Vec<String> {
-    let mut words: Vec<String> =
-        segment.split_whitespace().map(|w| w.trim_matches(|c| c == '\'' || c == '"').to_string()).collect();
-    while let Some(first) = words.first() {
-        let wrapper = matches!(first.as_str(), "sudo" | "env" | "nohup" | "exec" | "time" | "command")
-            || (first.contains('=') && !first.starts_with('-') && !first.starts_with('/'));
-        if !wrapper {
-            break;
-        }
-        words.remove(0);
-        // `sudo -u x` and similar: drop the wrapper's own options.
-        while words.first().is_some_and(|w| w.starts_with('-')) {
-            words.remove(0);
-        }
-    }
-    if let Some(first) = words.first_mut() {
-        *first = first.rsplit('/').next().unwrap_or(first).to_string();
-    }
-    words
+    segment.split_whitespace().map(|w| w.trim_matches(|c| c == '\'' || c == '"').to_string()).collect()
+}
+
+/// Every word position as the start of a command, with its program as a bare name: wrappers (`sudo -u root`,
+/// `env X=1 nohup`, `xargs`, `bash -c '...'`) then don't hide what runs.
+fn commands_at_each_word(w: &[String]) -> impl Iterator<Item = Vec<String>> + '_ {
+    (0..w.len()).map(move |i| {
+        let mut cmd = w[i..].to_vec();
+        cmd[0] = cmd[0].rsplit('/').next().unwrap_or("").to_string();
+        cmd
+    })
 }
 
 fn rm_recursive_force_top(w: &[String]) -> bool {
@@ -77,12 +70,14 @@ fn edits_apt_sources(command: &str) -> bool {
     }
     command.contains('>')
         || segments(command).any(|s| {
-            let w = words(s);
-            let first = w.first().map(String::as_str).unwrap_or("");
-            WRITERS.contains(&first) || (first == "sed" && w.iter().any(|a| a.starts_with("-i")))
+            commands_at_each_word(&words(s)).any(|w| {
+                let first = w[0].as_str();
+                WRITERS.contains(&first) || (first == "sed" && w.iter().any(|a| a.starts_with("-i")))
+            })
         })
 }
 
 pub fn needs_step_up(command: &str) -> bool {
-    segments(command).any(|s| simple_command_needs_step_up(&words(s))) || edits_apt_sources(command)
+    segments(command).any(|s| commands_at_each_word(&words(s)).any(|w| simple_command_needs_step_up(&w)))
+        || edits_apt_sources(command)
 }
