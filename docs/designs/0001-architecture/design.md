@@ -1643,8 +1643,8 @@ On by default (each can be turned off; air-gapped mode turns all off):
 
 | Source | Use | Sends | License notes |
 | --- | --- | --- | --- |
-| abuse.ch Feodo Tracker IP blocklist | threat list | an HTTPS GET | free use, confirmed in S10 |
-| Spamhaus DROP | threat list (hijacked networks) | an HTTPS GET | free for this use, confirmed in S10 |
+| abuse.ch Feodo Tracker IP blocklist | threat list | an HTTPS GET | CC0 (abuse.ch terms 3.4); nearly empty in 2026-11 (S10) |
+| Spamhaus DROP | threat list (hijacked networks) | an HTTPS GET of `drop_v4.json` and `drop_v6.json`, at most daily | free for any use; credit The Spamhaus Project on the Security page (S10) |
 | DB-IP Lite country and ASN | GeoIP and ASN | an HTTPS GET, monthly | CC BY 4.0, attribution on the Security page |
 | GitHub Releases of this project | update checks and downloads | an HTTPS GET, daily | n/a |
 
@@ -2069,6 +2069,11 @@ the owner and the document is updated before the work that depends on it starts.
   reads.
 - **S10** Threat list and GeoIP terms for default use in an open-source product, and whether the default lists still
   carry enough entries to be worth shipping as the defaults.
+  **Finding (2026-11-19):** All three default sources may be used by default: Feodo Tracker is CC0 (abuse.ch terms
+  3.4), Spamhaus DROP is free for any use with credit to The Spamhaus Project, DB-IP Lite is CC BY 4.0 with an "IP
+  Geolocation by DB-IP" link. Entry counts on 2026-11-19: DROP 1 747 IPv4 networks (use the JSON files; EDROP is
+  merged into DROP), DB-IP 732 796 country and 485 292 ASN ranges, Feodo Tracker 1 address (its datasets are nearly
+  empty). Keeping Feodo Tracker as a default is the owner's call before T69 (report: `spikes/s10.md`).
 - **S11** Collectors on current distributions: authentication events on systems that log only to the journal (no
   auth log file), read by a static binary; and memory readings on hosts where a ZFS cache holds most of the memory, so
   the memory rules in 7.6.1 don't fire on a healthy host.
@@ -2236,3 +2241,4 @@ None.
 | 2026-11-19 | S7 finding: the git mirror uses `git2` (statically linked); `gix` can't push (5.3, section 17) | Spike S7 finding | Implementation run |
 | 2026-11-19 | S2 finding: relay admission by key, one server-wide rate and priority at capacity work; per-key rates and daily quotas are not possible (owner decision pending; section 17) | Spike S2 finding | Implementation run |
 | 2026-11-19 | S3 finding: path detection and `wait_direct` as designed; two masquerade NATs stay relayed, so the network tier builds full cone with a UDP forward (section 17) | Spike S3 finding | Implementation run |
+| 2026-11-19 | S10 finding: default outside sources allowed (CC0, free with credit, CC BY 4.0); 7.8.5 license notes updated; Feodo Tracker nearly empty (owner decision pending before T69) | Spike S10 finding | Implementation run |

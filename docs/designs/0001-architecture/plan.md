@@ -220,7 +220,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T12 | Spike S4: Proxmox privileges, firewall, upgrade command | T02, L1 | scripted measurement (local Proxmox) | todo |
 | T13 | Spike S5: Claude Code headless | T02 | scripted measurement (owner's login) | todo |
 | T14 | Spike S9: TrueNAS API | T02 | lab measurement | todo |
-| T15 | Spike S10: threat list and GeoIP terms | T02 | scripted measurement + reading | todo |
+| T15 | Spike S10: threat list and GeoIP terms | T02 | scripted measurement + reading | done (owner decision pending for T69) |
 | T16 | Wire format: framing, limits, close codes, messages | T15 | unit, golden | todo |
 | T17 | Net: endpoint, node key, registry, contract harness | T16, T08, T09 | contract | todo |
 | T18 | Store: schema, writer task, read pool | T16 | unit | todo |
@@ -918,6 +918,8 @@ Every spike step follows the same rules:
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo run --release --manifest-path spikes/s10/Cargo.toml -- --stub --check | every source 0 entries; "a source has no entries (or no measurement)", exit 1 |
+  | 2026-11-19 | cargo run --release --manifest-path spikes/s10/Cargo.toml -- --report docs/designs/0001-architecture/spikes/s10.md --check | exit 0: Feodo 1 entry, DROP 1 747, DB-IP country 732 796, ASN 485 292; each with size, cadence, terms link and verdict |
 
 ### M1: Single-site monitoring
 
