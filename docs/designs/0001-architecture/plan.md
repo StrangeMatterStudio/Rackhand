@@ -215,7 +215,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T07 | Spike S7: git mirror library | T02 | scripted measurement | done |
 | T08 | Spike S2: iroh relay admission and limits | T02 | scripted measurement (network VM) | done (owner decision pending for T82) |
 | T09 | Spike S3: iroh path detection | T02 | scripted measurement (network VM) | done |
-| T10 | Spike S1: aya eBPF | T02, L1 | scripted measurement (eBPF VMs, local Proxmox) | todo |
+| T10 | Spike S1: aya eBPF | T02, L1 | scripted measurement (eBPF VMs, local Proxmox) | done (owner decision pending for T68) |
 | T11 | Spike S11: collectors on current distributions | T02, L1 | scripted measurement (containers, local Proxmox) | todo |
 | T12 | Spike S4: Proxmox privileges, firewall, upgrade command | T02, L1 | scripted measurement (local Proxmox) | todo |
 | T13 | Spike S5: Claude Code headless | T02 | scripted measurement (owner's login) | todo |
@@ -786,15 +786,18 @@ Every spike step follows the same rules:
 - **Regression:** `cargo xtask ci fast`: exit 0.
 - **Manual verification:** None here; MV2 (a real Proxmox host kernel) is run in L9.
 - **Done when:**
-  - [ ] Report committed; finding in design 17
-  - [ ] License finding stated; if GPL-only helpers are needed, the owner decides the eBPF program's license
+  - [x] Report committed; finding in design 17
+  - [x] License finding stated; if GPL-only helpers are needed, the owner decides the eBPF program's license
     (for example a separate `GPL-2.0 OR MIT` crate) before T68
-  - [ ] LXC attribution on `pve9` recorded
-  - [ ] Spike code deleted
+  - [x] LXC attribution on `pve9` recorded
+  - [x] Spike code deleted
 - **Risk / rollback:** if a kernel lacks a needed hook, that kernel uses sampling (already the design's fallback).
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 | cargo xtask ci ebpf --spike s1 -- --report docs/designs/0001-architecture/spikes/s1.md --check | exit 0: loaded on 5.10.274, 6.1.192 and 7.0.14; connect, UDP and exec captured with pid, exe path (in the program) and cgroup id; map memory 1080, 548 and 1070 KB; the MIT-declared build is refused by the verifier (GPL-only `bpf_probe_read_kernel`) |
+  | 2026-11-19 | spikes/s1/lxc-check.sh --node pve9 --guest ct-test --report docs/designs/0001-architecture/spikes/s1.md | exit 0 on the lab's pve9 (Proxmox VE 9.2.31, kernel 7.0.14-30-pve): the container's connect attributed to `/sys/fs/cgroup/lxc/100/ns/.lxc` |
+  | 2026-11-19 | report | `spikes/s1.md` and the finding in design 17; the eBPF program's licence is the owner's decision before T68; spike code deleted |
 
 ### T11: Spike S11: collectors on current distributions
 - **Design refs:** FR-2, FR-6, 7.6.1 (memory rules), S11

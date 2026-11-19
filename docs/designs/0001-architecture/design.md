@@ -2036,6 +2036,12 @@ the owner and the document is updated before the work that depends on it starts.
 - **S1** aya eBPF: connect, UDP and exec tracing on 5.10, 6.1 and the current Proxmox kernel; memory; LXC attribution by
   cgroup from the host; resolving the executable path and the cgroup id inside the eBPF program; and the licence the
   kernel requires an eBPF program to declare for the helpers it uses, against this project's licence (5.3).
+  **Finding (2026-11-19):** aya programs on `cgroup_sock_addr` (`connect4`, `sendmsg4`) and the
+  `sched_process_exec` tracepoint capture TCP connects, UDP sends and execs with pid, executable path (resolved in the
+  program) and cgroup id on 5.10.274, 6.1.192 and 7.0.14, with 0.5 to 1.1 MB of map memory. On the lab's Proxmox VE 9
+  node a container's connection is attributed to `/lxc/<vmid>/` from the host. The kernel refuses the program when it
+  declares `MIT` (`bpf_probe_read_kernel` is GPL-only); `Dual MIT/GPL` loads. The eBPF program's licence is the
+  owner's decision before T68. Report: `spikes/s1.md`.
 - **S2** iroh relay: admission with keys, per-endpoint rate limits, priority at capacity, ports.
   **Finding (2026-11-19):** iroh-relay 1.5 admits by key (an `AccessControl` hook sees the handshake-verified
   endpoint id and the client's bearer token, sent with `RelayConfig::with_auth_token`), enforces one rate limit for
