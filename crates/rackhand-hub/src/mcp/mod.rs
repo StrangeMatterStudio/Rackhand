@@ -239,8 +239,11 @@ impl Mcp {
         let token = read_line(&mut reader).await.and_then(|l| serde_json::from_str::<Value>(&l).ok()).and_then(|v| {
             v.as_object().filter(|o| o.len() == 1).and_then(|o| o.get("auth")?.as_str().map(str::to_string))
         });
-        let Some(token) = token.filter(|t| self.caller(t, &peer).is_some()) else {
-            let _ = write_line(&mut writer, &rpc_error(Value::Null, -32001, "unauthorized")).await;
+        let first = token.as_deref().map_or(Err("unauthorized"), |t| auth::check(&self.inner.db, t, &peer, now_ms()));
+        let refused = first.as_ref().err().copied();
+        let (Some(token), None) = (token, refused) else {
+            let code = refused.unwrap_or("unauthorized");
+            let _ = write_line(&mut writer, &rpc_error(Value::Null, -32001, code)).await;
             let _ = writer.shutdown().await;
             return;
         };

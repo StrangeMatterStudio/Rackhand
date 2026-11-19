@@ -636,7 +636,14 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
             Ok(n)
         }
         WriteCmd::PutMcpKey(row) => insert_or_update(conn, "mcp_keys", "id", "hash", row),
-        WriteCmd::PutJobToken(row) => insert_or_update(conn, "job_tokens", "job_id", "hash", row),
+        // A new token has its expiry; a row without one rebinds (another operator) or revokes the job's token.
+        WriteCmd::PutJobToken(row) => insert_or_update(conn, "job_tokens", "job_id", "expires_at", row),
+        WriteCmd::AppendTranscript(row) => {
+            let tx = conn.transaction()?;
+            let n = write_row(&tx, &RowWrite::insert("assistant_transcripts", row))?;
+            tx.commit()?;
+            Ok(n)
+        }
         WriteCmd::PutPolicy(row) => upsert_one(conn, "policies", "id", row),
         WriteCmd::PutQuarantineRule(row) => upsert_one(conn, "quarantine_rules", "id", row),
         WriteCmd::PutScheduleState(row) => replace_one(conn, "schedule_state", row),

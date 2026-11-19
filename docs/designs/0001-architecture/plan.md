@@ -285,7 +285,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | L5 | Live pass for M4: security watch and quarantine | T73, L4 | live (local lab) | todo |
 | T74 | MCP server and read tools | T17, T54 | contract | done |
 | T75 | MCP gated tools and approval binding | T74, T55, T63 | contract | done |
-| T76 | Operator contract and Assist | T75 | contract | todo |
+| T76 | Operator contract and Assist | T75 | contract | done |
 | T77 | Operator binary and runners | T76, T13 | integration (fake runner) + live (L6) | todo |
 | T78 | Incident routing to playbooks and briefs | T77, T57 | unit + integration | todo |
 | T79 | Dashboard: assistant pages and settings | T78 | unit (HTTP) | todo |
@@ -3267,6 +3267,9 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-hub --test operator_contract | compile errors: unresolved `rackhand_hub::assist::{Assist, AssistRequest, AssistResult}` |
+  | 2026-11-19 | cargo nextest run -p rackhand-hub --test operator_contract && cargo nextest run -p rackhand-hub -E 'test(assist::)' | 10 passed (7, then the 3 `assist::` tests, which live in the same file to share the fake operator), over QUIC through a local relay: an accepted offer's events are stored through Actions and its `JobDone` ends the job with `JobFinished`; three operators decline in their configured order and the job ends `declined`, and with no operator `no_operator`; the job token from another operator's endpoint gets `out_of_scope` and from its own works with the playbook's tools; after a dropped connection the job waits for the operator, which reports `failed` on reconnect; a restarted hub reattaches the job from `OperatorHello.running` and takes its events and end; six 1 MB events keep five and count one; the 21st assistant job of the day goes to a person with a note; the offer carries the incident, playbook and revision, brief, tools, level, hosts, a 30-minute deadline (at most 2 hours), 60 turns, and a token bound to the operator, hosts, tools and deadline; a deadline with an approval open ends `needs_human`, and Resume runs the approved runbook first with its approval and offers a new job whose brief says so. The first run failed on test ids that weren't valid ULIDs |
+  | 2026-11-19 | cargo xtask ci fast; cargo xtask arch-check; cargo deny check | exit 0 (240 passed); no violations; ok |
 
 ### T77: Operator binary and runners
 - **Design refs:** 7.3.5 (operator, Runner interface, Claude Code runner), 7.1 (operator user), D38, D39, D50, D62,
@@ -3287,6 +3290,11 @@ Only additions to that list are written out below.
   | `it::operator::patch_failure_offer_within_60s` | verify fails for a missing mount, then `patch-failure` is offered to the operator within 60 s | AC21 |
   | `it::operator::guided_install_each_change_approved_in_order` | the fake runner follows a script; each change waits for an approval | AC34 |
   | `it::operator::one_operator_two_hubs` | jobs from both hubs; neither hub reaches the other through it | D63 |
+
+  Carried in from T76:
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `operator::tools_fail_hub_unreachable_then_runner_killed_after_5_min` (carried in from T76) | while the hub is unreachable tool calls fail `hub_unreachable`; after 5 minutes the runner is killed and `failed` is reported on reconnect | E16 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
@@ -3320,6 +3328,12 @@ Only additions to that list are written out below.
   | `playbook_routing::assistant_resolves_event_incident_only_level_2_3_warning` | critical stays with a person | D76 |
   | `brief::contains_required_sections_and_untrusted_markers` | incident, timeline, machine facts, recent vitals, failed steps (marked untrusted), playbook, level, hosts, deadline, the data-not-instructions rule | 7.5.4 |
   | `builtins::seven_playbooks_parse` | `patch-failure`, `service-down`, `disk-filling`, `security-finding`, `machine-silent`, `backup-stale`, `guided-install` | 7.8.8 |
+
+  Carried in from T76:
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `incidents::no_operator_or_declines_go_human_with_callout` (carried in from T76) | `JobFinished` for an assistant job ended `no_operator` or `declined` moves the incident to `human`, and a callout says so | E15 |
+  | `incidents::assistant_job_without_report_ends_after_deadline` (carried in from T76) | an assistant job whose operator never reports ends `timed_out` a while after its deadline | 7.3.5 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
@@ -4443,6 +4457,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D37 | 2026-11-19 | T74 | 5.3: rmcp for the MCP server; `mcp/{server, auth, tools_read, keys}.rs` | The hub speaks the part of MCP it serves (initialize, ping, `tools/list`, `tools/call`, the stdio framing after the auth line) in `mcp/mod.rs`: the current rmcp (3.11) needs Rust 1.88, above the workspace's 1.85, and the framing is the design's own. `get_vitals` and the services, containers and updates of `get_machine` come through an `Observations` interface that the time-series store and ingest fill (tests carried into T25 and T27). Devices are admitted to `rackhand/mcp/1` too (people reach MCP from their device). Personal keys start `rk_` and job tokens `rj_`; a job token works only from its operator's endpoint and while its job runs. The request and job tools are listed for the callers that may use them and come with their gating in T75 | The design's MSRV and framing; series and facts aren't stored yet | design | pending (confirm not using rmcp in the hub; the CLI and operator may still use it) |
 | D38 | 2026-11-19 | T75 | `mcp/{tools_act.rs, gate.rs}`; the three tools | As planned, plus: `add_incident_note` writes through `incidents::notes` (Incidents owns `incident_events`; the `AppendIncidentEvent` handler is added); `finish_job` takes `resolved`, `unresolved` or `handed_over` and ends the job through Actions (only `resolved` succeeds); an approval asked for over MCP lasts an hour; the hash covers the call's arguments but not its `reason`; `run_runbook` answers when the job has ended (a long runbook holds the call); `exec` runs for at most 10 minutes; runbooks other than `quarantine-release` are refused on a quarantined machine (any state but `none`); the caller is checked on every request; `quarantine` and `quarantine-release` are judged as quarantine; a runbook runs at the lower of the job's level and its own `autonomy` | The design gives the rules, not these limits | plan | - |
 | D39 | 2026-11-19 | T58 | `web/pages/{approvals, jobs, library, patching}.rs` | As planned, plus `policy/store.rs`: Policy owns `policies` and `windows`, so it writes them and renders `config/policies.toml` (policies and windows) as a new revision on every change. The patching page shows policies (holds are `patch = hold`), windows and the latest `patch-*` jobs; pending updates per machine need the reports' facts (carried into T59). A decision in the dashboard doesn't publish `ApprovalDecided` yet: the Web has no Bus handle until the composition (T41) | Ownership per 7.2; facts and the Bus arrive later | plan | - |
+| D40 | 2026-11-19 | T76 | `assist/{offers, tokens, transcripts, cap, resume}.rs`; `tests/operator_contract.rs` | Tokens are issued and rebound to the next operator through `mcp::keys` (no `assist/tokens.rs`); the fake operator is in the test file. Assist ends a job nobody took with `no_operator` or `declined` and publishes `JobFinished`; moving the incident to `human` and the callout are Incidents' and Notify's (carried into T78). An operator's 5-minute grace and `hub_unreachable` are the operator's side (carried into T77); the hub waits for it. A job token from another endpoint now gets `out_of_scope` at the auth line (it was `unauthorized`). The daily cap counts assistant jobs since 00:00 UTC (20 by default; the setting is wired in T79). A job whose operator never reports stops being usable when its token expires at the deadline; a hub-side end for it is carried into T78 | Incidents and the operator binary come later | plan | - |
 
 ## Follow-ups (out of scope)
 

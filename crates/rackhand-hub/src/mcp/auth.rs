@@ -86,9 +86,25 @@ fn personal(db: &Db, token: &str, peer: &EndpointId, now_ms: i64) -> Option<Call
     Some(Caller::Key { key_id: k.id, user_id: k.user_id, role, scope })
 }
 
-fn job(db: &Db, token: &str, peer: &EndpointId, now_ms: i64) -> Option<Caller> {
-    let j: JobRow = db
-        .readers()
+fn job(db: &Db, token: &str, peer: &EndpointId, now_ms: i64) -> Result<Caller, &'static str> {
+    job_row(db, token).ok_or("unauthorized").and_then(|j| {
+        if j.revoked || j.operator_revoked || now_ms >= j.expires_at || j.state != "running" {
+            return Err("unauthorized");
+        }
+        // A live token from another endpoint than the operator that accepted the job (7.3.5).
+        if j.endpoint != peer.to_string() {
+            return Err("out_of_scope");
+        }
+        Ok(Caller::Job {
+            job_id: j.job_id,
+            hosts: serde_json::from_str(&j.hosts).unwrap_or_default(),
+            tools: serde_json::from_str(&j.tools).unwrap_or_default(),
+        })
+    })
+}
+
+fn job_row(db: &Db, token: &str) -> Option<JobRow> {
+    db.readers()
         .with(|c| {
             c.query_row(
                 "SELECT t.job_id, t.hosts, t.tools, t.expires_at, t.revoked_at IS NOT NULL, o.endpoint_id,
@@ -111,31 +127,24 @@ fn job(db: &Db, token: &str, peer: &EndpointId, now_ms: i64) -> Option<Caller> {
             )
             .optional()
         })
-        .ok()??;
-    if j.revoked
-        || j.operator_revoked
-        || now_ms >= j.expires_at
-        || j.endpoint != peer.to_string()
-        || j.state != "running"
-    {
-        return None;
-    }
-    Some(Caller::Job {
-        job_id: j.job_id,
-        hosts: serde_json::from_str(&j.hosts).unwrap_or_default(),
-        tools: serde_json::from_str(&j.tools).unwrap_or_default(),
-    })
+        .ok()
+        .flatten()
 }
 
-/// The caller for an auth line's token, or `None`: the session is closed then.
-pub fn authenticate(db: &Db, token: &str, peer: &EndpointId, now_ms: i64) -> Option<Caller> {
+/// The caller for an auth line's token, or why not: `out_of_scope` for a job token used from another endpoint than
+/// its operator's, `unauthorized` otherwise. The session is closed then.
+pub fn check(db: &Db, token: &str, peer: &EndpointId, now_ms: i64) -> Result<Caller, &'static str> {
     if token.starts_with(keys::KEY_PREFIX) {
-        personal(db, token, peer, now_ms)
+        personal(db, token, peer, now_ms).ok_or("unauthorized")
     } else if token.starts_with(keys::JOB_PREFIX) {
         job(db, token, peer, now_ms)
     } else {
-        None
+        Err("unauthorized")
     }
+}
+
+pub fn authenticate(db: &Db, token: &str, peer: &EndpointId, now_ms: i64) -> Option<Caller> {
+    check(db, token, peer, now_ms).ok()
 }
 
 fn parse_role(s: &str) -> Option<Role> {

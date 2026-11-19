@@ -334,6 +334,28 @@ impl Actions {
         Ok(job_id)
     }
 
+    /// One assistant transcript event (7.3.5): Actions stores them, as it owns `assistant_transcripts`.
+    pub async fn append_transcript(
+        &self,
+        job_id: &str,
+        seq: i64,
+        at_ms: i64,
+        kind: &str,
+        text: &str,
+    ) -> Result<(), ActionsError> {
+        let row: rackhand_store::Row = [
+            ("job_id", rusqlite::types::Value::Text(job_id.into())),
+            ("seq", rusqlite::types::Value::Integer(seq)),
+            ("at_ms", rusqlite::types::Value::Integer(at_ms)),
+            ("kind", rusqlite::types::Value::Text(kind.into())),
+            ("text", rusqlite::types::Value::Text(text.into())),
+        ]
+        .into_iter()
+        .collect();
+        self.inner.db.writer().send(rackhand_store::WriteCmd::AppendTranscript(row)).await?;
+        Ok(())
+    }
+
     /// The assistant ends its job (`finish_job`): `resolved` succeeds, anything else fails with that outcome. Its
     /// token stops working, since a token only works while its job runs.
     pub async fn finish_assistant(&self, job_id: &str, outcome: &str, summary: &str) -> Result<(), ActionsError> {

@@ -103,6 +103,20 @@ pub async fn revoke_personal_key(db: &Db, key_id: &str, now_ms: i64) -> Result<(
     Ok(())
 }
 
+/// A new token for the job, bound to another operator (the next one offered the job); the old token stops working.
+pub async fn rebind_job_token(db: &Db, job_id: &str, operator_id: &str) -> Result<String, KeyError> {
+    let secret = token(JOB_PREFIX)?;
+    let row: Row = [
+        ("job_id", Value::Text(job_id.into())),
+        ("operator_id", Value::Text(operator_id.into())),
+        ("hash", Value::Blob(hash(&secret))),
+    ]
+    .into_iter()
+    .collect();
+    db.writer().send(WriteCmd::PutJobToken(row)).await?;
+    Ok(secret)
+}
+
 /// A job's token for the operator that accepted it (Assist, T76): its hosts and its playbook's tools.
 pub async fn issue_job_token(
     db: &Db,
