@@ -98,10 +98,11 @@ unnoticed.
 - **FR-3** The probe shall buffer reports on disk while the hub is unreachable, up to 64 MB or 24 hours (whichever comes
   first, oldest dropped first), and replay them in order when the hub returns, without delaying live reports.
 - **FR-4** On systemd Linux with kernel 5.8 or later and BTF available, the probe shall record every outbound TCP
-  connect and UDP flow with pid, process name, executable path, user, destination IP and port, using eBPF (OpenRC
-  machines and LXCs have no capabilities for it, 7.3.3). Elsewhere it shall read
-  the connection table every 5 seconds, with process attribution from the helper. Windows uses the
-  GetExtendedTcpTable and GetExtendedUdpTable APIs every 5 seconds.
+  connect and UDP flow with pid, process name, executable path, container (from the process's cgroup), user,
+  destination IP and port, using eBPF (OpenRC machines and LXCs have no capabilities for it, 7.3.3). Elsewhere it shall
+  read the connection table every 5 seconds, with process and container attribution from the helper. Windows uses the
+  GetExtendedTcpTable and GetExtendedUdpTable APIs every 5 seconds. Sampling sees only connections that are open at a
+  poll, so shorter ones are missed on those machines; the Machine page shows which method each machine uses.
 - **FR-5** The probe shall report new listening sockets, and process starts whose executable is under `/tmp`,
   `/var/tmp`, `/dev/shm` or a deleted file (Linux: eBPF `sched_process_exec` tracepoint, fallback a helper process scan
   every 5 seconds, since an unprivileged process can't read other users' `/proc/<pid>/exe`), or on Windows under
@@ -125,7 +126,8 @@ unnoticed.
 **Actions**
 - **FR-12** The hub shall execute runbooks over SSH or driver APIs step by step, with per-step timeouts, one job per
   machine at a time, and record every command, exit code and output (stdout and stderr each truncated at 1 MB per step)
-  in the job log.
+  in the job log. Steps that change packages are started detached on the machine and polled, so they survive a hub
+  restart or a dropped connection (7.3.7).
 - **FR-13** The hub shall run patching per host policy: security updates daily and all updates weekly, inside patch
   windows, with a snapshot before (VMs and LXCs on Proxmox), health verification after, holds, approval-only hosts and
   recurring maintenance windows.
@@ -153,8 +155,8 @@ unnoticed.
 
 **Enrollment, installs and lifecycle**
 - **FR-21** The dashboard shall issue one-time enrollment commands for Linux, Alpine and Windows machines (local or
-  remote to the hub), a form for agentless machines, and invites for devices, operators and peers; a site bootstrap
-  command shall turn a fresh machine into a hub.
+  remote to the hub, at access level `managed` or `monitor`, 7.3.12), a form for agentless machines, and invites for
+  devices, operators and peers; a site bootstrap command shall turn a fresh machine into a hub.
 - **FR-22** The probe shall be updated from signed releases by its root helper when the hub says so, with automatic
   rollback if the new version fails to reconnect within 2 minutes.
 - **FR-23** Runbooks shall provision VMs and LXCs on Proxmox from templates with cloud-init and enroll them.
@@ -175,11 +177,11 @@ unnoticed.
 | Hub footprint | For 100 machines: RSS at most 300 MB, at most 10% of one core averaged. Database at most 2 GB per 50 machines across all tiers. Minimum host: 2 vCPU, 1 GB RAM, 20 GB disk for 50 machines. |
 | Latency | Vitals visible on the dashboard at most 30 s after sampling, including during buffered replay. A critical incident's callout sent at most 60 s after its condition has held for its duration; a warning callout at most 6 minutes after (grouping). Peer site silent detected within 2 minutes, down within 10. |
 | Availability | The hub keeps monitoring, alerting and running runbooks at its site with no internet, no peers and no operator. |
-| Security | No inbound ports on probes (except a remote-mode probe's tunnel stream from its pinned hub). All Rackhand-to-Rackhand traffic is QUIC with TLS 1.3 and endpoint keys pinned. Secrets encrypted at rest. Second factor mandatory for every dashboard account. |
+| Security | No inbound ports on probes (except a remote-mode probe's tunnel stream from its pinned hub). All Rackhand-to-Rackhand traffic is QUIC with TLS 1.3 and endpoint keys pinned. Secrets encrypted at rest. Second factor mandatory for every dashboard account. The hub, relay and operator run as unprivileged system users (7.1); the only root services are the probe helper, the updater and its guard, and the only other root code is the command wrapper and the steps it starts through sudo. |
 | Privacy | No telemetry. Connection logs store destination, port and process, never payloads. Data sent to the AI provider is limited to the job brief and tool results, and documented. |
 | Platforms | Probe: Linux x86_64 and aarch64 (static musl, kernel 4.19+; eBPF needs 5.8+ with BTF), Alpine 3.18+, Windows 10/11 and Server 2019+. `rackhand` (hub, relay, operator): Linux x86_64 and aarch64. `rackhand-cli`: Linux, Windows and macOS (x86_64 and aarch64). |
 | Compatibility | A hub accepts probes, operators, relays and CLIs of its own minor version and one minor version older. Peers of different minor versions interoperate on the summary and request contracts. |
-| Supply chain | Every release artifact is signed (minisign, Ed25519). Installers and the helper verify signatures against a pinned public key before running anything. Builds are reproducible from tags. |
+| Supply chain | Every release artifact is signed (minisign, Ed25519), and a signed manifest lists every artifact's hash. Installers, the helper and the updater verify signatures against two pinned public keys (current and standby) before running anything. The signing keys are kept offline and never on a CI runner (section 13). Builds are reproducible from tags. |
 | Language | Rust for every server-side process. No Node, Python or other interpreter on any server. Browser JavaScript is limited to vendored htmx and uPlot plus small page scripts. |
 
 ### 5.3 Constraints
@@ -251,7 +253,20 @@ Six programs ship as three binaries:
 Every Rackhand process has an Ed25519 key, which is its iroh endpoint id. A hub keeps a registry of the endpoint ids it
 accepts (probes, devices, operators, peers); every process that joins a hub pins the hub's id. Unregistered processes
 can only use the join contract (7.3.1). The hub reaches local machines for actions over SSH on the local network, and
-remote-mode machines over SSH through a tunnel to their probe.
+remote-mode machines over SSH through a tunnel to their probe. A machine enrolled at access level `monitor` has no hub
+accounts and is never reached over SSH (7.3.12).
+
+**Process users.** The hub runs as the system user `rackhand-hub`, the relay as `rackhand-relay` and the operator as
+`rackhand-operator`, each under a hardened service unit (`NoNewPrivileges`, `ProtectSystem=strict`, write access only
+to its own data directory). None of them is root:
+
+- The master key file stays `0600` root; the service manager hands it to the hub as a credential
+  (`LoadCredential`), so the hub process gets its own private copy and no other user can read the key.
+- ICMP checks use the single capability `CAP_NET_RAW` on the hub unit. The relay's port 443 uses the single capability
+  `CAP_NET_BIND_SERVICE` on the relay unit.
+- Updates are installed by a separate root unit, the updater (7.5.7), which verifies release signatures itself. The
+  hub user can ask for an update but can't write its own binary.
+- On the hub's own host, `rackhand-hub` is a different user from the `rackhand` automation user (7.3.7).
 
 ### 7.2 Systems and responsibilities
 
@@ -260,11 +275,11 @@ remote-mode machines over SSH through a tunnel to their probe.
 | Proto | Wire messages, ALPN names, versions | Message schemas | prost | contract | `crates/rackhand-proto` |
 | Net | iroh endpoint, relay config, ALPN routing, node key, registry checks | Node key file, relay list cache | iroh, Proto | detail | `crates/rackhand-net` |
 | Detect | Pure rule evaluation: thresholds, forecasts, baselines, silence, connection scoring, event severity | Nothing | none | policy | `crates/rackhand-detect` |
-| Runbook model | Runbook and playbook parsing and validation, sudoers generation | Nothing | none | policy | `crates/rackhand-runbook` |
+| Runbook model | Runbook and playbook parsing and validation, command template generation | Nothing | none | policy | `crates/rackhand-runbook` |
 | Drivers | Agentless checks and API calls behind the `Driver` trait | Nothing | HTTP, SNMP, ICMP clients | detail | `crates/rackhand-drivers` |
 | Store | SQLite schema, migrations, writer task, read pool, time-series encoding, retention, rollups | The hub database file | rusqlite | detail | `crates/rackhand-store` |
 | Registry | Sites, machines, devices, operators, peers, tags, enrollment tokens | `sites`, `machines`, `devices`, `operators`, `peers`, `join_tokens` | Store | policy | `crates/rackhand-hub/src/registry` |
-| Ingest | Receive probe and driver data, stage, ack, write series and events, update baselines and connection records | `report_staging`, `series_chunks`, `metric_keys`, `events`, `conn_records`, `conn_baseline`, `baseline_buckets` | Store, Proto | detail | `crates/rackhand-hub/src/ingest` |
+| Ingest | Receive probe and driver data, stage, ack, write series and events, update baselines and connection records | `report_staging`, `probe_labels`, `series_chunks`, `metric_keys`, `events`, `conn_records`, `conn_baseline`, `baseline_buckets`, and the in-memory recent window (7.4.1) | Store, Proto | detail | `crates/rackhand-hub/src/ingest` |
 | Checks | Service checks and driver polling on schedules | `checks`, `check_results` | Drivers, Store | detail | `crates/rackhand-hub/src/checks` |
 | Incidents | Evaluate Detect over fresh data, incident lifecycle, routing | `incidents`, `incident_events`, `silences` | Detect, Store, Bus | policy | `crates/rackhand-hub/src/incidents` |
 | Policy | Host policies, autonomy, risk, approvals, quarantine rules, windows | `policies`, `approvals`, `quarantine_rules`, `windows` | Store | policy | `crates/rackhand-hub/src/policy` |
@@ -280,11 +295,11 @@ remote-mode machines over SSH through a tunnel to their probe.
 | Intel | Threat lists and GeoIP/ASN refresh and lookup | Files under `/var/lib/rackhand/intel/` | HTTP client | detail | `crates/rackhand-hub/src/intel` |
 | Scheduler | Time-based triggers: patch windows, checks, retention, rollups, backups, intel refresh, git mirror debounce, dead-man calls | `schedule_state` | Bus, Store | detail | `crates/rackhand-hub/src/scheduler` |
 | Audit | Append-only hash-chained log | `audit_log` | Store | detail | `crates/rackhand-hub/src/audit` |
-| Web | Dashboard, auth, approvals, enrollment UI | `users`, `credentials`, `sessions` | everything above (reads, commands) | detail | `crates/rackhand-hub/src/web` |
-| Bus | In-process typed messages between hub systems: one bounded mpsc queue per consumer, never lossy | Nothing | tokio mpsc | contract | `crates/rackhand-hub/src/bus` |
+| Web | Dashboard, auth, approvals, enrollment UI | `users`, `credentials`, `sessions`, `known_devices` | everything above (reads, commands) | detail | `crates/rackhand-hub/src/web` |
+| Bus | In-process typed messages between hub systems: one bounded mpsc queue per consumer; report notices are coalesced, the rest are never dropped (7.3.8) | Nothing | tokio mpsc | contract | `crates/rackhand-hub/src/bus` |
 | Relay | iroh relay with Rackhand admission and limits | `relay.db` (keys, usage) | iroh-relay, Net | detail | `crates/rackhand-relay` |
 | Operator | Run assistant jobs with a `Runner` | Job workdirs | Net, Proto, rmcp | detail | `crates/rackhand-operator` |
-| Probe | Collectors, buffer, reports, remote-mode tunnel endpoint | Report buffer, config cache | Net, Proto, aya, OS APIs | detail | `crates/rackhand-probe` |
+| Probe | Collectors, buffer, reports, remote-mode tunnel endpoint | Report buffer, label table, config cache, update spool | Net, Proto, aya, OS APIs | detail | `crates/rackhand-probe` |
 | Helper | Root-only file hashing, auth logs, containers, socket owners, binary updates, key updates | Probe binary slots, `authorized_keys` options it writes | OS APIs | detail | `crates/rackhand-probe/src/helper` |
 | CLI | People-side client | CLI config and per-hub device keys | Net, Proto, rmcp | detail | `crates/rackhand-cli` |
 
@@ -318,9 +333,11 @@ flowchart TD
 **Common rules for QUIC contracts.** Each contract is its own iroh connection with its own ALPN. The accepting side
 looks up the caller's endpoint id in its registry for that ALPN and closes with application error `0x10 UNKNOWN_PEER`
 if absent. Except where stated, messages are protobuf frames prefixed with a u32 big-endian length, at most 4 MB each.
-The ALPN carries the major version; minor additions are new optional fields. Unknown enum values are answered with an
-`unsupported` error, never a crash. Close codes: `0x10` unknown peer, `0x11` identity mismatch, `0x12` unsupported
-version, `0x13` revoked, `0x14` rate limited.
+The 4 MB limit is the size on the wire. Where a contract compresses a payload (reports and replay batches, zstd), the
+receiver decompresses with a hard limit of 16 MB and closes with `0x15` if it is passed, so a small frame can't expand
+without bound. The ALPN carries the major version; minor additions are new optional fields. Unknown enum values are
+answered with an `unsupported` error, never a crash. Close codes: `0x10` unknown peer, `0x11` identity mismatch, `0x12`
+unsupported version, `0x13` revoked, `0x14` rate limited, `0x15` frame too large.
 
 #### 7.3.1 Join (`rackhand/join/1`)
 
@@ -328,26 +345,34 @@ The only ALPN that accepts unregistered endpoint ids. One bidirectional stream, 
 
 ```rust
 enum JoinRequest {
-    Machine { token: String, facts: HostFacts, ssh_host_keys: Vec<SshHostKey>, mode: ProbeMode }, // ProbeMode: Local | Remote
+    Machine { token: String, facts: HostFacts, ssh_host_keys: Vec<SshHostKey>, mode: ProbeMode, access: Access },
+                                              // ProbeMode: Local | Remote. Access: Managed | Monitor (no host keys for Monitor)
     Device  { invite_secret: String, device_name: String },
     Operator{ invite_secret: String, operator_name: String, runners: Vec<RunnerInfo> },
     Peer    { invite_secret: String, site: String, hub_version: SemVer, relays: Vec<RelayUrl> },
 }
 enum JoinResponse {
-    Machine { machine_id: Ulid, config: ProbeConfig, automation_pubkey: String, assistant_pubkey: Option<String>,
-              sudoers: String, hub_addrs: Vec<SocketAddr> },
+    Machine { machine_id: Ulid, config: ProbeConfig, access: Access, managed: Option<ManagedSetup>,
+              hub_addrs: Vec<SocketAddr> },
     Device  { user: String, hub_site: String },
     Operator{ hub_site: String },
     Peer    { site: String, hub_version: SemVer, relays: Vec<RelayUrl> },
     Error   { code: JoinError, message: String }, // expired | used | wrong_kind | site_name_taken | rate_limited | invalid
 }
+// Present only for Access::Managed: what the installer needs to create the hub's accounts (7.3.7)
+struct ManagedSetup { automation_pubkey: String, assistant_pubkey: Option<String>, sudoers: String,
+                      commands: SignedPayload /* the first commands.json, hub-signed and versioned */ }
 ```
 
 - Tokens and invite secrets are 128-bit random, single-use, stored hashed, and bound to a kind. Machine tokens are
   valid 60 minutes, device, operator and peer invites 24 hours.
 - On success the caller's endpoint id is added to the registry for the matching ALPNs. A failed attempt counts against
   a limit of 10 per minute per remote address.
-- `assistant_pubkey` is absent when the machine has role `hub` (D62).
+- A machine token is bound to the access level chosen in the dashboard; a request with a different `access` fails with
+  `invalid`. `managed` is absent for access level `monitor`. `assistant_pubkey` is absent when the machine has role
+  `hub` (D62).
+- A token issued to change an enrolled machine's access level (7.3.12) is bound to that machine's id; the join then
+  keeps the machine id and its history.
 - Peer joins are pairwise: linking A with B and B with C doesn't link A with C. A peer join with a site name already
   known to the hub fails with `site_name_taken`.
 
@@ -360,12 +385,14 @@ carries replay batches. QUIC orders bytes within a stream, so reports on each st
 ```rust
 // probe -> hub on stream 0
 struct Hello { probe_version: SemVer, machine_id: Ulid, epoch: u64, os: OsInfo, boot_id: String,
-               capabilities: Vec<Capability>, interfaces: Vec<IfaceInfo> /* name, mac, addrs */ }
+               capabilities: Vec<Capability>, interfaces: Vec<IfaceInfo> /* name, mac, addrs */,
+               label_table: Vec<LabelEntry> /* id: u32, labels: every label set of this epoch so far */ }
 // hub -> probe on stream 0
 struct Welcome { hub_version: SemVer, config: ProbeConfig, config_rev: u64, received: Option<EpochRanges>, server_time_ms: i64 }
 struct Ack { epoch: u64, ranges: Vec<SeqRange> }      // SeqRange { from: u64, to: u64 }, inclusive, every range the hub has committed
 // probe -> hub on stream 0
 struct DataDropped { epoch: u64, from_seq: u64, to_seq: u64 } // the probe deleted these unsent reports (buffer full)
+// hub -> probe on stream 0
 struct ConfigUpdate { config: ProbeConfig, config_rev: u64 }
 struct UpdateAvailable { version: SemVer, url: String, sha256: [u8; 32], signature: Vec<u8> }
 struct KeysUpdate { payload: Vec<u8>, hub_signature: Vec<u8> } // signed by the hub's node key, relayed to the helper
@@ -374,12 +401,13 @@ struct KeysUpdate { payload: Vec<u8>, hub_signature: Vec<u8> } // signed by the 
 struct Report {
     epoch: u64, seq: u64, sampled_at_ms: i64,
     vitals: Vec<Sample>,                 // Sample { metric: u32 (catalogue id), labels_id: u32, value: f64 }
-    label_sets: Vec<LabelSet>,           // new label sets introduced in this report
+    label_sets: Vec<LabelEntry>,         // label sets added to the table since this connection's Hello
     services: Vec<ServiceState>,
     containers: Vec<ContainerState>,     // from the helper
     updates: Option<UpdateSummary>,      // at most every 6 h or on change
     events: Vec<ProbeEvent>,
-    connections: Vec<ConnRecord>,        // aggregated per (exe, dest_ip, dest_port, proto) in the interval
+    connections: Vec<ConnRecord>,        // aggregated per (container, exe, dest_ip, dest_port, proto) in the interval,
+                                         // at most 500 tuples (below)
 }
 ```
 
@@ -389,7 +417,25 @@ struct Report {
   A new epoch is recorded as `probe.epoch_changed` (info).
 - **Received ranges.** The hub keeps, per machine and epoch, the set of committed seq ranges (merged, at most 64 ranges;
   older epochs are forgotten after 48 h). A report whose seq is already in a range is a duplicate and dropped. Any other
-  seq is accepted, whether it arrives on stream 1 or stream 2, in any order between streams.
+  seq is accepted, whether it arrives on stream 1 or stream 2, in any order between streams. A range the probe reports
+  in `DataDropped` is merged into the set as closed, so a permanent gap doesn't use up a range. If the set would still
+  pass 64 ranges, the hub closes the oldest gap, records it as `probe.data_gap`, and drops any report that arrives for
+  it later.
+- **Label tables.** A `labels_id` is an entry in the probe's label table for the current epoch. The probe keeps the
+  table on disk next to its buffer, never reuses an id within an epoch, and starts a new epoch (once its buffer is
+  empty) before the table passes 4096 entries. Every `Hello` carries the whole table, and a live report carries the
+  entries added since that `Hello`. Stream 2 carries only reports sampled before the connection's `Hello` (a later
+  report the hub never acked waits for the next connection), so every id they use is in the `Hello` table; reports on
+  stream 1 arrive in order, so an id is always defined before it is used. A report
+  therefore never depends on another report that is still buffered or was dropped. Entries belong to the epoch of the
+  report or `Hello` that carries them. A new epoch starts with an empty table, so when the probe changes epoch after
+  `Welcome` (the rollback case above), its reports define every label set again in `label_sets`. The hub stores the
+  table per
+  machine and epoch (`probe_labels`). A sample whose id it can't resolve is dropped and counted in
+  `probe.unknown_labels` (info); the rest of the report is kept.
+- **Connection tuples.** A report carries at most 500 connection tuples (setting, 7.8.1). Past that, the probe keeps
+  the tuples with the most bytes and folds the rest into one record per container and executable with a count and
+  byte total but no destination, and the report says so (`conn.overflow`, info, at most once an hour per machine).
 - **Acks.** `Ack` lists the committed ranges; the probe deletes buffered reports inside them, and only those.
 - **Gaps.** The hub never infers a gap from a seq jump. A gap is recorded (`probe.data_gap`) only when the probe sends
   `DataDropped` for reports it deleted unsent.
@@ -402,19 +448,44 @@ struct Report {
   delayed. Reports older than 10 minutes feed history and baselines but don't open threshold incidents. When backfilled
   points land in a minute or hour that was already rolled up, that range is marked dirty and rolled up again.
 - **Rate limits.** Stream 1: 1 report per second, burst 10. Excess closes with `0x14`.
-- **Clock.** The hub stores `sampled_at_ms` and its receive time. Skew over 30 s raises a `clock_skew` warning; live
-  alerting uses receive time.
+- **Clock.** The hub stores `sampled_at_ms` and its receive time. It keeps a clock offset per machine (the median of
+  receive time minus `sampled_at_ms` over the last 20 live reports) and places every sample at `sampled_at_ms` plus
+  that offset. Rule windows (7.6.1) use this corrected time, so a replayed batch that arrives in one burst still lands
+  on the times it was sampled. An offset over 30 s raises a `clock_skew` warning.
 - **Errors.** `0x11` when the endpoint id isn't the one registered to `machine_id`; `0x12` (the probe keeps buffering
   and retries hourly); `0x13` (the probe stops and exits with code 3).
 - **Reconnect.** Exponential backoff from 1 s to 60 s with jitter.
 - **Remote mode.** A probe enrolled with `mode = Remote` also accepts `rackhand/tunnel/1` connections from its pinned hub
-  only, and splices each tunnel stream to `127.0.0.1:22` only (D60).
+  only, and splices each tunnel stream to `127.0.0.1:22` only (D60). A remote-mode probe at access level `monitor`
+  accepts no tunnel connections at all.
 
 #### 7.3.3 Probe and helper (local socket)
 
-The helper runs as root (a separate service). Linux: `/run/rackhand/helper.sock`, mode 0660, group `rackhand-probe`,
-peer checked with `SO_PEERCRED` equal to the `rackhand-probe` user. Windows: a named pipe whose ACL allows only
-`NT SERVICE\RackhandProbe`. Newline-delimited JSON, one request per line.
+The helper runs as root (a separate service). Linux: `/run/rackhand-helper/helper.sock`, mode 0660, group
+`rackhand-probe`, peer checked with `SO_PEERCRED` equal to the `rackhand-probe` user. Windows: a named pipe whose ACL
+allows only `NT SERVICE\RackhandProbe`. Newline-delimited JSON, one request per line.
+
+**Who owns what.** Nothing root reads as a trust anchor or executes is writable by the probe user:
+
+| Path | Owner and mode | Holds |
+| --- | --- | --- |
+| `/run/rackhand-helper/` | root, 0755 | The socket and the update guard's copy of the binary |
+| `/usr/local/lib/rackhand/` | root, 0755 | Binary slots and the command wrapper |
+| `/etc/rackhand-probe/probe.toml` | root, 0644 | The hub ticket (which holds the pinned hub endpoint id) and the access level |
+| `/etc/rackhand/commands.json` | root, 0644 | The command list (7.3.7) |
+| `/var/lib/rackhand-helper/` | root, 0700 | Last applied key version |
+| `/var/lib/rackhand-run/` | root, 0700 | The command wrapper's state: last applied command list version, detached step output (`jobs/`), received files (`incoming/`) |
+| `/run/rackhand-probe/` | `rackhand-probe`, 0755 | `probe.state` |
+| `/var/lib/rackhand-probe/` | `rackhand-probe`, 0700 | Node key, buffer, label table, config cache, update spool |
+
+The helper reads the pinned hub id only from `probe.toml`. `rackhand-probe set-hub` and the installer are the only
+writers of that file and both need root. On Windows the same split is `C:\Program Files\Rackhand` and
+`C:\ProgramData\Rackhand\helper` (SYSTEM and Administrators only) against `C:\ProgramData\Rackhand\probe` (the probe's
+service account).
+
+The hub's own host is also a managed machine, so the same rule is applied there against the hub user: the hub's data
+directory `/var/lib/rackhand/` belongs to `rackhand-hub`, and nothing in the table above lives under it. That is why
+the wrapper's state has a directory of its own.
 
 ```rust
 enum HelperRequest {
@@ -422,10 +493,11 @@ enum HelperRequest {
     HashFiles,                                   // the list is compiled in plus a root-owned extras file; never from the socket
     AuthEventsSince { cursor: Option<String> },
     Containers,                                  // Docker and Podman sockets, read-only calls only
-    SocketOwners { inodes: Vec<u64> },           // sampling fallback: inode -> pid, exe, user
+    SocketOwners { inodes: Vec<u64> },           // sampling fallback: inode -> pid, exe, user, container
+    ContainerOf { cgroup_ids: Vec<u64> },        // eBPF mode: cgroup id -> container name
     ProcessScan,                                 // sampling fallback: processes whose exe is in a watched location
     UpdatesStatus,                               // last package-list refresh result (below)
-    ApplyUpdate { version: SemVer, url: String, sha256: [u8; 32], signature: Vec<u8> },
+    ApplyUpdate { version: SemVer, sha256: [u8; 32], signature: Vec<u8> }, // no URL or path: the file is read from the spool
     ApplyKeys { payload: Vec<u8>, hub_signature: Vec<u8> },
 }
 enum HelperResponse {
@@ -434,6 +506,7 @@ enum HelperResponse {
     AuthEvents { events: Vec<AuthEvent>, cursor: String },
     Containers { items: Vec<ContainerState> },   // id, name, image, state, health, restart_count, started_at
     SocketOwners { owners: Vec<SocketOwner> },
+    ContainerNames { names: Vec<(u64, String)> },
     Processes { items: Vec<ProcInfo> },          // pid, ppid, exe, user, started_at
     Updates { summary: UpdateSummary, refreshed_at_ms: i64 },
     UpdateStarted, KeysApplied,
@@ -453,21 +526,30 @@ enum HelperResponse {
   package lists and compute pending updates (`apt-get update` then `apt-get -s upgrade` with the security origin
   marked; `apk update` then `apk version -l '<'`; on Windows the Windows Update Agent search). The probe reads the result
   with `UpdatesStatus`. Patch jobs are selected from this data (7.5.3).
-- **Updates.** The helper refuses any version lower than the one installed (downgrades only by a local reinstall). It
-  verifies the minisign signature against the compiled-in release key and the sha256, and writes the new binary to the
-  inactive slot (`/usr/local/lib/rackhand/probe-a` or `probe-b`). It then copies the current, known-good binary to
-  `/run/rackhand/update-guard` and starts it as a separate transient unit (`systemd-run --unit=rackhand-update-guard`,
-  an OpenRC one-shot, or a Windows scheduled task) with `update-guard <old-slot> <new-slot>`. The guard points
-  `/usr/local/lib/rackhand/rackhand-probe` at the new slot, restarts the helper and probe services, and waits up to 2
-  minutes for the probe's state file (`/run/rackhand/probe.state`) to say `connected` with the new version. If it
-  doesn't, the guard points back to the old slot and restarts both. Because the guard runs the old binary, a broken new
-  helper can't block the rollback. The probe never writes its own binary.
+- **Updates.** The probe, not the helper, downloads the release file named in `UpdateAvailable` into its spool
+  (`/var/lib/rackhand-probe/update/`, one file, at most 64 MB), so no network access happens as root and no URL or path
+  crosses the socket. On `ApplyUpdate` the helper opens that one fixed file without following links, copies it into the
+  inactive slot (`/usr/local/lib/rackhand/probe-a` or `probe-b`), and checks the copy: it refuses any version lower
+  than the one installed (downgrades only by a local reinstall) and verifies the sha256 and the minisign signature
+  against the compiled-in release keys (current or standby, section 13). A file that fails is deleted from the slot.
+  The helper then copies the current, known-good binary to `/run/rackhand-helper/update-guard` and starts it as a
+  separate transient unit (`systemd-run --unit=rackhand-update-guard`, an OpenRC one-shot, or a Windows scheduled task)
+  with `update-guard <old-slot> <new-slot>`. The guard points `/usr/local/lib/rackhand/rackhand-probe` at the new slot,
+  restarts the helper and probe services, and waits up to 2 minutes for the probe's state file
+  (`/run/rackhand-probe/probe.state`) to say `connected` with the new version. If it doesn't, the guard points back to
+  the old slot and restarts both. The state file is written by the probe user, so the guard treats it only as a signal:
+  a probe that lies in it can keep or lose a correctly signed version and nothing else. Because the guard runs the old
+  binary, a broken new helper can't block the rollback. The probe never writes its own binary. The download needs the
+  machine to reach the URL; machines with no route to it stay on their version and show as `update_unreachable` (info).
 - **Version skew.** Probe and helper must be the same version; on mismatch the probe runs without the helper's features
   and reports `helper_version_mismatch`.
-- **Keys.** `ApplyKeys` carries a payload signed by the hub's node key (pinned at enrollment) that can only rewrite the
-  `from=` option and the key lines of the `rackhand` and `rackhand-ai` users' `authorized_keys`. The payload holds a
-  version (monotonic per machine) and an expiry (at most 1 hour after signing); the helper stores the last applied
-  version and refuses any payload that is older, equal or expired, so a replayed payload can't restore rotated keys.
+- **Keys.** `ApplyKeys` carries a payload signed by the hub's node key (the id pinned in the root-owned `probe.toml`)
+  that can only rewrite the `from=` option and the key lines of the `rackhand` and `rackhand-ai` users'
+  `authorized_keys`. The payload holds a version (monotonic per machine) and an expiry (at most 1 hour after signing);
+  the helper stores the last applied version and refuses any payload that is older, equal or expired, so a replayed
+  payload can't restore rotated keys. The same shape, `SignedPayload { payload, hub_signature }` with a version and an
+  expiry, is used for the command list (7.3.7). On a machine at access level `monitor` the helper refuses `ApplyKeys`:
+  there are no hub accounts to give keys to.
 
 #### 7.3.4 Hub and peer hub (`rackhand/peer/1`)
 
@@ -521,13 +603,15 @@ struct JobCancel { job_id: Ulid, reason: String }                              /
 ```
 
 - The operator declines past `max_jobs`. The hub tries its other operators in configured order. With no operator, or 3
-  declines, the incident becomes `needs_human` and a callout says so.
+  declines, the incident goes to a person (state `human`) and a callout says so.
+- A job token works only on connections from the endpoint id of the operator that accepted the offer; from any other
+  endpoint it is refused with `out_of_scope`.
 - **Disconnects.** If the hub connection drops mid-job, the operator keeps the runner for up to 5 minutes while it
   reconnects; tool calls fail with `hub_unreachable` meanwhile. After 5 minutes it kills the runner and reports
   `failed` on reconnect. When the hub restarts, the operator's `OperatorHello.running` lets the hub reattach jobs whose
   tokens are still valid.
 - **Transcripts.** `JobEvent`s are stored through Actions in `assistant_transcripts`, at most 5 MB per job (later events
-  are counted, not stored), kept 90 days.
+  are counted, not stored), kept 90 days or until the size budget trims them (7.4.1).
 - The operator never holds SSH keys or hub secrets.
 
 **Runner interface** (operator side):
@@ -545,8 +629,11 @@ pub struct RunHandle { pub events: mpsc::Receiver<JobEvent>, pub cancel: Cancell
 The Claude Code runner writes the brief to a temporary work directory, writes an MCP config whose only server is
 `rackhand operator mcp-bridge --hub <id> --job <job_id>` (stdio, bridging to `rackhand/mcp/1`), and runs
 `claude -p --output-format stream-json --mcp-config <file> --allowedTools "mcp__rackhand__*" --max-turns <n>` with no
-other tools allowed. It parses stream-json into `JobEvent`s and kills the process at the deadline (spike S5 confirms
-the exact flags).
+other tools allowed. The runner process runs as the unprivileged `rackhand-operator` user with a configuration
+directory of its own that holds only the AI provider credential set up at `rackhand operator join`, so no MCP server,
+tool or setting already present on the host is loaded. It parses stream-json
+into `JobEvent`s and kills the process at the deadline (spike S5 confirms the exact flags, including the one that
+limits the run to the given MCP config).
 
 #### 7.3.6 MCP (`rackhand/mcp/1`)
 
@@ -555,6 +642,8 @@ first line is `{"auth": "<job token or device key>"}`. Callers:
 - **Operator jobs**, through `rackhand operator mcp-bridge`, with a job token.
 - **People**, through `rackhand-cli mcp --hub <site>`, a stdio MCP server on their computer that dials the hub with its
   device key (7.3.1) and a personal MCP key (scope `read` or `read_request`, expiry default 90 days, at most 1 year).
+  A key never grants more than its user's role does in the dashboard (7.7.2): `read_request` on a viewer's account
+  works as `read`.
 
 Machines are named by id or `site/name`.
 
@@ -567,7 +656,7 @@ Machines are named by id or `site/name`.
 | `get_incident` | id | timeline, events, job logs, notes | all |
 | `list_security_events` | machine?, since?, kind? | events | all |
 | `get_connections` | machine, since | connection records with intel verdicts | all |
-| `run_diagnostic` | machine, name, args | output (at most 256 KB) | `read_request` keys and jobs; names from section 7.8.3; runs as the automation identity; job tokens limited to job hosts |
+| `run_diagnostic` | machine, name, args | output (at most 256 KB) | `read_request` keys and jobs; names from section 7.8.3; runs as the automation identity; job tokens limited to job hosts; with a personal key, the diagnostics marked sensitive in 7.8.3 are gated (below) |
 | `exec` | machine, command, reason, approval_id? | exit code, stdout, stderr (each at most 256 KB) | jobs only; machine in job hosts; runs as the assistant identity; gated (below) |
 | `list_runbooks`, `get_runbook` | name? | definitions | all |
 | `run_runbook` | name, target, params, reason, approval_id? | job id, status | `read_request` keys and jobs; gated (below) |
@@ -579,14 +668,19 @@ Machines are named by id or `site/name`.
 
 **Gating.** For `exec` and `run_runbook`, the hub computes what the call needs from the autonomy level, the action's
 risk, the target's roles and the policy (section 7.6.8). Calls with a personal MCP key are always treated as level 1:
-every `run_runbook` from a device needs an approval, so a stolen laptop and key can't change anything alone. If no approval is needed, it runs. Otherwise it returns at once
-with error `needs_approval {approval_id}`; the approval stores the exact tool, target and arguments and their SHA-256
-hash. After a person approves in the dashboard, the caller repeats the same call with `approval_id`; the hub runs it
-only if the hash matches and the approval is unused, then marks it used. There is no tool that approves or rejects.
+every `run_runbook` from a device needs an approval, so a stolen laptop and key can't change anything alone. For the
+same reason a personal key needs an approval for the sensitive diagnostics (`journal` and `docker_logs`, whose output
+can hold secrets); other diagnostics run without one. If no approval is needed, the call runs. Otherwise it returns at
+once with error `needs_approval {approval_id}`; the approval stores who asked (the job or the key), the exact tool,
+target and arguments, for `run_runbook` the runbook's revision, and the SHA-256 hash of all of these. After a person
+approves in the dashboard, the caller repeats the same call with `approval_id`; the hub runs it only if the caller is
+the one that asked, the hash matches (a runbook edited since then no longer matches) and the approval is unused, then
+marks it used. There is no tool that approves or rejects.
 
 **Enforcement.** The hub checks `allowed_tools` from the job's playbook on every call, not just the runner's flags. All
 output from machines is returned as `{"untrusted_output": "..."}`. Errors: `out_of_scope`, `tool_not_allowed`,
 `needs_approval`, `approval_rejected`, `approval_mismatch`, `deadline_exceeded`, `machine_unreachable`, `machine_busy`,
+`monitor_only` (the call needs an account on a machine at access level `monitor`), `machine_quarantined` (7.5.6),
 `invalid_args`, `rate_limited` (over 60 calls per minute per token).
 
 #### 7.3.7 Hub and machines over SSH
@@ -597,6 +691,11 @@ output from machines is returned as `{"untrusted_output": "..."}`. Errors: `out_
 | Assistant | `rackhand-ai` | `/bin/bash` | hub key `assistant` (Ed25519) | `ALL`, with `Defaults:rackhand-ai log_output, iolog_dir=/var/log/rackhand/sudo-io` |
 | Probe | `rackhand-probe` | `nologin` | none | none |
 
+- **Access levels.** The automation and assistant identities exist on every machine enrolled at access level
+  `managed`, which is the default: the automation identity runs routine runbooks through the allow-list, and the
+  assistant identity is the one an assistant uses to fix what a runbook couldn't. A machine enrolled at `monitor` has
+  only the probe user and the helper. The hub holds no key for it, needs no SSH server on it, and can run no command
+  on it (7.3.12).
 - **Keys** are generated at hub bootstrap, held in the Vault, and installed with
   `from="<hub addresses>",no-agent-forwarding,no-X11-forwarding,no-port-forwarding`. On remote-mode machines the SSH
   connection arrives through the probe's tunnel from `127.0.0.1`, so `from=` is `127.0.0.1,::1` there.
@@ -607,14 +706,34 @@ output from machines is returned as `{"untrusted_output": "..."}`. Errors: `out_
 - **Command execution.** Runbook commands are argument arrays. The hub quotes each argument POSIX-style (wrap in single
   quotes, replace `'` with `'\''`), joins them with spaces, and sends the string as the SSH exec request, which the
   user's `/bin/sh` runs. Parameters substitute whole arguments only and are validated against their declared type and
-  pattern first. Assistant `exec` sends the given command string as-is (it's the assistant's shell, logged).
+  pattern first. A pattern must match the whole value, and a value that starts with `-` is refused unless the parameter
+  declares `allow_leading_dash = true`, so a parameter can't turn into an option of the command. Assistant `exec` sends
+  the given command string as-is (it's the assistant's shell, logged).
 - **Command wrapper.** The automation user's sudo allow-list has one entry:
-  `rackhand ALL=(root) NOPASSWD: /usr/local/lib/rackhand/run`. `run` is part of the probe binary (`rackhand-probe run-cmd`
-  behind a fixed path) and reads `/etc/rackhand/commands.json` (root-owned, 0644), which lists each allowed command as
-  an argument template with a regular expression per parameter, generated from the enabled runbooks. `run` matches the
-  requested argument list against the templates, refuses anything that doesn't match exactly, and executes the match
-  directly (no shell). This works with any sudo version. Runbook `ssh` steps call `sudo /usr/local/lib/rackhand/run
-  <args...>` for steps that need root. Changing `commands.json` is the high-risk runbook `sudoers-refresh`.
+  `rackhand ALL=(root) NOPASSWD: /usr/local/lib/rackhand/run`. That fixed path is the command wrapper: the probe
+  binary started in its `run-cmd` mode, which is separate from the probe daemon (`rackhand-probe run`) and shares no
+  state with it. The wrapper reads `/etc/rackhand/commands.json` (root-owned, 0644), which lists each allowed command as
+  an argument template with a regular expression per parameter, generated from the enabled runbooks. It matches the
+  requested argument list against the templates, applies the same whole-value and leading-dash rules as the hub,
+  refuses anything that doesn't match exactly, and executes the match directly (no shell). This works with any sudo
+  version. Runbook `ssh` steps call `sudo /usr/local/lib/rackhand/run <args...>` for steps that need root.
+- **Command list updates.** The first `commands.json` arrives in the join response (7.3.1). Later versions are
+  installed by the wrapper's built-in subcommand `run install-commands`, which reads a `SignedPayload` from standard
+  input and writes the file only if the hub's signature verifies against the id pinned in `probe.toml`, the version is
+  newer than the last one applied, and the payload hasn't expired (the rules for keys, 7.3.3). The automation key
+  alone therefore can't widen its own allow-list: that takes the hub's node key. Sending a new list is the high-risk
+  runbook `sudoers-refresh`.
+- **Detached steps.** A step marked `detached = true` is started with `run job-start <job>/<step> -- <args...>`. The
+  wrapper matches the arguments as usual, starts the command in its own unit (`systemd-run`, an OpenRC supervised
+  one-shot, or a Windows scheduled task), writes its output and exit code under `/var/lib/rackhand-run/jobs/`, and returns
+  at once. The hub polls `run job-status <job>/<step> <offset>` every 5 seconds for the state, the exit code and new
+  output, and `run job-clean` removes the files once the result is recorded. The command doesn't depend on the SSH
+  session, so a hub restart, a dropped tunnel or a network break doesn't stop it; the hub picks the step up again by
+  polling. A detached step that passes its timeout isn't killed: the job ends `timed_out`, an incident opens, and the
+  machine stays locked until the unit exits and its result is recorded. A person can stop it from the job page
+  (`run job-stop`, an approval at normal risk). The package steps of the built-in patch runbooks are detached, so a
+  package manager is never cut off in the middle of a transaction. These subcommands are built into the wrapper; apart
+  from the template-matched command given to `job-start`, they take only a job and step id that the hub generated.
 - **Alpine.** The installer adds `sudo` and `bash` with apk.
 - **Windows.** OpenSSH Server (installed if missing). `sshd_config` gets `Match User rackhand,rackhand-ai` with
   `AuthorizedKeysFile __PROGRAMDATA__/rackhand/keys/%u`, placed before the default `Match Group administrators` block
@@ -622,9 +741,14 @@ output from machines is returned as `{"untrusted_output": "..."}`. Errors: `out_
   `ForceCommand` running `C:\Program Files\Rackhand\dispatch.ps1`, which accepts only `<script-name> <json-args>` for
   scripts in `C:\Program Files\Rackhand\scripts` and validates the args against each script's parameter schema.
   Runbook `ssh` steps targeting Windows use `windows_script` and `windows_args` instead of `cmd`. `rackhand-ai` is a
-  local administrator with PowerShell transcription to `C:\ProgramData\Rackhand\transcripts`.
+  local administrator with PowerShell transcription to `C:\ProgramData\Rackhand\transcripts`. Detached steps run the
+  script as a scheduled task through the same dispatcher. A Windows machine at access level `monitor` gets none of
+  this: no OpenSSH Server is installed and no accounts are created.
 - **Remote-mode machines** are reached through a tunnel to their probe (7.3.2), then the same SSH.
 - **Agentless machines** have no SSH identities; actions use driver APIs.
+- **Monitor machines** have no SSH identities either. Steps of kind `ssh` and `transfer` to them, `run_diagnostic` and
+  assistant `exec` fail with `monitor_only`. What can still act on a monitor machine is listed in
+  7.3.12.
 
 #### 7.3.8 In-process interfaces
 
@@ -645,7 +769,8 @@ pub trait Notifier: Send + Sync {
 // Store writes go through one task; callers send commands and await the result
 pub enum WriteCmd {
     // Ingest
-    StageReport(StagedReport), CompactStaged, PutEvents(Vec<Event>), PutConnRecords(Vec<ConnRecordRow>),
+    StageReport(StagedReport), CompactStaged, PutProbeLabels(Vec<ProbeLabelRow>), PutEvents(Vec<Event>),
+    PutConnRecords(Vec<ConnRecordRow>),
     UpdateBaselines(Vec<BaselineUpdate>), PutConnBaseline(Vec<ConnBaselineRow>), MarkRollupDirty(DirtyRange),
     // Checks
     PutCheck(CheckRow), PutCheckResults(Vec<CheckResult>),
@@ -660,7 +785,7 @@ pub enum WriteCmd {
     PutQuarantineRule(QuarantineRuleRow), PutWindow(WindowRow),
     // Registry, Peers, Assist, MCP, Web
     RegistryChange(RegistryChange), PutPeerSummary(PeerSummaryRow), PutJobToken(JobTokenRow), PutMcpKey(McpKeyRow),
-    PutUser(UserRow), PutCredential(CredentialRow), PutSession(SessionRow),
+    PutUser(UserRow), PutCredential(CredentialRow), PutSession(SessionRow), PutKnownDevice(KnownDeviceRow),
     // Library, Vault, Notify, Audit, Scheduler
     CreateLibraryItem(LibraryItemRow), PutLibraryRevision(LibraryRevisionRow), PutDraft(DraftRow), PutSecret(SecretRow),
     PutNotification(NotificationRow), AppendAudit(AuditRow), AppendAuditCheckpoint(AuditCheckpoint),
@@ -681,10 +806,20 @@ pub enum BusEvent { ReportIngested { machine: Ulid }, IncidentChanged { id: Ulid
 than Ingest raise events (`notifier_failed`, `git_mirror_failed`, `ssh.host_key_changed`, `quarantine_failed`,
 `clock_skew` and others) through `Ingest::raise_event`, so Ingest stays the single writer of `events`.
 
-**Bus delivery.** Each consumer has its own bounded queue (capacity 1024). Senders await space, so nothing is dropped;
-a full queue slows the sender. Because a crash can still lose queued messages, Incidents also reconciles on start and
-every minute: any incident in `automation` or `assistant` whose job has finished is advanced as if `JobFinished` had
-arrived.
+**Bus delivery.** Each consumer has its own bounded queue (capacity 1024). Two rules keep a slow consumer from
+stalling ingest or locking two systems against each other:
+
+- `ReportIngested` is a notice, not a record. Each consumer holds a set of machines with fresh data; a notice adds the
+  machine to the set and never waits, and the consumer reads the data itself (from the recent window, 7.4.1) when it
+  gets to that machine. Any number of notices for one machine collapse into one, so Ingest never waits on Incidents and
+  live reports are acked however busy rule evaluation is.
+- Every other event records a state change that is already committed to the database before it is sent (a finished
+  job, a decided approval, a changed incident). Senders await space for these, except Actions sending `JobFinished`:
+  Actions and Incidents send to each other, so Actions sends without waiting and leaves a full queue to the
+  reconciliation below. Nothing is lost either way, because the database row is the record.
+
+Because a crash can lose queued messages, Incidents also reconciles on start and every minute: any incident in
+`automation` or `assistant` whose job has finished is advanced as if `JobFinished` had arrived.
 
 #### 7.3.9 Notifiers
 
@@ -727,7 +862,7 @@ arrived.
   `rackhand-cli send <path> <site>/<machine>:<dest>` and the runbook `transfer` step. The sender streams to the hub that
   owns the target; that hub writes to the machine over SSH as `rackhand`, through the wrapper command
   `run receive <dest>`, which only accepts destinations under the policy's `transfer_roots` (default
-  `/var/lib/rackhand/incoming`), writes to a temporary file, checks the hash, then renames it into place (owner root,
+  `/var/lib/rackhand-run/incoming`), writes to a temporary file, checks the hash, then renames it into place (owner root,
   mode 0640). Partial files stay in the temporary location for resume.
 - **Streams for backup tools:** runbook steps `zfs-replicate`, `pbs-sync` and `restic-backup` don't use files. The
   source hub runs the sending command over SSH (for example `run zfs-send <dataset>@<snap>`), streams its output over
@@ -743,34 +878,66 @@ sequenceDiagram
   participant U as Admin (dashboard)
   participant H as Hub
   participant M as Machine (installer)
-  U->>H: Add machine (OS, name, site, policy, local or remote)
+  U->>H: Add machine (OS, name, site, policy, local or remote, managed or monitor)
   H-->>U: one-line command with hub ticket + token (60 min)
   U->>M: run command as root
   M->>M: download probe from release URL, verify minisign signature
-  M->>H: rackhand/join/1 Machine{token, facts, host keys, mode}
-  H-->>M: machine_id, config, public keys, sudoers, hub addresses
-  M->>M: create users, install keys and sudoers (visudo -c), install and start services
+  M->>H: rackhand/join/1 Machine{token, facts, host keys, mode, access}
+  H-->>M: machine_id, config, hub addresses, and for managed the keys, sudoers and command list
+  M->>M: write probe.toml, install and start services
+  opt managed
+    M->>M: create users, install keys, sudoers (visudo -c) and commands.json
+  end
   M->>H: rackhand/probe/1 Hello
-  H->>M: SSH test as rackhand, and rackhand-ai unless role hub (sudo -n true)
+  opt managed
+    H->>M: SSH test as rackhand, and rackhand-ai unless role hub (sudo -n true)
+  end
   H-->>U: machine enrolled and healthy
 ```
 
 - **Linux:** `curl -fsSL https://github.com/StrangeMatterStudio/Rackhand/releases/download/v<X>/install.sh | sudo sh -s
   -- --ticket <ticket> --token <token>`. Trust in the script rests on GitHub's TLS; the script then verifies every binary
-  with the pinned minisign key; trust in the hub comes from the endpoint id in the ticket. The offline variant fetches
+  with the pinned release keys (section 13); trust in the hub comes from the endpoint id in the ticket. The offline variant fetches
   from the hub over its self-signed HTTPS and checks the script against a SHA-256 the dashboard puts in the command:
   `curl -fsSLk https://<hub>:8443/install.sh -o /tmp/rackhand-install.sh && echo '<sha256>  /tmp/rackhand-install.sh'
   | sha256sum -c - && sudo sh /tmp/rackhand-install.sh --ticket <ticket> --token <token>`.
-- **Windows:** the PowerShell equivalent, which also installs OpenSSH Server if missing.
+- **Windows:** the PowerShell equivalent, which also installs OpenSSH Server if missing (managed only).
+- **Access level.** The admin picks `managed` (the default) or `monitor` when adding a machine, and the Machine page
+  shows it.
+  - `managed`: the probe, the helper, and both hub accounts (7.3.7). Everything in this design applies.
+  - `monitor`: the probe and the helper only. The machine reports vitals, services, containers, pending updates and
+    security signals, and gets probe updates. The hub has no account on it, so the hub can run no command on it: no
+    patching, no `ssh` or `transfer` steps, no diagnostics, no assistant `exec`, no in-guest quarantine. Patch selection
+    skips it and pending updates are only reported. Two things still run as root on a monitor machine, both in the
+    helper and neither taking a command from the hub: the fixed package-list refresh every 6 hours (7.3.3), and
+    installing a probe release that is signed by the release keys.
+  - A monitor machine that is a Proxmox guest can still be acted on from outside, through the hypervisor's API:
+    snapshot, rollback, power, and guest-firewall quarantine and release. These always need an approval in the
+    dashboard, whatever the runbook's autonomy level, and no automatic policy (auto-quarantine, auto-rollback) ever
+    applies to a monitor machine.
+  - Tunnels and port forwards to a local monitor machine follow its policy: they carry a person's or a backup tool's
+    own connection and use no hub account. A remote-mode monitor probe accepts none (7.3.2).
+  - Changing the level, in either direction, is done on the machine. The dashboard issues a one-time command (a join
+    token bound to the machine's id and the new level); run as root, it adds or removes the users, keys, sudoers file,
+    command list and, on Windows, the SSH configuration, and the machine keeps its id and history. The hub can't raise
+    a machine from `monitor` to `managed` by itself, because it has no way in. That is the point of the level.
 - **Agentless:** a dashboard form per driver. Credentials go into the Vault. HTTPS APIs (Proxmox, TrueNAS, Redfish) pin
   the certificate fingerprint seen when added (accepted by the admin), like SSH host keys.
 - **Proxmox:** the probe installer plus an API token (`pveum user token add`) with the Rackhand role (7.8.6), one per
-  cluster or standalone host, stored in the Vault through the join. Guests are matched to their VM or LXC by MAC
-  address (probe `interfaces` against the guest configs).
+  cluster or standalone host, stored in the Vault through the join.
+- **Guest binding.** The hub proposes which VM or LXC a machine is by MAC address (probe `interfaces` against the guest
+  configs), and an admin confirms the match on the Machine page; a guest created by `provision-vm` or `provision-lxc`
+  is bound by the runbook that created it. The confirmed binding (`proxmox_ref`) is then fixed. What a probe reports
+  later never changes it: if the reported MACs stop matching the bound guest's configuration, the hub raises
+  `machine.guest_binding_mismatch` (warning) and blocks every hypervisor-side action on that machine (snapshot,
+  rollback, guest firewall, power) until an admin confirms a binding again. A probe that claims another guest's MAC
+  therefore can't point those actions at the other guest. While a proposed match waits for confirmation, the patch
+  precheck fails with `guest_binding_unconfirmed` unless the policy has `snapshot = optional`.
 - **Devices, operators, peers:** an invite from the dashboard (endpoint ticket plus secret), used with
   `rackhand-cli login <invite>`, `rackhand operator join <invite>`, or the peer page.
-- **Unenroll:** the high-risk runbook `unenroll` (or `rackhand-probe uninstall` locally) removes services, users, keys
-  and sudoers files; the hub revokes the endpoint id.
+- **Unenroll:** the high-risk runbook `unenroll` (or `rackhand-probe uninstall` locally) removes services, users, keys,
+  the sudoers file and the command list; the hub revokes the endpoint id. A monitor machine has no account for the
+  runbook to use, so it is unenrolled with `rackhand-probe uninstall` on the machine, or just revoked on the hub.
 
 #### 7.3.13 Git mirror
 
@@ -797,7 +964,7 @@ ULIDs for ids, Unix milliseconds (UTC) for times. SQLite in WAL mode at `/var/li
 | Table | Fields |
 | --- | --- |
 | `sites` | id, name (unique, `[a-z0-9-]{1,32}`), timezone (IANA), is_local |
-| `machines` | id, site_id, name (unique per site), kind (`linux`, `alpine`, `windows`, `appliance`, `hypervisor`), os, address, mode (`local`, `remote`), probe_endpoint_id, driver (appliances), roles (JSON array, closed set: `hub`, `operator`, `relay`, `hypervisor`, `storage`, `network`, `desktop`), tags (JSON array, free-form), policy_id, proxmox_ref (cluster, node, vmid, type), enrolled_at, state (`pending`, `enrolled`, `revoked`), quarantine (`none`, `pending`, `applying`, `active`, `releasing`, `failed`) |
+| `machines` | id, site_id, name (unique per site), kind (`linux`, `alpine`, `windows`, `appliance`, `hypervisor`), os, address, mode (`local`, `remote`), access (`managed`, `monitor`), probe_endpoint_id, driver (appliances), roles (JSON array, closed set: `hub`, `operator`, `relay`, `hypervisor`, `storage`, `network`, `desktop`), tags (JSON array, free-form), policy_id, proxmox_ref (cluster, node, vmid, type), proxmox_ref_state (`none`, `proposed`, `confirmed`, `mismatch`), proxmox_ref_confirmed_by, enrolled_at, state (`pending`, `enrolled`, `revoked`), quarantine (`none`, `pending`, `applying`, `active`, `releasing`, `failed`) |
 | `devices` | id, user_id, name, endpoint_id, created_at, last_seen_ms, revoked_at |
 | `operators` | id, name, endpoint_id, runners (JSON), max_jobs, order, last_seen_ms, revoked_at |
 | `peers` | id, site, endpoint_id, allowed_queries (JSON), backup_quota_bytes (0 = off), added_at, last_seen_ms, revoked_at |
@@ -807,29 +974,31 @@ ULIDs for ids, Unix milliseconds (UTC) for times. SQLite in WAL mode at `/var/li
 | `windows` | id, machine_id or tag, kind (`maintenance`), rrule (daily or weekly, start time, duration), timezone |
 | `metric_keys` | id, name, unit, label_set (JSON) |
 | `report_staging` | machine_id, epoch, seq, received_at_ms, frame (zstd protobuf) |
+| `probe_labels` | machine_id, epoch, labels_id, metric_key_id (the probe's label table, 7.3.2) |
 | `series_chunks` | machine_id, metric_key_id, tier (0, 1, 2), start_ms, end_ms, count, data (Gorilla-encoded; tiers 1 and 2 hold min, max, avg) |
 | `events` | id, machine_id, at_ms, kind, severity, subject, data (JSON), job_id (if during a job) |
-| `conn_records` | machine_id, bucket_ms (5-minute buckets), exe, dest_ip, dest_port, proto, dest_asn, dest_country, verdict, bytes_out, count |
-| `conn_baseline` | machine_id, exe, dest_asn, dest_country, dest_port, proto, first_seen_ms, last_seen_ms, count |
-| `baseline_buckets` | machine_id, metric_key_id, hour_of_week, mean, var, n, frozen_until_ms |
+| `conn_records` | machine_id, bucket_ms (5-minute buckets), container (empty for host processes), exe, dest_ip, dest_port, proto, dest_asn, dest_country, verdict, bytes_out, count |
+| `conn_baseline` | machine_id, container, exe, dest_asn, dest_country, dest_port, proto, first_seen_ms, last_seen_ms, count |
+| `baseline_buckets` | machine_id, metric_key_id, kind (`hour_of_day`, `hour_of_week`), bucket (0 to 23, or 0 to 167), mean, var, n, frozen_until_ms |
 | `checks` / `check_results` | id, kind, target, interval_s, machine_id (bound), settings / check_id, at_ms, ok, latency_ms, detail |
 | `incidents` | id, machine_id, rule_id, dedupe_key, kind, severity, state (`open`, `automation`, `assistant`, `human`, `resolved`), title, opened_at, acked_at, acked_by, resolved_at, resolved_by |
 | `incident_events` | id, incident_id, at_ms, kind, data |
 | `silences` | id, machine_id or tag, rule_id or kind, until_ms, created_by, reason |
-| `jobs` | id, kind (`runbook`, `assistant`), name, rev, target, params, requested_by, approval_id, state (`queued`, `waiting_approval`, `running`, `succeeded`, `failed`, `interrupted`, `cancelled`, `timed_out`), started_at, ended_at, outcome, resumable_step |
+| `jobs` | id, kind (`runbook`, `assistant`), name, rev, target, params, requested_by, incident_id (if started for an incident), approval_id, state (`queued`, `waiting_approval`, `running`, `succeeded`, `failed`, `interrupted`, `cancelled`, `timed_out`), started_at, ended_at, outcome, resumable_step |
 | `job_steps` | job_id, step_id, state, command (JSON), exit_code, stdout, stderr (each at most 1 MB), started_at, ended_at |
 | `assistant_transcripts` | job_id, seq, at_ms, kind, text (at most 5 MB per job) |
-| `approvals` | id, tool, target, args (JSON), args_hash, risk, step_up, requested_by, reason, state (`pending`, `approved`, `rejected`, `expired`, `used`), decided_by, decided_at, expires_at |
+| `approvals` | id, tool, target, args (JSON), runbook_rev (for `run_runbook`), args_hash (over requester, tool, target, args and revision), risk, step_up, requested_by, reason, state (`pending`, `approved`, `rejected`, `expired`, `used`), decided_by, decided_at, expires_at |
 | `quarantine_rules` | id, name, severity_at_least, event_kinds, match (JSON: machine ids, tags, kinds, services), enabled, enabled_by, enabled_at |
 | `library_items`, `library_revisions`, `library_drafts` | name, kind, origin (`builtin`, `user`), rev, content, author, created_at; drafts: proposed_by, reason, state |
 | `notifications` | id, notifier, incident_id, at_ms, state, attempts, last_error |
 | `secrets` | name, nonce, ciphertext, created_at, rotated_at |
 | `ssh_host_keys` | machine_id, key_type, fingerprint, accepted_at, accepted_by |
 | `users` | id, name, role (`viewer`, `responder`, `admin`), auth (`local`, `oidc`), oidc_subject, created_at, disabled_at |
-| `credentials` | id, user_id, kind (`password`, `totp`, `passkey`), data (Argon2id hash, Vault reference, or WebAuthn credential), created_at |
+| `credentials` | id, user_id, kind (`password`, `totp`, `passkey`), data (Argon2id hash, Vault reference, or WebAuthn credential), last_totp_step (the newest time step accepted, so a code is used once), created_at |
+| `known_devices` | user_id, cookie_hash, first_seen_at, last_seen_at (browsers that have signed in to the account, 7.7.2) |
 | `sessions` | id_hash, user_id, created_at, last_seen_at, step_up_at, expires_at |
 | `mcp_keys` | id, user_id, device_id, scope (`read`, `read_request`), hash, expires_at, revoked_at |
-| `job_tokens` | job_id, hash, hosts, tools, expires_at, revoked_at |
+| `job_tokens` | job_id, operator_id (the only endpoint that may use it), hash, hosts, tools, expires_at, revoked_at |
 | `schedule_state` | kind, key, last_run_ms, next_run_ms |
 | `audit_log` | seq, at_ms, actor, action, target, data, prev_hash, hash (SHA-256 over prev_hash and the row); checkpoint rows hold the hash of the last row removed by retention |
 
@@ -838,14 +1007,38 @@ ULIDs for ids, Unix milliseconds (UTC) for times. SQLite in WAL mode at `/var/li
 `audit_log`: 1 y, with a checkpoint row written before each deletion so the chain stays verifiable. The retention task
 runs hourly and deletes in batches of 10 000 rows until nothing older is left, pausing 50 ms between batches.
 
-**Rollups.** Every minute the rollup task turns tier-0 data from the last completed minute into tier-1 min, max and avg;
-every hour it does the same from tier 1 into tier 2. Then it recomputes any ranges marked dirty by backfilled data
-(7.3.2). A chunk row is open (appended to by compaction) until it holds 120 points or its hour ends, then it is closed.
+Every table that grows has a rule; the rest are these. `check_results`: 30 d (check latency and state are also kept as
+series). `incident_events`: with their incident. `notifications`: 90 d. `peer_summaries`: the latest summary per peer
+only. `probe_labels`: with their epoch (48 h after a newer epoch starts). `conn_baseline`: entries not seen for 180 d.
+`join_tokens` and `job_tokens`: 30 d after they expire. `sessions`: deleted when they expire. `known_devices`: 1 y after
+they were last seen.
+
+Two caps bound what the time limits don't:
+- **Job output and transcripts** share a size budget (default 100 MB, 7.8.1). When it is full, the oldest output and
+  transcripts are trimmed first, before their 90 days are up; job and step metadata stay. Without the cap, 20 assistant
+  jobs a day at 5 MB each would reach 9 GB in 90 days.
+- **Connection records** are capped per machine per day (default 20 000 rows, 7.8.1). Past the cap, the rest of that
+  day's records for the machine are stored in summary form (counts per country and ASN, as for `connections =
+  "summary"`); threat-list checks still run on every reported tuple, and `conn.overflow` (info) says the cap was hit.
+
+**Recent window.** The hub keeps the last 35 minutes of samples for every series in memory (the longest rule window in
+7.6.1 is 30 minutes). Ingest adds each report's samples to it as the report is staged, so data is usable before
+compaction moves it into chunk rows. Rule evaluation reads only the recent window. Dashboard and MCP queries merge it
+with the chunk rows, which is how vitals show within seconds while compaction runs every 5 minutes. On start the hub
+rebuilds the window from `report_staging` and the newest tier-0 chunks before it evaluates any rule, so a restart
+doesn't reset a rule's duration. At 100 machines with 100 series each this is about 1.4 million samples, roughly
+20 MB.
+
+**Rollups.** Every minute the rollup task turns the last completed minute of the recent window into tier-1 min, max and
+avg; every hour it does the same from tier 1 into tier 2. Then it recomputes any ranges marked dirty by backfilled data
+(7.3.2) from the chunk rows. A chunk row is open (appended to by compaction) until it holds 120 points or its hour
+ends, then it is closed.
 
 **Storage estimate for 50 machines with 100 series each (the cardinality cap's typical case):** tier 0 is 50 x 100 x
 11 520 points = 57.6 M points at about 1.4 bytes each (Gorilla) = about 81 MB. Tier 1 is 50 x 100 x 43 200 x 3 values
 at about 1.4 bytes = about 0.9 GB. Tier 2 is 50 x 100 x 17 520 x 3 at about 2 bytes = about 0.53 GB. Connection records
-at about 2 000 rows per machine per day x 30 d x 80 bytes = about 0.24 GB. Events, jobs and the rest about 0.2 GB.
+at about 2 000 rows per machine per day x 30 d x 80 bytes = about 0.24 GB (the per-day cap bounds a busy machine at ten
+times that). Job output and transcripts at most 0.1 GB (their budget). Events, check results and the rest about 0.1 GB.
 Total about 1.95 GB, inside the 2 GB budget. The budget assumes an average of 100 series per machine; machines near
 the 200-series cap use proportionally more, and the dashboard shows the projected database size. Spike S8 measures
 the real bytes per value; if the budget can't be met with the retention in G1, the maintainer decides the trade-off and
@@ -854,7 +1047,8 @@ this document is updated before the code changes.
 **Secrets at rest.** XChaCha20-Poly1305 per secret with a 256-bit master key in `/etc/rackhand/master.key` (0600, root,
 outside the database). The first-run page shows the key once as a recovery code for the admin to store.
 
-**Probe buffer.** Append-only segment files in `/var/lib/rackhand-probe/buffer/`, 4 MB each, at most 64 MB total.
+**Probe buffer.** Append-only segment files in `/var/lib/rackhand-probe/buffer/`, 4 MB each, at most 64 MB total, with
+the epoch's label table in a file beside them.
 
 #### 7.4.2 Metric catalogue
 
@@ -862,7 +1056,7 @@ outside the database). The first-run page shows the key once as a recovery code 
 | --- | --- | --- |
 | `cpu.busy_pct`, `cpu.iowait_pct`, `cpu.steal_pct` | % | none (per-core `cpu.core_busy_pct` with `core`, off by default) |
 | `load.1m`, `load.5m`, `load.15m`, `load.15m_per_core` | ratio | none |
-| `mem.used_bytes`, `mem.available_bytes`, `mem.available_pct`, `mem.cached_bytes` | bytes, % | none |
+| `mem.used_bytes`, `mem.used_pct`, `mem.available_bytes`, `mem.available_pct`, `mem.cached_bytes` | bytes, % | none |
 | `swap.used_bytes`, `swap.used_pct` | bytes, % | none |
 | `disk.used_bytes`, `disk.total_bytes`, `disk.used_pct`, `disk.inodes_used_pct` | bytes, % | `mount` |
 | `diskio.read_bps`, `diskio.write_bps`, `diskio.read_iops`, `diskio.write_iops`, `diskio.busy_pct` | B/s, ops/s, % | `device` |
@@ -889,9 +1083,9 @@ A machine with more than 200 series drops the rest and raises `series_cap_reache
 ```mermaid
 stateDiagram-v2
   [*] --> Pending: token issued
-  Pending --> Enrolled: join succeeds and SSH test passes
+  Pending --> Enrolled: join succeeds, and for managed the SSH test passes
   Pending --> [*]: token expires (60 min)
-  Enrolled --> Silent: no report for 60 s
+  Enrolled --> Silent: no report for the silence time (7.6.3)
   Silent --> Enrolled: report arrives
   Enrolled --> Maintenance: maintenance window starts
   Silent --> Maintenance: maintenance window starts
@@ -910,20 +1104,30 @@ stateDiagram-v2
   [*] --> Open: rule fires, or a warning/critical event arrives
   Open --> Automation: runbook trigger matches and policy allows
   Open --> Assistant: playbook matches, operator available, daily cap not reached
-  Open --> Human: nothing matches, level 0, or no operator
+  Open --> Human: nothing matches, level 0, no operator, or attempt limit reached
   Automation --> Resolved: job succeeds and the condition clears
-  Automation --> Assistant: job fails, playbook matches
-  Automation --> Human: job fails, no playbook
+  Automation --> Assistant: job fails or the condition persists, playbook matches
+  Automation --> Human: job fails or the condition persists, no playbook or limit reached
   Assistant --> Resolved: job resolved and the condition clears
-  Assistant --> Human: needs_human, failed, timed_out
+  Assistant --> Human: needs_human, failed, timed_out, or the condition persists
   Human --> Resolved: condition clears, or a person resolves it
-  Open --> Resolved: condition clears for 2 evaluations
+  Open --> Resolved: condition clears
   Resolved --> Open: same dedupe key within 30 min (reopen)
   Resolved --> [*]
 ```
 
-- **Condition incidents** (thresholds, forecasts, baselines, silence, checks) resolve when the condition clears for 2
-  evaluations. Their severity can rise and fall; a fall doesn't send a callout.
+- **Condition incidents** (thresholds, forecasts, baselines, silence, checks) resolve when the condition clears.
+  Clearing is counted in the rule's own inputs, never in evaluation ticks: 2 samples for a threshold (7.6.1), 2 runs
+  for a check, 2 recomputations for a forecast or a baseline, and the first report for silence. Their severity can rise
+  and fall; a fall doesn't send a callout.
+- **A job that succeeds isn't the end.** After a runbook succeeds, or an assistant reports `resolved`, the incident
+  waits for its condition to clear (10 minutes by default, 7.8.1). If it hasn't, the job is treated as failed for
+  routing: a runbook's incident goes on to a playbook or a person, an assistant's incident goes to a person.
+- **Attempt limits.** Reopening keeps the incident's history, so the limits count across reopens. For one incident
+  (one dedupe key), automatic runbooks start at most 2 times and assistant jobs at most once in any 24 hours (7.8.1);
+  a job a person starts or resumes from the dashboard isn't counted. Past a limit the incident goes to a person with
+  the note "attempt limit reached", so a service that keeps failing isn't restarted forever and one incident can't use
+  up the hub's daily assistant cap.
 - **Event incidents** (security and system events of warning or critical severity) have no condition. Dedupe key:
   `<machine>:<kind>:<subject>` (for example the file path, the user, or the exe and ASN). Later matching events within
   24 hours are added to the same incident. They are resolved only by a person, or by an assistant at level 2 or 3 for
@@ -942,18 +1146,19 @@ stateDiagram-v2
    Sunday 03:00), each `window_length_min` long (default 180). Times that don't exist on a daylight-saving change run at
    the next valid minute; repeated times run once.
 2. **Selection.** At window start, the Scheduler asks Actions to start `patch` jobs (mode `security` or `full`) for
-   machines with policy `auto` and pending updates, not in a maintenance window and not quarantined. At most 3 per site
-   at once (configurable). Machines with role `hypervisor`, and the machine with role `hub`, go after all other machines
-   at their site, one at a time. A machine offline at window start is retried every 15 minutes until the window ends,
+   machines at access level `managed` with policy `auto` and pending updates, not in a maintenance window and not
+   quarantined. At most 3 per site at once (configurable). Machines with role `hypervisor`, and the machine with role
+   `hub`, go after all other machines at their site, one at a time. Apart from that, v0.1 patches a site's machines in
+   no set order. A machine offline at window start is retried every 15 minutes until the window ends,
    then waits for the next window.
 3. **Approve-only.** For `approve-only` machines an approval is created at window start that expires at window end; an
    approval decided later waits for the next window.
 4. **Steps** (`patch-debian`; `patch-alpine` and `patch-windows` are the same shape):
    precheck (1 GB free on `/`, no lock files, no other job on the machine, no open critical incident on it; for Proxmox
-   guests, the datastore has 10% and 5 GB free) then snapshot (Proxmox guests; name `rackhand-patch-<YYYYMMDD-HHMM>`;
-   keep the last 3 `rackhand-patch-*` per guest) then record active services, running containers and required mounts
-   then update then install then reboot if required and `auto_reboot` then wait for a report (up to 15 minutes) then
-   verify.
+   guests, the guest binding is confirmed (7.3.12) and the datastore has 10% and 5 GB free) then snapshot (Proxmox
+   guests; name `rackhand-patch-<YYYYMMDD-HHMM>`; keep the last 3 `rackhand-patch-*` per guest) then record active
+   services, running containers and required mounts then update then install (both detached, 7.3.7) then reboot if
+   required and `auto_reboot` then wait for a report (up to 15 minutes) then verify.
 5. **Verify** passes when the probe reports, every service active before is active, every container running before is
    running, every required mount (policy `required_mounts`) is mounted, and every check bound to the machine passes
    within 5 minutes.
@@ -962,13 +1167,17 @@ stateDiagram-v2
    allowed automatic high-risk action, D45) and records it. Otherwise the incident routes to the `patch-failure`
    playbook.
 7. **Hypervisors** install updates without rebooting. If a reboot is required, a high-risk approval lists every guest
-   that goes down with it. Two hypervisors in one cluster are never rebooted in the same window.
+   that goes down with it. Two hypervisors in one cluster are never rebooted in the same window. When the hub itself is
+   a guest of the hypervisor (known from its confirmed guest binding), the approval names the hub among those guests and
+   the reboot works like step 8: it is scheduled 60 seconds out, the job is marked `resumable_step = verify`, and the
+   hub finishes the job when it is back.
 8. **The hub's own host** runs `patch-hub-host`: its reboot step schedules the reboot 60 seconds out
    (`systemd-run --on-active=60 systemctl reboot`) and marks the job `resumable_step = verify`. On start the hub
    resumes a job with a `resumable_step` instead of marking it interrupted. Reboot needs approval unless the policy says
    `auto_reboot` for this host.
-9. **Defaults.** `auto_reboot` is true for Linux guests and false for kind `windows`, role `desktop`, role `hypervisor`
-   and role `hub`. Alpine has no security marker, so Alpine patches only in the full window. Windows uses the Windows
+9. **Defaults.** `snapshot` is `required` and applies to Proxmox guests; on any other machine there is nothing to
+   snapshot, the step is skipped, and the job log says the machine was patched without one. `auto_reboot` is true for
+   Linux guests and false for kind `windows`, role `desktop`, role `hypervisor` and role `hub`. Alpine has no security marker, so Alpine patches only in the full window. Windows uses the Windows
    Update Agent through a shipped script.
 
 #### 7.5.4 Assistant on a failed runbook
@@ -1038,16 +1247,27 @@ stateDiagram-v2
 
 Applying:
 1. **Isolate first.** Proxmox guests: requires the datacenter firewall to be on (otherwise this step fails with
-   `pve_firewall_off` and tells the admin; Rackhand never turns the datacenter firewall on). Enable the guest's firewall
-   with input and output policy DROP plus rules allowing DHCP (UDP 67 and 68) and all traffic to and from the hub's
-   addresses; flush the guest's conntrack entries on the host. Other Linux: `/usr/local/lib/rackhand/quarantine on
-   <hub-addresses>` (in the automation allow-list) loads an nftables table `rackhand_quarantine` with the same rules and
-   flushes conntrack. Windows: the shipped script adds Windows Firewall rules that block all but the hub and DHCP.
-   Appliances and remote-mode machines: not supported in v0.1 (cutting a remote machine's network would also cut its
-   mesh path to the hub); the incident says so and stays with a person.
+   `pve_firewall_off` and tells the admin; Rackhand never turns the datacenter firewall on). The hub first saves the
+   guest's whole firewall configuration (options, policies, rules and each network device's firewall setting) in the
+   job record. It then enables the guest's firewall with input and output policy DROP plus only these rules: DHCP (UDP
+   67 and 68), the guest to the hub's QUIC port (the probe's connection), and the hub to the guest's TCP port 22 and
+   ICMP echo. Nothing else to or from the hub is allowed, so a compromised guest gets no wider path to the hub than
+   the probe already had. Then it flushes the guest's conntrack entries on the host. Other managed Linux:
+   `/usr/local/lib/rackhand/quarantine on <hub-addresses>` (in the automation allow-list) loads an nftables table
+   `rackhand_quarantine` with the same rules and flushes conntrack. Managed Windows: the shipped script adds Windows
+   Firewall rules to the same effect. A monitor machine can be quarantined only as a Proxmox guest, from the
+   hypervisor, and only on approval (7.3.12). Appliances and remote-mode machines: not supported in v0.1 (cutting a
+   remote machine's network would also cut its mesh path to the hub); the incident says so and stays with a person.
 2. **Then snapshot** for forensics (Proxmox guests): `rackhand-quarantine-<time>`, with RAM for VMs when the storage
    supports it. Quarantine snapshots are never pruned automatically.
-3. Health shows `quarantined`. Patching and runbooks other than diagnostics and release are blocked.
+3. Health shows `quarantined`. Patching and runbooks other than diagnostics and release are blocked, and so is
+   assistant `exec` (it fails with `machine_quarantined`): an assistant with a root shell could undo an in-guest
+   quarantine, and everything the machine prints is suspect. An assistant can still read and run diagnostics.
+
+Releasing puts back exactly what was saved: the hub removes its rules and restores the saved firewall configuration
+(for in-guest quarantine, it drops the `rackhand_quarantine` table or its Windows rules, which touch nothing else). If
+the guest's firewall configuration was changed by someone else while quarantined, release stops with
+`quarantine_config_changed` and a person decides which version to keep.
 
 In-guest firewalls (nftables, Windows Firewall) are advisory against an attacker with root on the machine; only the
 hypervisor firewall is enforced from outside. The dashboard says which kind each quarantine is.
@@ -1058,21 +1278,46 @@ step-up.
 
 #### 7.5.7 Hub upgrade
 
-`rackhand` updates only when an admin clicks Update (or runs `rackhand self-update`): the hub takes a backup, downloads
-the signed release, verifies it, writes it to the inactive slot, and starts a transient guard unit running the old
-binary (`systemd-run --unit=rackhand-update-guard /run/rackhand/update-guard hub <old> <new>`). The guard switches the
-slot, restarts the hub, and polls `https://127.0.0.1:8443/healthz` for up to 2 minutes. If it never answers healthy,
-the guard switches back and restarts the old version; if migrations ran, it first restores the pre-update backup
-(migrations are forward-only). Relays and operators update the same way with their own command. After a hub update,
-probes are offered only the hub's own version (FR-22).
+`rackhand` updates only when an admin clicks Update (or runs `rackhand self-update`). The hub runs as an unprivileged
+user (7.1), so it does the unprivileged part and a root unit does the rest:
+
+1. The hub takes a backup, downloads the signed release into `/var/lib/rackhand/update/`, and writes a request file
+   there naming the version.
+2. A root unit, the updater (`rackhand-updater.path` and `.service`, the same binary run as `rackhand update-apply`),
+   starts when the request appears. It trusts nothing the hub wrote: it reads only the version from the request, opens
+   the one fixed download file without following links, copies it into the inactive slot, and checks the copy, not the
+   original: it refuses a version lower than the one installed, and verifies the sha256 and the signature against its
+   own compiled-in release keys. A copy that fails is deleted and the request is answered with the reason.
+3. The updater copies the current binary to `/run/rackhand-updater/update-guard` (root-only) and starts it as a
+   transient unit (`systemd-run --unit=rackhand-update-guard`) with `hub <old> <new>`. The guard switches the slot,
+   restarts the hub, and polls `https://127.0.0.1:8443/healthz` for up to 2 minutes. If it never answers healthy, the
+   guard switches back and restarts the old version; if migrations ran, it first restores the pre-update backup
+   (migrations are forward-only).
+
+A hub process that has been taken over can therefore ask for an update but can't install a binary the release keys
+didn't sign, and can't go back to an older one. Restoring the pre-update backup loses what the new version wrote in
+its 2 minutes: reports acked in that time are gone from the hub and already deleted on the probes, and audit entries,
+approvals and job records from that time are gone too. The first audit entry after a restore records it, and the
+dashboard shows that the update was rolled back and what window was lost.
+Relays and operators update the same way with their own command. After a hub update, probes are offered only the hub's
+own version (FR-22).
 
 ### 7.6 Algorithms and rules
 
 #### 7.6.1 Threshold rules
 
-A rule is `metric op value for duration`, evaluated every 15 s over the samples received in the window. A window counts
-as matching when at least 80% of the expected samples are present and every present sample matches. It clears when no
-sample matches in the last 2 evaluations.
+A rule is `metric op value for duration`, evaluated every 15 s over the samples in the window (at their corrected
+times, 7.3.2). Everything is counted in samples, using the machine's own probe interval, so the rules mean the same at
+5 seconds and at 300:
+
+- **Matching.** The number of samples expected in a window is the duration divided by the machine's interval. A window
+  matches when at least 80% of the expected samples are present and every present sample matches. A duration shorter
+  than 4 intervals is raised to 4 intervals, so no rule fires on fewer than 4 samples.
+- **Clearing.** A rule clears when the 2 most recent samples are both on the safe side of the threshold by the clear
+  margin. An evaluation with no new sample changes nothing.
+- **Clear margin.** 2 points for percentages and temperatures, 0.2 for load per core. A disk rule that opens over 85%
+  clears under 83%, so a value sitting at the threshold doesn't open and resolve over and over. Rows without a metric
+  value (services, restarts, checks, pending updates) have no margin.
 
 | Rule | Warning | Critical |
 | --- | --- | --- |
@@ -1091,7 +1336,7 @@ sample matches in the last 2 evaluations.
 
 Example: `/var` reads 86%, 86%, 87% from minute 0 to minute 5, so a warning opens at minute 5. It reaches 95.2% at
 minute 22 and stays above 95%, so at minute 27 the incident becomes critical and a new callout goes out. After cleanup
-it reads 70% for two evaluations, so it resolves.
+it reads 70% for two samples (under the 83% clear line), so it resolves.
 
 #### 7.6.2 Forecasts
 
@@ -1108,7 +1353,7 @@ it reads 70% for two evaluations, so it resolves.
 
 | Subject | Warning | Critical |
 | --- | --- | --- |
-| Machine probe (no report) | 60 s (4 intervals) | 5 min |
+| Machine probe (no report) | the larger of 60 s and 4 intervals | the larger of 5 min and 20 intervals |
 | Machine with `expected_offline` | info event only | none |
 | Agentless machine (driver poll failing) | 2 polls | 5 polls |
 | Peer hub | 2 min | 10 min |
@@ -1139,17 +1384,21 @@ Mbit/s floor) a warning opens and the bucket freezes.
 
 #### 7.6.5 Connection scoring
 
-For each connection record `(exe, dest_ip, dest_port, proto)`:
+For each connection record `(container, exe, dest_ip, dest_port, proto)`, where `container` is the container's name
+(the image name when the name was generated) or empty for a host process:
 1. Skip private, loopback and link-local destinations unless the policy has `watch_internal`.
 2. A destination on a loaded threat list gives a critical `conn.known_bad` event.
 3. Look up ASN and country (7.8.5).
 4. During learning (first 7 days per machine), add the tuple to `conn_baseline` without events.
-5. After learning, a tuple `(exe, dest_asn, dest_port)` not in the baseline gives `conn.new_destination` at info, raised
+5. After learning, a tuple `(container, exe, dest_asn, dest_port)` not in the baseline gives `conn.new_destination` at
+   info, naming the container, raised
    to warning when any of: the country is new for this machine; the exe is new on the machine; the port is on the watch
    list (22, 23, 1080, 3389, 4444, 5555, 6667, 9001) or above 49151 from a server process. A server process is one with
    no controlling terminal whose parent chain reaches the service manager or a container runtime.
 6. Over 1 GB to a single new destination within an hour gives `conn.large_egress` (warning).
 7. Excluded: Rackhand's own processes, and the package manager during a Rackhand patch job.
+8. Records folded together by the per-report cap (7.3.2) have no destination, so they are counted but not scored. The
+   `conn.overflow` event tells the admin that this machine makes more distinct connections than the cap covers.
 
 Example: on `media-vm`, `ffmpeg` connects on port 4444 to an ASN and country it has never used. That's a warning (new
 country and a watch-list port). If the IP is on a threat list, it's critical, and an enabled auto-quarantine rule may
@@ -1165,7 +1414,7 @@ apply.
 | `user.added` with UID 0 or in `sudo`, `wheel` or Administrators | critical |
 | `user.added` (other) | warning |
 | `auth.keys_changed` (any `authorized_keys`) | critical |
-| `file.changed` for sudoers, sshd_config, PAM, `/etc/passwd`, `/etc/shadow`, `/etc/group` | critical |
+| `file.changed` for sudoers, sshd_config, PAM, `/etc/passwd`, `/etc/shadow`, `/etc/group`, `/etc/rackhand/commands.json`, `/etc/rackhand-probe/probe.toml` | critical |
 | `file.changed` for other listed files | warning |
 | `port.new_listener` | warning |
 | `auth.login_new_source` | warning |
@@ -1178,7 +1427,9 @@ runtime internals). During a patch job, `file.changed` for files owned by a pack
 `dpkg -S`, `apk info -W` or the Windows installer record) is recorded at info with the job id. Key changes
 (`auth.keys_changed`) and account changes are exempt only during `sudoers-refresh`, `keys-rotate`, enrollment and
 unenroll, and only for the `rackhand` and `rackhand-ai` users and files those jobs write. Nothing is exempt for any
-other user's keys or accounts.
+other user's keys or accounts. A change to `/etc/rackhand/commands.json` is exempt only when it is the version the hub
+just sent with `sudoers-refresh` (the hash matches); a change to `probe.toml` only during enrollment and an access
+level change. Any other change to either file is critical.
 
 #### 7.6.7 Callout grouping
 
@@ -1201,10 +1452,11 @@ other user's keys or accounts.
 | --- | --- | --- |
 | low | diagnostics, `service-restart`, `compose-restart` | follows the level |
 | normal | patching, `snapshot`, `compose-update`, provisioning, assistant `exec` on ordinary machines | follows the level |
+| high | quarantine and release, rollback, hypervisor reboot, `sudoers-refresh`, `unenroll`, key rotation, assistant `exec` on roles `operator`, `relay` or `hypervisor`, accepting a changed host key, confirming a guest binding after a mismatch | always an approval with step-up |
 
 At every risk, requests from peers and from personal MCP keys need an approval (peer requests skip it only when the
-owning hub's policy sets `peer_requests = "auto"` for that runbook, and never for high risk).
-| high | quarantine and release, rollback, hypervisor reboot, `sudoers-refresh`, `unenroll`, key rotation, assistant `exec` on roles `operator`, `relay` or `hypervisor`, accepting a changed host key | always an approval with step-up |
+owning hub's policy sets `peer_requests = "auto"` for that runbook, and never for high risk). Any action on a machine
+at access level `monitor` needs an approval too, whatever the level (7.3.12).
 
 **Exceptions** (D61): an enabled auto-quarantine rule may apply quarantine, and a policy with `auto_rollback` may roll
 back after a failed patch (7.5.3), without an approval. Enabling or changing either is itself high risk and needs
@@ -1232,14 +1484,14 @@ Server-rendered HTML with askama, htmx for live parts, uPlot for charts, served 
 | First run | Create the admin (password plus TOTP, or a passkey when the hub has a trusted certificate), name the site and timezone, store the master-key recovery code, review outside sources (7.8.5) | Shown until an admin exists |
 | Overview | A tile per site (local and peers): machines by health, open incidents, last heartbeat; incident list; approvals waiting | "No machines yet: Add machine" |
 | Site | Machines (name, kind, health, CPU, memory, worst disk, updates, last seen), checks | Peer offline: last summary time |
-| Machine | Charts (1 h, 24 h, 7 d, 30 d, 1 y), services, containers, updates, security events, connections with verdicts, jobs, policy, windows, quarantine state, actions | "Probe silent since ..." |
+| Machine | Charts (1 h, 24 h, 7 d, 30 d, 1 y), services, containers, updates, security events, connections with verdicts (by container), jobs, policy, windows, quarantine state, access level, connection capture method (eBPF or sampling), guest binding (confirm), actions | "Probe silent since ..."; on a monitor machine, actions that need an account are shown disabled with the reason |
 | Incidents | List with filters; detail with timeline, events, job logs, assistant transcript, notes, actions, Resume job | |
 | Approvals | Action, target, exact arguments, risk, requester, reason; Approve and Reject (step-up prompt for high risk) | "Nothing waiting" |
 | Security | Event feed, baseline status per machine, threat-list and GeoIP freshness, quarantine rules | "Lists not downloaded yet" |
 | Library | Runbooks and playbooks, revisions, diffs, validation errors, drafts | |
 | Jobs | Runs, steps, commands, exit codes, output | |
 | Patching | Windows, maintenance windows, pending updates per machine, holds, last results | |
-| Add | Machine (Linux, Alpine, Windows; local or remote), appliance (per driver), device, operator, peer, site bootstrap | |
+| Add | Machine (Linux, Alpine, Windows; local or remote; managed or monitor), appliance (per driver), device, operator, peer, site bootstrap | |
 | Peers and relays | Peers (state, allowed queries, backup quota), relays and lists, operators | |
 | Settings | Notifiers (Send test), users and roles, devices, MCP keys, OIDC, git mirror, outside sources, dead-man URL, assistant daily cap | |
 | Audit | Log with search and chain status | Chain broken: critical banner |
@@ -1258,6 +1510,7 @@ its approval happens on the peer's own dashboard.
 | Open tunnels and transfers, run diagnostics | no | yes | yes |
 | Edit runbooks, playbooks, policies, quarantine rules | no | no | yes |
 | Enroll and unenroll, create invites, MCP keys for others | no | no | yes |
+| Confirm a guest binding | no | no | yes (step-up after a mismatch) |
 | Users, roles, notifiers, settings | no | no | yes |
 
 - A person may approve their own request; a request from an assistant or a peer can be approved by any responder or
@@ -1266,9 +1519,20 @@ its approval happens on the peer's own dashboard.
   is reached by hostname with a certificate the browser trusts (a provided certificate, or ACME with a DNS challenge).
 - OIDC users also enroll a local TOTP or passkey, used for step-up.
 - Sessions: 12 hours absolute, 2 hours idle; step-up lasts 5 minutes. Cookies `Secure`, `HttpOnly`, `SameSite=Strict`.
-- Sign-in failures back off per source IP (after 5 failures in 15 minutes, 1 attempt per minute) instead of locking
-  accounts, so nobody on the network can lock out the admin.
+- Sign-in failures back off per source (after 5 failures in 15 minutes, 1 attempt per minute) instead of locking
+  accounts, so nobody on the network can lock out the admin. A source is an IPv4 address or an IPv6 /64.
+- Sources alone don't stop an attacker with many addresses, so each account also has a limit of its own. After 10
+  failures for one account in 15 minutes from any sources, sign-in attempts for that account from browsers the account
+  has never signed in from are limited to 1 a minute in total. A browser that has signed in to the account before
+  carries a device cookie and keeps its own separate limit, so the real owner still gets in while the account is under
+  attack.
+- A second-factor code is accepted once: a TOTP code or time step that has been used is refused. After 5 wrong codes
+  the password step must be passed again, and those failures count toward the limits above.
+- Behind a reverse proxy, the hub takes the client address from the forwarding header only when the request comes
+  from an address listed in `trusted_proxies` (`hub.toml`, empty by default). Otherwise it uses the connection's
+  address, so a client can't fake its source and one proxy address isn't mistaken for every user.
 - MCP keys: per user and device, scope `read` or `read_request`, expiry default 90 days (at most 1 year), revocable.
+  A key's scope is capped by its user's role (7.3.6).
 
 #### 7.7.3 CLIs
 
@@ -1279,7 +1543,7 @@ its approval happens on the peer's own dashboard.
 - `rackhand-cli login <invite>`, `rackhand-cli connect`, `rackhand-cli forward`, `rackhand-cli send`,
   `rackhand-cli mcp`, `rackhand-cli status`.
 - `rackhand-probe run`, `rackhand-probe helper`, `rackhand-probe collect --once --json`, `rackhand-probe set-hub
-  <ticket>`, `rackhand-probe uninstall`.
+  <ticket>` (root), `rackhand-probe uninstall` (root).
 - Every command has `--help` and exits non-zero with a message naming what failed.
 
 #### 7.7.4 Site bootstrap
@@ -1291,8 +1555,8 @@ prints the dashboard URL and a one-time setup code.
 ### 7.8 Configuration and tuning
 
 All configuration is edited in the dashboard, stored with revisions, and mirrored to git. Only these are files:
-`/etc/rackhand/hub.toml` (listen addresses, data directory, master key path), `/etc/rackhand/master.key`, and the
-probe's `/etc/rackhand-probe/probe.toml` (hub ticket).
+`/etc/rackhand/hub.toml` (listen addresses, data directory, master key path, trusted proxies),
+`/etc/rackhand/master.key`, and the probe's `/etc/rackhand-probe/probe.toml` (hub ticket and access level, root-owned).
 
 #### 7.8.1 Settings
 
@@ -1306,6 +1570,12 @@ probe's `/etc/rackhand-probe/probe.toml` (hub ticket).
 | Peer summary interval | 30 s | 10 to 300 s (peer silent warning is the larger of 2 min and 3 intervals) |
 | Assistant job deadline / max turns | 30 min / 60 | 5 to 120 min / 10 to 200 |
 | Assistant jobs per day per hub | 20 | 0 to 500 |
+| Automatic runbook starts per incident per 24 h | 2 | 1 to 10 |
+| Assistant jobs per incident per 24 h | 1 | 1 to 5 |
+| Wait for the condition to clear after a job | 10 min | 2 to 60 min |
+| Connection tuples per report | 500 | 100 to 5000 |
+| Connection records per machine per day | 20 000 | 1 000 to 200 000 |
+| Job output and transcript budget | 100 MB | 50 MB to 20 GB |
 | Approval expiry | 24 h (patch: end of window) | 1 h to 7 d |
 | Step-up freshness | 5 min | 1 to 15 min |
 | Baseline learning | 7 days | 1 to 30 days |
@@ -1347,8 +1617,9 @@ Read-only, built in, run as the automation identity:
 | `last_logins` | `last -n 50` | Security log 4624, last 50 |
 | `ping` (target in the same site), `http_head` (URL bound to the machine's checks) | `ping -c 4`, `curl -sSI` | `Test-Connection`, `Invoke-WebRequest -Method Head` |
 
-`docker_logs` and `journal` output can contain secrets; it is returned as untrusted output and stored in job logs only
-(not sent to peers).
+`docker_logs` and `journal` are the sensitive diagnostics: their output can contain secrets. It is returned as
+untrusted output and stored in job logs only (not sent to peers), and a personal MCP key needs an approval to run them
+(7.3.6). Parameters follow the runbook rules in 7.3.7, including the refusal of values that start with `-`.
 
 #### 7.8.4 Critical file list (helper)
 
@@ -1356,7 +1627,8 @@ Linux: `/etc/passwd`, `/etc/shadow`, `/etc/group`, `/etc/gshadow`, `/etc/sudoers
 `/etc/ssh/sshd_config`, `/etc/ssh/sshd_config.d/*`, `/etc/pam.d/*`, `/etc/security/*.conf`, `/root/.ssh/authorized_keys`,
 `/home/*/.ssh/authorized_keys`, files named by `AuthorizedKeysFile` in `sshd_config`, `/etc/crontab`, `/etc/cron.d/*`,
 `/var/spool/cron/crontabs/*`, `/etc/systemd/system/*.service`, `/etc/systemd/system/*.timer`, `/etc/ld.so.preload`,
-`/etc/hosts`, `/etc/resolv.conf`, `/usr/bin/sudo`, `/usr/sbin/sshd`, `/usr/bin/ssh`, `/usr/local/lib/rackhand/*`.
+`/etc/hosts`, `/etc/resolv.conf`, `/usr/bin/sudo`, `/usr/sbin/sshd`, `/usr/bin/ssh`, `/usr/local/lib/rackhand/*`,
+`/etc/rackhand/commands.json`, `/etc/rackhand-probe/probe.toml`.
 Windows: `C:\ProgramData\ssh\sshd_config`, `C:\ProgramData\ssh\administrators_authorized_keys`,
 `C:\ProgramData\rackhand\keys\*`, `C:\Windows\System32\drivers\etc\hosts`, the scheduled tasks folder
 `C:\Windows\System32\Tasks\*`, and `C:\Program Files\Rackhand\*`. Extra paths come from the root-owned
@@ -1394,7 +1666,7 @@ autonomy = 1
 triggers = { incident_kinds = ["container.restarting"], auto = false }
 [params.project]
 type = "string"
-pattern = "^[a-zA-Z0-9_-]{1,64}$"
+pattern = "^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,63}$"   # whole value; a leading "-" is refused in any case (7.3.7)
 [[step]]
 id = "restart"
 kind = "ssh"
@@ -1410,7 +1682,8 @@ on_failure = { playbook = "compose-failure" }
 Step kinds: `ssh` (`cmd`, or `windows_script` and `windows_args`), `snapshot`, `rollback`, `reboot_if_required`,
 `wait_report`, `verify`, `probe_check`, `api` (driver call), `transfer`, `tunnel`, `notify`. Steps can set
 `retries = n` only when marked `idempotent = true`. `resumable = true` marks a step the hub may resume after its own
-restart.
+restart. `detached = true` on an `ssh` step starts the command in its own unit on the machine and polls it (7.3.7); a
+detached step is always resumable. A parameter takes values that start with `-` only with `allow_leading_dash = true`.
 
 Built-in runbooks: `patch-debian`, `patch-alpine`, `patch-windows`, `patch-proxmox-host`, `patch-hub-host`, `reboot`,
 `rollback`, `snapshot`, `service-restart`, `compose-restart`, `compose-update`, `quarantine`, `quarantine-release`,
@@ -1446,7 +1719,7 @@ Built-in playbooks: `patch-failure`, `service-down`, `disk-filling`, `security-f
 | E1 | Hub down for 6 hours | Probes buffer and replay on stream 2 while live reports flow on stream 1; history backfills; samples older than 10 min don't open threshold incidents | Integration test |
 | E2 | Probe buffer full | Oldest segments dropped; hub records `probe.data_gap` | Unit test |
 | E3 | Probe reinstalled, buffer lost, or guest rolled back (even with reports still buffered) | New epoch (from an empty buffer, or because `Welcome.received` is ahead); hub accepts it and records `probe.epoch_changed` | Contract test (AC48) |
-| E4 | Machine clock wrong by hours | Receive time used for alerting; `clock_skew` warning | Unit test |
+| E4 | Machine clock wrong by hours | Samples placed at offset-corrected time for alerting; `clock_skew` warning | Unit test |
 | E5 | Two probes claim one machine id | Second rejected with `0x11`; critical `probe.identity_conflict` | Contract test |
 | E6 | VM cloned with the probe installed | Same endpoint id from two addresses with different boot ids: `identity_conflict`, both refused until one re-enrolls | Integration test |
 | E7 | Enrollment token reused, expired or wrong kind | `JoinError` with the reason; shown on the dashboard | Contract test |
@@ -1486,11 +1759,29 @@ Built-in playbooks: `patch-failure`, `service-down`, `disk-filling`, `security-f
 | E41 | Sign-in brute force | Per-IP backoff; account never locked | Unit test |
 | E42 | Two admins decide one approval at once | First write wins; second sees "already decided" | Unit test |
 | E43 | Machine renamed or re-IPed | Identity is endpoint id and machine id; address follows the probe's report; SSH host key still checked | Unit test |
-| E44 | Hub restarts | Silence suppressed 3 min; staged reports compacted; jobs with `resumable_step` resume, others become `interrupted` with an incident | Integration test |
+| E44 | Hub restarts | Silence suppressed 3 min; staged reports compacted; the recent window rebuilt before rules run; jobs with `resumable_step` or in a detached step resume, others become `interrupted` with an incident | Integration test |
 | E45 | Peer queries JobLog without permission | `Denied("not allowed")` | Contract test |
 | E46 | Daylight-saving change during a window | Nonexistent times run at the next valid minute; repeated times run once | Unit test |
 | E47 | Assistant daily cap reached | New incidents route to people with a note | Unit test |
 | E48 | Container start produces `memfd:runc_cloned` | Exempt, no event | Unit test |
+| E49 | A step or tool needs an account on a monitor machine | Fails with `monitor_only` before anything is sent; hypervisor-side actions need an approval; no automatic policy applies | Unit test, contract test |
+| E50 | A probe reports another guest's MAC | Binding unchanged; `machine.guest_binding_mismatch`; hypervisor-side actions on that machine blocked until an admin confirms with step-up | Integration test |
+| E51 | A runbook or diagnostic parameter value starts with `-` | Refused by the hub's validation, and by the wrapper if it gets that far | Unit test |
+| E52 | A report uses a label id the hub doesn't know | That sample dropped and counted in `probe.unknown_labels`; the rest of the report kept | Contract test |
+| E53 | A 4 MB frame decompresses past 16 MB | Connection closed with `0x15`; nothing staged | Contract test |
+| E54 | The hub restarts, or the SSH connection drops, during a detached step | The command keeps running on the machine; the hub polls again and records the result | Integration test |
+| E55 | A detached step passes its timeout | Not killed; job `timed_out`, incident, machine locked until the unit exits | Integration test |
+| E56 | An incident keeps reopening | After 2 automatic runbook starts in 24 h it goes to a person with "attempt limit reached" | Unit test |
+| E57 | A runbook succeeds but the condition doesn't clear | After 10 min treated as failed: playbook or person | Unit test |
+| E58 | Probe interval set to 300 s | Durations under 4 intervals raised to 4; silence warning at 20 min; clearing needs 2 new samples | Unit test |
+| E59 | A machine makes more distinct connections than the caps | The probe folds the excess per container and executable; the hub stores summary rows past the daily cap; `conn.overflow` | Unit test |
+| E60 | A command list arrives unsigned, expired, or older than the installed one | `install-commands` refuses; the file is unchanged | Unit test |
+| E61 | Sign-in flood against one account from many addresses | Browsers new to the account limited to 1 attempt a minute in total; a browser that signed in before still gets in | Unit test |
+| E62 | The hypervisor that hosts the hub is rebooted | Approval names the hub; reboot scheduled 60 s out; the job resumes at verify when the hub is back | Lab test |
+| E63 | A hub process asks the updater for an unsigned or older binary | Updater refuses; no slot change; audit entry | Integration test |
+| E64 | A release is signed with the standby key | Accepted by installers, the helper and the updater | Unit test |
+| E65 | A machine has no route to the probe update URL | Stays on its version; `update_unreachable` (info) | Unit test |
+| E66 | A guest's firewall configuration is changed while it is quarantined | Release stops with `quarantine_config_changed`; a person decides | Lab test |
 
 ## 9. Error handling and recovery
 
@@ -1517,15 +1808,17 @@ Built-in playbooks: `patch-failure`, `service-down`, `disk-filling`, `security-f
 | --- | --- | --- |
 | Joiner to hub | Token guessing, replay | 128-bit single-use tokens, short expiry, per-address rate limit |
 | Probe to hub | Fake probe, replay, flooding | Registry, mutual pinning, epoch and seq, frame cap, stream rate limits |
-| Probe to helper | Probe compromise escalating to root | Fixed requests only, no paths or commands from the socket, signature-checked updates, hub-signed key updates only |
+| Probe to helper | Probe compromise escalating to root | Fixed requests only, no paths, URLs or commands from the socket; the helper never uses the network; signature-checked updates read from one fixed file; hub-signed key updates checked against a root-owned pin; nothing root executes or trusts is writable by the probe user (7.3.3) |
+| Probe to hypervisor actions | A probe lies about which guest it is | Guest binding confirmed by an admin and fixed; a mismatch blocks hypervisor-side actions (7.3.12) |
+| Hub process | A bug in the web, mesh or parsing code runs as the hub | Unprivileged user under a hardened unit, single capabilities for ICMP, master key passed as a credential, a separate root updater that verifies signatures itself, decompression limits (7.1, 7.3, 7.5.7) |
 | Hub to machines | Stolen hub keys reach every machine | Keys only in the Vault, master key outside the DB, `from=` restriction, no assistant account on hubs, sudo I/O logs, step-up for high risk, self-watch, peer watch, audit anchors in peers |
 | Machine output to assistant | Prompt injection | Untrusted wrapping, no approval tool, approvals bound to exact calls, scope enforced in the hub, high risk always human |
 | Operator host | Compromise drives tools | Job tokens scoped to hosts, tools and deadline; no keys on the operator |
 | Device (CLI) | Stolen laptop | Device keys revocable, MCP keys expire, tunnels need responder role on the owning hub |
 | Peer to peer | Malicious peer | Summaries and allowed queries only; requests need the owner's approval; nothing secret crosses |
-| Browser to hub | Session theft, CSRF, XSS | Mandatory second factor, strict cookies, CSRF tokens, strict CSP, auto-escaping templates |
+| Browser to hub | Session theft, CSRF, XSS, password and code guessing | Mandatory second factor, strict cookies, CSRF tokens, strict CSP, auto-escaping templates, limits per source and per account, single-use codes, trusted-proxy list (7.7.2) |
 | Relay | Inspection, metadata | End-to-end encryption; relays see endpoint ids, sizes and timing; private relays available; listed relays get no keys |
-| Supply chain | Malicious release or dependency | Signed releases verified before install and update, `cargo deny`, `cargo audit`, lockfile, reproducible builds |
+| Supply chain | Malicious release or dependency, stolen or lost signing key | Signed releases verified before install and update, signing keys offline and never on CI, a standby key for rotation, a maintainer rebuild that must match before signing (section 13), `cargo deny`, `cargo audit`, lockfile, reproducible builds |
 | Fetched lists | Hostile content | Strict parsing, size caps, HTTPS only, never executed |
 
 - **Secrets** (SSH private keys, API tokens, webhook URLs, SMTP passwords, TOTP secrets, tokens, the git deploy key)
@@ -1550,7 +1843,8 @@ Built-in playbooks: `patch-failure`, `service-down`, `disk-filling`, `security-f
   `nice 19` and `ionice idle`; eBPF events aggregate in per-CPU maps drained every interval; reports are
   zstd-compressed. Measured by a 1-hour soak test (RSS, CPU and bytes sent) against section 5.2.
 - **Hub:** one writer task; four read connections; staged reports committed per 500 ms batch; compaction every 5
-  minutes. Measured with a load generator of 200 simulated probes for 1 hour (p99 ingest-to-visible under 2 s, RSS under
+  minutes, in one transaction per machine so a commit of live reports never waits behind the whole fleet. The recent
+  window (7.4.1) costs about 20 MB at 100 machines, inside the 300 MB budget. Measured with a load generator of 200 simulated probes for 1 hour (p99 ingest-to-visible under 2 s, RSS under
   300 MB, CPU under 10% of a core) and a synthetic 2-year data fill for 50 machines (database size under 2 GB, retention
   and rollups finishing within their schedule).
 - **Network:** a report with 100 samples and no events is about 1.2 KB compressed (about 80 B/s at 15 s). Peer summaries
@@ -1576,6 +1870,13 @@ Built-in playbooks: `patch-failure`, `service-down`, `disk-filling`, `security-f
 - **Channels.** `stable` and `beta`. Probe updates go to one canary machine per site, then the rest after 1 hour without
   new incidents on the canary.
 - **Rollback.** Probes: automatic (7.3.3). Hub, relay, operator: 7.5.7.
+- **Release signing** (D90). CI builds the artifacts but never holds a
+  signing key. A maintainer rebuilds the tag on a machine that is not a CI runner, checks that every hash matches the
+  CI build (builds are reproducible, 5.2), and only then signs each artifact and the release manifest with the current
+  key. The key is passphrase-protected and kept offline between releases. Every binary and installer pins two public
+  keys, the current one and a standby whose private half is stored separately and used for nothing else. If the
+  current key is lost or exposed, the next release is signed with the standby and carries a new pair; binaries already
+  installed accept it because they already pin the standby. A release signed by neither key is never installed.
 - **First deployment.** A multi-site homelab run by a maintainer: a hub at each site, an operator host at the main site
   invited to all hubs, a relay on a VPS (its own probe enrolled to the main hub in remote mode), an offsite box
   bootstrapped as a new site, and the existing uptime checker retired after Rackhand checks cover its monitors for 2
@@ -1590,7 +1891,7 @@ Built-in playbooks: `patch-failure`, `service-down`, `disk-filling`, `security-f
 
 | Layer | What | Where |
 | --- | --- | --- |
-| Unit | Detect rules and the worked examples in 7.6; runbook and playbook parsing; sudoers generation; Policy decisions (levels, risk, exceptions, exclusions); buffer; epoch logic; time-series encoding; rollups; retention; audit chain and checkpoints; relay list parsing; DST windows | Every CI run |
+| Unit | Detect rules and the worked examples in 7.6, at several probe intervals; runbook and playbook parsing; command template generation and matching; signed payload checks; Policy decisions (levels, risk, exceptions, exclusions); buffer; epoch logic; time-series encoding; rollups; retention; audit chain and checkpoints; relay list parsing; DST windows | Every CI run |
 | Contract | Each QUIC contract with a real endpoint pair in-process; MCP scope, allowed tools, approval hash binding, untrusted output; protobuf old and new versions | Every CI run |
 | Collector | Linux collectors on fixture `/proc` and `/sys` trees; Windows collectors on recorded API outputs | Every CI run |
 | eBPF | Load and capture a known connect and exec on kernels 5.10, 6.1 and the current Proxmox kernel | Self-hosted privileged Linux runner |
@@ -1610,15 +1911,15 @@ Manual checks exist only where real hypervisors, real internet NATs or a real AI
 | AC2 | Given the hub stopped for 2 hours, when it restarts, then the machine's series for the gap are complete within 15 minutes, live vitals stay under 30 s during replay, and no threshold incident opens for samples older than 10 minutes | G1, FR-3, E1 | integration |
 | AC3 | Given the buffer limit, when the hub is down past 64 MB of reports, then the oldest are dropped and `probe.data_gap` names the missing range | FR-3, E2 | integration |
 | AC4 | Given retention settings, when retention and rollups run, then data older than each tier's limit is gone, newer data remains, and tier-1 and tier-2 values equal the min, max and avg of their source | FR-7 | unit |
-| AC5 | Given `/data` above 95% for 5 minutes, then a critical incident opens and a Discord message and an email are sent within 60 s; given 86% for 5 minutes, then a warning callout is sent within 6 minutes; when it drops to 70% for two evaluations, then a resolution message is sent | G2, FR-8, FR-11 | integration |
+| AC5 | Given `/data` above 95% for 5 minutes, then a critical incident opens and a Discord message and an email are sent within 60 s; given 86% for 5 minutes, then a warning callout is sent within 6 minutes; when it drops to 70% for two samples, then a resolution message is sent | G2, FR-8, FR-11 | integration |
 | AC6 | Given the forecast example in 7.6.2, when the detector runs, then it reports a warning with an ETA of 62.5 hours | G2 | unit |
 | AC7 | Given the baseline example in 7.6.4, when the data is replayed, then a warning opens at 14:35 and the bucket is frozen | G2, FR-8 | unit |
 | AC8 | Given an enrolled machine whose probe stops, then a silent warning opens at 60 s (callout within 6 min); with `expected_offline`, only an info event | G2, E38 | integration |
-| AC9 | Given three linked hubs, when one hub's network is cut, then the other two mark it silent within 2 minutes and down within 10, and exactly one of them sends the callout | G2, G6, FR-18 | network |
+| AC9 | Given three hubs, each linked to the other two, when one hub's network is cut, then the other two mark it silent within 2 minutes and down within 10, and exactly one of them sends the callout | G2, G6, FR-18 | network |
 | AC10 | Given an HTTP check against a stopped service, then a warning opens after 2 failed checks, and a certificate 10 days from expiry gives a warning | FR-9 | integration |
 | AC11 | Given simulators replaying recorded Proxmox, TrueNAS, Redfish and SNMP responses, added through the form, then each driver's metrics in 7.4.2 appear and a stopped simulator gives a silent warning after 2 polls | FR-10 | integration |
 | AC12 | Given a runbook step that runs past its timeout or prints 2 MB, then the step fails with `timeout` or its output is cut at 1 MB with a marker, and the job log shows command, exit code and output | FR-12 | integration |
-| AC13 | Given a machine past learning, when a process connects to a new ASN in a new country on port 4444, then a warning incident opens; on a kernel without eBPF the same is found by sampling | G3, FR-4 | unit + eBPF |
+| AC13 | Given a machine past learning, when a process connects to a new ASN in a new country on port 4444, then a warning incident opens; on a machine without eBPF the same is found by sampling when the connection stays open across a 5 s poll, and the machine page shows that it uses sampling | G3, FR-4 | unit + eBPF |
 | AC14 | Given a loaded threat list, when a machine connects to a listed IP, then a critical incident opens within 60 s | G3 | integration |
 | AC15 | Given a binary started from `/tmp`, and separately a new listening port, then a critical and a warning incident open; a container start does not | G3, FR-5, E48 | integration |
 | AC16 | Given the helper, when a key is added to any `authorized_keys` outside a Rackhand job, then a critical incident opens; when an SSH login succeeds from a new IP, then a warning opens; the probe never received file contents | G3, FR-6 | integration |
@@ -1636,7 +1937,7 @@ Manual checks exist only where real hypervisors, real internet NATs or a real AI
 | AC28 | Given a responder on hub A, when they request `compose-restart` on hub B's machine, then hub B runs it only after a hub B approval; a `JobLog` query from A is denied by default | G6, FR-18, E45 | integration |
 | AC29 | Given a 5 GB file, when `rackhand-cli send` is interrupted at 60% and rerun, then it resumes from the last verified chunk and the BLAKE3 hash matches | G6, FR-19, E30 | network |
 | AC30 | Given a device enrolled on hub B, when `rackhand-cli connect siteb/vm1 22` is used as `ProxyCommand` from another network, then SSH works; without a hub B device enrollment it is refused | G6, FR-19 | network |
-| AC31 | Given a private relay, an unkeyed hub is refused and a keyed one admitted; given a public relay at capacity, high-priority keyed endpoints are admitted before unkeyed; an unkeyed endpoint is limited to 1 Mbit/s; a relay list with bad entries keeps the valid ones | G6, FR-20, E27, E28 | unit + network |
+| AC31 | Given a private relay, an unkeyed hub is refused and a keyed one admitted; an unkeyed endpoint on a public relay is limited to 1 Mbit/s; a relay list with bad entries keeps the valid ones. If spike S2 confirms priority admission: given a public relay at capacity, high-priority keyed endpoints are admitted before unkeyed (if S2 rules it out, this clause and the priority wording in FR-20 are removed, 7.3.10) | G6, FR-20, E27, E28 | unit + network |
 | AC32 | Given a fresh Debian 12 machine, when the hub bootstrap runs, then a hub runs, first run is reachable, and an invite from it links to an existing hub; the LXC script does the same on a Proxmox host | G7, G8, FR-21 | integration + lab |
 | AC33 | Given an enrolled Proxmox host, when `provision-vm` runs with a template and cloud-init, then the VM boots, enrolls and is healthy | G7, FR-23 | lab |
 | AC34 | Given the `guided-install` playbook and a fake runner script, when a person starts it for a target, then each step's change goes through an approval in order | G7 | integration |
@@ -1663,6 +1964,22 @@ Manual checks exist only where real hypervisors, real internet NATs or a real AI
 | AC55 | Given a desktop with `connections = "summary"`, then only per-country and per-ASN counts are stored, and a connection to a threat-listed IP still opens a critical incident naming it; with `off`, nothing is stored | 10 privacy, D56 | integration |
 | AC56 | Given a Windows machine, then connections, a process started from `%TEMP%`, and a new listening port are reported | FR-4, FR-5 | manual checklist until a Windows runner exists |
 | AC57 | Given the command wrapper, when the automation user requests a command that differs from every template in one argument, then it is refused and nothing runs | 7.3.7 | unit + integration |
+| AC58 | Given a machine enrolled at access level `monitor`, then it reports vitals and security signals and gets probe updates; no `rackhand` or `rackhand-ai` user, hub key or command list exists on it; patch selection skips it; `ssh` steps, `run_diagnostic` and `exec` fail with `monitor_only`. Given it is a Proxmox guest, a quarantine from the hypervisor runs only after an approval, and an enabled auto-quarantine rule that matches it does nothing | FR-21, FR-15, E49, D88, D89 | integration + lab |
+| AC59 | Given a monitor machine, when the one-time level command from the dashboard is run on it as root, then it becomes managed with the same machine id and history, and the reverse command removes the users, keys, sudoers file and command list; no call from the hub alone changes the level | FR-21, D89 | integration |
+| AC60 | Given a confirmed guest binding, when the probe reports the MAC of a different guest, then the binding is unchanged, `machine.guest_binding_mismatch` opens, and snapshot, rollback and quarantine for that machine are refused until an admin confirms with step-up; the other guest is never touched | 7.3.12, E50, D93 | integration (simulated Proxmox API) |
+| AC61 | Given a runbook parameter value `-f`, then the hub refuses the call and the wrapper refuses the same arguments sent to it directly; given a command list that is unsigned, expired or not newer, `install-commands` leaves `commands.json` unchanged; the first list arrives with the join | 7.3.7, E51, E60, D92 | unit + integration |
+| AC62 | Given a reconnect with a backlog, when a live report uses a label set first seen during the outage, then every sample is stored under the right labels; a sample with an unknown label id is dropped and counted while the rest of its report is stored; a frame that decompresses past 16 MB closes the connection with `0x15` | FR-3, E52, E53, D94 | contract |
+| AC63 | Given a patch job in its install step, when the hub is restarted, and separately when the SSH connection is cut, then the package manager finishes, the hub records the step's output and exit code, and the job goes on to verify | FR-12, FR-13, E54, D97 | integration |
+| AC64 | Given an incident whose automatic runbook succeeds but whose condition returns each time, then the runbook starts at most twice in 24 hours and the incident then goes to a person with "attempt limit reached"; given a runbook that succeeds while the condition never clears, then after 10 minutes the incident routes as if the job had failed | FR-8, E56, E57, D96 | unit |
+| AC65 | Given a machine with a 300 s probe interval, then a 5-minute rule needs 4 matching samples, no silence warning opens before 20 minutes without a report, and a rule doesn't clear until 2 new samples are past the clear margin; given a disk above 85% for 5 minutes that then moves between 84% and 86% on every sample, then the one incident stays open, and it resolves only after 2 samples under 83% | FR-1, FR-8, E58, D95 | unit |
+| AC66 | Given a rule 20 minutes into a 30-minute duration, when the hub restarts, then the incident still opens at 30 minutes; given rule evaluation stalled for 60 s under 200 simulated probes, then live reports are still acked within 2 s | FR-8, 5.2 latency, E44, D100, D102 | integration |
+| AC67 | Given a running hub, relay and operator, then none of their processes is root and the hub can't open the master key file by path; given an update request for an unsigned binary or a lower version, the updater refuses and no slot changes; given a release signed with the standby key, installers, the helper and the updater accept it | 5.2 security, 5.2 supply chain, E63, E64, D90, D98 | integration + unit |
+| AC68 | Given 10 failed sign-ins for one account from different addresses, then a browser new to the account is held to 1 attempt a minute while a browser that signed in before still signs in; a used TOTP code is refused; a forwarding header from an address outside `trusted_proxies` is ignored | FR-25, E61, D99 | unit + integration |
+| AC69 | Given a retention run, then every table in 7.4.1 holds nothing older than its rule and `peer_summaries` holds one row per peer; given job output past its budget, the oldest is trimmed and metadata stays; given a machine reporting 100 000 distinct destinations in a day, then at most 20 000 connection rows plus summary rows are stored and a threat-listed destination among them still opens a critical incident | FR-7, E59, D100 | unit + performance |
+| AC70 | Given a job token used from an endpoint other than the operator that accepted the job, the call is refused; a `read_request` key on a viewer's account can't run a diagnostic; an approval can't be used by a different caller or after the runbook was edited; a personal key gets `needs_approval` for `journal` and runs `df` without one | FR-17, D101 | contract |
+| AC71 | Given two containers running the same executable, when one of them connects to a destination new for it, then the event and the connection record name that container, with eBPF and with sampling | G3, FR-4, D103 | integration + eBPF |
+| AC72 | Given a guest with firewall rules of its own, when it is quarantined and released, then its firewall configuration is identical to before; while quarantined it reaches only DHCP and the hub's QUIC port; assistant `exec` on it fails with `machine_quarantined`; if its configuration was changed meanwhile, release stops with `quarantine_config_changed` | FR-15, E66, D104 | lab + contract |
+| AC73 | Given the hypervisor that hosts the hub, when its reboot is approved, then the approval lists the hub among the affected guests and the job finishes at verify after the hub is back | FR-13, E62 | lab |
 
 ## 16. Alternatives considered
 
@@ -1706,21 +2023,31 @@ Manual checks exist only where real hypervisors, real internet NATs or a real AI
 | Claude Code headless behaviour changes | Medium | Medium | Runner interface; everything else works without AI |
 | Threat-list or GeoIP terms change | Low | Medium | Spike S10, sources switchable |
 
-**Spikes** (findings recorded here, spike code deleted):
+**Spikes** (findings recorded here, spike code deleted). The design is approved as a whole first; the spikes are then
+the first steps of the implementation plan (D87). As with S8, a finding that contradicts this document goes back to
+the owner and the document is updated before the work that depends on it starts.
 - **S1** aya eBPF: connect, UDP and exec tracing on 5.10, 6.1 and the current Proxmox kernel; memory; LXC attribution by
-  cgroup from the host.
+  cgroup from the host; resolving the executable path and the cgroup id inside the eBPF program; and the licence the
+  kernel requires an eBPF program to declare for the helpers it uses, against this project's licence (5.3).
 - **S2** iroh relay: admission with keys, per-endpoint rate limits, priority at capacity, ports.
 - **S3** iroh path detection: direct versus relayed, waiting for a direct path.
 - **S4** Proxmox: role privileges (snapshot, rollback, guest firewall, conntrack flush, clone, power) on PVE 8 and 9,
-  and the datacenter firewall prerequisite.
+  and the datacenter firewall prerequisite; whether each network device's own firewall setting must be on for guest
+  rules to apply, and saving and restoring it; and which upgrade command Proxmox requires on its own hosts (a full
+  upgrade or a plain one), for `patch-proxmox-host` and for the helper's count of pending updates there.
 - **S5** Claude Code headless: stdio MCP only, `--allowedTools` limited to MCP tools, stream-json events, kill at
-  deadline.
+  deadline; the flag that limits a run to the given MCP config; any extra flag stream-json needs in a non-interactive
+  run; and running with a configuration directory that holds only the provider credential.
 - **S6** Probe footprint: static musl binary size and steady RSS with iroh, aya and tokio.
 - **S7** Git mirror push in pure Rust (gix) or with libgit2 (git2, statically linked).
 - **S8** Time-series encoding: real bytes per value on recorded data.
 - **S9** TrueNAS API: which API (REST or JSON-RPC over WebSocket) the current releases support for pool, disk and alert
   reads.
-- **S10** Threat list and GeoIP terms for default use in an open-source product.
+- **S10** Threat list and GeoIP terms for default use in an open-source product, and whether the default lists still
+  carry enough entries to be worth shipping as the defaults.
+- **S11** Collectors on current distributions: authentication events on systems that log only to the journal (no
+  auth log file), read by a static binary; and memory readings on hosts where a ZFS cache holds most of the memory, so
+  the memory rules in 7.6.1 don't fire on a healthy host.
 
 ## 18. Decisions
 
@@ -1812,6 +2139,24 @@ Manual checks exist only where real hypervisors, real internet NATs or a real AI
 | D84 | Root commands | One sudo entry for a command wrapper that matches argument templates, instead of sudo regular expressions | Works on every sudo version (Ubuntu 22.04 has 1.9.9) | Claude (delegated) | 2026-11-18 |
 | D85 | Personal MCP keys | Always level 1: their runbook calls need an approval | A stolen laptop can't act alone | Claude (delegated) | 2026-11-18 |
 | D86 | Update rollback | A guard process running the old binary switches back on failure, for probes and hubs | A broken new version can't block its own rollback | Claude (delegated) | 2026-11-18 |
+| D87 | When do the spikes run? | The design is approved as a whole; the spikes are the first steps of the implementation plan | The usual approve, plan, run sequence | Owen | 2026-11-18 |
+| D88 | Accounts and access levels | Both hub accounts (automation and assistant) on every managed machine; a `monitor` level with no hub accounts also exists; `managed` is the default | Actions run through the accounts; some machines should only be watched | Owen | 2026-11-18 |
+| D89 | What `monitor` allows | The hub has no account and can run no command on the machine (the helper still refreshes package lists and installs signed probe updates); hypervisor-side actions on a monitor guest only with an approval, never automatically; the level changes only by a command run on the machine | The hub has no way in, so it can't let itself in | Claude (delegated) | 2026-11-18 |
+| D90 | Release signing keys | Offline, never on a CI runner; signed after a maintainer rebuild matches the CI build; two pinned keys (current and standby) for rotation | The helper and updater install signed releases as root | Claude (recommended), Owen (confirmed) | 2026-11-18 |
+| D91 | Helper boundary | The probe downloads updates and the helper reads one fixed file; root-only directories for what root runs or trusts; the hub pin lives in root-owned `probe.toml` | A compromised probe user must not reach root | Claude (delegated) | 2026-11-18 |
+| D92 | Command list | First list in the join response; later lists are hub-signed, versioned payloads installed by the wrapper; patterns match whole values and refuse a leading `-` | The automation key can't widen its own allow-list; no option injection | Claude (delegated) | 2026-11-18 |
+| D93 | Guest binding | Proposed by MAC, confirmed by an admin, then fixed; a mismatch blocks hypervisor-side actions | A probe can't redirect a snapshot, rollback or firewall to another guest | Claude (delegated) | 2026-11-18 |
+| D94 | Label tables and frame size | Label ids come from a per-epoch table sent whole in every `Hello`; decompressed frames capped at 16 MB | A report never depends on another report; no decompression bomb | Claude (delegated) | 2026-11-18 |
+| D95 | Rule timing | Windows, clearing and silence counted in samples at the machine's interval; a clear margin; samples placed at offset-corrected time | Rules must mean the same at any interval and not flap | Claude (delegated) | 2026-11-18 |
+| D96 | Incident attempts | At most 2 automatic runbook starts and 1 assistant job per incident per 24 h; a job whose condition doesn't clear in 10 min counts as failed | No endless restart loop; one incident can't use the daily assistant cap | Claude (delegated) | 2026-11-18 |
+| D97 | Long steps | Package steps run detached on the machine and are polled; a timed-out detached step isn't killed | A hub restart or dropped connection must not cut a package manager off | Claude (delegated) | 2026-11-18 |
+| D98 | Process users | Hub, relay and operator run unprivileged; a separate root updater verifies and installs releases | A bug in the hub shouldn't be a root bug or a way to install unsigned code | Claude (delegated) | 2026-11-18 |
+| D99 | Sign-in limits | Per source and per account, with device cookies so the owner isn't locked out; single-use codes; trusted-proxy list | Per-address limits alone don't stop many addresses | Claude (delegated) | 2026-11-18 |
+| D100 | Storage bounds and the recent window | A retention rule for every table; size caps for job output, transcripts and connection records; a 35-minute in-memory window feeds rules, live charts and rollups | The budget must hold in the worst case; data must be usable before compaction | Claude (delegated) | 2026-11-18 |
+| D101 | MCP bindings | Key scope capped by role; job tokens tied to the accepting operator; approvals tied to the requester and runbook revision; sensitive diagnostics need an approval with a personal key | Close gaps a stolen key or token could use | Claude (delegated) | 2026-11-18 |
+| D102 | Bus | Report notices coalesce per machine; Actions never waits on Incidents | A slow consumer must not stall ingest or lock two systems | Claude (delegated) | 2026-11-18 |
+| D103 | Container attribution | Connection records and baselines carry the container | The problem statement asks which container talked to a new address | Claude (delegated) | 2026-11-18 |
+| D104 | Quarantine details | Only the probe's port, SSH from the hub, ICMP echo and DHCP stay open; the prior firewall configuration is saved and restored; no assistant `exec` on a quarantined machine | A quarantined machine shouldn't get a wide path to the hub or be released by the assistant | Claude (delegated) | 2026-11-18 |
 
 ## 19. Deferred decisions
 
@@ -1824,6 +2169,12 @@ None.
 | Site | A place with its own network and one hub |
 | Hub | The Rackhand server for a site: data, detection, runbooks, dashboard, MCP |
 | Probe | The small monitoring daemon on a machine; it reports and never runs commands for the hub |
+| Command wrapper | A separate mode of the probe binary, run through sudo by the automation account, that runs only commands matching the hub-signed command list |
+| Access level | `managed` (the hub has its two accounts on the machine) or `monitor` (probe and helper only; the hub has no account and can run no command on the machine) |
+| Guest binding | The confirmed link between an enrolled machine and its VM or LXC on a hypervisor |
+| Updater | The root unit that verifies and installs hub, relay and operator releases |
+| Recent window | The last 35 minutes of samples the hub keeps in memory for rules, live charts and rollups |
+| Clear margin | How far past its threshold a value must be before a rule clears |
 | Remote mode | A probe enrolled to a hub at another site over the mesh, which also accepts SSH tunnels from that hub |
 | Helper | The probe's small root companion |
 | Peer | Another site's hub linked to this one |
@@ -1850,3 +2201,4 @@ None.
 | 2026-11-18 | First draft | Design interview | Owen (review pending) |
 | 2026-11-18 | Revision after independent review: join contract, epochs and replay streams, helper-driven updates, approval binding, per-hub devices, operators on several hubs, no assistant on hubs, metric catalogue and storage recount, silence rules, baseline freezing, event incidents, routing, roles, outside sources, backups, maintenance windows, ACs for every FR | Review findings and Owen's answers | Owen (review pending) |
 | 2026-11-18 | Closure check fixes: range acks and epoch restart, hub-wide replay budget, compaction into open chunks and re-rollups, lossless bus with reconciliation, command wrapper instead of sudo regex, update guard processes, versioned key updates, transfer write path, peer backup export, baseline seeding, narrower exemptions, desktop summary mode, generic public wording, Windows tests manual, ACs 48 to 57 | Closure review and Owen's answers | Owen (review pending) |
+| 2026-11-18 | Third review: `monitor` access level; spikes moved into the plan; release signing keys offline with a standby; helper boundary (no URL over the socket, root-only directories, root-owned hub pin); signed command list and leading-dash rule; fixed guest binding; per-epoch label tables and decompression cap; rules counted in samples with a clear margin; incident attempt limits; detached package steps; unprivileged hub with a root updater; sign-in limits per account; retention and caps for every table and the recent window; MCP bindings; bus coalescing; container attribution; quarantine narrowing and restore; table and wording fixes; spike S11; E49 to E66; ACs 58 to 73 | Review findings and Owen's answers (D87, D88, D90) | Owen (review pending) |
