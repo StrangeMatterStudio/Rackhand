@@ -62,6 +62,7 @@ struct Inner {
     limits: Mutex<auth::limits::Limits>,
     pending: Mutex<HashMap<String, auth::Pending>>,
     host_keys: Option<Arc<crate::ssh::hostkeys::HostKeys>>,
+    registry: Option<Arc<crate::registry::Registry>>,
 }
 
 #[derive(Clone)]
@@ -99,6 +100,7 @@ impl Web {
             limits: Mutex::new(auth::limits::Limits::default()),
             pending: Mutex::new(HashMap::new()),
             host_keys: None,
+            registry: None,
         }))
     }
 
@@ -108,6 +110,19 @@ impl Web {
             inner.host_keys = Some(keys);
         }
         self
+    }
+
+    /// The Registry, for listing and revoking devices; before the router is built.
+    pub fn with_registry(mut self, registry: Arc<crate::registry::Registry>) -> Web {
+        if let Some(inner) = Arc::get_mut(&mut self.0) {
+            inner.registry = Some(registry);
+        }
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn db(&self) -> &Arc<Db> {
+        &self.0.db
     }
 
     /// Replaces the clock; for tests, before the router is built.

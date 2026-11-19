@@ -18,6 +18,30 @@ struct Settings<'a> {
     sources: Sources,
     mirror_url: &'a str,
     deploy_key: Option<String>,
+    users: Vec<UserLine>,
+    devices: Vec<crate::registry::devices::DeviceRow>,
+}
+
+struct UserLine {
+    id: String,
+    name: String,
+    role: String,
+    auth: String,
+    disabled: bool,
+}
+
+fn users(web: &Web) -> Vec<UserLine> {
+    web.0
+        .db
+        .readers()
+        .with(|c| {
+            let mut s = c.prepare("SELECT id, name, role, auth, disabled_at IS NOT NULL FROM users ORDER BY name")?;
+            let rows = s.query_map([], |r| {
+                Ok(UserLine { id: r.get(0)?, name: r.get(1)?, role: r.get(2)?, auth: r.get(3)?, disabled: r.get(4)? })
+            })?;
+            rows.collect()
+        })
+        .unwrap_or_default()
 }
 
 fn deploy_public_key(web: &Web) -> Option<String> {
@@ -33,8 +57,15 @@ pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
     let url = current.git_mirror.as_ref().map(|m| m.url.as_str()).unwrap_or("");
     html(
         StatusCode::OK,
-        Settings { csrf: &ctx.csrf, sources: current.sources, mirror_url: url, deploy_key: deploy_public_key(web) }
-            .render(),
+        Settings {
+            csrf: &ctx.csrf,
+            sources: current.sources,
+            mirror_url: url,
+            deploy_key: deploy_public_key(web),
+            users: users(web),
+            devices: web.0.registry.as_ref().and_then(|r| r.devices().ok()).unwrap_or_default(),
+        }
+        .render(),
     )
 }
 

@@ -94,6 +94,55 @@ pub async fn create_local(
     Ok(id)
 }
 
+/// How a new account signs in.
+#[derive(Debug, Clone, Copy)]
+pub enum NewUser<'a> {
+    Local {
+        password: &'a str,
+    },
+    /// Through the OIDC provider, matched by its `sub` claim.
+    Oidc {
+        subject: &'a str,
+    },
+}
+
+/// Creates an account with its TOTP secret (sealed in the Vault). Local accounts also get their password.
+pub async fn create(
+    db: &Arc<Db>,
+    vault: &Vault,
+    name: &str,
+    role: Role,
+    new: NewUser<'_>,
+    totp_secret: &[u8],
+    now_ms: i64,
+) -> Result<String, UserError> {
+    let subject = match new {
+        NewUser::Local { password } => {
+            return create_local(db, vault, name, role, password, Some(totp_secret), now_ms).await;
+        }
+        NewUser::Oidc { subject } => subject,
+    };
+    let id = ulid::Ulid::new().to_string();
+    let user: Row = [
+        ("id", Value::Text(id.clone())),
+        ("name", Value::Text(name.into())),
+        ("role", Value::Text(role_name(role).into())),
+        ("auth", Value::Text("oidc".into())),
+        ("oidc_subject", Value::Text(subject.into())),
+        ("created_at", Value::Integer(now_ms)),
+    ]
+    .into_iter()
+    .collect();
+    let vault_name = format!("totp:{id}");
+    vault.put(&vault_name, &Secret::new(totp_secret.to_vec())).await.map_err(|e| UserError::Invalid(e.to_string()))?;
+    let writes = vec![
+        RowWrite::insert("users", user),
+        credential(&id, "totp", format!("vault:{vault_name}").into_bytes(), now_ms),
+    ];
+    db.writer().send(WriteCmd::Batch(writes)).await?;
+    Ok(id)
+}
+
 pub(crate) fn credential(user_id: &str, kind: &str, data: Vec<u8>, now_ms: i64) -> RowWrite {
     let row: Row = [
         ("id", Value::Text(ulid::Ulid::new().to_string())),

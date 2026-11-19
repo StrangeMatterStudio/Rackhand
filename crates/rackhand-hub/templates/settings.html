@@ -25,4 +25,40 @@
 </fieldset>
 <button type="submit">Save</button>
 </form>
+<h2>Users</h2>
+<table>
+<tr><th>Name</th><th>Role</th><th>Sign-in</th><th></th></tr>
+{% for u in users %}
+<tr><td>{{ u.name }}</td><td>{{ u.role }}</td><td>{{ u.auth }}</td><td>
+{% if u.disabled %}disabled{% else %}
+<form method="post" action="/settings/users/{{ u.id }}/role"><input type="hidden" name="csrf" value="{{ csrf }}">
+<select name="role"><option value="viewer">viewer</option><option value="responder">responder</option><option value="admin">admin</option></select>
+<button type="submit">Change role</button></form>
+<form method="post" action="/settings/users/{{ u.id }}/disable"><input type="hidden" name="csrf" value="{{ csrf }}">
+<button type="submit">Disable</button></form>
+{% endif %}</td></tr>
+{% endfor %}
+</table>
+<form method="post" action="/settings/users">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<fieldset>
+<legend>Add a user</legend>
+<label>Name <input name="name" required></label>
+<label>Role <select name="role"><option value="viewer">viewer</option><option value="responder">responder</option><option value="admin">admin</option></select></label>
+<label><input type="radio" name="auth" value="local" checked> Password <input type="password" name="password" autocomplete="new-password"></label>
+<label><input type="radio" name="auth" value="oidc"> OIDC, subject <input name="subject"></label>
+</fieldset>
+<button type="submit">Add</button>
+</form>
+<h2>Devices</h2>
+<table>
+<tr><th>Device</th><th>User</th><th></th></tr>
+{% for d in devices %}
+<tr><td>{{ d.name }}</td><td>{{ d.user }}</td><td>
+{% if d.revoked_at.is_some() %}revoked{% else %}
+<form method="post" action="/settings/devices/{{ d.id }}/revoke"><input type="hidden" name="csrf" value="{{ csrf }}">
+<button type="submit">Revoke</button></form>
+{% endif %}</td></tr>
+{% endfor %}
+</table>
 {% endblock %}

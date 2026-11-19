@@ -1715,6 +1715,8 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-store -E 'test(put_user)'; cargo nextest run -p rackhand-hub -E 'test(settings::)' | `Unimplemented("PutUser")`; compile errors: no `Web::with_registry`, `Web::db`, `Registry::allow_device` (the test then used the existing `allow`) |
+  | 2026-11-19 | cargo nextest run -p rackhand-store -E 'test(put_user)'; cargo nextest run -p rackhand-hub -E 'test(settings::) \| test(web::)' | 1 passed; 24 passed: `settings::users_and_roles_admin_only`, `settings::last_admin_cannot_be_disabled_or_demoted` (added in the run) and `settings::devices_listed_and_revocable`, whose revoked device's next connection over a local relay is closed with `0x13`, and admission reloaded from the tables still refuses it |
 
 ### T39: Dashboard pages for monitoring
 - **Design refs:** 7.7.1 (Overview, Site, Machine, Incidents, Audit, Settings: notifiers), G1, 5.2 latency, AC1
@@ -1837,6 +1839,7 @@ Only additions to that list are written out below.
   | --- | --- | --- |
   | `it::executor::wait_report_step_waits_for_fresh_report` | a `wait_report` step succeeds once the probe's next report arrives after the step started, and fails `timeout` if none does | 7.8.7 |
   | `it::executor::probe_check_step_runs_check_on_probe` | a `probe_check` step asks the probe to run the check and fails when it fails | 7.8.7 |
+  | `collect::rate_interval_is_monotonic` (carried in from T38's run: `collect::once_json_prints_one_sample_set` failed once under load and passed in 4 reruns; the interval between snapshots comes from the wall clock, so a clock step back skips the rate series) | rates use a monotonic interval; a wall-clock step back between two snapshots still gives `net.rx_bps` | 7.4.2 |
 - **Fails first:** compile errors; then the container tests fail (no daemon).
 - **Verification:**
   ```bash

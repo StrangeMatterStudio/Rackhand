@@ -588,6 +588,27 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
             )?;
             if n == 0 { Err(StoreError::Conflict("job already finished")) } else { Ok(n) }
         }
+        WriteCmd::PutUser(mut row) => {
+            // A whole row (with `created_at`) adds a user; a row of some columns changes one. Either way the hub keeps
+            // at least one enabled admin, so it can't lose its last administrator (7.7.2).
+            let tx = conn.transaction()?;
+            let n = if row.contains_key("created_at") {
+                write_row(&tx, &RowWrite::insert("users", row))?
+            } else {
+                let key = row.remove("id").ok_or(StoreError::MissingColumn("id"))?;
+                update_row(&tx, &RowUpdate { table: "users", key: ("id", key), set: row })?
+            };
+            let admins: i64 =
+                tx.query_row("SELECT count(*) FROM users WHERE role = 'admin' AND disabled_at IS NULL", [], |r| {
+                    r.get(0)
+                })?;
+            let any_users: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM users)", [], |r| r.get(0))?;
+            if any_users && admins == 0 {
+                return Err(StoreError::Conflict("the last enabled admin"));
+            }
+            tx.commit()?;
+            Ok(n)
+        }
         WriteCmd::PutPolicy(row) => upsert_one(conn, "policies", "id", row),
         WriteCmd::PutQuarantineRule(row) => upsert_one(conn, "quarantine_rules", "id", row),
         WriteCmd::PutScheduleState(row) => replace_one(conn, "schedule_state", row),

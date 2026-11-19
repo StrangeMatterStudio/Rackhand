@@ -33,6 +33,10 @@ pub enum Page {
     SettingsSources,
     AcceptHostKey,
     SettingsGitMirror,
+    UserCreate,
+    UserRole,
+    UserDisable,
+    DeviceRevoke,
 }
 
 #[derive(Debug, Clone)]
@@ -65,4 +69,8 @@ pub static ROUTES: &[RouteSpec] = &[
     r(Method::POST, "/settings/sources", Access::Perm(Permission::Administer), Page::SettingsSources),
     r(Method::POST, "/settings/git-mirror", Access::Perm(Permission::Administer), Page::SettingsGitMirror),
     r(Method::POST, "/machines/{id}/host-key/accept", Access::Perm(Permission::Administer), Page::AcceptHostKey),
+    r(Method::POST, "/settings/users", Access::Perm(Permission::Administer), Page::UserCreate),
+    r(Method::POST, "/settings/users/{id}/role", Access::Perm(Permission::Administer), Page::UserRole),
+    r(Method::POST, "/settings/users/{id}/disable", Access::Perm(Permission::Administer), Page::UserDisable),
+    r(Method::POST, "/settings/devices/{id}/revoke", Access::Perm(Permission::Administer), Page::DeviceRevoke),
 ];

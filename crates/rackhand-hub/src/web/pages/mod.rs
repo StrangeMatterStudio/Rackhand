@@ -4,6 +4,7 @@ mod first_run;
 mod machines;
 mod overview;
 mod settings;
+mod users;
 
 use askama::Template;
 use axum::body::Body;
@@ -31,6 +32,10 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
         Page::SettingsSources => settings::sources(web, ctx).await,
         Page::SettingsGitMirror => settings::git_mirror(web, ctx).await,
         Page::AcceptHostKey => machines::accept_host_key(web, ctx).await,
+        Page::UserCreate => users::create(web, ctx).await,
+        Page::UserRole => users::change_role(web, ctx).await,
+        Page::UserDisable => users::disable(web, ctx).await,
+        Page::DeviceRevoke => users::revoke_device(web, ctx).await,
     }
 }
 

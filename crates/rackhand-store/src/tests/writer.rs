@@ -166,3 +166,49 @@ async fn job_rows_created_stepped_and_finished_once() {
     let job: String = conn.query_row("SELECT state FROM jobs WHERE id = 'j1'", [], |r| r.get(0)).unwrap();
     assert_eq!(job, "succeeded");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn put_user_changes_columns_and_keeps_an_admin() {
+    let path = temp("users");
+    let db = Db::open(&path).unwrap();
+    let w = db.writer();
+    let t = |s: &str| Value::Text(s.into());
+    let user = |id: &str, role: &str| {
+        WriteCmd::PutUser(Row::from([
+            ("id", t(id)),
+            ("name", t(id)),
+            ("role", t(role)),
+            ("created_at", Value::Integer(1)),
+        ]))
+    };
+    w.send(user("a1", "admin")).await.unwrap();
+    w.send(user("r1", "responder")).await.unwrap();
+    // Some columns of an existing row.
+    w.send(WriteCmd::PutUser(Row::from([("id", t("r1")), ("role", t("viewer"))]))).await.unwrap();
+    // The only enabled admin can't be demoted or disabled.
+    let demote = WriteCmd::PutUser(Row::from([("id", t("a1")), ("role", t("viewer"))]));
+    assert!(matches!(w.send(demote).await, Err(StoreError::Conflict(_))));
+    let disable = WriteCmd::PutUser(Row::from([("id", t("a1")), ("disabled_at", Value::Integer(5))]));
+    assert!(matches!(w.send(disable.clone()).await, Err(StoreError::Conflict(_))));
+    // With a second admin it can.
+    w.send(user("a2", "admin")).await.unwrap();
+    w.send(disable).await.unwrap();
+    let missing = WriteCmd::PutUser(Row::from([("id", t("nobody")), ("role", t("viewer"))]));
+    assert!(matches!(w.send(missing).await, Err(StoreError::NoSuchRow(_))));
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let rows: Vec<(String, String, Option<i64>)> = conn
+        .prepare("SELECT id, role, disabled_at FROM users ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("a1".to_string(), "admin".to_string(), Some(5)),
+            ("a2".into(), "admin".into(), None),
+            ("r1".into(), "viewer".into(), None)
+        ]
+    );
+}

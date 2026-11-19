@@ -26,6 +26,11 @@ struct App {
 }
 
 async fn app(name: &str) -> App {
+    app_with(name, |web| web).await
+}
+
+/// An app whose `Web` is adjusted (for example given the Registry) before the router is built.
+async fn app_with(name: &str, adjust: impl FnOnce(Web) -> Web) -> App {
     let dir = std::env::temp_dir().join(format!("rackhand-web-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -38,7 +43,7 @@ async fn app(name: &str) -> App {
         csrf_key: [9u8; 32],
         trusted_proxies: vec![],
     };
-    let web = Web::new(db.clone(), vault, Audit::new(db.writer()), recovery.clone(), config);
+    let web = adjust(Web::new(db.clone(), vault, Audit::new(db.writer()), recovery.clone(), config));
     App { db, router: web.router(), recovery }
 }
 
@@ -464,5 +469,175 @@ mod settings {
         )
         .await;
         assert_eq!(bad.status(), StatusCode::BAD_REQUEST, "only ssh:// URLs");
+    }
+
+    fn user_row(db: &Db, name: &str) -> Option<(String, String, Option<i64>)> {
+        use rusqlite::OptionalExtension;
+        db.readers()
+            .with(|c| {
+                c.query_row("SELECT id, role, disabled_at FROM users WHERE name = ?1", [name], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })
+                .optional()
+            })
+            .unwrap()
+    }
+
+    async fn session_of(db: &Arc<Db>, user_id: &str) -> String {
+        let token = session::create(db, user_id, now_ms()).await.unwrap();
+        format!("{}={token}", session::COOKIE)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn users_and_roles_admin_only() {
+        let app = app("users").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        // An admin creates a local account; its authenticator secret is shown once.
+        let csrf = csrf_of(&app, &admin).await;
+        let fields = [
+            ("csrf", csrf.as_str()),
+            ("name", "alice"),
+            ("role", "responder"),
+            ("auth", "local"),
+            ("password", "a long enough secret"),
+        ];
+        let resp = send(&app.router, post("/settings/users", &admin, &fields)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let shown = text(resp).await;
+        assert!(shown.contains("otpauth://totp/"), "{shown}");
+        let (id, role, disabled) = user_row(&app.db, "alice").expect("created");
+        assert_eq!((role.as_str(), disabled), ("responder", None));
+        let page = text(send(&app.router, get("/settings", &admin)).await).await;
+        assert!(page.contains("alice"), "listed");
+        // Change the role, then disable: alice's session stops working.
+        let alice = session_of(&app.db, &id).await;
+        assert_eq!(send(&app.router, get("/", &alice)).await.status(), StatusCode::OK);
+        let csrf = csrf_of(&app, &admin).await;
+        let role_path = format!("/settings/users/{id}/role");
+        let resp = send(&app.router, post(&role_path, &admin, &[("csrf", csrf.as_str()), ("role", "viewer")])).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(user_row(&app.db, "alice").unwrap().1, "viewer");
+        let csrf = csrf_of(&app, &admin).await;
+        let disable_path = format!("/settings/users/{id}/disable");
+        let resp = send(&app.router, post(&disable_path, &admin, &[("csrf", csrf.as_str())])).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert!(user_row(&app.db, "alice").unwrap().2.is_some());
+        assert_eq!(location(&send(&app.router, get("/", &alice)).await).as_deref(), Some("/sign-in"));
+        // A responder can't do any of it.
+        let responder = session_for(&app.db, Role::Responder).await;
+        let csrf = csrf_of(&app, &responder).await;
+        for (path, extra) in
+            [("/settings/users".to_string(), ("name", "mallory")), (role_path.clone(), ("role", "admin"))]
+        {
+            let resp = send(&app.router, post(&path, &responder, &[("csrf", csrf.as_str()), extra])).await;
+            assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{path}");
+        }
+        assert!(user_row(&app.db, "mallory").is_none());
+        let audited: i64 = app
+            .db
+            .readers()
+            .with(|c| c.query_row("SELECT count(*) FROM audit_log WHERE action LIKE 'user.%'", [], |r| r.get(0)))
+            .unwrap();
+        assert_eq!(audited, 3, "created, role changed, disabled");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn last_admin_cannot_be_disabled_or_demoted() {
+        let app = app("last-admin").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let (id, _, _) = user_row(&app.db, "admin").unwrap();
+        let admin = session_of(&app.db, &id).await;
+        let csrf = csrf_of(&app, &admin).await;
+        let role_path = format!("/settings/users/{id}/role");
+        let demote = send(&app.router, post(&role_path, &admin, &[("csrf", csrf.as_str()), ("role", "viewer")])).await;
+        assert_eq!(demote.status(), StatusCode::CONFLICT);
+        let disable_path = format!("/settings/users/{id}/disable");
+        let disable = send(&app.router, post(&disable_path, &admin, &[("csrf", csrf.as_str())])).await;
+        assert_eq!(disable.status(), StatusCode::CONFLICT);
+        assert_eq!(user_row(&app.db, "admin").unwrap(), (id, "admin".to_string(), None));
+    }
+
+    async fn echo(conn: iroh::endpoint::Connection) {
+        while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+            if let Ok(data) = recv.read_to_end(64).await {
+                let _ = send.write_all(&data).await;
+                let _ = send.finish();
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn devices_listed_and_revocable() {
+        use rackhand_net::registry::{Admission, Registry as Admit};
+        use rackhand_proto::alpn;
+        use rackhand_proto::close::CloseCode;
+
+        // The Registry the hub serves device connections with, and the same one the dashboard revokes through.
+        let slot: Arc<std::sync::Mutex<Option<Arc<crate::registry::Registry>>>> = Arc::default();
+        let app = app_with("devices", {
+            let slot = slot.clone();
+            move |web| {
+                let registry = crate::registry::Registry::load(web.db().clone()).unwrap();
+                *slot.lock().unwrap() = Some(registry.clone());
+                web.with_registry(registry)
+            }
+        })
+        .await;
+        let registry = slot.lock().unwrap().clone().unwrap();
+        complete_first_run(&app, SETUP_CODE).await;
+        let (user_id, _, _) = user_row(&app.db, "admin").unwrap();
+        // A person's device, joined (T35 writes the row and admits it).
+        let (_relay, relay_url) = rackhand_net::testing::local_relay().await;
+        let server = rackhand_net::testing::endpoint(&relay_url, &[alpn::TUNNEL]).await;
+        let device = rackhand_net::testing::endpoint(&relay_url, &[]).await;
+        let mut addr = server.addr();
+        addr.addrs.insert(iroh::TransportAddr::Relay(relay_url.clone()));
+        app.db
+            .writer()
+            .send(WriteCmd::RegistryChange(rackhand_store::RegistryChange {
+                writes: vec![RowWrite::insert(
+                    "devices",
+                    Row::from([
+                        ("id", Value::Text("d1".into())),
+                        ("user_id", Value::Text(user_id)),
+                        ("name", Value::Text("laptop".into())),
+                        ("endpoint_id", Value::Text(device.id().to_string())),
+                        ("created_at", Value::Integer(1)),
+                    ]),
+                )],
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+        registry.allow(crate::registry::tokens::TokenKind::Device, device.id());
+        let router = rackhand_net::router::Router::new(server.clone(), registry.clone())
+            .route(alpn::TUNNEL, rackhand_net::router::handler(echo));
+        tokio::spawn(router.serve());
+        let conn = device.connect(addr.clone(), alpn::TUNNEL).await.unwrap();
+        let (mut tx, mut rx) = conn.open_bi().await.unwrap();
+        tx.write_all(b"hi").await.unwrap();
+        tx.finish().unwrap();
+        assert_eq!(rx.read_to_end(64).await.unwrap(), b"hi", "the device is served");
+        conn.close(0u32.into(), b"done");
+        // Listed on the settings page, then revoked there.
+        let admin = session_for(&app.db, Role::Admin).await;
+        let page = text(send(&app.router, get("/settings", &admin)).await).await;
+        assert!(page.contains("laptop"), "listed");
+        let csrf = csrf_of(&app, &admin).await;
+        let resp = send(&app.router, post("/settings/devices/d1/revoke", &admin, &[("csrf", csrf.as_str())])).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        // Its next connection is closed with 0x13, now and after the hub reloads admission from the tables.
+        let next = device.connect(addr, alpn::TUNNEL).await.unwrap();
+        let reason = tokio::time::timeout(std::time::Duration::from_secs(10), next.closed()).await.unwrap();
+        assert_eq!(rackhand_net::close_code(&reason), Some(CloseCode::Revoked));
+        let reloaded = crate::registry::Registry::load(app.db.clone()).unwrap();
+        assert_eq!(reloaded.admission(alpn::TUNNEL, &device.id()), Admission::Revoked);
+        let audited: i64 = app
+            .db
+            .readers()
+            .with(|c| c.query_row("SELECT count(*) FROM audit_log WHERE action = 'device.revoked'", [], |r| r.get(0)))
+            .unwrap();
+        assert_eq!(audited, 1);
     }
 }
