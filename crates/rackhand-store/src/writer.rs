@@ -352,6 +352,26 @@ fn upsert_one(conn: &mut Connection, table: &'static str, key: &'static str, row
     Ok(conn.execute(&sql, rusqlite::params_from_iter(values))?)
 }
 
+/// A row with `whole` (a column only a new row has) is inserted; otherwise it updates the named columns of the row
+/// with that `key`, which must exist.
+fn insert_or_update(
+    conn: &mut Connection,
+    table: &'static str,
+    key: &'static str,
+    whole: &'static str,
+    mut row: Row,
+) -> Result<usize, StoreError> {
+    let tx = conn.transaction()?;
+    let n = if row.contains_key(whole) {
+        write_row(&tx, &RowWrite::insert(table, row))?
+    } else {
+        let k = row.remove(key).ok_or(StoreError::MissingColumn(key))?;
+        update_row(&tx, &RowUpdate { table, key: (key, k), set: row })?
+    };
+    tx.commit()?;
+    Ok(n)
+}
+
 fn replace_one(conn: &mut Connection, table: &'static str, row: Row) -> Result<usize, StoreError> {
     let tx = conn.transaction()?;
     let n = write_row(&tx, &RowWrite::replace(table, row))?;
@@ -609,6 +629,8 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
             tx.commit()?;
             Ok(n)
         }
+        WriteCmd::PutMcpKey(row) => insert_or_update(conn, "mcp_keys", "id", "hash", row),
+        WriteCmd::PutJobToken(row) => insert_or_update(conn, "job_tokens", "job_id", "hash", row),
         WriteCmd::PutPolicy(row) => upsert_one(conn, "policies", "id", row),
         WriteCmd::PutQuarantineRule(row) => upsert_one(conn, "quarantine_rules", "id", row),
         WriteCmd::PutScheduleState(row) => replace_one(conn, "schedule_state", row),

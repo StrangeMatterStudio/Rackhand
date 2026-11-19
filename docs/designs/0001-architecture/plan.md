@@ -283,7 +283,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T72 | Quarantine | T71, T55, T47 | unit + integration + live (L5, L9) | todo |
 | T73 | Dashboard: security pages | T71, T72 | unit (HTTP) | todo |
 | L5 | Live pass for M4: security watch and quarantine | T73, L4 | live (local lab) | todo |
-| T74 | MCP server and read tools | T17, T54 | contract | todo |
+| T74 | MCP server and read tools | T17, T54 | contract | done |
 | T75 | MCP gated tools and approval binding | T74, T55, T63 | contract | todo |
 | T76 | Operator contract and Assist | T75 | contract | todo |
 | T77 | Operator binary and runners | T76, T13 | integration (fake runner) + live (L6) | todo |
@@ -1268,6 +1268,11 @@ Only additions to that list are written out below.
   | `ingest::backfill_into_rolled_up_range_marks_dirty` | a dirty range is recorded | 7.3.2 |
   | `ingest::replayed_sample_older_than_10_min_flagged_history_only` | the sample carries the no-threshold flag | E1, AC2 |
   | `ingest::disk_below_2_percent_stops_replay_and_new_jobs` | at an injected 1.9% free, stream 2 stops, live ingest continues and a critical event is raised | E32 |
+
+  Carried in from T74:
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `mcp::get_machine_facts_from_latest_report` (carried in from T74) | `get_machine`'s services, containers and updates come from the machine's latest report through `Observations` | 7.3.6 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
@@ -1331,6 +1336,11 @@ Only additions to that list are written out below.
   | `retention::each_tier_removes_only_older_than_limit` | points at the limit minus 1 ms stay; points at the limit plus 1 ms go | AC4 |
   | `retention::deletes_in_batches_with_pauses` | 25 000 old rows take 3 batches with 2 pauses (injected sleeper) | 7.4.1 |
   | `retention::registry_lists_a_rule_for_every_growing_table` | every table created so far has a rule or is listed as fixed-size | AC69 |
+
+  Carried in from T74:
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `mcp::get_vitals_reads_the_series_store` (carried in from T74) | `get_vitals` reads the stored series through `Observations`, choosing the tier for the range, at most 2000 points | 7.3.6 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
@@ -3156,6 +3166,9 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-hub --test mcp_contract; cargo nextest run -p rackhand-store -E 'test(mcp_keys)' | compile errors: unresolved `rackhand_hub::mcp::{Mcp, Observations, Facts, SeriesQuery, keys}`; `Unimplemented("PutMcpKey")` |
+  | 2026-11-19 | cargo nextest run -p rackhand-hub --test mcp_contract | 8 passed, over a QUIC stream through a local relay with the Registry's admission: a first line other than the auth line, a wrong token and a key used from another device each get one error line and a closed stream; the 12 read tools return their shapes (`get_vitals` cut to at most 2000 points; machines by id or `site/name`); job output only inside `untrusted_output`; a `read` key gets `tool_not_allowed` for `run_diagnostic` and `run_runbook`; an expired key is refused and a key over a year isn't issued; `read_request` on a viewer lists only the read tools; call 61 in a minute is `rate_limited`, shared by sessions of the token; every call (refusals too) is an `mcp.call` audit row, for a key and for a job token used from its operator. The first full run overflowed the test thread's stack (one large future); the test session now boxes each request |
+  | 2026-11-19 | cargo xtask ci fast; cargo xtask arch-check; cargo deny check | exit 0 (206 passed); no violations; ok |
 
 ### T75: MCP gated tools and approval binding
 - **Design refs:** FR-14, FR-17, 7.3.6 (gating, enforcement), 7.5.6 (no `exec` on quarantined machines), 7.6.8, D21,
@@ -4404,6 +4417,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D34 | 2026-11-19 | T38 | 5.3: `openidconnect` (OIDC) | The code flow with PKCE is written in `web/auth/oidc.rs`, and ID tokens are checked with ring (RS256, ES256, EdDSA; `none` and HMAC refused); the provider is reached with hyper over rustls on ring with the Mozilla roots (`webpki-roots`). `openidconnect` depends on the `rsa` crate, whose RUSTSEC-2023-0071 (Marvin) has no fixed version, so `cargo deny` fails with it (checked: `cargo deny check advisories` failed after adding it with default features off). The fake provider is `web/auth/fake_oidc.rs`, not `tests/support/fake_oidc.rs` | Keeps one crypto provider and the advisory gate as it is; negative tests cover each check | design | pending (confirm the library change; 5.3 still names `openidconnect`) |
 | D35 | 2026-11-19 | T38 | 7.7.2: accounts, OIDC users and their local factor | An admin creates every account on the settings page: a local one with a password, an OIDC one with the provider's subject (`sub`), and each gets a TOTP secret shown once, so an OIDC user has a local factor from the start (the provider alone never approves high risk, D49) and nobody gets in through the provider without an account. The store refuses to demote or disable the last enabled admin. The OIDC callback answers with a page that moves on to `/` (the session cookie is `SameSite=Strict`, so it isn't sent on the redirect chain from the provider's site); the cookie binding `state` to the browser is `SameSite=Lax` for the same reason. Passkeys are turned on by the composition (`Web::with_passkeys`) when the hub has a hostname and a trusted certificate; the browser half is `static/passkey.js`, checked only by MV12 | The design names the factors but not how accounts come to exist | design gap | pending (how OIDC accounts are created, and whether an admin issuing their TOTP is right) |
 | D36 | 2026-11-19 | T63 | `crates/rackhand-runbook/builtin/diagnostics.toml`; `actions/diagnostics.rs`; templates in `commands.json` generation | As planned, plus: Linux and Alpine commands only (the Windows ones run through the dispatcher's scripts, T90: `Unsupported` until then); a diagnostic doesn't wait for the machine's job lock, since it is read-only and a detached step can hold a machine for long (E55); within a job it is a step of that job (output stored there only), otherwise it is audited without its output; the hub keeps stdout then stderr, and `du_top` is sorted by size, `top_processes` cut to 20 and `dmesg_tail` to 200 lines by the hub; the diagnostics' templates are added by the hub's `signed_command_list`, not by the runbook crate's `command_list`. The container image has a stand-in `docker` CLI | Read-only work shouldn't queue behind a stuck package step | plan | - |
+| D37 | 2026-11-19 | T74 | 5.3: rmcp for the MCP server; `mcp/{server, auth, tools_read, keys}.rs` | The hub speaks the part of MCP it serves (initialize, ping, `tools/list`, `tools/call`, the stdio framing after the auth line) in `mcp/mod.rs`: rmcp 3.11 needs Rust 1.88, above the workspace's 1.85, and the framing is the design's own. `get_vitals` and the services, containers and updates of `get_machine` come through an `Observations` interface that the time-series store and ingest fill (tests carried into T25 and T27). Devices are admitted to `rackhand/mcp/1` too (people reach MCP from their device). Personal keys start `rk_` and job tokens `rj_`; a job token works only from its operator's endpoint and while its job runs. The request and job tools are listed for the callers that may use them and come with their gating in T75 | The design's MSRV and framing; series and facts aren't stored yet | design | pending (confirm not using rmcp in the hub; the CLI and operator may still use it) |
 
 ## Follow-ups (out of scope)
 

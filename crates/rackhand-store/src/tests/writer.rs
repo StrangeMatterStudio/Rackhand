@@ -212,3 +212,76 @@ async fn put_user_changes_columns_and_keeps_an_admin() {
         ]
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_keys_and_job_tokens_stored_and_revoked() {
+    let path = temp("mcp-keys");
+    let db = Db::open(&path).unwrap();
+    let w = db.writer();
+    let t = |s: &str| Value::Text(s.into());
+    let rows = vec![
+        RowWrite::insert(
+            "users",
+            Row::from([
+                ("id", t("u1")),
+                ("name", t("bob")),
+                ("role", t("responder")),
+                ("created_at", Value::Integer(1)),
+            ]),
+        ),
+        RowWrite::insert(
+            "devices",
+            Row::from([
+                ("id", t("d1")),
+                ("user_id", t("u1")),
+                ("name", t("laptop")),
+                ("endpoint_id", t("e1")),
+                ("created_at", Value::Integer(1)),
+            ]),
+        ),
+        RowWrite::insert("operators", Row::from([("id", t("o1")), ("name", t("op")), ("endpoint_id", t("e2"))])),
+        RowWrite::insert(
+            "jobs",
+            Row::from([
+                ("id", t("j1")),
+                ("kind", t("assistant")),
+                ("name", t("p")),
+                ("requested_by", t("x")),
+                ("state", t("running")),
+            ]),
+        ),
+    ];
+    w.send(WriteCmd::Batch(rows)).await.unwrap();
+    w.send(WriteCmd::PutMcpKey(Row::from([
+        ("id", t("k1")),
+        ("user_id", t("u1")),
+        ("device_id", t("d1")),
+        ("scope", t("read")),
+        ("hash", Value::Blob(vec![1; 32])),
+        ("expires_at", Value::Integer(100)),
+    ])))
+    .await
+    .unwrap();
+    w.send(WriteCmd::PutJobToken(Row::from([
+        ("job_id", t("j1")),
+        ("operator_id", t("o1")),
+        ("hash", Value::Blob(vec![2; 32])),
+        ("hosts", t("[\"m1\"]")),
+        ("tools", t("[\"get_incident\"]")),
+        ("expires_at", Value::Integer(100)),
+    ])))
+    .await
+    .unwrap();
+    // Revoking names the row and the time only.
+    w.send(WriteCmd::PutMcpKey(Row::from([("id", t("k1")), ("revoked_at", Value::Integer(5))]))).await.unwrap();
+    w.send(WriteCmd::PutJobToken(Row::from([("job_id", t("j1")), ("revoked_at", Value::Integer(6))]))).await.unwrap();
+    let missing = WriteCmd::PutMcpKey(Row::from([("id", t("nope")), ("revoked_at", Value::Integer(5))]));
+    assert!(matches!(w.send(missing).await, Err(StoreError::NoSuchRow(_))));
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let k: (String, i64) =
+        conn.query_row("SELECT scope, revoked_at FROM mcp_keys", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    let j: (String, i64) =
+        conn.query_row("SELECT tools, revoked_at FROM job_tokens", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    assert_eq!(k, ("read".to_string(), 5));
+    assert_eq!(j, ("[\"get_incident\"]".to_string(), 6));
+}

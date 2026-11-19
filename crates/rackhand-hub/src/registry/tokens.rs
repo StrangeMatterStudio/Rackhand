@@ -39,7 +39,8 @@ impl TokenKind {
     pub fn alpns(self) -> &'static [&'static [u8]] {
         match self {
             TokenKind::Machine => &[alpn::PROBE],
-            TokenKind::Device => &[alpn::TUNNEL, alpn::XFER],
+            // A person's device: tunnels, transfers, and MCP with their personal key (7.3.6).
+            TokenKind::Device => &[alpn::TUNNEL, alpn::XFER, alpn::MCP],
             TokenKind::Operator => &[alpn::OPERATOR, alpn::MCP],
             TokenKind::Peer => &[alpn::PEER, alpn::XFER],
         }
