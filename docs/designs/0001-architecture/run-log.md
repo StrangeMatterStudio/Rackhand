@@ -59,3 +59,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-19 | T10 done: LXC attribution on pve9 works (`/lxc/100/`); report `spikes/s1.md`; the eBPF licence (MIT is refused) waits for the owner before T68 |
 | 2026-11-19 | T11 done: journal-only auth events read on Debian 12 and Ubuntu 24.04; `mem.available_*` counts the ZFS ARC above `c_min` (design 7.4.2 and 17); report `spikes/s11.md` |
 | 2026-11-19 | T50 done: runbook and playbook model, command templates and `rackhand hub runbook check` (D23) |
+| 2026-11-19 | T54 done: policy decisions, exec step-up patterns, quarantine exclusions and approvals (D24) |

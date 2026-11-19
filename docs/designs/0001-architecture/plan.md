@@ -261,7 +261,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T51 | Command wrapper and signed command lists | T50, T16 | unit + integration | todo |
 | T52 | Wrapper detached steps and file receive | T51 | integration (systemd and OpenRC containers) | todo |
 | T53 | SSH system | T21, T35 | unit + integration | todo |
-| T54 | Policy: decisions and approvals | T18 | unit | todo |
+| T54 | Policy: decisions and approvals | T18 | unit | done |
 | T55 | Actions and Executor | T52 to T54, T24 | unit + integration | todo |
 | T56 | Library and git mirror | T50, T21, T07 | unit + integration | todo |
 | T57 | Incident routing to runbooks and attempt limits | T32, T55 | unit | todo |
@@ -2296,6 +2296,10 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-hub -E 'test(decide::) \\| test(exclusions::) \\| test(approvals::)' | compile errors: the policy items (`decide`, `Requester`, `Role`, `Approvals` and the rest) don't exist |
+  | 2026-11-19 | cargo nextest run -p rackhand-hub -E 'test(decide::) \\| test(exclusions::) \\| test(approvals::)' | 11 passed, 0 failed (the decision table has 62 rows; the concurrent decision gives one success and one `AlreadyDecided`) |
+  | 2026-11-19 | cargo nextest run -p rackhand-store -E 'test(put_policy)' | added for the `PutPolicy` and `PutQuarantineRule` upserts: failed with the handler stashed (unimplemented), 1 passed with it |
+  | 2026-11-19 | cargo xtask ci fast | exit 0 (nextest 132 passed) |
 
 ### T55: Actions and Executor
 - **Design refs:** FR-12, 7.2 (Actions single coordinator), 7.3.7, 7.3.8 (`JobFinished`), 7.8.7 (step kinds), 9 (each
@@ -4271,6 +4275,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D21 | 2026-11-19 | T35 | Registry tables written by plain row commands; join writes the host keys | `WriteCmd::RegistryChange` carries a typed change: an optional token to use up (checked for kind, use and expiry in the same transaction) plus inserts and column updates (never a row replace, so a machine's policy, tags and guest binding survive). The join hands a managed machine's host keys to the SSH system through a `Joined` event, since SSH owns `ssh_host_keys`; the keys, sudoers and command list come from a `ManagedSetupSource` that T51 and T53 provide. Joins register machines for `probe`, devices for `tunnel` and `xfer`, operators for `operator` and `mcp`, peers for `peer` and `xfer`. Tokens are 26 Crockford base32 characters (128 bits), hashed upper case | Single use under concurrency, ownership per 7.2, and the ALPN users in 7.3.2 to 7.3.11 | plan | - |
 | D22 | 2026-11-19 | L1 | Proxmox nodes snapshotted as `pristine`; 6 live tests | The provisioned base image is the pristine state (`lab reset` drops the overlay); `base.provisioned` holds a hash of the image, the cloud-init seed and `proxmox.sh`, so a changed input provisions that base again. The site NIC's bridge port has learning off. A seventh live test checks that every guest answers steadily | QEMU's multicast socket NIC hands frames back to their sender, which made the bridges learn guest MACs on the uplink; one lucky ping had passed the VM test | plan | - |
 | D23 | 2026-11-19 | T50 | Runbook model as 7.8.7 and 7.8.8 | Parameter types are `string`, `int` and `bool`; a parameter's regex is its pattern wrapped as `^(?:...)$` (or the type's own); a `cmd` parameter must be a whole argument; steps take `cmd`, `windows_script`/`windows_args`, `checks`, `call`, `message`, `source`/`dest`, `port`, `timeout` (`30s`, `5m`, `2h`), `on_failure`, `retries`, `idempotent`, `resumable` and `detached`, and nothing else; `commands.json` lists `{runbook, step, args}` with each arg `{"literal"}` or `{"param", "regex", "allow_leading_dash"}`; a playbook needs all five sections and `max_runtime` of at most 2 h. `builtin/` is created by the steps that add built-in runbooks | The design gives the example and the rules, not the full field list or the JSON shape; the wrapper (T51) reads this shape | plan | - |
+| D24 | 2026-11-19 | T54 | `decide()` as 7.6.8 | Requesters are the hub itself, a person in the dashboard, a peer, a personal key and an assistant job; for the hub and assistant jobs level 0 refuses (`TellOnly`) before risk is looked at, since nothing runs at level 0; a person's own dashboard action runs (high risk still needs an approval with step-up, which they may give themselves); `exec` is for assistant jobs only; diagnostics are read tools at every level (a personal key needs an approval for `journal` and `docker_logs`); actions needing an account on a monitor machine are refused with `monitor_only`, the rest need an approval. Policy and quarantine-rule writes are upserts so references survive; deciding and using an approval are conditional updates (the first decision wins) | The design states the rules by requester and risk; these settle how they combine | plan | - |
 
 ## Follow-ups (out of scope)
 

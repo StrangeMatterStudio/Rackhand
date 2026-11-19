@@ -206,6 +206,9 @@ pub enum StoreError {
     TokenRefused(TokenRefusal),
     #[error("no `{0}` row to update")]
     NoSuchRow(&'static str),
+    /// A conditional update found the row no longer in the state it needed (decided, used).
+    #[error("conflict: {0}")]
+    Conflict(&'static str),
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
 }
@@ -316,6 +319,29 @@ fn update_row(tx: &rusqlite::Transaction<'_>, u: &RowUpdate) -> Result<usize, St
     }
 }
 
+/// Inserts the row, or updates the given columns of the existing one (never a delete and re-insert, which would break
+/// rows that reference it).
+fn upsert_one(conn: &mut Connection, table: &'static str, key: &'static str, row: Row) -> Result<usize, StoreError> {
+    check_ident(table)?;
+    check_ident(key)?;
+    let cols: Vec<&str> = row.keys().copied().collect();
+    for c in &cols {
+        check_ident(c)?;
+    }
+    let quoted: Vec<String> = cols.iter().map(|c| format!("\"{c}\"")).collect();
+    let placeholders: Vec<String> = (1..=cols.len()).map(|i| format!("?{i}")).collect();
+    let updates: Vec<String> =
+        cols.iter().filter(|c| **c != key).map(|c| format!("\"{c}\" = excluded.\"{c}\"")).collect();
+    let sql = format!(
+        "INSERT INTO {table} ({}) VALUES ({}) ON CONFLICT(\"{key}\") DO {}",
+        quoted.join(", "),
+        placeholders.join(", "),
+        if updates.is_empty() { "NOTHING".to_string() } else { format!("UPDATE SET {}", updates.join(", ")) }
+    );
+    let values: Vec<&Value> = row.values().collect();
+    Ok(conn.execute(&sql, rusqlite::params_from_iter(values))?)
+}
+
 fn replace_one(conn: &mut Connection, table: &'static str, row: Row) -> Result<usize, StoreError> {
     let tx = conn.transaction()?;
     let n = write_row(&tx, &RowWrite::replace(table, row))?;
@@ -390,6 +416,32 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
             tx.commit()?;
             Ok(n)
         }
+        WriteCmd::CreateApproval(row) => {
+            let tx = conn.transaction()?;
+            let n = write_row(&tx, &RowWrite::insert("approvals", row))?;
+            tx.commit()?;
+            Ok(n)
+        }
+        WriteCmd::DecideApproval(row) => {
+            // Only a pending, unexpired approval can be decided: the first decision wins.
+            let n = conn.execute(
+                "UPDATE approvals SET state = ?1, decided_by = ?2, decided_at = ?3
+                 WHERE id = ?4 AND state = 'pending' AND expires_at > ?3",
+                rusqlite::params![
+                    text(&row, "state")?,
+                    text(&row, "decided_by")?,
+                    int(&row, "decided_at")?,
+                    text(&row, "id")?
+                ],
+            )?;
+            if n == 0 { Err(StoreError::Conflict("approval already decided")) } else { Ok(n) }
+        }
+        WriteCmd::UseApproval(id) => {
+            let n = conn.execute("UPDATE approvals SET state = 'used' WHERE id = ?1 AND state = 'approved'", [&id])?;
+            if n == 0 { Err(StoreError::Conflict("approval already used")) } else { Ok(n) }
+        }
+        WriteCmd::PutPolicy(row) => upsert_one(conn, "policies", "id", row),
+        WriteCmd::PutQuarantineRule(row) => upsert_one(conn, "quarantine_rules", "id", row),
         WriteCmd::PutScheduleState(row) => replace_one(conn, "schedule_state", row),
         WriteCmd::PutWindow(row) => replace_one(conn, "windows", row),
         other => Err(StoreError::Unimplemented(other.name())),

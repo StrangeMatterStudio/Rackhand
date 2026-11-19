@@ -67,3 +67,49 @@ async fn multi_table_command_is_one_transaction() {
     let unimplemented = writer.send(WriteCmd::CompactStaged).await.unwrap_err();
     assert!(matches!(unimplemented, StoreError::Unimplemented("CompactStaged")), "{unimplemented:?}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn put_policy_updates_in_place() {
+    let path = temp("policy");
+    let db = Db::open(&path).unwrap();
+    let w = db.writer();
+    let policy = |patch: &str| {
+        Row::from([
+            ("id", Value::Text("p1".into())),
+            ("name", Value::Text("default".into())),
+            ("patch", Value::Text(patch.into())),
+        ])
+    };
+    w.send(WriteCmd::PutPolicy(policy("approve-only"))).await.unwrap();
+    w.send(WriteCmd::Batch(vec![
+        RowWrite::insert(
+            "sites",
+            Row::from([
+                ("id", Value::Text("s1".into())),
+                ("name", Value::Text("home".into())),
+                ("timezone", Value::Text("UTC".into())),
+            ]),
+        ),
+        RowWrite::insert(
+            "machines",
+            Row::from([
+                ("id", Value::Text("m1".into())),
+                ("site_id", Value::Text("s1".into())),
+                ("name", Value::Text("web".into())),
+                ("kind", Value::Text("linux".into())),
+                ("policy_id", Value::Text("p1".into())),
+            ]),
+        ),
+    ]))
+    .await
+    .unwrap();
+    // A delete and re-insert would fail the machine's reference to the policy.
+    w.send(WriteCmd::PutPolicy(policy("auto"))).await.unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let (patch, policy_id): (String, String) = conn
+        .query_row("SELECT p.patch, m.policy_id FROM policies p JOIN machines m ON m.policy_id = p.id", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!((patch.as_str(), policy_id.as_str()), ("auto", "p1"));
+}

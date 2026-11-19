@@ -11,6 +11,7 @@ publish = false
 rackhand-store = { path = "../rackhand-store" }
 rackhand-net = { path = "../rackhand-net" }
 rackhand-proto = { path = "../rackhand-proto" }
+rackhand-runbook = { path = "../rackhand-runbook" }
 rusqlite = { workspace = true }
 chacha20poly1305 = { workspace = true }
 sha2 = { workspace = true }

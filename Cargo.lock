@@ -2780,6 +2780,7 @@ dependencies = [
  "prost",
  "rackhand-net",
  "rackhand-proto",
+ "rackhand-runbook",
  "rackhand-store",
  "rusqlite",
  "serde",
