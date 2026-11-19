@@ -3,9 +3,9 @@
 | | |
 | --- | --- |
 | Depth | Full |
-| Status | In review |
+| Status | Approved |
 | Authors | Owen Ravelo, Claude |
-| Approver | Pending |
+| Approver | Owen Ravelo (2026-11-18) |
 | Created / Updated | 2026-11-18 / 2026-11-18 |
 | Related | none (first design) |
 
@@ -2202,3 +2202,4 @@ None.
 | 2026-11-18 | Revision after independent review: join contract, epochs and replay streams, helper-driven updates, approval binding, per-hub devices, operators on several hubs, no assistant on hubs, metric catalogue and storage recount, silence rules, baseline freezing, event incidents, routing, roles, outside sources, backups, maintenance windows, ACs for every FR | Review findings and Owen's answers | Owen (review pending) |
 | 2026-11-18 | Closure check fixes: range acks and epoch restart, hub-wide replay budget, compaction into open chunks and re-rollups, lossless bus with reconciliation, command wrapper instead of sudo regex, update guard processes, versioned key updates, transfer write path, peer backup export, baseline seeding, narrower exemptions, desktop summary mode, generic public wording, Windows tests manual, ACs 48 to 57 | Closure review and Owen's answers | Owen (review pending) |
 | 2026-11-18 | Third review: `monitor` access level; spikes moved into the plan; release signing keys offline with a standby; helper boundary (no URL over the socket, root-only directories, root-owned hub pin); signed command list and leading-dash rule; fixed guest binding; per-epoch label tables and decompression cap; rules counted in samples with a clear margin; incident attempt limits; detached package steps; unprivileged hub with a root updater; sign-in limits per account; retention and caps for every table and the recent window; MCP bindings; bus coalescing; container attribution; quarantine narrowing and restore; table and wording fixes; spike S11; E49 to E66; ACs 58 to 73 | Review findings and Owen's answers (D87, D88, D90) | Owen (review pending) |
+| 2026-11-18 | Approved as a whole, including every decision marked "Claude (delegated)" (D41 to D86, D89, D91 to D104); next step is the implementation plan, whose first steps are the spikes (D87) | Owner approval | Owen |
