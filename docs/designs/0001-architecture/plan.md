@@ -1717,6 +1717,9 @@ Only additions to that list are written out below.
   | --- | --- | --- |
   | 2026-11-19 fails first | cargo nextest run -p rackhand-store -E 'test(put_user)'; cargo nextest run -p rackhand-hub -E 'test(settings::)' | `Unimplemented("PutUser")`; compile errors: no `Web::with_registry`, `Web::db`, `Registry::allow_device` (the test then used the existing `allow`) |
   | 2026-11-19 | cargo nextest run -p rackhand-store -E 'test(put_user)'; cargo nextest run -p rackhand-hub -E 'test(settings::) \| test(web::)' | 1 passed; 24 passed: `settings::users_and_roles_admin_only`, `settings::last_admin_cannot_be_disabled_or_demoted` (added in the run) and `settings::devices_listed_and_revocable`, whose revoked device's next connection over a local relay is closed with `0x13`, and admission reloaded from the tables still refuses it |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-hub -E 'test(passkey::)' | compile error: no `Web::with_passkeys` |
+  | 2026-11-19 | cargo nextest run -p rackhand-hub -E 'test(passkey::)' | 2 passed. A software authenticator (P-256 with ring, attestation `none`) registers after a step-up, signs in on another browser in place of the code, steps up; a replayed answer and a forged signature are refused (401); without a passkey configuration there are no options (404) and the account page says why. The browser half is `static/passkey.js`, which no test runs: the real-browser check is MV12 |
+  | 2026-11-19 | cargo xtask ci fast; cargo deny check | exit 0 (189 passed); ok |
 
 ### T39: Dashboard pages for monitoring
 - **Design refs:** 7.7.1 (Overview, Site, Machine, Incidents, Audit, Settings: notifiers), G1, 5.2 latency, AC1

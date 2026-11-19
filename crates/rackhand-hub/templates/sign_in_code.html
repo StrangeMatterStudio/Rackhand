@@ -8,4 +8,12 @@
 <label>Code from your authenticator app <input name="code" required inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code"></label>
 <button type="submit">Continue</button>
 </form>
+{% if let Some((options, action)) = passkey %}
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="credential" value="">
+<button type="button" data-passkey="get" data-options="{{ options }}">Use a passkey</button>
+</form>
+<script src="/static/passkey.js"></script>
+{% endif %}
 {% endblock %}

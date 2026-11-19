@@ -5,6 +5,7 @@ pub mod client_addr;
 pub mod devices;
 pub(crate) mod flow;
 pub mod limits;
+pub mod passkey;
 pub mod password;
 pub mod step_up;
 pub mod users;

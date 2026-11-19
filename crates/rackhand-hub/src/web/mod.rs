@@ -63,6 +63,7 @@ struct Inner {
     pending: Mutex<HashMap<String, auth::Pending>>,
     host_keys: Option<Arc<crate::ssh::hostkeys::HostKeys>>,
     registry: Option<Arc<crate::registry::Registry>>,
+    passkeys: Option<auth::passkey::Passkeys>,
 }
 
 #[derive(Clone)]
@@ -101,6 +102,7 @@ impl Web {
             pending: Mutex::new(HashMap::new()),
             host_keys: None,
             registry: None,
+            passkeys: None,
         }))
     }
 

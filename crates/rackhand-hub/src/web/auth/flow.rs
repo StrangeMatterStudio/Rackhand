@@ -30,6 +30,8 @@ struct CodeForm<'a> {
     action: &'a str,
     title: &'a str,
     error: Option<&'a str>,
+    /// The passkey alternative: where its options come from and where the answer goes.
+    passkey: Option<(&'a str, &'a str)>,
 }
 
 fn with_cookies(mut resp: Response<Body>, cookies: &[String]) -> Response<Body> {
@@ -45,7 +47,7 @@ fn expire(name: &str) -> String {
     format!("{name}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict")
 }
 
-async fn audit(web: &Web, actor: &str, action: &str, data: serde_json::Value) {
+pub(crate) async fn audit(web: &Web, actor: &str, action: &str, data: serde_json::Value) {
     if let Err(e) = web.0.audit.append(actor, action, None, &data.to_string()).await {
         tracing::error!(error = %e, "audit");
     }
@@ -86,7 +88,7 @@ pub(crate) async fn password_step(web: &Web, ctx: &Ctx) -> Response<Body> {
             PasswordForm { csrf: &ctx.csrf, error: Some("Wrong name or password") }.render(),
         );
     };
-    if account.totp.is_none() {
+    if !account.has_local_factor() {
         audit(
             web,
             name,
@@ -108,19 +110,30 @@ pub(crate) async fn password_step(web: &Web, ctx: &Ctx) -> Response<Body> {
     with_cookies(redirect("/sign-in/code"), &[session::cookie(PENDING_COOKIE, &token, PENDING_MS / 1000)])
 }
 
-fn pending_of(web: &Web, ctx: &Ctx) -> Option<(String, Pending)> {
+pub(crate) fn pending_of(web: &Web, ctx: &Ctx) -> Option<(String, Pending)> {
     let key = devices::hash_hex(ctx.cookies.get(PENDING_COOKIE)?);
     let pending = web.0.pending.lock().ok()?.get(&key).cloned()?;
     (ctx.now_ms - pending.created_ms < PENDING_MS).then_some((key, pending))
 }
 
+/// The passkey alternative for `account`, when passkeys are on and it has one.
+fn passkey_choice(
+    web: &Web,
+    account: Option<&Account>,
+    options: &'static str,
+    action: &'static str,
+) -> Option<(&'static str, &'static str)> {
+    (web.passkeys_offered() && account.is_some_and(|a| !a.passkeys.is_empty())).then_some((options, action))
+}
+
 pub(crate) fn code_page(web: &Web, ctx: &Ctx) -> Response<Body> {
-    if pending_of(web, ctx).is_none() {
-        return redirect("/sign-in");
-    }
+    let Some((_, pending)) = pending_of(web, ctx) else { return redirect("/sign-in") };
+    let account = users::find(&web.0.db, &pending.name).ok().flatten();
+    let passkey = passkey_choice(web, account.as_ref(), "/sign-in/passkey/options", "/sign-in/passkey");
     html(
         StatusCode::OK,
-        CodeForm { csrf: &ctx.csrf, action: "/sign-in/code", title: "Authenticator code", error: None }.render(),
+        CodeForm { csrf: &ctx.csrf, action: "/sign-in/code", title: "Authenticator code", error: None, passkey }
+            .render(),
     )
 }
 
@@ -175,11 +188,17 @@ pub(crate) async fn code_step(web: &Web, ctx: &Ctx) -> Response<Body> {
             action: "/sign-in/code",
             title: "Authenticator code",
             error: Some("That code doesn't match"),
+            passkey: None,
         };
         return html(StatusCode::UNAUTHORIZED, form.render());
     };
+    finish_sign_in(web, ctx, &key, &account).await
+}
+
+/// The second step passed (a code or a passkey): the session starts and the browser is remembered.
+pub(crate) async fn finish_sign_in(web: &Web, ctx: &Ctx, pending_key: &str, account: &Account) -> Response<Body> {
     if let Ok(mut p) = web.0.pending.lock() {
-        p.remove(&key);
+        p.remove(pending_key);
     }
     let Ok(token) = session::create(&web.0.db, &account.id, ctx.now_ms).await else {
         return status(StatusCode::INTERNAL_SERVER_ERROR, "The session couldn't be started");
@@ -207,12 +226,11 @@ pub(crate) async fn sign_out(web: &Web, ctx: &Ctx) -> Response<Body> {
     with_cookies(redirect("/sign-in"), &[expire(session::COOKIE)])
 }
 
-pub(crate) fn step_up_page(ctx: &Ctx) -> Response<Body> {
-    html(
-        StatusCode::OK,
-        CodeForm { csrf: &ctx.csrf, action: "/step-up", title: "Confirm with your authenticator", error: None }
-            .render(),
-    )
+pub(crate) fn step_up_page(web: &Web, ctx: &Ctx) -> Response<Body> {
+    let account = ctx.user.as_ref().and_then(|u| users::find_by_id(&web.0.db, &u.user_id).ok().flatten());
+    let passkey = passkey_choice(web, account.as_ref(), "/step-up/passkey/options", "/step-up/passkey");
+    let title = "Confirm with your authenticator";
+    html(StatusCode::OK, CodeForm { csrf: &ctx.csrf, action: "/step-up", title, error: None, passkey }.render())
 }
 
 pub(crate) async fn step_up(web: &Web, ctx: &Ctx) -> Response<Body> {
@@ -221,7 +239,8 @@ pub(crate) async fn step_up(web: &Web, ctx: &Ctx) -> Response<Body> {
     if !web.0.limits.lock().map(|mut l| l.try_attempt(&source_only, ctx.now_ms)).unwrap_or(false) {
         return status(StatusCode::TOO_MANY_REQUESTS, "Too many failed codes from here; wait a minute and try again");
     }
-    let account = users::find(&web.0.db, &user.name).ok().flatten();
+    // By id: OIDC accounts step up with their local factor too (D49).
+    let account = users::find_by_id(&web.0.db, &user.user_id).ok().flatten();
     let code = ctx.form.get("code").map(String::as_str).unwrap_or("");
     let ok = match &account {
         Some(a) => code_matches(web, a, code, ctx.now_ms).await,
@@ -238,6 +257,7 @@ pub(crate) async fn step_up(web: &Web, ctx: &Ctx) -> Response<Body> {
             action: "/step-up",
             title: "Confirm with your authenticator",
             error: Some("That code doesn't match"),
+            passkey: None,
         };
         return html(StatusCode::UNAUTHORIZED, form.render());
     }

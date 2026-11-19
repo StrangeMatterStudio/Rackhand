@@ -1,5 +1,6 @@
 //! Page handlers, called by the gate once its checks have passed.
 
+mod account;
 mod first_run;
 mod machines;
 mod overview;
@@ -18,12 +19,13 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
         Page::Healthz => plain(StatusCode::OK, "ok"),
         Page::Vendor => vendor(ctx.path.strip_prefix("/static/vendor/").unwrap_or("")),
         Page::AppCss => asset("text/css", APP_CSS),
+        Page::PasskeyJs => asset("text/javascript", PASSKEY_JS),
         Page::SignIn => auth::flow::password_page(ctx),
         Page::SignInSubmit => auth::flow::password_step(web, ctx).await,
         Page::SignInCode => auth::flow::code_page(web, ctx),
         Page::SignInCodeSubmit => auth::flow::code_step(web, ctx).await,
         Page::SignOut => auth::flow::sign_out(web, ctx).await,
-        Page::StepUp => auth::flow::step_up_page(ctx),
+        Page::StepUp => auth::flow::step_up_page(web, ctx),
         Page::StepUpSubmit => auth::flow::step_up(web, ctx).await,
         Page::FirstRunForm => first_run::form(web, ctx),
         Page::FirstRunSubmit => first_run::submit(web, ctx).await,
@@ -36,6 +38,13 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
         Page::UserRole => users::change_role(web, ctx).await,
         Page::UserDisable => users::disable(web, ctx).await,
         Page::DeviceRevoke => users::revoke_device(web, ctx).await,
+        Page::Account => account::page(web, ctx),
+        Page::PasskeyRegisterOptions => auth::passkey::register_options(web, ctx),
+        Page::PasskeyRegister => auth::passkey::register(web, ctx).await,
+        Page::PasskeySignInOptions => auth::passkey::sign_in_options(web, ctx),
+        Page::PasskeySignIn => auth::passkey::sign_in(web, ctx).await,
+        Page::PasskeyStepUpOptions => auth::passkey::step_up_options(web, ctx),
+        Page::PasskeyStepUp => auth::passkey::step_up(web, ctx).await,
     }
 }
 
@@ -81,6 +90,8 @@ pub(crate) fn redirect(to: &'static str) -> Response<Body> {
 }
 
 const APP_CSS: &[u8] = include_bytes!("../../../static/app.css");
+/// The browser half of passkeys: no inline script, so it is a static file (the CSP allows `'self'` only).
+const PASSKEY_JS: &[u8] = include_bytes!("../../../static/passkey.js");
 
 /// The vendored files (D9), embedded at build time.
 const VENDOR: &[(&str, &str, &[u8])] = &[

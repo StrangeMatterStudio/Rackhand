@@ -18,31 +18,36 @@ use crate::vault::Vault;
 use crate::vault::master_key::MasterKey;
 use crate::web::{Web, WebConfig, session, totp};
 
-const MIN: i64 = 60_000;
-const T0: i64 = 1_795_000_000_000;
-const PASSWORD: &str = "correct horse battery staple";
-const SECRET: &[u8; 20] = b"12345678901234567890";
+pub(super) const MIN: i64 = 60_000;
+pub(super) const T0: i64 = 1_795_000_000_000;
+pub(super) const PASSWORD: &str = "correct horse battery staple";
+pub(super) const SECRET: &[u8; 20] = b"12345678901234567890";
 
-struct App {
-    db: Arc<Db>,
-    router: Router,
-    clock: Arc<AtomicI64>,
+pub(super) struct App {
+    pub(super) db: Arc<Db>,
+    pub(super) router: Router,
+    pub(super) clock: Arc<AtomicI64>,
 }
 
 impl App {
-    fn now(&self) -> i64 {
+    pub(super) fn now(&self) -> i64 {
         self.clock.load(Ordering::SeqCst)
     }
     fn advance(&self, ms: i64) {
         self.clock.fetch_add(ms, Ordering::SeqCst);
     }
     /// A code for the current time step.
-    fn code(&self) -> String {
+    pub(super) fn code(&self) -> String {
         totp::code(SECRET, self.now() / 1000)
     }
 }
 
 async fn app(name: &str) -> App {
+    app_with(name, |web| web).await
+}
+
+/// An app whose `Web` is adjusted (for example given passkeys) before the router is built.
+pub(super) async fn app_with(name: &str, adjust: impl FnOnce(Web) -> Web) -> App {
     let dir = std::env::temp_dir().join(format!("rackhand-auth-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -55,21 +60,23 @@ async fn app(name: &str) -> App {
     };
     let clock = Arc::new(AtomicI64::new(T0));
     let c = clock.clone();
-    let web = Web::new(db.clone(), vault.clone(), Audit::new(db.writer()), "RECOVERY".into(), config)
-        .with_clock(Arc::new(move || c.load(Ordering::SeqCst)));
+    let web = adjust(
+        Web::new(db.clone(), vault.clone(), Audit::new(db.writer()), "RECOVERY".into(), config)
+            .with_clock(Arc::new(move || c.load(Ordering::SeqCst))),
+    );
     create_local(&db, &vault, "admin", Role::Admin, PASSWORD, Some(SECRET), T0).await.unwrap();
     App { db, router: web.router(), clock }
 }
 
 /// A browser: its own cookies, at a source address.
-struct Browser {
-    cookies: Vec<(String, String)>,
+pub(super) struct Browser {
+    pub(super) cookies: Vec<(String, String)>,
     addr: SocketAddr,
     forwarded: Option<String>,
 }
 
 impl Browser {
-    fn at(ip: &str) -> Browser {
+    pub(super) fn at(ip: &str) -> Browser {
         Browser { cookies: Vec::new(), addr: SocketAddr::new(ip.parse().unwrap(), 50000), forwarded: None }
     }
 
@@ -88,7 +95,7 @@ impl Browser {
         }
     }
 
-    async fn send(&mut self, app: &App, mut req: Request<Body>) -> Response<Body> {
+    pub(super) async fn send(&mut self, app: &App, mut req: Request<Body>) -> Response<Body> {
         req.extensions_mut().insert(PeerAddr(self.addr));
         if let Some(f) = &self.forwarded {
             req.headers_mut().insert("x-forwarded-for", f.parse().unwrap());
@@ -99,13 +106,19 @@ impl Browser {
         resp
     }
 
-    async fn page(&mut self, app: &App, path: &str) -> (StatusCode, String) {
+    pub(super) async fn page(&mut self, app: &App, path: &str) -> (StatusCode, String) {
         let resp = self.send(app, Request::get(path).body(Body::empty()).unwrap()).await;
         let status = resp.status();
         (status, body(resp).await)
     }
 
-    async fn post(&mut self, app: &App, path: &str, form_page: &str, fields: &[(&str, &str)]) -> Response<Body> {
+    pub(super) async fn post(
+        &mut self,
+        app: &App,
+        path: &str,
+        form_page: &str,
+        fields: &[(&str, &str)],
+    ) -> Response<Body> {
         let (_, html) = self.page(app, form_page).await;
         let csrf = field(&html, "csrf");
         let mut all = vec![("csrf", csrf.as_str())];
@@ -118,16 +131,16 @@ impl Browser {
         self.send(app, req).await
     }
 
-    async fn password(&mut self, app: &App, name: &str, password: &str) -> Response<Body> {
+    pub(super) async fn password(&mut self, app: &App, name: &str, password: &str) -> Response<Body> {
         self.post(app, "/sign-in", "/sign-in", &[("name", name), ("password", password)]).await
     }
 
-    async fn code(&mut self, app: &App, code: &str) -> Response<Body> {
+    pub(super) async fn code(&mut self, app: &App, code: &str) -> Response<Body> {
         self.post(app, "/sign-in/code", "/sign-in/code", &[("code", code)]).await
     }
 
     /// Both steps; true if a session came of it.
-    async fn sign_in(&mut self, app: &App, password: &str, code: &str) -> bool {
+    pub(super) async fn sign_in(&mut self, app: &App, password: &str, code: &str) -> bool {
         let first = self.password(app, "admin", password).await;
         if first.status() != StatusCode::SEE_OTHER {
             return false;
@@ -136,16 +149,16 @@ impl Browser {
         second.status() == StatusCode::SEE_OTHER && self.has(session::COOKIE)
     }
 
-    fn has(&self, cookie: &str) -> bool {
+    pub(super) fn has(&self, cookie: &str) -> bool {
         self.cookies.iter().any(|(k, _)| k == cookie)
     }
 }
 
-async fn body(resp: Response<Body>) -> String {
+pub(super) async fn body(resp: Response<Body>) -> String {
     String::from_utf8_lossy(&axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap()).into_owned()
 }
 
-fn field(html: &str, name: &str) -> String {
+pub(super) fn field(html: &str, name: &str) -> String {
     let marker = format!("name=\"{name}\" value=\"");
     let Some(i) = html.find(&marker) else { return String::new() };
     let start = i + marker.len();

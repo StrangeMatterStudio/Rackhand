@@ -48,6 +48,9 @@ form_urlencoded = "1"
 # The library's git mirror (S7): libgit2, libssh2 and OpenSSL vendored and linked statically.
 git2 = { version = "0.21", default-features = false, features = ["ssh", "vendored-libgit2", "vendored-openssl"] }
 russh = { version = "0.65", default-features = false, features = ["ring"] }
+# Passkeys (7.7.2): webauthn-rs, on the OpenSSL that git2 already vendors. OIDC ID tokens are checked with ring.
+webauthn-rs = { version = "0.5", default-features = false }
+base64 = "0.22"
 # Timezones and daylight saving for windows (7.5.3); the bundled database gives the same answers on every host.
 jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
 
