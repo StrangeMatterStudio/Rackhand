@@ -1901,9 +1901,13 @@ Built-in playbooks: `patch-failure`, `service-down`, `disk-filling`, `security-f
 | Network | Hubs, a relay, devices and probes in Linux network namespaces with nftables NAT (full cone, symmetric, UDP blocked): hole punching, relay fallback, peer watch with three hubs, tunnels, transfers | Self-hosted privileged Linux runner |
 | Windows | Probe and helper services, collectors, pipe, enrollment, dispatch script, patch script dry run | Manual on a Windows test machine with a recorded checklist until a self-hosted Windows runner exists; the GitHub-hosted workflow copy can run them in forks |
 | Performance | Probe soak; hub load; synthetic 2-year fill | Nightly, self-hosted |
-| Lab (manual) | Proxmox snapshot, rollback, guest firewall quarantine, LXC cgroup attribution, multi-site link over the internet, a real Claude Code job | Before each minor release, evidence redacted per section 10 |
+| Live (local lab) | The built product deployed to QEMU/KVM machines on the development machine: a hub managing a Linux VM, nested Proxmox VE 8 and 9 nodes with LXC guests, a second site behind a relay and NAT, a real Claude Code operator | At the end of each milestone, on the development machine (not in CI) (D107) |
+| Live (real lab) | The same live tests against the owner's hub VM or LXC and one managed VM, plus the checks that need real hardware: Proxmox snapshot, rollback, guest firewall quarantine, LXC cgroup attribution, provisioning, TrueNAS, multi-site link over the internet | Once at the end of v0.1 and before each minor release, evidence redacted per section 10 (D107) |
 
-Manual checks exist only where real hypervisors, real internet NATs or a real AI account are needed.
+The implementer runs both live tiers, with access the owner provides for the real lab. Checks the owner does
+themself exist only where the owner's own accounts, devices or offline keys are needed: the runner setup, Claude Code
+sign-ins, a passkey, a Windows machine and release signing. Acceptance criteria whose verification says `lab` are
+tested in both live tiers.
 
 ## 15. Acceptance criteria
 
@@ -2161,6 +2165,8 @@ the owner and the document is updated before the work that depends on it starts.
 | D104 | Quarantine details | Only the probe's port, SSH from the hub, ICMP echo and DHCP stay open; the prior firewall configuration is saved and restored; no assistant `exec` on a quarantined machine | A quarantined machine shouldn't get a wide path to the hub or be released by the assistant | Claude (delegated) | 2026-11-18 |
 | D105 | How the POSIX-sh installer verifies signatures | Each release ships a small static `rackhand-verify`; `install.sh` holds its SHA-256 and checks it, and the verifier checks every other binary against the two pinned keys | A shell can't check minisign signatures; trust in `install.sh` already rests on GitHub's TLS | Owen | 2026-11-18 |
 | D106 | Versions and pre-releases | The version is `0.1.0` from the start (no 0.0.x pre-releases); the implementation plan builds and verifies artifacts but schedules no release, which stays the maintainer's call | The maintainers' versioning rule starts at 0.1.0; signing is offline (D90) | Owen | 2026-11-18 |
+| D107 | Where the built product is tested live | Local lab first: the implementer deploys each milestone's build to QEMU/KVM machines on the development machine (a hub managing one VM, nested Proxmox, a second site) and runs live tests; a final pass runs them against the owner's real hub VM or LXC and one VM, plus the real-hardware checks | Finds integration problems early without the owner's time; the real lab still proves real hardware | Owen | 2026-11-18 |
+| D108 | CI runners | CI runs on the maintainers' self-hosted runner service; where a tier needs something a runner profile lacks (Docker, `/dev/kvm`, memory, time), the owner adjusts the service | One runner platform, sized to the project | Owen | 2026-11-18 |
 
 ## 19. Deferred decisions
 
@@ -2208,3 +2214,4 @@ None.
 | 2026-11-18 | Third review: `monitor` access level; spikes moved into the plan; release signing keys offline with a standby; helper boundary (no URL over the socket, root-only directories, root-owned hub pin); signed command list and leading-dash rule; fixed guest binding; per-epoch label tables and decompression cap; rules counted in samples with a clear margin; incident attempt limits; detached package steps; unprivileged hub with a root updater; sign-in limits per account; retention and caps for every table and the recent window; MCP bindings; bus coalescing; container attribution; quarantine narrowing and restore; table and wording fixes; spike S11; E49 to E66; ACs 58 to 73 | Review findings and Owen's answers (D87, D88, D90) | Owen (review pending) |
 | 2026-11-18 | Approved as a whole, including every decision marked "Claude (delegated)" (D41 to D86, D89, D91 to D104); next step is the implementation plan, whose first steps are the spikes (D87) | Owner approval | Owen |
 | 2026-11-18 | Planning findings: the installer verifies signatures through a small verifier binary (D105, 7.3.12); the version is 0.1.0 with no scheduled pre-releases (D106, section 17) | Gaps found while writing the implementation plan | Owen |
+| 2026-11-18 | Live testing: a local lab on the development machine at each milestone, then a real-lab pass (D107, section 14); CI runners adjusted to fit the tiers (D108) | Owner decision during plan review | Owen |

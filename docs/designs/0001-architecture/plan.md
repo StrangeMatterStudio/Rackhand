@@ -3,13 +3,13 @@
 | | |
 | --- | --- |
 | Design | [design.md](design.md) (Approved 2026-11-18 by Owen Ravelo) |
-| Status | Draft |
-| Plan approved by | Pending |
+| Status | Approved |
+| Plan approved by | Owen Ravelo (2026-11-18), including the local lab downloads listed under *Environment and tools* |
 | Branch | `design/0001-architecture` |
 | Run log | [run-log.md](run-log.md) (written by `/design:run`) |
 
-Step IDs are `T01` to `T99` so they don't clash with the design's spike IDs (`S1` to `S11`, section 17). Each step is
-one commit named `T<nn>: <title>`. Status words: `todo`, `in progress`, `done`, `unverified`, `blocked`.
+Step IDs are `T01` to `T99` so they don't clash with the design's spike IDs (`S1` to `S11`, section 17); the live
+passes against the lab are `L1` to `L9` (D107). Each step is one commit named `T<nn>: <title>` or `L<n>: <title>`. Status words: `todo`, `in progress`, `done`, `unverified`, `blocked`.
 
 ## Environment and tools
 
@@ -35,14 +35,17 @@ directories under `/tmp` (the Windows drive mounted in WSL doesn't keep Unix mod
 | `vmtest` | network and eBPF tiers | `vmtest --version` | prints a version |
 | `actionlint` | workflow lint | `actionlint --version` | prints a version |
 | PowerShell 7 (`pwsh`) with Pester 5 | Windows dispatcher and script tests (run on Linux) | `pwsh -NoProfile -c "(Get-Module -ListAvailable Pester).Version.Major"` | `5` |
-| Docker reachable from WSL | integration tier (containers with sshd, systemd, Alpine) | `docker info --format '{{.ServerVersion}}'` | a version number |
+| Docker Engine in WSL (installed by the owner on 2026-11-18; Docker Desktop's WSL integration stays off for Ubuntu) | integration tier (containers with sshd, systemd, Alpine) | `docker info --format '{{.ServerVersion}}'` | a version number |
 | `CARGO_TARGET_DIR` on the Linux filesystem | build speed | `echo $CARGO_TARGET_DIR` | a path under `$HOME`, not under `/mnt/` |
 | GitHub CLI signed in with `repo` and `workflow` scopes | CI runs, PR | `gh auth status` (from PowerShell) | signed in to github.com |
 | Push access | commit and push after each step | `git push --dry-run origin design/0001-architecture` (from PowerShell) | no error |
 | Runner profiles for Rackhand (added in T04) | CI tiers on self-hosted runners | `gh variable list --repo StrangeMatterStudio/Rackhand` (from PowerShell) | `RACKHAND_CI_LINUX`, `RACKHAND_CI_DOCKER`, `RACKHAND_CI_KVM` set for the runners that exist |
-| Owner's lab: Proxmox VE 8 and 9 hosts, a TrueNAS instance, a Claude Code login, a Windows 10/11 machine | spikes S1, S4, S5, S9; lab and Windows manual checks | confirmed by the owner (2026-11-18) | available |
+| Local lab: QEMU/KVM machines in WSL, including nested Proxmox VE 8 and 9 (built by L1) | spikes T10 to T12; live passes L1 to L8 | `cargo xtask lab doctor` | KVM usable, images present with matching checksums, the chosen profile fits in memory |
+| Owner's real lab: a hub VM or LXC and one managed VM reachable by SSH key with sudo; Proxmox VE 8 and 9 test nodes; a TrueNAS instance; a Windows 10/11 machine | T14; real-lab pass L9; Windows checks | `cargo xtask ci live --target real --milestone real -- --list` (reads the untracked `lab/real.env`) | every configured host answers |
+| A Claude Code login (the owner signs in when the run asks) | T13, L6 | the spike or the lab operator reports a signed-in account | signed in |
 
-One-time setup the owner runs in WSL (needs the sudo password, so the run can't do it):
+One-time setup the owner runs in WSL (needs the sudo password, so the run can't do it). Done on 2026-11-18, together
+with Docker Engine from Docker's apt repository:
 
 ```bash
 sudo apt-get update && sudo apt-get install -y build-essential clang llvm libelf-dev musl-tools protobuf-compiler \
@@ -54,11 +57,29 @@ targets, `rust-src` for nightly, and `cargo install --locked cargo-nextest cargo
 bpf-linker vmtest`; install `zig`, `actionlint` and `pwsh` (with `Install-Module Pester -Scope CurrentUser`) under
 `$HOME/.local`; add `export CARGO_TARGET_DIR=$HOME/.cache/rackhand-target` to `~/.bashrc`.
 
+**Local lab downloads** (approved with this plan). L1 pins each SHA-256 in `lab/images.toml` from the publisher's
+signed checksum file and caches the files under `~/.cache/rackhand-lab`:
+
+| Download | Source | Approximate size |
+| --- | --- | --- |
+| Debian 12 and Debian 13 `genericcloud` amd64 images | `cloud.debian.org` | 350 MB each |
+| Ubuntu 24.04 server cloud image | `cloud-images.ubuntu.com` | 600 MB |
+| Alpine 3.20 cloud-init (`nocloud`) image | `dl-cdn.alpinelinux.org` | 150 MB |
+| Proxmox VE 8 and 9 packages, installed inside `pve8` and `pve9` | `download.proxmox.com` (no-subscription repository) | 1.5 GB per node |
+| Alpine LXC template, fetched inside the nodes with `pveam` | Proxmox's template mirror | 5 MB |
+| Docker, Compose and `snmpd`, installed inside lab machines | the distributions' own package archives | 150 MB |
+| A small Compose test image (`nginx:alpine`) on `target` | Docker Hub | 20 MB |
+| Claude Code (native binary) on `operator` | Anthropic's official installer | 200 MB |
+
+**Lab memory budget.** WSL has 30 GB. The largest profile (`m2`) needs 13.5 GB; `lab up` keeps 12 GB free for builds,
+and live passes cap `CARGO_BUILD_JOBS` at 12.
+
 ## How to build and test
 
-No toolchain was installed while planning (neither Windows nor WSL had Rust), so none of these commands has been run
-yet. T01 and T02 create them, and preflight in `/design:run` checks the environment above first. From T02 on, every
-step's regression is the fast tier.
+Checked in WSL on 2026-11-18: the system packages are installed; QEMU started with `-accel kvm` reports `kvm support:
+enabled`; Docker Engine runs `hello-world` and a privileged container without sudo. Rust isn't installed yet, so the
+cargo commands below haven't been run: T01, T02 and L1 create them, and preflight in `/design:run` checks the
+environment above first. From T02 on, every step's regression is the fast tier.
 
 | Purpose | Command | Expected (green) result |
 | --- | --- | --- |
@@ -70,6 +91,9 @@ step's regression is the fast tier.
 | eBPF tier (kernels 5.10, 6.1 and the current Proxmox kernel series, inside QEMU) | `cargo xtask ci ebpf` | exit 0; `0 failed` on every kernel |
 | Windows tier (cross builds and Pester tests of the shipped PowerShell) | `cargo xtask ci win` | exit 0; Pester `Failed: 0` |
 | Performance tier (soak, load, fill; nightly in CI) | `cargo xtask ci perf` | exit 0; every budget assertion passes |
+| Local lab | `cargo xtask lab up <profile>`, `cargo xtask lab reset`, `cargo xtask lab destroy` | the profile's machines answer SSH |
+| Live tier (local lab; WSL only, never in CI) | `cargo xtask ci live --target local --milestone <lab, m1 to m8, or all>` | exit 0; `0 failed` |
+| Real-lab pass | `cargo xtask ci live --target real --milestone real` | every configured test passes |
 | Lint and format | `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | Dependency rules | `cargo xtask arch-check` | `no violations` |
 | Licenses and advisories | `cargo deny check && cargo audit` | clean |
@@ -78,7 +102,8 @@ step's regression is the fast tier.
 ## Approach and ordering
 
 1. **Prerequisites (T01 to T04).** The workspace matching the crate table in design 7.2, the test tiers, both CI
-   workflows with the AC44 guard test, and the runner profiles.
+   workflows with the AC44 guard test, and the runner profiles. Then the local lab harness (L1), which spikes T10 to
+   T12 use.
 2. **Spikes (T05 to T15), all before any feature work (D87).** Each spike answers the questions listed in design
    section 17 with a scripted measurement against a stated threshold. Spike code is throwaway and is not committed;
    the commit holds the finding (appended under the spike in design section 17, with a change-log row) and redacted
@@ -106,6 +131,14 @@ step's regression is the fast tier.
    ours; hub systems never depend on Web; Incidents reaches Actions only through `StartJob` and hears back only through
    the Bus.
 
+**Local lab first, real lab last (D107).** At the end of each milestone a live pass (L2 to L8) deploys the build to
+the local lab and runs that milestone's live tests against real machines: a hub VM managing a Linux VM, nested
+Proxmox VE 8 and 9 nodes, and a second site behind a relay. The lab belongs to the run, which may create, break and
+reset anything in it. Each live test is written first and run against the lab with the previous milestone's build
+deployed, where it fails on the missing feature; then the new build is deployed and it passes. The real-lab pass (L9)
+runs once at the end against the owner's hub VM or LXC and one managed VM, plus the checks that need real hardware.
+A live pass is part of its milestone being done; it is not a stop point.
+
 **Gated steps.** Every step whose design depends on a spike lists that spike's step under *Depends on*:
 
 | Spike | Step | Gates |
@@ -128,13 +161,16 @@ HTTPS with a real database in a temporary directory, and drive it with an HTTP c
 integration tests for the ACs whose design verification says integration (AC40, AC49).
 Container tests run in the integration tier, namespace tests in the network tier, kernel tests in the eBPF tier, the
 soak, load and fill tests in the performance tier, and the shipped PowerShell in the Windows tier. A step's
-verification names the tier it needs. Real hypervisors, internet NATs, a real AI account and real Windows are manual
-(design section 14, last row); they are listed under *Manual verifications* with the owner as verifier.
+verification names the tier it needs. The live tier runs the built product in the local lab (L1 to L8) and in the real
+lab (L9). Checks that need real hardware or the internet are run by the run itself in L9 with access the owner
+provides; only checks that need the owner's own accounts, devices or offline keys are done by the owner (design
+section 14). All of them are listed under *Manual verifications*.
 
-**Lab and Windows checks don't block the run.** The run carries on past steps whose only remaining proof is a manual
-lab or Windows check. Those steps are marked `unverified` with the manual check ID, and the owner runs the checks
-(MV1 to MV17) at a time of their choosing. Spike steps T10 (Proxmox kernel part), T12, T13 and T14 do need the owner,
-and the run pauses there if the lab isn't ready.
+**Live, real-lab and owner checks don't block the run.** A step whose remaining proof is a live test is marked
+`unverified` until its live pass (L2 to L8) passes, then `done`. Real-lab confirmations in L9 and owner checks are
+recorded on their MV rows; a step whose only remaining proof is one of them stays `unverified` with the MV ID, and a
+failed confirmation reopens the step. The run pauses only where later steps need the owner: T13 (Claude Code sign-in),
+T14 (the TrueNAS key), L6 (Claude Code sign-in on the lab hub) and L9 (access to the real lab).
 
 **Versions and releases (D106).** The workspace version is `0.1.0` throughout. The run builds and verifies release
 artifacts (T91) but schedules no release: publishing one, and signing it offline, are the maintainer's decisions after
@@ -145,10 +181,12 @@ consecutive commits (`T22a`, `T22b`, ...), each with its own tests seen failing 
 plan-level deviation (owner decision, 2026-11-18).
 
 **What the run never does:** hold or use a release signing key (D90, design section 13), publish a release, change
-the runner service's configuration, or touch the owner's lab beyond the test guests the owner names for a check.
+the runner service's configuration, or touch the owner's real lab beyond the hosts and test guests named in the
+untracked `lab/real.env`. Inside the local lab it may create, break, snapshot and delete anything.
 
 **Evidence** committed to the repository uses documentation IP ranges and invented names (D71, D82). No lab host
-names, addresses or account names appear in this plan, the run log or the evidence.
+names, addresses or account names appear in this plan, the run log or the evidence. The local lab uses documentation
+ranges for its site networks; the real lab's details live only in the untracked `lab/real.env`.
 
 **Notes on the maintainers' rules** (raised with the owner at plan review; the design wins where it is explicit):
 - The design's `ci-github-hosted.yml` (D37, section 13) is off by default and exists for forks. The maintainers' rule says
@@ -161,7 +199,7 @@ names, addresses or account names appear in this plan, the run log or the eviden
 
 | After step | Why |
 | --- | --- |
-| None | The maintainers' rule: once a plan is approved, run it to completion. The run still pauses for a spike finding that contradicts the design (design-level deviation), for the owner-run setup in T04, and for the lab spikes T10, T12, T13 and T14 if the lab isn't ready. |
+| None | The maintainers' rule: once a plan is approved, run it to completion. The run still pauses for a spike finding that contradicts the design (design-level deviation), and where it needs the owner: the Claude Code sign-ins in T13 and L6, the TrueNAS key in T14, and access to the real lab in L9. |
 
 ## Steps overview
 
@@ -171,14 +209,15 @@ names, addresses or account names appear in this plan, the run log or the eviden
 | T02 | Test tiers and `cargo xtask ci` | T01 | scripted | todo |
 | T03 | CI workflows and the guard test | T02 | unit (xtask), lint | todo |
 | T04 | Runner profiles for Rackhand | T03 | scripted (CI run), owner setup | todo |
+| L1 | Local lab harness | T02 | unit (xtask) + live (local lab) | todo |
 | T05 | Spike S8: time-series encoding | T02 | scripted measurement | todo |
 | T06 | Spike S6: probe footprint | T02 | scripted measurement | todo |
 | T07 | Spike S7: git mirror library | T02 | scripted measurement | todo |
 | T08 | Spike S2: iroh relay admission and limits | T02 | scripted measurement (network VM) | todo |
 | T09 | Spike S3: iroh path detection | T02 | scripted measurement (network VM) | todo |
-| T10 | Spike S1: aya eBPF | T02 | scripted measurement (eBPF VMs) + lab | todo |
-| T11 | Spike S11: collectors on current distributions | T02 | scripted measurement | todo |
-| T12 | Spike S4: Proxmox privileges, firewall, upgrade command | T02 | lab measurement | todo |
+| T10 | Spike S1: aya eBPF | T02, L1 | scripted measurement (eBPF VMs, local Proxmox) | todo |
+| T11 | Spike S11: collectors on current distributions | T02, L1 | scripted measurement (containers, local Proxmox) | todo |
+| T12 | Spike S4: Proxmox privileges, firewall, upgrade command | T02, L1 | scripted measurement (local Proxmox) | todo |
 | T13 | Spike S5: Claude Code headless | T02 | scripted measurement (owner's login) | todo |
 | T14 | Spike S9: TrueNAS API | T02 | lab measurement | todo |
 | T15 | Spike S10: threat list and GeoIP terms | T02 | scripted measurement + reading | todo |
@@ -212,10 +251,12 @@ names, addresses or account names appear in this plan, the run log or the eviden
 | T43 | Helper basics and package-list refresh | T42 | integration (containers) | todo |
 | T44 | Linux and Alpine installer and enrollment | T35, T43 | integration (containers) | todo |
 | T45 | Hub self-watch, integrity and backups | T41 | unit + integration | todo |
+| L2 | Live tier and the M1 pass | T44, T45, L1 | live (local lab) | todo |
 | T46 | Service checks and network drivers | T41 | unit + integration | todo |
 | T47 | Proxmox driver | T46, T12 | unit (recorded API) | todo |
 | T48 | TrueNAS, Redfish and SNMP drivers | T46, T14 | unit (simulators) + integration | todo |
 | T49 | Add page, agentless enrollment and guest binding | T47, T48, T39 | unit + integration | todo |
+| L3 | Live pass for M2: agentless and Proxmox | T49, L2 | live (local lab) | todo |
 | T50 | Runbook and playbook model | T01 | unit | todo |
 | T51 | Command wrapper and signed command lists | T50, T16 | unit + integration | todo |
 | T52 | Wrapper detached steps and file receive | T51 | integration (systemd and OpenRC containers) | todo |
@@ -225,27 +266,30 @@ names, addresses or account names appear in this plan, the run log or the eviden
 | T56 | Library and git mirror | T50, T21, T07 | unit + integration | todo |
 | T57 | Incident routing to runbooks and attempt limits | T32, T55 | unit | todo |
 | T58 | Dashboard: approvals, jobs, library, patching | T55, T56, T37 | unit (HTTP) | todo |
-| T59 | Patching | T55, T34, T47, T12 | unit + integration + lab | todo |
-| T60 | Hypervisor and hub-host patching | T59 | unit + integration + lab | todo |
+| T59 | Patching | T55, T34, T47, T12 | unit + integration + live (L4, L9) | todo |
+| T60 | Hypervisor and hub-host patching | T59 | unit + integration + live (L4, L9) | todo |
 | T61 | Remaining built-in runbooks and key rotation | T55, T43 | unit + integration | todo |
 | T62 | Access levels and monitor enforcement | T44, T55, T49 | unit + integration | todo |
 | T63 | Diagnostics allow-list | T55 | unit + integration | todo |
-| T64 | Provisioning VMs and LXCs | T59, T49 | unit (recorded API) + lab | todo |
+| T64 | Provisioning VMs and LXCs | T59, T49 | unit (recorded API) + live (L4, L9) | todo |
 | T65 | Hub restart recovery for jobs | T55, T59 | integration | todo |
+| L4 | Live pass for M3: actions and patching | T65, L3 | live (local lab) | todo |
 | T66 | Helper security scans | T43, T11 | integration (containers) | todo |
 | T67 | Probe sampling capture and security signals | T66, T42 | collector + integration | todo |
 | T68 | eBPF capture | T67, T10, T06 | eBPF tier | todo |
 | T69 | Threat intel and outside sources | T41, T15 | unit | todo |
 | T70 | Connection scoring and connection storage | T67, T69 | unit + integration | todo |
 | T71 | Security events, severities and exemptions | T70, T61 | unit + integration | todo |
-| T72 | Quarantine | T71, T55, T47 | unit + integration + lab | todo |
+| T72 | Quarantine | T71, T55, T47 | unit + integration + live (L5, L9) | todo |
 | T73 | Dashboard: security pages | T71, T72 | unit (HTTP) | todo |
+| L5 | Live pass for M4: security watch and quarantine | T73, L4 | live (local lab) | todo |
 | T74 | MCP server and read tools | T17, T54 | contract | todo |
 | T75 | MCP gated tools and approval binding | T74, T55, T63 | contract | todo |
 | T76 | Operator contract and Assist | T75 | contract | todo |
-| T77 | Operator binary and runners | T76, T13 | integration (fake runner) + lab | todo |
+| T77 | Operator binary and runners | T76, T13 | integration (fake runner) + live (L6) | todo |
 | T78 | Incident routing to playbooks and briefs | T77, T57 | unit + integration | todo |
 | T79 | Dashboard: assistant pages and settings | T78 | unit (HTTP) | todo |
+| L6 | Live pass for M5: a real Claude Code operator | T79, L5 | live (local lab, owner's sign-in) | todo |
 | T80 | Peer contract | T35, T41 | contract | todo |
 | T81 | Peer watch and callout election | T80 | unit + network | todo |
 | T82 | Relay | T17, T08 | unit + network | todo |
@@ -255,17 +299,20 @@ names, addresses or account names appear in this plan, the run log or the eviden
 | T86 | `rackhand-cli` | T84, T75 | integration + network | todo |
 | T87 | Address changes, `set-hub` and identity conflicts | T42, T61 | integration | todo |
 | T88 | Dashboard: peers, relays and peer sites | T81, T82 | unit (HTTP) | todo |
+| L7 | Live pass for M6: two sites | T88, L6 | live (local lab) | todo |
 | T89 | Windows probe and helper | T22, T23, T26, T66, T67 | collector (recorded outputs) + Windows tier + manual | todo |
 | T90 | Windows installer, SSH setup, dispatcher and scripts | T89, T61, T72 | Windows tier (Pester) + manual | todo |
 | T91 | Release signing, manifests and reproducible builds | T44 | unit + scripted | todo |
 | T92 | Probe self-update | T91, T43 | unit + integration | todo |
 | T93 | Hub, relay and operator updater | T91, T45 | unit + integration | todo |
-| T94 | Site bootstrap and LXC script | T93, T44 | integration + lab | todo |
+| T94 | Site bootstrap and LXC script | T93, T44 | integration + live (L8, L9) | todo |
 | T95 | Version compatibility | T42, T77, T82, T86 | contract | todo |
 | T96 | Performance tier | T42, T68, T05, T06 | performance | todo |
 | T97 | Offline operation | T59 | integration | todo |
 | T98 | Retention for every table and settings ranges | T85, T76, T70 | unit | todo |
 | T99 | Documentation and command check | T94 | scripted | todo |
+| L8 | Final local pass for M8 | T99, L7 | live (local lab) | todo |
+| L9 | Real-lab pass | L8 | live (real lab, owner's access) | todo |
 
 ## Steps
 
@@ -422,9 +469,9 @@ names, addresses or account names appear in this plan, the run log or the eviden
   - Owner, in the runner service's configuration (not in this repository): profile `linux-docker` with labels
     `[self-hosted, sm-linux-docker]`, `docker: true`, at least 4 CPUs, 8 GB memory and 40 GB disk; profile `linux-kvm`
     with labels `[self-hosted, sm-linux-kvm]`, `/dev/kvm` passed into the runner container, at least 4 CPUs, 8 GB
-    memory; runner time limits of at least 60 minutes for `it`, `net` and `ebpf`. The runner service's profiles have no
-    device option today, so `linux-kvm` needs a change to that service; until it exists, the `net`, `ebpf` and `perf` tiers run in WSL and the
-    evidence says so.
+    memory; runner time limits of at least 60 minutes for `it`, `net` and `ebpf`. Where a profile needs something the
+    runner service doesn't offer yet (for example passing `/dev/kvm` into the container), the owner adjusts the
+    service (D108).
   - Owner, in GitHub organization settings: the runner group the runner service uses allows public repositories, limited to
     `StrangeMatterStudio/Rackhand` among public ones. The guard from T03 and the organization's "require approval for
     outside contributors" setting keep fork code off the runners.
@@ -444,13 +491,99 @@ names, addresses or account names appear in this plan, the run log or the eviden
 - **Regression:** `cargo xtask ci fast`: exit 0.
 - **Manual verification:** MV1 (the owner creates the profiles and the runner group setting).
 - **Done when:**
-  - [ ] the `runners` jobs green on all three label sets (or `sm-linux-kvm` recorded as pending a runner-service change, with
-    the KVM tiers running in WSL meanwhile and `RACKHAND_CI_KVM` left unset)
+  - [ ] the `runners` jobs green on all three label sets
   - [ ] `ci.yml` green on a push of this branch for every job whose runner exists
   - [ ] Evidence recorded below
 - **Risk / rollback:** a public repository on shared runners widens their exposure; the guard, the outside-contributor
   approval setting and the per-repository allow-list in the runner group are the controls (design 17, "Self-hosted
-  runners exposed"). Remove the repository from the runner group to roll back.
+  runners exposed"). Remove the repository from the runner group to roll back. If a profile isn't ready when
+  the run reaches T04, the run carries on with that tier in WSL, leaves its variable unset, and T04 stays `unverified`
+  until MV1 is done.
+- **Evidence:**
+  | When | Command | Result |
+  | --- | --- | --- |
+
+### L1: Local lab harness
+- **Design refs:** 14 (live tier), D107, D71
+- **Goal:** `cargo xtask lab` runs QEMU/KVM virtual machines in WSL as the normal user, on two lab site networks, with
+  reset and snapshots, including nested Proxmox VE 8 and 9 nodes that each run an LXC guest, so the spikes and every
+  live pass can run on the development machine.
+- **Depends on:** T02
+- **Changes:**
+  - `lab/lab.toml`: the lab's machines and profiles.
+    | Machine | Image | vCPU / memory | Site |
+    | --- | --- | --- | --- |
+    | `hub` | Debian 12 | 2 / 2 GB | A |
+    | `target` | Ubuntu 24.04 | 2 / 2 GB | A |
+    | `agentless` | Debian 12 | 1 / 1 GB | A |
+    | `alpine` | Alpine 3.20 | 1 / 512 MB | A |
+    | `pve8` | Debian 12 with Proxmox VE 8, extra 16 GB disk for a ZFS pool | 4 / 4 GB | A |
+    | `pve9` | Debian 13 with Proxmox VE 9, extra 16 GB disk for a ZFS pool | 4 / 4 GB | A |
+    | `hub-b`, `target-b` | Debian 12 | 2 / 2 GB each | B |
+    | `relay` | Debian 12, a NIC on each site, nftables NAT for site B | 1 / 1 GB | A and B |
+    | `operator` | Debian 12 with Claude Code (Claude Code runs only on operator hosts, never on a hub) | 2 / 2 GB | A |
+
+    Profiles (memory in brackets): `lab` (`hub`, `target`, `alpine`, `pve8`, `pve9`; 12.5 GB), `spikes` (`pve8`,
+    `pve9`; 8 GB), `m1` (`hub`, `target`; 4 GB), `m2` (`hub`, `target`, `agentless`, `alpine`, `pve8`, `pve9`; 13.5 GB),
+    `m3` (`hub`, `target`, `pve9`; 8 GB), `m4` (`hub`, `target`, `agentless`, `pve9`; 9 GB), `m5` (`hub`, `target`,
+    `operator`; 6 GB), `m6` (`hub`, `target`, `relay`, `hub-b`, `target-b`; 9 GB), `m8` (`hub`, `target`, `alpine`,
+    `pve9`, `hub-b`; 10.5 GB). Only one profile runs at a time.
+  - `lab/images.toml`: every download with its URL and pinned SHA-256, taken from the publisher's signed checksum file
+    when this step runs (the list is under *Environment and tools*).
+  - `xtask/src/lab/`: `lab doctor`, `lab fetch`, `lab up <profile>`, `lab down`, `lab reset [machine]` (drops the
+    machine's qcow2 overlay over its pristine base), `lab snapshot <machine> <name>` and `lab restore`, `lab ssh
+    <machine>`, `lab run <machine> -- <command>`, `lab pause` and `lab resume` (QMP `stop` and `cont`), `lab cut` and
+    `lab heal` (QMP `set_link` on the site NIC), `lab status`, `lab destroy` (deletes all lab state). `lab reset` without a machine name skips `operator`, so
+    the owner's Claude Code sign-in there survives; only `lab reset operator` or `lab destroy` removes it.
+  - Networking without root: each machine has a user-mode NIC (internet, and SSH forwarded to a `127.0.0.1` port) and a
+    NIC on its site segment (QEMU socket multicast). Site A is `192.0.2.0/24` and site B is `198.51.100.0/24`, both
+    documentation ranges (D71), so lab evidence needs no redaction. Test code in WSL reaches site services through
+    forwarded ports; machines reach WSL-side fakes through the user-mode gateway.
+  - Cloud-init NoCloud seeds served by `xtask` over HTTP (SMBIOS `ds=nocloud;s=...`), so no ISO tools or sudo are
+    needed; a lab SSH key under `~/.cache/rackhand-lab/`, where all lab state lives (Linux filesystem).
+  - Proxmox nodes: `lab up` installs Proxmox VE on Debian following Proxmox's "install on Debian" guide with the
+    no-subscription repository, creates a ZFS pool on the extra disk, fetches the Alpine LXC template with `pveam`,
+    and creates `ct-test` (an unprivileged LXC) and `vm-test` (a small Alpine VM: hardware virtualization if the
+    nested CPU offers it, otherwise `kvm: 0` emulation), then snapshots the node as `pristine`.
+  - Memory guard: `lab up` refuses a profile whose machines don't fit in available memory minus 12 GB kept for builds;
+    `cargo xtask ci live` caps `CARGO_BUILD_JOBS` at 12.
+  - `tests/live` (`rackhand-live`, excluded from `default-members`), nextest profile `live`, and `cargo xtask ci live
+    --target local|real --milestone <name>|all [--no-deploy]`. With `--target local`, `--milestone <name>` stops any
+    other profile, brings up profile `<name>`, deploys the current build (unless `--no-deploy`) and runs that
+    milestone's tests; `all` does this for every milestone in order. The live tier runs only in WSL, never in CI (it
+    needs the lab).
+  - `.gitignore`: `lab/real.env` (the owner's real-lab hosts, used by L9).
+- **Tests to write first:**
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `lab::profiles_reference_known_machines` | every profile names machines defined in `lab.toml` | 14 |
+  | `lab::image_checksum_mismatch_is_refused` | a fetched image whose SHA-256 differs from `images.toml` is deleted and the command fails | 14 |
+  | `lab::profile_over_memory_budget_is_refused` | a profile needing more than available memory minus 12 GB fails before starting anything | 14 |
+  | `lab::site_networks_use_documentation_ranges` | every lab address is in `192.0.2.0/24` or `198.51.100.0/24` | D71 |
+  | `live::lab::machines_boot_and_answer_ssh` | every machine in profile `lab` answers SSH with the lab key within 5 minutes | 14 |
+  | `live::lab::site_a_machines_reach_each_other` | `hub` pings `target` on the site A segment | 14 |
+  | `live::lab::reset_restores_the_pristine_disk` | a file written on `target` is gone after `lab reset target` | 14 |
+  | `live::lab::pause_and_cut_stop_traffic` | after `lab pause` and after `lab cut`, `target` stops answering; `resume` and `heal` bring it back | 14 |
+  | `live::lab::proxmox_nodes_run_an_lxc_guest` | `pveversion` reports 8.x on `pve8` and 9.x on `pve9`; `ct-test` starts on each | 14, D107 |
+  | `live::lab::proxmox_vm_guest_boots` | `vm-test` boots on `pve9`; the test records whether it ran with hardware virtualization or emulation | 14 |
+- **Fails first:** the `lab::` tests don't compile (no `xtask::lab`); the `live::lab::` tests fail with "lab not
+  running".
+- **Verification:**
+  ```bash
+  cargo nextest run -p xtask -E 'test(lab::)' && cargo xtask lab fetch && cargo xtask ci live --target local --milestone lab
+  ```
+  Expected: 4 passed, 0 failed; every image verified; 6 passed, 0 failed.
+- **Regression:** `cargo xtask ci fast`: exit 0.
+- **Manual verification:** None.
+- **Done when:**
+  - [ ] New tests observed failing before the implementation
+  - [ ] New tests and the regression suite pass
+  - [ ] Nested Proxmox result recorded (LXC guests run; VM guests with hardware virtualization or emulation)
+  - [ ] Evidence recorded below
+- **Risk / rollback:** nested Proxmox (three virtualization levels deep under WSL) may not run. If `pve8` or `pve9`
+  can't run an LXC guest, the run records a plan-level deviation: T10, T11 and T12 use the owner's real lab as first
+  planned (MV2, MV3 and MV4 back to the owner), and the Proxmox tests in L3 to L5 and L8 move to L9. The lab needs
+  about 40 GB of disk under `~/.cache/rackhand-lab`. `cargo xtask lab destroy`, then revert the commit.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
@@ -603,25 +736,26 @@ Every spike step follows the same rules:
 - **Goal:** connect, UDP and exec tracing with aya on kernels 5.10, 6.1 and the current Proxmox kernel; memory use;
   executable path and cgroup id resolved in the program; LXC attribution by cgroup from the host; and the license the
   eBPF program must declare for the helpers it uses.
-- **Depends on:** T02
+- **Depends on:** T02, L1
 - **Changes:** `spikes/s1/` (deleted); `spikes/s1.md`; design 17 and change log.
 - **Method:** CO-RE programs on `sock` and `sched_process_exec` tracepoints; in each eBPF VM run `curl`, a UDP send and
-  an exec from `/tmp`; read events; measure map memory. On a lab Proxmox host chosen by the owner, run the same binary
-  on the host and check that a connection from inside an unprivileged LXC is attributed to its cgroup. List every BPF
+  an exec from `/tmp`; read events; measure map memory. On the local lab's `pve9` node (L1), run the same binary
+  on the node and check that a connection from inside an unprivileged LXC is attributed to its cgroup. List every BPF
   helper used and whether it is GPL-only.
 - **Verification:**
   ```bash
-  cargo xtask ci ebpf --spike s1 -- --report docs/designs/0001-architecture/spikes/s1.md --check
+  cargo xtask ci ebpf --spike s1 -- --report docs/designs/0001-architecture/spikes/s1.md --check && cargo xtask lab up spikes && spikes/s1/lxc-check.sh --node pve9 --guest ct-test --report docs/designs/0001-architecture/spikes/s1.md
   ```
   Expected: exit 0 on each kernel: the connect, UDP and exec events are captured with pid, exe path and cgroup id;
-  memory measured. The Proxmox and LXC part is MV2.
+  memory measured; on `pve9` a connection from `ct-test` is attributed to its cgroup. MV2 repeats the LXC part on
+  a real Proxmox host in L9.
 - **Regression:** `cargo xtask ci fast`: exit 0.
-- **Manual verification:** MV2 (Proxmox kernel and LXC attribution on the owner's host).
+- **Manual verification:** None here; MV2 (a real Proxmox host kernel) is run in L9.
 - **Done when:**
   - [ ] Report committed; finding in design 17
   - [ ] License finding stated; if GPL-only helpers are needed, the owner decides the eBPF program's license
     (for example a separate `GPL-2.0 OR MIT` crate) before T68
-  - [ ] MV2 recorded
+  - [ ] LXC attribution on `pve9` recorded
   - [ ] Spike code deleted
 - **Risk / rollback:** if a kernel lacks a needed hook, that kernel uses sampling (already the design's fallback).
 - **Evidence:**
@@ -632,20 +766,20 @@ Every spike step follows the same rules:
 - **Design refs:** FR-2, FR-6, 7.6.1 (memory rules), S11
 - **Goal:** how a static binary reads authentication events on journal-only systems, and which memory reading keeps the
   memory rules quiet on a healthy host whose ZFS cache holds most memory.
-- **Depends on:** T02
+- **Depends on:** T02, L1
 - **Changes:** `spikes/s11/` (deleted); `spikes/s11.md`; design 17 and change log.
 - **Method:** in Debian 12 and Ubuntu 24.04 containers with systemd and no `/var/log/auth.log`: read SSH and sudo events
-  by (a) spawning `journalctl -o json --cursor`, (b) parsing journal files with a pure-Rust reader; compare. On a lab
-  Proxmox host with ZFS (owner's choice), read `/proc/meminfo` and `/proc/spl/kstat/zfs/arcstats` and compute
+  by (a) spawning `journalctl -o json --cursor`, (b) parsing journal files with a pure-Rust reader; compare. On the local
+  lab's `pve9` node, whose ZFS pool is on its extra disk, read `/proc/meminfo` and `/proc/spl/kstat/zfs/arcstats` and compute
   `mem.available_pct` with and without the shrinkable ARC.
 - **Verification:**
   ```bash
-  spikes/s11/run.sh --report docs/designs/0001-architecture/spikes/s11.md --check
+  cargo xtask lab up spikes && spikes/s11/run.sh --zfs-node pve9 --report docs/designs/0001-architecture/spikes/s11.md --check
   ```
   Expected: exit 0; at least one method returns every SSH login and sudo event generated in the container; the ZFS
-  computation is recorded (MV3).
+  computation on `pve9` is recorded; MV3 repeats it on a real host in L9.
 - **Regression:** `cargo xtask ci fast`: exit 0.
-- **Manual verification:** MV3 (ZFS memory reading on the owner's host).
+- **Manual verification:** None here; MV3 (a real host's ARC under real load) is run in L9.
 - **Done when:**
   - [ ] Report committed; the chosen method and the memory formula in design 17 (and 7.4.2 if a metric changes)
   - [ ] Spike code deleted
@@ -659,26 +793,25 @@ Every spike step follows the same rules:
 - **Goal:** the exact role privileges for snapshot, rollback, guest firewall, conntrack flush, clone and power on PVE 8
   and 9; the datacenter firewall prerequisite; whether each network device's firewall flag must be on for guest rules,
   and saving and restoring it; and the upgrade command Proxmox needs on its own hosts.
-- **Depends on:** T02
+- **Depends on:** T02, L1
 - **Changes:** `spikes/s4/` (deleted); `spikes/s4.md`; design 7.8.6 (final privilege list), 17 and change log.
-- **Method:** with an API token the owner creates on a test node of each version (held in environment variables, never
-  written to disk or the repository), a script grants the 7.8.6 role, then tries each operation on a test guest the
-  owner names, removing one privilege at a time to find the minimum; applies and removes the quarantine rule set and
+- **Method:** on the local lab's `pve8` and `pve9` nodes (L1), with an API token the script creates and deletes itself, a
+  script grants the 7.8.6 role, then tries each operation on the lab guests `ct-test` and `vm-test`, removing one privilege at a time to find the minimum; applies and removes the quarantine rule set and
   compares the saved and restored firewall configuration; checks whether conntrack can be flushed through the API.
   Reads Proxmox documentation for the upgrade command.
 - **Verification:**
   ```bash
-  spikes/s4/run.sh --report docs/designs/0001-architecture/spikes/s4.md --check
+  cargo xtask lab up spikes && spikes/s4/run.sh --nodes pve8,pve9 --report docs/designs/0001-architecture/spikes/s4.md --check
   ```
   Expected: exit 0; every operation listed as working with the minimal privilege set on both versions, the firewall
   round trip identical, and the conntrack and upgrade answers stated.
 - **Regression:** `cargo xtask ci fast`: exit 0.
-- **Manual verification:** MV4 (the owner provides the test nodes, guest and token, and confirms the result).
+- **Manual verification:** None here; MV4 repeats the privilege check on the owner's real nodes in L9.
 - **Done when:**
   - [ ] Report committed (redacted); 7.8.6 updated; finding in design 17
   - [ ] If conntrack can't be flushed through the API, the owner decides how (design-level)
-  - [ ] Spike code deleted; the owner revokes the token
-- **Risk / rollback:** test guests only; the script refuses a guest that isn't the named one.
+  - [ ] Spike code deleted; the script's tokens deleted from the lab nodes
+- **Risk / rollback:** lab guests only; the script refuses any node or guest outside the lab.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
@@ -1500,7 +1633,8 @@ Only additions to that list are written out below.
   cargo nextest run -p rackhand-hub -E 'test(pages::) | test(query::)'
   ```
   Expected: 7 passed, 0 failed.
-- **Manual verification:** MV12, a dashboard walk-through in a browser at the end of M1, checked against 7.7.1.
+- **Manual verification:** the M1 page walk, done by the run in L2 against the lab hub; the passkey part of MV12
+  stays with the owner.
 - **Risk / rollback:** revert.
 - **Evidence:**
   | When | Command | Result |
@@ -1691,8 +1825,58 @@ Only additions to that list are written out below.
   ```
   Expected: 4 passed, then 1 passed; 0 failed.
 - **Regression (in addition):** `cargo xtask ci it`: exit 0.
-- **Manual verification:** E34 (master key lost) is documented in T99 and tested once in MV13.
+- **Manual verification:** E34 (master key lost) is documented in T99 and tested in L8
+  (`live::m8::recovery_procedure_restores_the_master_key`).
 - **Risk / rollback:** revert.
+- **Evidence:**
+  | When | Command | Result |
+  | --- | --- | --- |
+
+### L2: Live tier and the M1 pass
+- **Design refs:** 14 (live tier), D107, 7.3.12, AC1, AC2, AC5, AC8, AC35, AC40, AC47, AC49, AC66
+- **Goal:** the M1 build, deployed to the lab's `hub` machine, enrolls `target` with the dashboard's install command,
+  watches it, calls out and recovers, all against real machines.
+- **Depends on:** T44, T45, L1
+- **Changes:**
+  - `cargo xtask lab deploy [--hub-on <machine>]`: builds static musl binaries, signs them with the test release keys
+    T44's integration tests use (`tests/keys/`), pinned through the `lab-build` feature; serves them from a
+    lab release server in WSL; installs the hub with the packaged systemd unit and completes first run with a
+    generated admin whose password and TOTP secret stay in `~/.cache/rackhand-lab/creds` (never printed or committed).
+  - The `lab-build` feature fails the build when `RACKHAND_RELEASE=1` is set, which T91's release build sets. It also
+    adds `rackhand hub lab-token --kind machine --access managed|monitor`, which prints a one-time machine token from
+    the Registry, because the Add page that issues tokens arrives only in T49. Release builds don't have the command.
+  - `tests/live/src/`: a hub client (sign-in with TOTP, API calls), the dashboard install command runner, and
+    WSL-side fakes for a Discord webhook and an SMTP server that record callouts.
+  - `--no-deploy` on `ci live`, used to see the tests fail first.
+- **Tests to write first:**
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `lab::release_build_with_test_keys_fails` | building with the `lab-build` feature and `RACKHAND_RELEASE=1` fails with a message naming the feature; a build without `lab-build` has no `lab-token` command | D90 |
+  | `live::m1::hub_serves_dashboard_and_metrics` | HTTPS answers on the hub; sign-in needs the second factor; `/metrics` is 401 without a token and lists series with one | AC40, AC49 |
+  | `live::m1::target_installs_and_reports_within_30s` | the 7.3.12 Linux command with a token from `rackhand hub lab-token`, run on `target`, enrolls it as `managed`; vitals, services and updates appear within 30 s | AC1, AC35 |
+  | `live::m1::tampered_probe_stops_the_install` | with the lab release server serving a tampered probe, the install exits non-zero and installs nothing | AC35 |
+  | `live::m1::stopped_service_calls_out_and_resolves` | stopping a watched service on `target` opens a critical incident and the fake webhook gets the callout in time; starting it resolves the incident | AC5 |
+  | `live::m1::paused_target_raises_silence_warning` | `lab pause target` gives the silence warning at 60 s; `resume` clears it | AC8 |
+  | `live::m1::cut_link_backfills_without_stale_incidents` | `lab cut target` for 10 minutes (AC2's 2 hours shortened for the lab), then `heal`: the gap backfills, data is live within 30 s, no stale incident remains | AC2 |
+  | `live::m1::hub_reboot_keeps_history_and_rules` | rebooting `hub` keeps history, rules and open incidents; `target` reconnects | AC66 |
+  | `live::m1::backup_restores_on_a_fresh_hub` | a backup, `lab reset hub`, deploy and restore: history is back and `target` reconnects | AC47 |
+- **Fails first:** `lab::release_build_with_test_keys_fails` fails (no guard yet); `cargo xtask ci live --target
+  local --milestone m1 --no-deploy` (no hub on `hub` yet) fails every `live::m1::` test with "hub not reachable".
+- **Verification:**
+  ```bash
+  cargo nextest run -p xtask -E 'test(lab::)' && cargo xtask ci live --target local --milestone m1
+  ```
+  Expected: 5 passed, 0 failed; then 8 passed, 0 failed.
+- **Regression:** `cargo xtask ci fast`: exit 0; `cargo xtask ci live --target local --milestone lab`: 6 passed.
+- **Manual verification:** the page walk of MV12, done by the run: every M1 page in 7.7.1 opened against the lab hub
+  in the in-app browser and compared with 7.7.1's contents and empty states; screenshots kept as evidence. It is a
+  visual check, so it can't be an automated assertion.
+- **Done when:**
+  - [ ] New tests observed failing before the deploy
+  - [ ] New tests and the regression suites pass
+  - [ ] M1 page walk recorded
+  - [ ] Evidence recorded below
+- **Risk / rollback:** `lab reset` returns every machine to its base image. Revert the commit.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
@@ -1820,6 +2004,43 @@ Only additions to that list are written out below.
 - **Manual verification:** None.
 - **Done when (in addition):** blocking of hypervisor-side actions on a mismatched binding is tested in T62.
 - **Risk / rollback:** revert.
+- **Evidence:**
+  | When | Command | Result |
+  | --- | --- | --- |
+
+### L3: Live pass for M2: agentless and Proxmox
+- **Design refs:** 14, D107, FR-10, AC10, AC11, AC35, AC36, AC60
+- **Goal:** agentless machines, service checks and the Proxmox driver work against real machines and real Proxmox VE 8
+  and 9 APIs.
+- **Depends on:** T49, L2
+- **Changes:** live tests only; `lab` gains a test HTTPS service on `target` with a certificate that expires in 10 days,
+  and `snmpd` on `agentless` (an SNMP appliance with no probe).
+- **Tests to write first:**
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `live::m2::snmp_appliance_added_by_form_reports` | `agentless`, added through the Add page's SNMP form with no probe, reports its interface metrics; a second use of the form's invite is refused | AC36, AC11 |
+  | `live::m2::alpine_installs_and_reports` | the Add page's Alpine command enrolls `alpine` (OpenRC) and it reports | AC35 |
+  | `live::m2::service_checks_and_certificate_warning` | HTTP and TCP checks against `target` pass; the 10-day certificate gives the certificate warning | AC10 |
+  | `live::m2::proxmox8_driver_reports_node_and_guests` | the driver, with a token the test creates on `pve8`, reports the node and its two guests | AC11 |
+  | `live::m2::proxmox9_driver_reports_node_and_guests` | the same on `pve9` | AC11 |
+  | `live::m2::silent_proxmox_node_after_two_polls` | `lab pause pve8` makes it silent after 2 polls | AC11 |
+  | `live::m2::probe_in_lxc_is_bound_to_its_guest` | a probe installed in `ct-test` on `pve9` is bound to that guest | AC60 |
+- **Fails first:** `cargo xtask ci live --target local --milestone m2 --no-deploy` with the M1 build still deployed
+  from L2: the SNMP, Alpine, Proxmox and binding tests fail (no drivers or Add page yet); then the M2 build is deployed.
+- **Verification:**
+  ```bash
+  cargo xtask ci live --target local --milestone m2
+  ```
+  Expected: 7 passed, 0 failed.
+- **Regression:** `cargo xtask ci fast`: exit 0; `cargo xtask ci live --target local --milestone m1`: 8 passed.
+- **Manual verification:** the M2 page walk (Add page, machine and driver pages), done by the run as in L2.
+- **Done when:**
+  - [ ] New tests observed failing before the M2 deploy
+  - [ ] New tests and the regression suites pass
+  - [ ] M2 page walk recorded
+  - [ ] Evidence recorded below
+- **Risk / rollback:** if nested Proxmox didn't work in L1, the three Proxmox tests move to L9 (deviation). Revert the
+  commit.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
@@ -2114,7 +2335,7 @@ Only additions to that list are written out below.
   cargo nextest run -p rackhand-hub -E 'test(pages::approval) | test(pages::high_risk) | test(pages::viewer) | test(pages::second_decision) | test(pages::job_page) | test(pages::library) | test(pages::nothing_waiting) | test(pages::policy_and_window)'
   ```
   Expected: 8 passed, 0 failed.
-- **Manual verification:** part of MV12 (walk-through repeated at the end of M3).
+- **Manual verification:** the M3 page walk, done by the run in L4.
 - **Risk / rollback:** revert.
 - **Evidence:**
   | When | Command | Result |
@@ -2164,7 +2385,7 @@ Only additions to that list are written out below.
   Expected: 10 passed, then 5 passed; 0 failed. (The hub-restart half of AC63 is tested in T65, after restart
   recovery exists.)
 - **Regression (in addition):** `cargo xtask ci it`: exit 0.
-- **Manual verification:** MV7 (AC19 on a real Proxmox guest: snapshot `rackhand-patch-*` taken, pruned to 3, updates
+- **Manual verification:** first in the local lab (L4); then on real hardware MV7 (AC19 on a real Proxmox guest: snapshot `rackhand-patch-*` taken, pruned to 3, updates
   installed, reboot, verify; E11 reboot loop with `auto_rollback` on a test guest).
 - **Risk / rollback:** revert.
 - **Evidence:**
@@ -2194,7 +2415,8 @@ Only additions to that list are written out below.
   ```
   Expected: 4 passed, then 1 passed; 0 failed.
 - **Regression (in addition):** `cargo xtask ci it`: exit 0.
-- **Manual verification:** MV8 (AC73 and E62: the owner approves a reboot of the hypervisor hosting a test hub; the
+- **Manual verification:** first in the local lab (L4); then, if the owner names a hypervisor hosting a test
+  hub, MV8 (AC73 and E62: the owner approves a reboot of the hypervisor hosting a test hub; the
   job finishes at verify).
 - **Risk / rollback:** revert.
 - **Evidence:**
@@ -2260,7 +2482,7 @@ Only additions to that list are written out below.
   ```
   Expected: 3 passed, then 3 passed; 0 failed.
 - **Regression (in addition):** `cargo xtask ci it`: exit 0.
-- **Manual verification:** MV9 (AC58's Proxmox part: on a monitor guest, a hypervisor quarantine runs only after an
+- **Manual verification:** first in the local lab (L4, L5); then MV9 (AC58's Proxmox part: on a monitor guest, a hypervisor quarantine runs only after an
   approval and an enabled auto rule does nothing).
 - **Risk / rollback:** revert.
 - **Evidence:**
@@ -2316,7 +2538,7 @@ Only additions to that list are written out below.
   cargo nextest run -p rackhand-hub -E 'test(provision::)'
   ```
   Expected: 4 passed, 0 failed.
-- **Manual verification:** MV10 (AC33: on the owner's Proxmox, `provision-vm` with a template and cloud-init gives a
+- **Manual verification:** first in the local lab (L4); then MV10 (AC33: on the owner's Proxmox, `provision-vm` with a template and cloud-init gives a
   VM that boots, enrolls and is healthy).
 - **Risk / rollback:** revert.
 - **Evidence:**
@@ -2347,6 +2569,46 @@ Only additions to that list are written out below.
 - **Regression (in addition):** `cargo xtask ci it`: exit 0.
 - **Manual verification:** None.
 - **Risk / rollback:** revert.
+- **Evidence:**
+  | When | Command | Result |
+  | --- | --- | --- |
+
+### L4: Live pass for M3: actions and patching
+- **Design refs:** 14, D107, 7.5, FR-23, AC19, AC33, AC58, AC63, AC64, AC73, E11, E62
+- **Goal:** runbooks, approvals, patching with snapshots and rollback, hypervisor actions and provisioning work on real
+  machines and on the nested Proxmox node.
+- **Depends on:** T65, L3
+- **Changes:** live tests; `lab` gains an apt repository on `hub` that offers `rackhand-lab-dummy` 2.0 over the 1.0
+  installed on `target` and in `ct-test`, and a 2.0-broken variant whose postinst stops the probe; `lab deploy
+  --hub-on pve9` installs a second lab hub in an LXC `ct-hub` on `pve9` for the hypervisor-hosting-the-hub test.
+- **Tests to write first:**
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `live::m3::failed_service_runbook_after_approval` | a stopped service routes to its runbook; after approval the service restarts and the job log is complete; a second failure inside the window stops at the attempt limit | 7.5, AC64 |
+  | `live::m3::patch_target_from_lab_repository` | a patch job on `target` installs `rackhand-lab-dummy` 2.0, verify passes, the job log lists every step | AC19 |
+  | `live::m3::lxc_patch_snapshots_and_prunes_to_three` | four `auto` patch runs on `ct-test` leave exactly three `rackhand-patch-*` snapshots | AC19 |
+  | `live::m3::broken_guest_rolls_back_after_15_minutes` | the broken variant on `ct-test` with `auto_rollback` on: no report for 15 minutes, then the guest is rolled back and reports again | E11 |
+  | `live::m3::hypervisor_hosting_the_hub_finishes_at_verify` | with the hub in `ct-hub`, the approval for rebooting `pve9` names the hub; after the reboot the job finishes at verify | AC73, E62 |
+  | `live::m3::monitor_guest_hypervisor_action_needs_approval` | with `ct-test` enrolled as `monitor`, a hypervisor action on it waits for approval and nothing runs inside the guest | AC58 |
+  | `live::m3::provision_vm_boots_enrolls_and_is_healthy` | `provision-vm` on `pve9` from an Alpine template with cloud-init boots, enrolls and is healthy | AC33, FR-23 |
+  | `live::m3::install_step_survives_hub_restart_and_ssh_cut` | a patch install step on `target` survives a hub restart and an SSH cut and finishes | AC63 |
+- **Fails first:** `cargo xtask ci live --target local --milestone m3 --no-deploy` with the M2 build still deployed:
+  every test fails (no actions or patching yet); then the M3 build is deployed.
+- **Verification:**
+  ```bash
+  cargo xtask ci live --target local --milestone m3
+  ```
+  Expected: 8 passed, 0 failed (the rollback test takes about 20 minutes).
+- **Regression:** `cargo xtask ci fast`: exit 0; `cargo xtask ci live --target local --milestone m1`: 8 passed.
+- **Manual verification:** the M3 page walk (approvals, jobs, library, patching), done by the run as in L2. The
+  real-hardware confirmations are MV7 to MV10, run in L9.
+- **Done when:**
+  - [ ] New tests observed failing before the M3 deploy
+  - [ ] New tests and the regression suites pass
+  - [ ] M3 page walk recorded
+  - [ ] Evidence recorded below
+- **Risk / rollback:** an emulated `vm-test` may be too slow for the provisioning test's timeout; the test then uses an
+  LXC template and the VM case moves to L9 (deviation). Revert the commit.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
@@ -2441,7 +2703,8 @@ Only additions to that list are written out below.
   ```
   Expected: 6 passed, 0 failed on each of 5.10, 6.1 and the current Proxmox kernel series.
 - **Regression (in addition):** none beyond the fast tier.
-- **Manual verification:** MV2 covers LXC attribution from the Proxmox host (E37).
+- **Manual verification:** LXC attribution from the Proxmox host (E37) is tested in L5 on `pve9`, then on a real
+  host as MV2 in L9.
 - **Risk / rollback:** a kernel where loading fails uses sampling. Revert the commit.
 - **Evidence:**
   | When | Command | Result |
@@ -2587,7 +2850,7 @@ Only additions to that list are written out below.
   ```
   Expected: 12 passed, then 2 passed; 0 failed.
 - **Regression (in addition):** `cargo xtask ci it`: exit 0.
-- **Manual verification:** MV11 (AC17, AC72 and E66 on the owner's Proxmox with the datacenter firewall on: a test
+- **Manual verification:** first in the local lab (L5); then MV11 (AC17, AC72 and E66 on the owner's Proxmox with the datacenter firewall on: a test
   guest with its own rules is quarantined after an approval with step-up, reaches only DHCP and the hub, the hub still
   runs diagnostics, the forensic snapshot exists, release restores identical configuration; a change during quarantine
   stops release; E24 with the datacenter firewall off).
@@ -2616,8 +2879,44 @@ Only additions to that list are written out below.
   cargo nextest run -p rackhand-hub -E 'test(pages::security) | test(pages::machine_connections) | test(pages::quarantine)'
   ```
   Expected: 4 passed, 0 failed.
-- **Manual verification:** part of MV12.
+- **Manual verification:** the M4 page walk, done by the run in L5.
 - **Risk / rollback:** revert.
+- **Evidence:**
+  | When | Command | Result |
+  | --- | --- | --- |
+
+### L5: Live pass for M4: security watch and quarantine
+- **Design refs:** 14, D107, AC15, AC16, AC17, AC58, AC72, E24, E37, E66
+- **Goal:** security signals fire on real machines and kernels, and quarantine works on a real Proxmox guest firewall.
+- **Depends on:** T73, L4
+- **Changes:** live tests only.
+- **Tests to write first:**
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `live::m4::new_ssh_key_is_critical` | a key added to a user on `target` raises a critical event, with no file contents stored | AC16 |
+  | `live::m4::login_from_new_address_is_a_warning` | an SSH login to `target` from `agentless`, a new address, is a warning | AC16 |
+  | `live::m4::exec_from_tmp_and_new_port_flagged` | on `target` (Ubuntu 24.04 kernel, eBPF), a program run from `/tmp` that opens a new listening port raises both events | AC15 |
+  | `live::m4::lxc_connection_attributed_to_its_cgroup` | the probe on the `pve9` host attributes a connection made inside `ct-test` to that guest | E37 |
+  | `live::m4::quarantine_lxc_guest_and_release` | after approval with step-up, `ct-test` reaches only DHCP and the hub; diagnostics still work; release restores the firewall configuration exactly | AC17, AC72 |
+  | `live::m4::changed_firewall_during_quarantine_stops_release` | a firewall change during quarantine stops the release with the reason | E66 |
+  | `live::m4::datacenter_firewall_off_fails_with_instructions` | with the datacenter firewall off, quarantine fails with instructions and never turns it on | E24 |
+  | `live::m4::monitor_guest_auto_rule_does_nothing` | an auto rule matching a `monitor` guest takes no action | AC58 |
+- **Fails first:** `cargo xtask ci live --target local --milestone m4 --no-deploy` with the M3 build still deployed:
+  every test fails (no security watch yet); then the M4 build is deployed.
+- **Verification:**
+  ```bash
+  cargo xtask ci live --target local --milestone m4
+  ```
+  Expected: 8 passed, 0 failed.
+- **Regression:** `cargo xtask ci fast`: exit 0; `cargo xtask ci live --target local --milestone m1`: 8 passed.
+- **Manual verification:** the M4 page walk (security pages), done by the run as in L2. Real-hardware confirmations
+  are MV2, MV9 and MV11, run in L9.
+- **Done when:**
+  - [ ] New tests observed failing before the M4 deploy
+  - [ ] New tests and the regression suites pass
+  - [ ] M4 page walk recorded
+  - [ ] Evidence recorded below
+- **Risk / rollback:** quarantine tests run only on lab guests. Revert the commit.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
@@ -2757,7 +3056,7 @@ Only additions to that list are written out below.
   ```
   Expected: 4 passed, then 3 passed; 0 failed.
 - **Regression (in addition):** `cargo xtask ci it`: exit 0.
-- **Manual verification:** MV14 (AC25: a real Claude Code operator and a stopped Compose project; within 30 minutes the
+- **Manual verification:** run in L6 on the lab's `operator` machine with the owner's sign-in, as MV14 (AC25: a real Claude Code operator and a stopped Compose project; within 30 minutes the
   assistant calls `run_diagnostic`, requests `compose-restart`, and after approval the containers run and the incident
   resolves, in at least 2 of 3 runs).
 - **Risk / rollback:** revert.
@@ -2817,8 +3116,44 @@ Only additions to that list are written out below.
   cargo nextest run -p rackhand-hub -E 'test(pages::transcript) | test(pages::resume) | test(pages::mcp_key) | test(pages::operator_setup)'
   ```
   Expected: 4 passed, 0 failed.
-- **Manual verification:** part of MV12.
+- **Manual verification:** the M5 page walk, done by the run in L6.
 - **Risk / rollback:** revert.
+- **Evidence:**
+  | When | Command | Result |
+  | --- | --- | --- |
+
+### L6: Live pass for M5: a real Claude Code operator
+- **Design refs:** 14, D107, 7.3.5, AC22, AC24, AC25
+- **Goal:** a real Claude Code operator, signed in with the owner's account, connects to the lab hub, fixes a stopped
+  Compose project after approval, and ignores injected text.
+- **Depends on:** T79, L5
+- **Changes:** live tests; `lab` stages a Compose project on `target` (Docker installed there by cloud-init) and
+  installs Claude Code and the operator on `operator`, which joins `hub` with an operator invite.
+- **Tests to write first:**
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `live::m5::operator_connects_and_lists_its_tools` | the operator on `operator` connects to `hub` and lists only the tools its key allows | 7.3.5 |
+  | `live::m5::stopped_compose_project_fixed_in_2_of_3_runs` | three runs: in at least two the assistant calls `run_diagnostic`, requests `compose-restart`, and after approval the incident resolves within 30 minutes | AC25 |
+  | `live::m5::injected_approve_text_changes_nothing` | a container log line telling the assistant to approve itself changes nothing; the job still waits for a person | AC24 |
+  | `live::m5::out_of_scope_tool_is_refused_and_audited` | a request outside the operator's scope is refused and audited | AC22 |
+- **Fails first:** `RACKHAND_LIVE_ASSISTANT=1 cargo xtask ci live --target local --milestone m5 --no-deploy` with the
+  M4 build still deployed: every test fails (no operator yet); then the M5 build is deployed.
+- **Verification:**
+  ```bash
+  RACKHAND_LIVE_ASSISTANT=1 cargo xtask ci live --target local --milestone m5
+  ```
+  Expected: 4 passed, 0 failed.
+- **Regression:** `cargo xtask ci fast`: exit 0; `cargo xtask ci live --target local --milestone m1`: 8 passed.
+- **Manual verification:** MV14: the owner signs in to Claude Code once in the operator's configuration directory on
+  `operator` (the run can't hold the owner's credentials); the run then does the three runs. The M5 page walk is done by
+  the run as in L2. The runs use the owner's Claude Code usage.
+- **Done when:**
+  - [ ] New tests observed failing before the M5 deploy
+  - [ ] New tests and the regression suites pass
+  - [ ] M5 page walk recorded
+  - [ ] Evidence recorded below
+- **Risk / rollback:** the run waits here until the owner has signed in; without `RACKHAND_LIVE_ASSISTANT=1` the tests
+  skip and the step stays `blocked`. only `lab reset operator` or `lab destroy` removes the sign-in. Revert the commit.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
@@ -2942,7 +3277,7 @@ Only additions to that list are written out below.
   ```
   Expected: 3 passed, 0 failed.
 - **Regression (in addition):** `cargo xtask ci net`: exit 0.
-- **Manual verification:** MV15 (AC27 across the real internet between two of the owner's sites).
+- **Manual verification:** first across the lab's two sites in L7; then MV15 (AC27 across the real internet between two of the owner's sites).
 - **Risk / rollback:** revert.
 - **Evidence:**
   | When | Command | Result |
@@ -3095,8 +3430,42 @@ Only additions to that list are written out below.
   cargo nextest run -p rackhand-hub -E 'test(pages::peer) | test(pages::relay)'
   ```
   Expected: 4 passed, 0 failed.
-- **Manual verification:** part of MV12.
+- **Manual verification:** the M6 page walk, done by the run in L7.
 - **Risk / rollback:** revert.
+- **Evidence:**
+  | When | Command | Result |
+  | --- | --- | --- |
+
+### L7: Live pass for M6: two sites
+- **Design refs:** 14, D107, AC27, AC28, AC29, AC30, AC46
+- **Goal:** two lab sites link through the lab relay and NAT, share summaries, transfer, tunnel and proxy, with real
+  machines.
+- **Depends on:** T88, L6
+- **Changes:** live tests; `lab deploy` installs the relay on `relay` and a second hub on `hub-b`.
+- **Tests to write first:**
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `live::m6::sites_link_and_exchange_summaries` | `hub` and `hub-b` link (site B behind the relay's NAT) and each shows the other's machines | AC27 |
+  | `live::m6::cross_hub_request_needs_owner_approval` | a runbook requested from `hub` on `target-b` waits for approval on `hub-b` | AC28 |
+  | `live::m6::cli_connect_works_as_proxycommand` | `ssh -o ProxyCommand='rackhand-cli connect %h'` reaches `target-b` from WSL | AC30 |
+  | `live::m6::transfer_resumes_after_a_cut` | a 500 MB transfer (AC29's 5 GB shortened for the lab) cut halfway with `lab cut hub-b` resumes and the hash matches | AC29 |
+  | `live::m6::remote_mode_probe_runs_a_runbook` | `target-b` in remote mode reports to `hub` and runs a runbook through the tunnel | AC46 |
+- **Fails first:** `cargo xtask ci live --target local --milestone m6 --no-deploy` with the M5 build still deployed:
+  every test fails (no peers yet); then the M6 build is deployed.
+- **Verification:**
+  ```bash
+  cargo xtask ci live --target local --milestone m6
+  ```
+  Expected: 5 passed, 0 failed.
+- **Regression:** `cargo xtask ci fast`: exit 0; `cargo xtask ci live --target local --milestone m1`: 8 passed.
+- **Manual verification:** the M6 page walk (peers, relays, peer sites), done by the run as in L2. The internet link is
+  MV15, run in L9 if the owner provides two sites.
+- **Done when:**
+  - [ ] New tests observed failing before the M6 deploy
+  - [ ] New tests and the regression suites pass
+  - [ ] M6 page walk recorded
+  - [ ] Evidence recorded below
+- **Risk / rollback:** revert the commit.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
@@ -3179,7 +3548,8 @@ Only additions to that list are written out below.
   hashes; the verification crate from T44 also checks manifests. No CI job or run step ever holds a signing key.
 - **Depends on:** T44
 - **Changes:** `crates/rackhand-release/` (adds the manifest format and manifest checks); `xtask release build`
-  (deterministic flags, `SOURCE_DATE_EPOCH`, path remapping) and `xtask release repro` (builds twice in different
+  (deterministic flags, `SOURCE_DATE_EPOCH`, path remapping, and `RACKHAND_RELEASE=1`, which makes the lab's
+  `lab-build` feature fail the build) and `xtask release repro` (builds twice in different
   directories and compares); `.github/workflows/release.yml` (self-hosted, builds artifacts for every target in 5.2 and
   uploads them unsigned as workflow artifacts; no secrets); `docs/maintainers/signing.md` (the offline procedure for the
   maintainer).
@@ -3297,7 +3667,8 @@ Only additions to that list are written out below.
   ```
   Expected: 3 passed, 0 failed.
 - **Regression (in addition):** `cargo xtask ci it`: exit 0.
-- **Manual verification:** MV13 (AC32 lab: `rackhand-lxc.sh` on the owner's Proxmox host; also E34 recovery once).
+- **Manual verification:** first in the local lab (L8: the LXC script on `pve9`, and E34 recovery); then MV13 (the
+  LXC script on a real Proxmox host, in L9).
 - **Risk / rollback:** revert.
 - **Evidence:**
   | When | Command | Result |
@@ -3445,6 +3816,97 @@ Only additions to that list are written out below.
   | When | Command | Result |
   | --- | --- | --- |
 
+### L8: Final local pass for M8
+- **Design refs:** 14, D107, AC32, AC37, AC41, AC67, E34
+- **Goal:** updates, site bootstrap, the LXC script, offline operation and master-key recovery work on real machines,
+  and every earlier live pass still passes on the final build.
+- **Depends on:** T99, L7
+- **Changes:** live tests; `lab deploy --release <version>` builds lab releases with `-lab.N` pre-release versions
+  (for example `0.1.0-lab.1` then `0.1.0-lab.2`) so update order can be tested without changing the workspace version
+  (D106).
+- **Tests to write first:**
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `live::m8::probe_self_update_canary_first` | publishing `-lab.2` updates the canary (`target`) first, then `alpine`; a broken `-lab.3` is restored within 3 minutes | AC37 |
+  | `live::m8::hub_updater_upgrades_and_refuses_lower` | the hub updates to `-lab.2` and refuses `-lab.1` and an unsigned build | AC67 |
+  | `live::m8::lxc_script_creates_a_hub_on_proxmox` | `rackhand-lxc.sh` on `pve9` creates an LXC hub that starts and links to `hub` | AC32 |
+  | `live::m8::bootstrap_turns_fresh_debian_into_a_linked_hub` | site bootstrap on a reset `hub-b` gives a hub that links to `hub` | AC32 |
+  | `live::m8::recovery_procedure_restores_the_master_key` | following `docs/recovery.md` on a lab hub with its key file removed brings it back with its vault readable | E34 |
+  | `live::m8::lab_without_internet_keeps_working` | with every user-mode NIC cut, monitoring, callouts to the WSL-side fakes and runbooks keep working | AC41 |
+- **Fails first:** `cargo xtask ci live --target local --milestone m8 --no-deploy` with the M6 build still deployed:
+  every test fails (no updater, bootstrap or LXC script yet); then the M8 build is deployed.
+- **Verification:**
+  ```bash
+  cargo xtask ci live --target local --milestone m8 && cargo xtask ci live --target local --milestone all
+  ```
+  Expected: 6 passed, 0 failed; then every live test from L1 to L8 passes (`all`, 52 tests; the M5 tests run when
+  `RACKHAND_LIVE_ASSISTANT=1` is set and are otherwise reported as skipped).
+- **Regression:** `cargo xtask ci fast`: exit 0.
+- **Manual verification:** a final page walk of every page in 7.7.1, done by the run as in L2.
+- **Done when:**
+  - [ ] New tests observed failing before the M8 deploy
+  - [ ] New tests and the full live suite pass
+  - [ ] Final page walk recorded
+  - [ ] Evidence recorded below
+- **Risk / rollback:** revert the commit.
+- **Evidence:**
+  | When | Command | Result |
+  | --- | --- | --- |
+
+### L9: Real-lab pass
+- **Design refs:** 14 (real lab), D107, AC17, AC19, AC27, AC32, AC33, AC58, AC72, AC73, E11, E37, E62, E66
+- **Goal:** the same build, deployed to the owner's hub VM or LXC, manages one real VM, and the checks that need real
+  hardware pass on the owner's Proxmox and TrueNAS.
+- **Depends on:** L8
+- **Changes:**
+  - `lab/real.env.example` (committed, no values): `RACKHAND_REAL_HUB`, `RACKHAND_REAL_TARGET`, `RACKHAND_REAL_SSH_KEY`,
+    `RACKHAND_REAL_PVE8`, `RACKHAND_REAL_PVE9`, `RACKHAND_REAL_PVE_TOKEN_FILE`, `RACKHAND_REAL_GUEST`,
+    `RACKHAND_REAL_ZFS_HOST`, `RACKHAND_REAL_TRUENAS`, `RACKHAND_REAL_TRUENAS_KEY_FILE`, `RACKHAND_REAL_SITE_B`.
+  - `--target real` for `ci live` and `lab deploy`: reads the untracked `lab/real.env`; refuses any host or guest not
+    named there. The hub and one managed VM are required: without `RACKHAND_REAL_HUB`, `RACKHAND_REAL_TARGET` and
+    `RACKHAND_REAL_SSH_KEY` the first five tests fail and L9 is `blocked`. Any other test whose variables are missing
+    is skipped with "not configured", and its MV stays open.
+  - `live::real::*` tests, mostly the local tests' bodies run against the real hosts.
+- **Tests to write first:**
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `live::real::refuses_unnamed_hosts` | `--target real` with a guest not in `real.env` fails before connecting | D107 |
+  | `live::real::hub_deploys_and_signs_in` | the hub installs on `RACKHAND_REAL_HUB` and sign-in with the second factor works | AC40 |
+  | `live::real::target_installs_and_reports` | `RACKHAND_REAL_TARGET` enrolls and reports within 30 s | AC1, AC35 |
+  | `live::real::service_stop_calls_out_and_resolves` | as `live::m1::stopped_service_calls_out_and_resolves` | AC5 |
+  | `live::real::probe_stop_raises_silence` | stopping the probe service gives the silence warning at 60 s | AC8 |
+  | `live::real::lxc_attribution_on_a_real_host` | MV2 | E37 |
+  | `live::real::zfs_memory_reading` | MV3 | 7.6.1 |
+  | `live::real::proxmox_minimal_privileges` | MV4: the S4 script on both real nodes with the owner's token and named guest | 7.8.6 |
+  | `live::real::patch_named_guest_with_snapshot_and_rollback` | MV7 | AC19, E11 |
+  | `live::real::quarantine_named_guest_and_release` | MV9 and MV11 | AC17, AC58, AC72, E66 |
+  | `live::real::provision_vm_on_a_named_node` | MV10 | AC33 |
+  | `live::real::lxc_script_on_a_real_node` | MV13 | AC32 |
+  | `live::real::truenas_driver_reports` | the TrueNAS driver reports every 7.4.2 TrueNAS metric with the owner's read-only key | AC11 |
+- **Fails first:** with `lab/real.env` present, `cargo xtask ci live --target real --milestone real --no-deploy` (no
+  hub on the owner's host yet) fails every test except the first with "hub not reachable"; `refuses_unnamed_hosts`
+  fails until the guard exists.
+- **Verification:**
+  ```bash
+  cargo xtask ci live --target real --milestone real
+  ```
+  Expected: the five required tests and every other configured test pass, 0 failed; skipped tests are listed with
+  their open MV.
+- **Regression:** `cargo xtask ci fast`: exit 0.
+- **Manual verification:** the owner provides `lab/real.env` and the access it names (MV18). MV8 (a hypervisor
+  hosting a test hub) and MV15 (two sites over the internet) run here only if the owner names those hosts.
+- **Done when:**
+  - [ ] New tests observed failing before the deploy
+  - [ ] Every configured test passes; every skipped test has its MV listed as open
+  - [ ] MV rows updated with the results
+  - [ ] Evidence recorded below (redacted per D71; no real host names or addresses)
+- **Risk / rollback:** the run touches only the hosts and guests named in `real.env`; destructive tests (patch,
+  rollback, quarantine, provisioning) run only on the named test guest and node. The documented uninstall steps for the
+  hub and the probe remove the lab build afterward. Revert the commit.
+- **Evidence:**
+  | When | Command | Result |
+  | --- | --- | --- |
+
 ## Traceability matrix
 
 Every acceptance criterion, functional requirement, contract, edge case and non-functional row in the design, with
@@ -3454,55 +3916,55 @@ the steps and tests that prove it. "MV" marks a manual check (see *Manual verifi
 
 | Target | Description | Step(s) | Test(s) / check | Status |
 | --- | --- | --- | --- | --- |
-| AC1 | Vitals, services, containers, updates within 30 s | T22, T39, T42 | `collect::every_catalogue_metric_from_debian_fixture`, `query::vitals_visible_before_compaction`, `it::probe_hub::vitals_visible_within_30s` | todo |
-| AC2 | 2-hour outage backfills, live under 30 s, no stale incidents | T25, T32, T42, T96 | `ingest::replayed_sample_older_than_10_min_flagged_history_only`, `incidents::stale_samples_do_not_open_threshold_incidents`, `it::probe_hub::outage_backfills_and_live_stays_fresh`, `perf::outage_2h_backfills_in_15_min_live_under_30s` | todo |
+| AC1 | Vitals, services, containers, updates within 30 s | T22, T39, T42, L2, L9 | `collect::every_catalogue_metric_from_debian_fixture`, `query::vitals_visible_before_compaction`, `it::probe_hub::vitals_visible_within_30s`; `live::m1::target_installs_and_reports_within_30s`, `live::real::target_installs_and_reports` | todo |
+| AC2 | 2-hour outage backfills, live under 30 s, no stale incidents | T25, T32, T42, T96, L2 | `ingest::replayed_sample_older_than_10_min_flagged_history_only`, `incidents::stale_samples_do_not_open_threshold_incidents`, `it::probe_hub::outage_backfills_and_live_stays_fresh`, `perf::outage_2h_backfills_in_15_min_live_under_30s`; `live::m1::cut_link_backfills_without_stale_incidents` | todo |
 | AC3 | Buffer limit drops oldest, `probe.data_gap` | T26, T42 | `probe_contract::data_dropped_closes_gap_and_records_event`, `it::probe_hub::buffer_limit_drops_oldest_with_gap_event` | todo |
 | AC4 | Retention and rollups correct | T27 | `rollup::tier1_equals_min_max_avg_of_minute`, `rollup::tier2_...`, `retention::each_tier_removes_only_older_than_limit` | todo |
-| AC5 | Critical and warning callouts in time, resolution | T28, T33, T42 | `threshold::worked_example_...`, `notify::critical_sent_immediately_warnings_grouped_5_min`, `it::probe_hub::disk_rule_callouts_and_resolution` | todo |
+| AC5 | Critical and warning callouts in time, resolution | T28, T33, T42, L2, L9 | `threshold::worked_example_...`, `notify::critical_sent_immediately_warnings_grouped_5_min`, `it::probe_hub::disk_rule_callouts_and_resolution`; `live::m1::stopped_service_calls_out_and_resolves`, `live::real::service_stop_calls_out_and_resolves` | todo |
 | AC6 | Forecast example ETA 62.5 h | T29 | `forecast::worked_example_warns_with_eta_62_5_hours` | todo |
 | AC7 | Baseline example at 14:35, frozen | T31 | `baseline::worked_example_warns_at_14_35_and_freezes` | todo |
-| AC8 | Silent warning at 60 s; `expected_offline` info only | T30, T42 | `silence::machine_warning_at_max_60s_or_4_intervals`, `it::probe_hub::stopped_probe_opens_silent_warning_at_60s` | todo |
+| AC8 | Silent warning at 60 s; `expected_offline` info only | T30, T42, L2, L9 | `silence::machine_warning_at_max_60s_or_4_intervals`, `it::probe_hub::stopped_probe_opens_silent_warning_at_60s`; `live::m1::paused_target_raises_silence_warning`, `live::real::probe_stop_raises_silence` | todo |
 | AC9 | Three hubs, one cut, one callout | T81 | `net_tests::peer_watch::three_hubs_one_cut_exactly_one_callout` | todo |
-| AC10 | HTTP check and certificate warnings | T29, T31, T46 | `it::checks::http_check_on_stopped_service_and_expiring_cert` | todo |
-| AC11 | Driver metrics from simulators; silent after 2 polls | T47, T48, T30 | `proxmox::poll_maps_every_catalogue_metric`, `it::drivers::form_added_simulators_report_and_silence_after_2_polls` | todo |
+| AC10 | HTTP check and certificate warnings | T29, T31, T46, L3 | `it::checks::http_check_on_stopped_service_and_expiring_cert`; `live::m2::service_checks_and_certificate_warning` | todo |
+| AC11 | Driver metrics from simulators; silent after 2 polls | T47, T48, T30, L3, L9 | `proxmox::poll_maps_every_catalogue_metric`, `it::drivers::form_added_simulators_report_and_silence_after_2_polls`; `live::m2::proxmox8_driver_reports_node_and_guests`, `live::m2::proxmox9_driver_reports_node_and_guests`, `live::m2::silent_proxmox_node_after_two_polls`, `live::m2::snmp_appliance_added_by_form_reports`, `live::real::truenas_driver_reports` | todo |
 | AC12 | Step timeout and 1 MB output cap | T53, T55, T58 | `it::executor::step_timeout_fails_with_timeout`, `it::executor::output_over_1mb_cut_with_marker_in_job_log` | todo |
 | AC13 | New ASN and country on 4444 is a warning; sampling shown | T67, T68, T70 | `conn_score::new_asn_new_country_port_4444_is_warning_naming_container`, `ebpf_tests::capture::short_connect_seen`, `capability::no_ebpf_reports_sampling` | todo |
 | AC14 | Threat-listed IP critical within 60 s | T70 | `it::conn::threat_listed_destination_critical_within_60s` | todo |
-| AC15 | Exec from /tmp and new port; container start quiet | T71 | `it::security::exec_from_tmp_critical_new_port_warning_container_start_nothing` | todo |
-| AC16 | Key added critical; new-IP login warning; no file contents | T71 | `it::security::authorized_keys_added_outside_job_critical_new_ip_login_warning` | todo |
-| AC17 | Approved guest quarantine and release | T72 | `it::quarantine::nftables_only_hub_paths_and_dhcp_then_removed`; MV11 | todo |
+| AC15 | Exec from /tmp and new port; container start quiet | T71, L5 | `it::security::exec_from_tmp_critical_new_port_warning_container_start_nothing`; `live::m4::exec_from_tmp_and_new_port_flagged` | todo |
+| AC16 | Key added critical; new-IP login warning; no file contents | T71, L5 | `it::security::authorized_keys_added_outside_job_critical_new_ip_login_warning`; `live::m4::new_ssh_key_is_critical`, `live::m4::login_from_new_address_is_a_warning` | todo |
+| AC17 | Approved guest quarantine and release | T72, L5, L9 | `it::quarantine::nftables_only_hub_paths_and_dhcp_then_removed`; `live::m4::quarantine_lxc_guest_and_release`, `live::real::quarantine_named_guest_and_release`; MV11 | todo |
 | AC18 | Auto rule for `dmz`; hypervisor excluded; step-up to enable | T72 | `it::quarantine::auto_rule_dmz_known_bad_quarantines_end_to_end`, `quarantine::auto_rule_matches_tag_quarantines_without_approval`, `quarantine::hypervisor_with_same_finding_not_quarantined`, `quarantine::enabling_rule_requires_step_up` | todo |
-| AC19 | Patch flow with snapshot, verify, job log | T59 | `it::patch::debian_full_flow_with_fake_package_manager`; MV7 | todo |
+| AC19 | Patch flow with snapshot, verify, job log | T59, L4, L9 | `it::patch::debian_full_flow_with_fake_package_manager`; `live::m3::patch_target_from_lab_repository`, `live::m3::lxc_patch_snapshots_and_prunes_to_three`, `live::real::patch_named_guest_with_snapshot_and_rollback`; MV7 | todo |
 | AC20 | Hold, approve-only, maintenance windows | T34, T59 | `select::hold_never_patched`, `select::approve_only_...`, `it::patch::no_patch_or_silence_alert_during_maintenance_window` | todo |
 | AC21 | Failed verify routes to `patch-failure`, offer within 60 s | T59, T77 | `it::patch::verify_fails_on_missing_required_mount`, `it::operator::patch_failure_offer_within_60s` | todo |
-| AC22 | Out of scope and tool not allowed, audited | T75 | `mcp_contract::exec_outside_job_hosts_out_of_scope_and_audited`, `mcp_contract::tool_not_in_playbook_refused_and_audited` | todo |
+| AC22 | Out of scope and tool not allowed, audited | T75, L6 | `mcp_contract::exec_outside_job_hosts_out_of_scope_and_audited`, `mcp_contract::tool_not_in_playbook_refused_and_audited`; `live::m5::out_of_scope_tool_is_refused_and_audited` | todo |
 | AC23 | Level-1 approval flow, mismatch, no MCP approval | T75 | `mcp_contract::level_1_run_runbook_needs_approval_then_runs_once`, `mcp_contract::different_arguments_give_approval_mismatch`, `mcp_contract::no_tool_changes_an_approval` | todo |
-| AC24 | Injected "approve" text changes nothing | T75 | `mcp_contract::injected_output_does_not_change_approvals` | todo |
-| AC25 | Real Claude Code fixes a stopped Compose project, 2 of 3 runs | T77 | MV14 | todo |
+| AC24 | Injected "approve" text changes nothing | T75, L6 | `mcp_contract::injected_output_does_not_change_approvals`; `live::m5::injected_approve_text_changes_nothing` | todo |
+| AC25 | Real Claude Code fixes a stopped Compose project, 2 of 3 runs | T77, L6 | `live::m5::stopped_compose_project_fixed_in_2_of_3_runs`; MV14 | todo |
 | AC26 | Personal `read` vs `read_request` keys, expiry | T74, T75 | `mcp_contract::read_key_refused_for_diagnostic_and_runbook`, `mcp_contract::expired_key_refused`, `mcp_contract::read_request_key_same_gating` | todo |
-| AC27 | Two hubs behind NAT link and exchange summaries | T83 | `net_tests::holepunch::full_cone_connects_direct`, `net_tests::holepunch::symmetric_connects_via_relay`; MV15 | todo |
-| AC28 | Cross-hub request needs owner approval; `JobLog` denied | T80 | `it::peers::responder_on_a_requests_compose_restart_on_b`, `peer_contract::action_request_needs_owner_approval`, `peer_contract::joblog_denied_by_default` | todo |
-| AC29 | 5 GB transfer resumes, hash matches | T85 | `net_tests::xfer::send_5gb_interrupted_at_60_percent_resumes_hash_matches` | todo |
-| AC30 | `connect` as `ProxyCommand`; refused without device | T84 | `net_tests::tunnel::ssh_through_connect_as_proxycommand` | todo |
+| AC27 | Two hubs behind NAT link and exchange summaries | T83, L7 | `net_tests::holepunch::full_cone_connects_direct`, `net_tests::holepunch::symmetric_connects_via_relay`; `live::m6::sites_link_and_exchange_summaries`; MV15 | todo |
+| AC28 | Cross-hub request needs owner approval; `JobLog` denied | T80, L7 | `it::peers::responder_on_a_requests_compose_restart_on_b`, `peer_contract::action_request_needs_owner_approval`, `peer_contract::joblog_denied_by_default`; `live::m6::cross_hub_request_needs_owner_approval` | todo |
+| AC29 | 5 GB transfer resumes, hash matches | T85, L7 | `net_tests::xfer::send_5gb_interrupted_at_60_percent_resumes_hash_matches`; `live::m6::transfer_resumes_after_a_cut` | todo |
+| AC30 | `connect` as `ProxyCommand`; refused without device | T84, L7 | `net_tests::tunnel::ssh_through_connect_as_proxycommand`; `live::m6::cli_connect_works_as_proxycommand` | todo |
 | AC31 | Relay modes, limits, lists, priority if S2 allows | T08, T82 | `net_tests::relay::*`, `relay_lists::garbage_and_10000_entries_keep_first_100_valid` | todo |
-| AC32 | Site bootstrap and LXC script | T41, T94 | `it::bootstrap::fresh_debian_becomes_hub_and_links_to_existing`, `it::bootstrap::lxc_script_pct_calls_match_spec`; MV13 | todo |
-| AC33 | `provision-vm` boots, enrolls, healthy | T64 | `provision::vm_clone_cloudinit_start_calls_match_recorded_api`; MV10 | todo |
+| AC32 | Site bootstrap and LXC script | T41, T94, L8, L9 | `it::bootstrap::fresh_debian_becomes_hub_and_links_to_existing`, `it::bootstrap::lxc_script_pct_calls_match_spec`; `live::m8::lxc_script_creates_a_hub_on_proxmox`, `live::m8::bootstrap_turns_fresh_debian_into_a_linked_hub`, `live::real::lxc_script_on_a_real_node`; MV13 | todo |
+| AC33 | `provision-vm` boots, enrolls, healthy | T64, L4, L9 | `provision::vm_clone_cloudinit_start_calls_match_recorded_api`; `live::m3::provision_vm_boots_enrolls_and_is_healthy`, `live::real::provision_vm_on_a_named_node`; MV10 | todo |
 | AC34 | `guided-install` steps approved in order | T77 | `it::operator::guided_install_each_change_approved_in_order` | todo |
-| AC35 | Linux, Alpine, Windows install; bad signature stops | T44, T90 | `it::install::debian_managed_enrolls_and_reports`, `it::install::alpine_managed_enrolls_and_reports`, `it::install::bad_signature_stops_before_installing`, `Install.Tests`; MV16 | todo |
-| AC36 | Agentless, operator, device joins; used or expired refused | T35, T49 | `join_contract::device_operator_and_peer_invites_join`, `join_contract::used_expired_and_wrong_kind_tokens_refused`, `agentless::form_join_completes_and_used_invite_refused` | todo |
-| AC37 | Canary first; broken release restored within 3 min | T92 | `rollout::canary_first_then_rest_after_1h_without_incidents`, `it::update::broken_release_restored_within_3_minutes` | todo |
+| AC35 | Linux, Alpine, Windows install; bad signature stops | T44, T90, L2, L3 | `it::install::debian_managed_enrolls_and_reports`, `it::install::alpine_managed_enrolls_and_reports`, `it::install::bad_signature_stops_before_installing`, `Install.Tests`; `live::m1::target_installs_and_reports_within_30s`, `live::m1::tampered_probe_stops_the_install`, `live::m2::alpine_installs_and_reports`; MV16 | todo |
+| AC36 | Agentless, operator, device joins; used or expired refused | T35, T49, L3 | `join_contract::device_operator_and_peer_invites_join`, `join_contract::used_expired_and_wrong_kind_tokens_refused`, `agentless::form_join_completes_and_used_invite_refused`; `live::m2::snmp_appliance_added_by_form_reports` | todo |
+| AC37 | Canary first; broken release restored within 3 min | T92, L8 | `rollout::canary_first_then_rest_after_1h_without_incidents`, `it::update::broken_release_restored_within_3_minutes`; `live::m8::probe_self_update_canary_first` | todo |
 | AC38 | Library revision pushed within 60 s; secret blocks push | T56 | `it::mirror::change_pushed_within_60s_and_planted_secret_blocks`, `scan::refuses_each_secret_kind` | todo |
 | AC39 | Audit for every kind; tamper detected; retention verifiable | T20, T36, T37, T55, T56, T74, T75 | `audit::*`, `web::configuration_changes_are_audited`, `auth::sign_ins_and_failures_are_audited`, `actions::jobs_and_approvals_are_audited`, `library::changes_are_audited`, `mcp_contract::every_call_audited` | todo |
-| AC40 | Second factor mandatory; OIDC with local step-up; role limits | T36, T37, T38, T54, T58 | `auth::account_without_second_factor_cannot_sign_in`, `oidc::*`, `pages::viewer_cannot_approve_responder_cannot_approve_high` | todo |
-| AC41 | Works with no internet, peers or operator | T97 | `it::offline::collects_alerts_by_lan_smtp_and_runs_runbooks` | todo |
+| AC40 | Second factor mandatory; OIDC with local step-up; role limits | T36, T37, T38, T54, T58, L2, L9 | `auth::account_without_second_factor_cannot_sign_in`, `oidc::*`, `pages::viewer_cannot_approve_responder_cannot_approve_high`; `live::m1::hub_serves_dashboard_and_metrics`, `live::real::hub_deploys_and_signs_in` | todo |
+| AC41 | Works with no internet, peers or operator | T97, L8 | `it::offline::collects_alerts_by_lan_smtp_and_runs_runbooks`; `live::m8::lab_without_internet_keeps_working` | todo |
 | AC42 | Soak, load, fill within budgets | T96 | `perf::*` | todo |
 | AC43 | Static, signed, reproducible artifacts | T91 | `xtask::repro::two_builds_identical_hashes`, `xtask::release::artifacts_are_static` | todo |
 | AC44 | Workflow guards on recorded payloads | T03, T04 | `ci_guard::*` | todo |
 | AC45 | Older probe connects and is offered the update | T95, T92 | `compat::older_probe_connects_reports_and_is_offered_update` (version rules only until a previous minor release exists) | todo |
-| AC46 | Remote-mode probe reports and runs a runbook through the tunnel | T84 | `net_tests::tunnel::runbook_on_remote_mode_machine_through_tunnel` | todo |
-| AC47 | Restored backup; probes reconnect | T45 | `it::backup::restore_on_new_machine_probes_reconnect` | todo |
+| AC46 | Remote-mode probe reports and runs a runbook through the tunnel | T84, L7 | `net_tests::tunnel::runbook_on_remote_mode_machine_through_tunnel`; `live::m6::remote_mode_probe_runs_a_runbook` | todo |
+| AC47 | Restored backup; probes reconnect | T45, L2 | `it::backup::restore_on_new_machine_probes_reconnect`; `live::m1::backup_restores_on_a_fresh_hub` | todo |
 | AC48 | Rolled-back guest starts new epoch, accepted at once | T23, T26 | `epoch::hub_ahead_starts_new_epoch_even_with_backlog`, `probe_contract::rollback_epoch_accepted_at_once` | todo |
-| AC49 | `/metrics` 401 without token, every series with | T40 | `metrics::without_token_401`, `metrics::with_token_every_series_latest_value` | todo |
+| AC49 | `/metrics` 401 without token, every series with | T40, L2 | `metrics::without_token_401`, `metrics::with_token_every_series_latest_value`; `live::m1::hub_serves_dashboard_and_metrics` | todo |
 | AC50 | Second job waits 60 s then `machine_busy` | T55, T75 | `actions::second_job_waits_60s_then_machine_busy`, `it::executor::second_job_of_any_kind_waits_then_machine_busy`, `mcp_contract::exec_on_busy_machine_waits_then_machine_busy` | todo |
 | AC51 | Daily cap routes to a person | T76 | `assist::daily_cap_routes_to_person_with_note` | todo |
 | AC52 | Re-notify at 6 h, ack stops it | T33 | `notify::resent_on_rise_and_every_6h_unacked_and_not_before` | todo |
@@ -3511,22 +3973,22 @@ the steps and tests that prove it. "MV" marks a manual check (see *Manual verifi
 | AC55 | Desktop summary mode; known-bad still named; off stores nothing | T70 | `it::conn::desktop_summary_and_off_modes_end_to_end`, `conn_store::summary_mode_stores_country_asn_counts_only_known_bad_still_named`, `conn_store::off_mode_stores_nothing` | todo |
 | AC56 | Windows connections, `%TEMP%` process, new port | T89 | `windows_parse::*`; MV16 | todo |
 | AC57 | Wrapper refuses one-argument difference | T51 | `runcmd::one_argument_different_from_every_template_refused`, `it::runcmd::sudo_entry_runs_wrapper_only` | todo |
-| AC58 | Monitor machine: reports, no accounts, skipped, `monitor_only`; hypervisor actions approved only | T44, T54, T55, T59, T62, T72 | `it::install::monitor_has_no_accounts_keys_or_command_list`, `decide::monitor_machine_always_needs_approval_and_no_auto_policy`, `actions::monitor_machine_ssh_step_fails_monitor_only_before_sending`, `select::auto_pending_not_maintenance_not_quarantined_managed_only`, `guard::monitor_guest_hypervisor_action_needs_approval`, `quarantine::auto_rule_matching_monitor_machine_does_nothing`; MV9 | todo |
+| AC58 | Monitor machine: reports, no accounts, skipped, `monitor_only`; hypervisor actions approved only | T44, T54, T55, T59, T62, T72, L4, L5 | `it::install::monitor_has_no_accounts_keys_or_command_list`, `decide::monitor_machine_always_needs_approval_and_no_auto_policy`, `actions::monitor_machine_ssh_step_fails_monitor_only_before_sending`, `select::auto_pending_not_maintenance_not_quarantined_managed_only`, `guard::monitor_guest_hypervisor_action_needs_approval`, `quarantine::auto_rule_matching_monitor_machine_does_nothing`; `live::m3::monitor_guest_hypervisor_action_needs_approval`, `live::m4::monitor_guest_auto_rule_does_nothing`; MV9 | todo |
 | AC59 | Level change on the machine keeps id; hub can't change it alone | T35, T62 | `join_contract::level_change_token_keeps_machine_id`, `it::level::*` | todo |
-| AC60 | Guest binding mismatch blocks hypervisor actions | T49, T62 | `binding::reported_mac_of_other_guest_sets_mismatch_and_event`, `guard::mismatched_binding_refuses_snapshot_rollback_firewall_power`, `guard::other_guest_never_touched` | todo |
+| AC60 | Guest binding mismatch blocks hypervisor actions | T49, T62, L3 | `binding::reported_mac_of_other_guest_sets_mismatch_and_event`, `guard::mismatched_binding_refuses_snapshot_rollback_firewall_power`, `guard::other_guest_never_touched`; `live::m2::probe_in_lxc_is_bound_to_its_guest` | todo |
 | AC61 | Leading dash refused; command list install rules; first list with join | T50, T51 | `params::leading_dash_refused_unless_allowed`, `install::unsigned_expired_or_not_newer_list_refused`, `it::runcmd::first_list_arrives_with_join` | todo |
 | AC62 | Labels during outage, unknown label dropped, 16 MB cap | T16, T26 | `zstd::decompression_past_16_mib_fails_with_0x15`, `probe_contract::label_set_first_seen_during_outage_resolves`, `probe_contract::unknown_label_id_drops_sample_keeps_report`, `probe_contract::oversized_decompression_closes_0x15` | todo |
-| AC63 | Install step survives hub restart and SSH cut | T59, T65 | `it::recovery::hub_restart_during_patch_install_finishes_and_verifies`, `it::patch::ssh_cut_during_install_finishes_and_verifies` | todo |
-| AC64 | Attempt limit and wait-for-clear | T57 | `attempts::two_automatic_starts_per_24h_then_human`, `routing::success_waits_for_clear_then_failed_after_10_min` | todo |
+| AC63 | Install step survives hub restart and SSH cut | T59, T65, L4 | `it::recovery::hub_restart_during_patch_install_finishes_and_verifies`, `it::patch::ssh_cut_during_install_finishes_and_verifies`; `live::m3::install_step_survives_hub_restart_and_ssh_cut` | todo |
+| AC64 | Attempt limit and wait-for-clear | T57, L4 | `attempts::two_automatic_starts_per_24h_then_human`, `routing::success_waits_for_clear_then_failed_after_10_min`; `live::m3::failed_service_runbook_after_approval` | todo |
 | AC65 | 300 s interval rules, silence, clear margin, flapping | T28, T30 | `threshold::duration_below_4_intervals_raised_to_4`, `threshold::flapping_between_84_and_86_stays_one_incident`, `silence::machine_warning_at_max_60s_or_4_intervals` | todo |
-| AC66 | Rule survives restart; acks under 2 s with stalled rules | T25, T24, T32, T96 | `incidents::rule_mid_duration_survives_restart`, `bus::notice_send_never_waits_on_stalled_consumer`, `perf::stalled_rules_60s_acks_still_under_2s` | todo |
-| AC67 | Nothing root; updater refuses unsigned or lower; standby key accepted | T41, T44, T91, T93 | `it::hub_start::*`, `it::install::standby_key_signature_accepted`, `release::verify_accepts_current_and_standby_keys`, `update::unsigned_or_lower_version_refused_no_slot_change_audited`, `it::updater::relay_and_operator_not_root` | todo |
+| AC66 | Rule survives restart; acks under 2 s with stalled rules | T25, T24, T32, T96, L2 | `incidents::rule_mid_duration_survives_restart`, `bus::notice_send_never_waits_on_stalled_consumer`, `perf::stalled_rules_60s_acks_still_under_2s`; `live::m1::hub_reboot_keeps_history_and_rules` | todo |
+| AC67 | Nothing root; updater refuses unsigned or lower; standby key accepted | T41, T44, T91, T93, L8 | `it::hub_start::*`, `it::install::standby_key_signature_accepted`, `release::verify_accepts_current_and_standby_keys`, `update::unsigned_or_lower_version_refused_no_slot_change_audited`, `it::updater::relay_and_operator_not_root`; `live::m8::hub_updater_upgrades_and_refuses_lower` | todo |
 | AC68 | Account flood, used TOTP, untrusted forwarding header | T37 | `auth::account_flood_limits_new_browsers_not_known_ones`, `auth::used_totp_code_refused`, `auth::forwarded_header_ignored_unless_trusted_proxy` | todo |
 | AC69 | Retention for every table, output budget, connection cap | T27, T70, T80, T96, T98 | `retention::every_table_rule_from_design`, `output_budget::oldest_trimmed_first_metadata_kept`, `conn_store::daily_cap_20000_then_summary_rows_and_overflow`, `perf::fill_2y_50_machines_under_2gb_retention_on_schedule` | todo |
 | AC70 | Token bound to operator; key capped by role; approval bound; personal key diagnostics | T54, T74, T75, T76 | `operator_contract::token_from_other_endpoint_refused`, `mcp_contract::read_request_key_on_viewer_works_as_read`, `mcp_contract::approval_from_other_caller_or_after_edit_refused`, `mcp_contract::personal_key_journal_needs_approval_df_does_not` | todo |
 | AC71 | Container named on new destination, eBPF and sampling | T67, T68, T70 | `it::sampling::connection_open_across_poll_attributed_to_container`, `ebpf_tests::capture::two_containers_same_exe_attributed` | todo |
-| AC72 | Firewall restored identically; only DHCP and hub; no `exec`; changed config stops release | T47, T72, T75 | `proxmox::firewall_config_read_and_restore_round_trip`, `quarantine::guest_rules_exact_set`, `quarantine::release_restores_identical_configuration`, `quarantine::changed_config_stops_release`, `mcp_contract::exec_on_quarantined_machine_refused`; MV11 | todo |
-| AC73 | Hypervisor hosting the hub: approval lists it; job finishes at verify | T60 | `hypervisor::approval_names_hub_when_hub_is_a_guest`; MV8 | todo |
+| AC72 | Firewall restored identically; only DHCP and hub; no `exec`; changed config stops release | T47, T72, T75, L5, L9 | `proxmox::firewall_config_read_and_restore_round_trip`, `quarantine::guest_rules_exact_set`, `quarantine::release_restores_identical_configuration`, `quarantine::changed_config_stops_release`, `mcp_contract::exec_on_quarantined_machine_refused`; `live::m4::quarantine_lxc_guest_and_release`, `live::real::quarantine_named_guest_and_release`; MV11 | todo |
+| AC73 | Hypervisor hosting the hub: approval lists it; job finishes at verify | T60, L4 | `hypervisor::approval_names_hub_when_hub_is_a_guest`; `live::m3::hypervisor_hosting_the_hub_finishes_at_verify`; MV8 | todo |
 
 ### Functional requirements
 
@@ -3554,7 +4016,7 @@ the steps and tests that prove it. "MV" marks a manual check (see *Manual verifi
 | FR-20 | T82 | `relay_keys::*`, `net_tests::relay::*` | todo |
 | FR-21 | T35, T44, T49, T62, T94 | `join_contract::*`, `it::install::*`, `it::level::*`, `it::bootstrap::*` | todo |
 | FR-22 | T92 | `apply::*`, `it::update::*` | todo |
-| FR-23 | T64 | `provision::*`; MV10 | todo |
+| FR-23 | T64, L4 | `provision::*`; `live::m3::provision_vm_boots_enrolls_and_is_healthy`; MV10 | todo |
 | FR-24 | T56 | `library::*`, `mirror::*` | todo |
 | FR-25 | T37, T38 | `auth::*`, `oidc::*`, `passkey::*` | todo |
 | FR-26 | T20, T36, T37, T55, T56, T75 | `audit::*` and the "is audited" tests | todo |
@@ -3593,7 +4055,7 @@ the steps and tests that prove it. "MV" marks a manual check (see *Manual verifi
 | E8 | T53 | `hostkeys::changed_key_blocks_and_raises_critical`, `it::ssh::accepting_new_key_needs_admin_step_up` | todo |
 | E9 | T59 | `it::patch::apt_lock_waits_10_min_then_fails_without_changes` | todo |
 | E10 | T59 | `select::hold_never_patched` | todo |
-| E11 | T59 | `rollback::only_when_no_report_15_min_auto_rollback_on_not_hub`; MV7 | todo |
+| E11 | T59, L4, L9 | `rollback::only_when_no_report_15_min_auto_rollback_on_not_hub`; `live::m3::broken_guest_rolls_back_after_15_minutes`, `live::real::patch_named_guest_with_snapshot_and_rollback`; MV7 | todo |
 | E12 | T59 | `precheck::snapshot_unsupported_fails_unless_optional` | todo |
 | E13 | T60 | `hypervisor::reboot_needs_high_risk_approval_listing_guests` | todo |
 | E14 | T60 | `it::hubhost::reboot_scheduled_60s_job_resumes_at_verify` | todo |
@@ -3606,7 +4068,7 @@ the steps and tests that prove it. "MV" marks a manual check (see *Manual verifi
 | E21 | T76, T79 | `assist::deadline_with_pending_approval_needs_human_and_resume` | todo |
 | E22 | T54, T72 | `exclusions::never_quarantined_roles_and_tag`, `quarantine::hypervisor_with_same_finding_not_quarantined` | todo |
 | E23 | T72 | `quarantine::isolation_failure_sets_failed_and_critical` | todo |
-| E24 | T72 | `quarantine::pve_firewall_off_fails_with_instructions_never_enables`; MV11 | todo |
+| E24 | T72, L5 | `quarantine::pve_firewall_off_fails_with_instructions_never_enables`; `live::m4::datacenter_firewall_off_fails_with_instructions`; MV11 | todo |
 | E25 | T81 | `net_tests::peer_watch::three_hubs_one_cut_exactly_one_callout` | todo |
 | E26 | T83 | `net_tests::holepunch::hard_nat_no_relay_unreachable_with_explanation` | todo |
 | E27 | T82 | `net_tests::relay::refused_client_sees_reason` (and priority if S2 allows) | todo |
@@ -3616,10 +4078,10 @@ the steps and tests that prove it. "MV" marks a manual check (see *Manual verifi
 | E31 | T33 | `notify::retries_1_5_15_then_failed_raises_notifier_failed` | todo |
 | E32 | T25 | `ingest::disk_below_2_percent_stops_replay_and_new_jobs` | todo |
 | E33 | T45 | `selfwatch::quick_check_failure_stops_writes_and_alerts` | todo |
-| E34 | T21, T99 | `vault::recovery_code_round_trips_the_master_key`, `docs/recovery.md`; MV13 | todo |
+| E34 | T21, T99, L8 | `vault::recovery_code_round_trips_the_master_key`, `docs/recovery.md`; `live::m8::recovery_procedure_restores_the_master_key`; MV13 | todo |
 | E35 | T87 | `it::address::hub_address_change_config_and_keys_update` | todo |
 | E36 | T67, T68 | `capability::no_ebpf_reports_sampling`, `ebpf_tests::capture::load_failure_falls_back_to_sampling` | todo |
-| E37 | T10, T68 | MV2 | todo |
+| E37 | T10, T68, L5, L9 | `live::m4::lxc_connection_attributed_to_its_cgroup`, `live::real::lxc_attribution_on_a_real_host`; MV2 | todo |
 | E38 | T30, T42 | `silence::expected_offline_gives_info_only` | todo |
 | E39 | T92 | `it::update::broken_release_restored_within_3_minutes` | todo |
 | E40 | T56 | `scan::refuses_each_secret_kind` | todo |
@@ -3644,11 +4106,11 @@ the steps and tests that prove it. "MV" marks a manual check (see *Manual verifi
 | E59 | T67, T70 | `aggregate::over_500_tuples_keeps_most_bytes_folds_rest`, `conn_store::daily_cap_...` | todo |
 | E60 | T51 | `install::unsigned_expired_or_not_newer_list_refused` | todo |
 | E61 | T37 | `auth::account_flood_limits_new_browsers_not_known_ones` | todo |
-| E62 | T60 | `hypervisor::approval_names_hub_when_hub_is_a_guest`; MV8 | todo |
+| E62 | T60, L4 | `hypervisor::approval_names_hub_when_hub_is_a_guest`; `live::m3::hypervisor_hosting_the_hub_finishes_at_verify`; MV8 | todo |
 | E63 | T93 | `update::unsigned_or_lower_version_refused_no_slot_change_audited` | todo |
 | E64 | T44, T91, T93 | `release::verify_accepts_current_and_standby_keys`, `it::install::standby_key_signature_accepted` | todo |
 | E65 | T92 | `download::unreachable_url_reports_info_and_keeps_version` | todo |
-| E66 | T72 | `quarantine::changed_config_stops_release`; MV11 | todo |
+| E66 | T72, L5 | `quarantine::changed_config_stops_release`; `live::m4::changed_firewall_during_quarantine_stops_release`; MV11 | todo |
 
 ### Non-functional requirements (design 5.2)
 
@@ -3667,28 +4129,29 @@ the steps and tests that prove it. "MV" marks a manual check (see *Manual verifi
 
 ## Manual verifications
 
-The owner performs these (or provides the access for them); results are recorded here and in the run log, with
-evidence redacted per D71.
+Each row names who runs it: the owner, or the run itself with access the owner provides. Results are recorded here
+and in the run log, with evidence redacted per D71.
 
 | ID | Step | Why not automated | Steps | Expected | Verified by / date | Result |
 | --- | --- | --- | --- | --- | --- | --- |
 | MV1 | T04 | Changes the runner service's configuration and GitHub organization settings, outside this repository | Add the `linux-docker` and `linux-kvm` profiles; allow the repository in the runner group; set the three repository variables | The `runners` jobs green on all three label sets | Owen | |
-| MV2 | T10, T68 | Needs a real Proxmox host kernel and LXCs | Run the S1 binary, later the probe, on a Proxmox host; connect from inside an unprivileged LXC | The connection is attributed to the LXC's cgroup | Owen | |
-| MV3 | T11 | Needs a host with a ZFS ARC | Run the S11 memory script on a Proxmox host with ZFS | `mem.available_pct` per the chosen formula stays above the warning line on a healthy host | Owen | |
-| MV4 | T12 | Needs PVE 8 and 9 nodes and an API token | Owner creates the token and names a test guest; run the S4 script | Every operation works with the minimal role; firewall round trip identical | Owen | |
+| MV2 | T10, T68, L9 | Confirms on a real Proxmox host kernel what `pve9` showed in T10 and L5 | In L9, `live::real::lxc_attribution_on_a_real_host` on the owner's test node | The connection is attributed to the LXC's cgroup | The run (L9), with the owner's access | |
+| MV3 | T11, L9 | A real host's ZFS ARC under real load | In L9, `live::real::zfs_memory_reading` on the owner's ZFS host | `mem.available_pct` per the chosen formula stays above the warning line on a healthy host | The run (L9), with the owner's access | |
+| MV4 | T12, L9 | Confirms the minimal privileges on the owner's real PVE 8 and 9 nodes | The owner creates a token and names a test guest; in L9, `live::real::proxmox_minimal_privileges` | Every operation works with the minimal role; firewall round trip identical | The run (L9); the owner creates and revokes the token | |
 | MV5 | T13 | Needs a Claude Code sign-in | Owner signs in in the spike's configuration directory; run the S5 script | Only stub tools called; no other MCP servers start | Owen | |
 | MV6 | T14 | Needs a TrueNAS instance and API key | Owner creates a read-only key; run the S9 script | Every TrueNAS metric found; fixtures redacted | Owen | |
-| MV7 | T59 | Real snapshots and reboots on Proxmox (AC19, E11) | Enroll a test guest with `auto`; wait for or trigger its window; then a test guest that never comes back with `auto_rollback` on | Snapshot taken and pruned to 3, updates installed, verify passes; the broken guest is rolled back after 15 minutes | Owen | |
-| MV8 | T60 | Rebooting a real hypervisor that hosts a hub (AC73, E62) | Approve a reboot of a test hypervisor hosting a test hub | Approval lists the hub; the job finishes at verify after the hub is back | Owen | |
-| MV9 | T62 | Real Proxmox firewall on a monitor guest (AC58) | Enroll a test guest as `monitor`; enable an auto rule matching it; raise a matching finding; then approve a quarantine | The auto rule does nothing; the approved quarantine applies from the hypervisor | Owen | |
-| MV10 | T64 | Real VM provisioning (AC33) | Run `provision-vm` with a template and cloud-init | The VM boots, enrolls and is healthy | Owen | |
-| MV11 | T72 | Real guest firewall and conntrack (AC17, AC72, E24, E66) | Quarantine a test guest with its own firewall rules after approval with step-up; test reachability; release; repeat with a change during quarantine; repeat with the datacenter firewall off | Only DHCP and the hub reachable; diagnostics work; forensic snapshot exists; release restores identical config; a change stops release; firewall-off fails with instructions | Owen | |
-| MV12 | T39, T58, T73, T79, T88 | Visual check of pages and a real browser passkey | Walk through every page in 7.7.1 at the end of M1, M3, M4, M5 and M6; register a passkey with a trusted certificate | Pages match 7.7.1 contents and empty states; passkey works | Owen | |
-| MV13 | T94, T45 | Real Proxmox host for the LXC script; master-key loss procedure (AC32, E34) | Run `rackhand-lxc.sh`; follow `docs/recovery.md` once on a test hub | Hub runs and links; recovery procedure works as documented | Owen | |
-| MV14 | T77 | Real AI account (AC25) | Stage a stopped Compose project on a test VM with a real Claude Code operator; three runs | In at least 2 of 3 runs the assistant calls `run_diagnostic`, requests `compose-restart`, and after approval the incident resolves within 30 minutes | Owen | |
-| MV15 | T83 | Real internet NATs (AC27) | Link hubs at two of the owner's sites through a relay | They connect (direct if possible) and exchange summaries | Owen | |
+| MV7 | T59, L4, L9 | Real snapshots and reboots on real Proxmox storage (AC19, E11) | In L9, `live::real::patch_named_guest_with_snapshot_and_rollback` on the named test guest | Snapshot taken and pruned to 3, updates installed, verify passes; the broken guest is rolled back after 15 minutes | The run (L9), with the owner's access | |
+| MV8 | T60, L4, L9 | Rebooting a real hypervisor that hosts a hub (AC73, E62) | Only if `real.env` names a test hypervisor hosting a test hub: approve its reboot | Approval lists the hub; the job finishes at verify after the hub is back | The run (L9), if configured | |
+| MV9 | T62, L5, L9 | Real Proxmox firewall on a monitor guest (AC58) | In L9, the monitor part of `live::real::quarantine_named_guest_and_release` | The auto rule does nothing; the approved quarantine applies from the hypervisor | The run (L9), with the owner's access | |
+| MV10 | T64, L4, L9 | Real VM provisioning with hardware virtualization (AC33) | In L9, `live::real::provision_vm_on_a_named_node` | The VM boots, enrolls and is healthy | The run (L9), with the owner's access | |
+| MV11 | T72, L5, L9 | Real guest firewall and conntrack (AC17, AC72, E66) | In L9, `live::real::quarantine_named_guest_and_release`: quarantine the named guest after approval with step-up; test reachability; release; repeat with a change during quarantine (the datacenter-firewall-off case, E24, is tested only in L5) | Only DHCP and the hub reachable; diagnostics work; forensic snapshot exists; release restores identical config; a change stops release | The run (L9), with the owner's access | |
+| MV12 | T38, T39 | A real browser passkey with a trusted certificate (the page walks are done by the run in L2 to L8) | Register a passkey on the lab hub and sign in with it | Passkey works | Owen | |
+| MV13 | T94, L8, L9 | A real Proxmox host for the LXC script (AC32); recovery (E34) is tested in L8 | In L9, `live::real::lxc_script_on_a_real_node` | The hub runs and links | The run (L9), with the owner's access | |
+| MV14 | T77, L6 | Needs the owner's Claude Code sign-in (AC25) | The owner signs in once in the operator's configuration directory on the lab's `operator` machine; the run does the three runs in L6 | In at least 2 of 3 runs the assistant calls `run_diagnostic`, requests `compose-restart`, and after approval the incident resolves within 30 minutes | The run (L6); the owner signs in | |
+| MV15 | T83, L7, L9 | Real internet NATs (AC27) | Only if `real.env` names a second site: link the hubs through a relay | They connect (direct if possible) and exchange summaries | The run (L9), if configured | |
 | MV16 | T89, T90 | No Windows runner (D81) (AC35 Windows, AC56) | Follow `docs/windows-checklist.md` on a Windows 10/11 machine | Every checklist line passes | Owen | |
 | MV17 | T91 | Signing keys are offline and held by the maintainer (D90) | Follow `docs/maintainers/signing.md` once with a throwaway key pair | The procedure produces signatures that `rackhand-release` verifies | Owen | |
+| MV18 | L9 | The owner's hosts and credentials | Fill `lab/real.env` from `lab/real.env.example`: the hub VM or LXC, one managed VM, an SSH key with sudo, Proxmox test nodes with a named test guest and a token, a TrueNAS read-only key, and optionally a second site | `cargo xtask ci live --target real --milestone real -- --list` shows every configured host answering | Owen | |
 
 ## Deviations
 
@@ -3701,8 +4164,10 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 
 ## Follow-ups (out of scope)
 
-- The runner service: a profile with `/dev/kvm` (a platform change), if it doesn't exist by T04.
 - A self-hosted Windows runner, which would move AC35 (Windows) and AC56 from manual to automated (D81).
+- A Windows VM in the local lab (an evaluation image with an unattended install), so the run could do MV16's
+  checklist itself.
+- TrueNAS in the local lab (its installer is interactive, so the owner would install it once).
 - The maintainers' documentation space: README, usage and setup pages once there is a release to document.
 - Mirroring this plan's milestones as tasks on the maintainers' task board.
 - The first release (`0.1.0`, D106): the maintainer signs offline (D90); this plan builds and verifies the artifacts
@@ -3719,10 +4184,12 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | eBPF tier (5.10, 6.1, current Proxmox series) | `cargo xtask ci ebpf` | | |
 | Windows tier | `cargo xtask ci win` | | |
 | Performance tier | `cargo xtask ci perf` | | |
+| Local live tier, every milestone | `cargo xtask ci live --target local --milestone all` | | |
+| Real-lab pass | `cargo xtask ci live --target real --milestone real` | | |
 | Licenses and advisories | `cargo deny check && cargo audit` | | |
 | Reproducible release build | `cargo xtask release repro` | | |
 | Workflow guards | `actionlint && cargo xtask ci-guard` | | |
 | CI on self-hosted runners | `ci.yml` green on the branch head | | |
 | All acceptance tests | every AC row above `done`, or `unverified` with its MV pending | | |
-| Manual verifications | MV1 to MV17 recorded | | |
+| Manual verifications | MV1 to MV18 recorded by their listed verifiers | | |
 | Traceability complete | every row in the matrix has a step and a passing test or a recorded MV | | |
