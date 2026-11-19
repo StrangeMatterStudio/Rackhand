@@ -42,6 +42,19 @@ cmd = ["sh", "-c", "if [ \"$0\" = sleep ]; then sleep 600; else head -c 2000000 
 timeout = "5s"
 "#;
 
+    /// A root command through the wrapper that outlives its timeout, as real runbooks send it.
+    const WRAPPED: &str = r#"name = "wrapped"
+description = "A long root command"
+identity = "automation"
+risk = "low"
+autonomy = 1
+[[step]]
+id = "hang"
+kind = "ssh"
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/bin/sleep", "601"]
+timeout = "5s"
+"#;
+
     fn slow(timeout: &str) -> String {
         format!(
             r#"name = "slow"
@@ -129,7 +142,9 @@ timeout = "{timeout}"
         let slow = slow(slow_timeout);
         library.save(Kind::Runbook, "plain", PLAIN, "admin", 1).await.unwrap();
         library.save(Kind::Runbook, "slow", &slow, "admin", 1).await.unwrap();
-        let runbooks = [Runbook::parse(PLAIN).unwrap(), Runbook::parse(&slow).unwrap()];
+        library.save(Kind::Runbook, "wrapped", WRAPPED, "admin", 1).await.unwrap();
+        let runbooks =
+            [Runbook::parse(PLAIN).unwrap(), Runbook::parse(&slow).unwrap(), Runbook::parse(WRAPPED).unwrap()];
         let now = rackhand_store::ids::now_ms();
         let payload = signed_command_list(&node, &runbooks, 1, now, 3_600_000);
         let install = machine.exec(Some("rackhand"), &["sudo", "-n", WRAPPER, "install-commands"], Some(&payload));
@@ -238,6 +253,20 @@ timeout = "{timeout}"
         let start = Instant::now();
         while lab.machine.root("pgrep -f '[s]leep 600'").status.success() {
             assert!(start.elapsed() < Duration::from_secs(15), "the command still runs on the machine");
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wrapped_step_timeout_stops_root_command() {
+        let lab = lab("wrapped-timeout", "60s", Duration::from_secs(5)).await;
+        let job = StartJob { params: BTreeMap::new(), ..start("wrapped", ("unused", "")) };
+        let result = lab.actions.run(job).await.unwrap();
+        assert_eq!((result.outcome, result.reason.as_deref()), (JobOutcome::TimedOut, Some("timeout")));
+        // The root command (sudo, the wrapper, then sleep) is stopped too (D33).
+        let start = Instant::now();
+        while lab.machine.root("pgrep -f '[s]leep 601'").status.success() {
+            assert!(start.elapsed() < Duration::from_secs(15), "the root command still runs on the machine");
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     }
