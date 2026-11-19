@@ -336,7 +336,7 @@ CREATE TABLE quarantine_rules (
 
 CREATE TABLE library_items (
   name TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('runbook', 'playbook')),
+  kind TEXT NOT NULL CHECK (kind IN ('runbook', 'playbook', 'config')),
   origin TEXT NOT NULL CHECK (origin IN ('builtin', 'user')),
   rev INTEGER NOT NULL,
   PRIMARY KEY (kind, name)

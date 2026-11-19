@@ -15,6 +15,8 @@ pub type Row = BTreeMap<&'static str, Value>;
 pub enum WriteMode {
     Insert,
     Replace,
+    /// Insert only if the table has no rows yet; otherwise the whole command fails with `Conflict` (the first admin).
+    InsertIfTableEmpty,
 }
 
 /// One row written to one table.
@@ -272,6 +274,14 @@ fn write_row(tx: &rusqlite::Transaction<'_>, w: &RowWrite) -> Result<usize, Stor
     let verb = match w.mode {
         WriteMode::Insert => "INSERT",
         WriteMode::Replace => "INSERT OR REPLACE",
+        WriteMode::InsertIfTableEmpty => {
+            let empty: bool =
+                tx.query_row(&format!("SELECT NOT EXISTS (SELECT 1 FROM {})", w.table), [], |r| r.get(0))?;
+            if !empty {
+                return Err(StoreError::Conflict("the table already has rows"));
+            }
+            "INSERT"
+        }
     };
     let placeholders: Vec<String> = (1..=cols.len()).map(|i| format!("?{i}")).collect();
     let quoted: Vec<String> = cols.iter().map(|c| format!("\"{c}\"")).collect();
@@ -439,6 +449,32 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
         WriteCmd::UseApproval(id) => {
             let n = conn.execute("UPDATE approvals SET state = 'used' WHERE id = ?1 AND state = 'approved'", [&id])?;
             if n == 0 { Err(StoreError::Conflict("approval already used")) } else { Ok(n) }
+        }
+        WriteCmd::PutSession(row) => upsert_one(conn, "sessions", "id_hash", row),
+        WriteCmd::PutLibraryRevision(row) => {
+            // The next revision of an item, and the item's current revision, in one transaction.
+            let tx = conn.transaction()?;
+            let (kind, name) = (text(&row, "kind")?.to_string(), text(&row, "name")?.to_string());
+            let current: Option<i64> = {
+                use rusqlite::OptionalExtension;
+                tx.query_row("SELECT rev FROM library_items WHERE kind = ?1 AND name = ?2", [&kind, &name], |r| {
+                    r.get(0)
+                })
+                .optional()?
+            };
+            let rev = current.unwrap_or(0) + 1;
+            let origin = row.get("origin").cloned().unwrap_or(Value::Text("user".into()));
+            tx.execute(
+                "INSERT INTO library_items (name, kind, origin, rev) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (kind, name) DO UPDATE SET rev = excluded.rev",
+                rusqlite::params![name, kind, origin, rev],
+            )?;
+            tx.execute(
+                "INSERT INTO library_revisions (name, kind, rev, content, author, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![name, kind, rev, text(&row, "content")?, text(&row, "author")?, int(&row, "created_at")?],
+            )?;
+            tx.commit()?;
+            Ok(rev as usize)
         }
         WriteCmd::PutPolicy(row) => upsert_one(conn, "policies", "id", row),
         WriteCmd::PutQuarantineRule(row) => upsert_one(conn, "quarantine_rules", "id", row),

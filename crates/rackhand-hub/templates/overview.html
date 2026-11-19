@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block nav %}<nav><a href="/">Overview</a> <a href="/settings">Settings</a> <span class="user">{{ user }}</span></nav>{% endblock %}
+{% block content %}
+<h1>Overview</h1>
+{% for site in sites %}<h2>{{ site }}</h2>{% endfor %}
+{% if machines.is_empty() %}
+<p>No machines yet: <a href="/add">Add machine</a></p>
+{% else %}
+<table>
+<thead><tr><th>Site</th><th>Machine</th><th>Kind</th><th>State</th></tr></thead>
+<tbody>
+{% for m in machines %}<tr><td>{{ m.site }}</td><td>{{ m.name }}</td><td>{{ m.kind }}</td><td>{{ m.state }}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+{% endif %}
+{% endblock %}

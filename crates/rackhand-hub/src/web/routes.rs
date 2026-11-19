@@ -1,0 +1,52 @@
+//! The one route table. Every route is public, first-run only, or guarded by a row of the permission matrix; the gate,
+//! the CSRF check and the tests all read this table, so a route added later is covered without being listed again.
+
+use axum::http::Method;
+
+use super::perms::Permission;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    /// Health, static files and the sign-in page: no session, no first-run redirect.
+    Public,
+    /// Only until an admin exists.
+    FirstRun,
+    Perm(Permission),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    Healthz,
+    Vendor,
+    AppCss,
+    SignIn,
+    FirstRunForm,
+    FirstRunSubmit,
+    Overview,
+    Settings,
+    SettingsSources,
+}
+
+#[derive(Debug, Clone)]
+pub struct RouteSpec {
+    pub method: Method,
+    pub path: &'static str,
+    pub access: Access,
+    pub page: Page,
+}
+
+const fn r(method: Method, path: &'static str, access: Access, page: Page) -> RouteSpec {
+    RouteSpec { method, path, access, page }
+}
+
+pub static ROUTES: &[RouteSpec] = &[
+    r(Method::GET, "/healthz", Access::Public, Page::Healthz),
+    r(Method::GET, "/static/vendor/{file}", Access::Public, Page::Vendor),
+    r(Method::GET, "/static/app.css", Access::Public, Page::AppCss),
+    r(Method::GET, "/sign-in", Access::Public, Page::SignIn),
+    r(Method::GET, "/first-run", Access::FirstRun, Page::FirstRunForm),
+    r(Method::POST, "/first-run", Access::FirstRun, Page::FirstRunSubmit),
+    r(Method::GET, "/", Access::Perm(Permission::SeeEverything), Page::Overview),
+    r(Method::GET, "/settings", Access::Perm(Permission::Administer), Page::Settings),
+    r(Method::POST, "/settings/sources", Access::Perm(Permission::Administer), Page::SettingsSources),
+];

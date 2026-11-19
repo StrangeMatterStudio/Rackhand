@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Set up: Rackhand{% endblock %}
+{% block content %}
+<h1>{{ site }} is set up</h1>
+<p>The admin {{ admin }} can now sign in.</p>
+<h2>Master-key recovery code</h2>
+<p>This is shown once. Store it somewhere safe and offline: with it, the Vault can be opened on a new machine if the
+master key file is lost.</p>
+<p><code class="recovery">{{ recovery_code }}</code></p>
+<p><a href="/sign-in">Sign in</a></p>
+{% endblock %}

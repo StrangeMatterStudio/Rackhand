@@ -5,8 +5,22 @@ use super::{Registry, RegistryError};
 use rackhand_store::WriteCmd;
 
 /// Site names follow the `sites.name` rule: 1 to 32 of `a-z`, `0-9` and `-`.
-pub(crate) fn valid_site_name(name: &str) -> bool {
+pub fn valid_site_name(name: &str) -> bool {
     (1..=32).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// The row of this hub's own site, for first run's transaction.
+pub fn local_site_row(name: &str, timezone: &str) -> rackhand_store::RowWrite {
+    use rusqlite::types::Value;
+    let row: rackhand_store::Row = [
+        ("id", Value::Text(ulid::Ulid::new().to_string())),
+        ("name", Value::Text(name.into())),
+        ("timezone", Value::Text(timezone.into())),
+        ("is_local", Value::Integer(1)),
+    ]
+    .into_iter()
+    .collect();
+    rackhand_store::RowWrite::insert("sites", row)
 }
 
 impl Registry {

@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Settings: Rackhand{% endblock %}
+{% block nav %}<nav><a href="/">Overview</a> <a href="/settings">Settings</a></nav>{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<form method="post" action="/settings/sources">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<fieldset>
+<legend>Outside sources</legend>
+<label><input type="checkbox" name="source_feodo"{% if sources.feodo %} checked{% endif %}> abuse.ch Feodo Tracker</label>
+<label><input type="checkbox" name="source_spamhaus"{% if sources.spamhaus %} checked{% endif %}> Spamhaus DROP</label>
+<label><input type="checkbox" name="source_dbip"{% if sources.dbip %} checked{% endif %}> DB-IP Lite</label>
+</fieldset>
+<button type="submit">Save</button>
+</form>
+{% endblock %}

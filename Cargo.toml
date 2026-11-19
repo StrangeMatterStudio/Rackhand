@@ -31,6 +31,19 @@ ulid = "1"
 chacha20poly1305 = { version = "0.10", features = ["std"] }
 zeroize = { version = "1", features = ["derive"] }
 getrandom = "0.3"
+# Dashboard (7.7.1): axum and askama over hyper; TLS with rustls on ring only (iroh uses ring, so no second crypto
+# provider), rcgen for the self-signed certificate, Argon2id for passwords.
+axum = { version = "0.8", default-features = false, features = ["tokio", "http1", "form", "query", "matched-path"] }
+askama = "0.14"
+argon2 = "0.5"
+ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
+tower = { version = "0.5", features = ["util"] }
+form_urlencoded = "1"
 # Timezones and daylight saving for windows (7.5.3); the bundled database gives the same answers on every host.
 jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
 
@@ -43,6 +56,12 @@ all = { level = "warn", priority = -1 }
 dbg_macro = "warn"
 todo = "warn"
 unwrap_used = "warn"
+
+# Argon2id at its real cost is slow unoptimized; tests hash real passwords.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
 
 [profile.release]
 lto = "thin"

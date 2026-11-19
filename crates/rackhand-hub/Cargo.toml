@@ -26,8 +26,20 @@ serde_json = { workspace = true }
 ulid = { workspace = true }
 getrandom = { workspace = true }
 tracing = { workspace = true }
+axum = { workspace = true }
+askama = { workspace = true }
+argon2 = { workspace = true }
+ring = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+rcgen = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+form_urlencoded = { workspace = true }
+toml = { workspace = true }
 
 [dev-dependencies]
+tower = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 rackhand-net = { path = "../rackhand-net", features = ["testing"] }
 iroh-relay = { workspace = true }
