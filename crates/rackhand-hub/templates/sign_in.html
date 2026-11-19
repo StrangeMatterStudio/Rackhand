@@ -9,4 +9,5 @@
 <label>Password <input type="password" name="password" required autocomplete="current-password"></label>
 <button type="submit">Continue</button>
 </form>
+{% if oidc %}<p><a href="/sign-in/oidc">Sign in with your identity provider</a></p>{% endif %}
 {% endblock %}

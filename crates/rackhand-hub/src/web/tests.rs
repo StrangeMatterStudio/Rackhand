@@ -640,4 +640,67 @@ mod settings {
             .unwrap();
         assert_eq!(audited, 1);
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oidc_client_secret_stored_in_vault() {
+        let app = app("oidc-settings").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let secret = "do-not-mirror-this-client-secret";
+        let csrf = csrf_of(&app, &admin).await;
+        let fields = [
+            ("csrf", csrf.as_str()),
+            ("issuer", "https://id.example.test/realms/home"),
+            ("client_id", "rackhand-hub"),
+            ("client_secret", secret),
+            ("redirect_url", "https://hub.example.test/sign-in/oidc/callback"),
+        ];
+        let resp = send(&app.router, post("/settings/oidc", &admin, &fields)).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        // The settings (mirrored to git) hold only a reference; the value is sealed in the Vault.
+        let config = crate::library::config::current(&app.db, "hub").unwrap().unwrap();
+        assert!(config.contains("client_secret = \"secret:oidc.client_secret\""), "{config}");
+        assert!(!config.contains(secret));
+        let sealed: i64 = app
+            .db
+            .readers()
+            .with(|c| c.query_row("SELECT count(*) FROM secrets WHERE name = 'oidc.client_secret'", [], |r| r.get(0)))
+            .unwrap();
+        assert_eq!(sealed, 1);
+        let leaked: i64 = app
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row("SELECT count(*) FROM audit_log WHERE data LIKE ?1", [format!("%{secret}%")], |r| r.get(0))
+            })
+            .unwrap();
+        assert_eq!(leaked, 0, "not in the audit log");
+        let page = text(send(&app.router, get("/settings", &admin)).await).await;
+        assert!(page.contains("https://id.example.test/realms/home") && !page.contains(secret));
+        // Saving again without a secret keeps the stored one; plain http is refused for a provider off this host.
+        let csrf = csrf_of(&app, &admin).await;
+        let keep = [
+            ("csrf", csrf.as_str()),
+            ("issuer", "https://id.example.test/realms/home"),
+            ("client_id", "rackhand-hub"),
+            ("client_secret", ""),
+            ("redirect_url", "https://hub.example.test/sign-in/oidc/callback"),
+        ];
+        assert_eq!(send(&app.router, post("/settings/oidc", &admin, &keep)).await.status(), StatusCode::SEE_OTHER);
+        let sealed: i64 = app
+            .db
+            .readers()
+            .with(|c| c.query_row("SELECT count(*) FROM secrets WHERE name = 'oidc.client_secret'", [], |r| r.get(0)))
+            .unwrap();
+        assert_eq!(sealed, 1);
+        let csrf = csrf_of(&app, &admin).await;
+        let plain = [
+            ("csrf", csrf.as_str()),
+            ("issuer", "http://id.example.test"),
+            ("client_id", "rackhand-hub"),
+            ("client_secret", secret),
+            ("redirect_url", "https://hub.example.test/sign-in/oidc/callback"),
+        ];
+        assert_eq!(send(&app.router, post("/settings/oidc", &admin, &plain)).await.status(), StatusCode::BAD_REQUEST);
+    }
 }

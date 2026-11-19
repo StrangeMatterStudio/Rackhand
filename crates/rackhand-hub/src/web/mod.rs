@@ -64,6 +64,7 @@ struct Inner {
     host_keys: Option<Arc<crate::ssh::hostkeys::HostKeys>>,
     registry: Option<Arc<crate::registry::Registry>>,
     passkeys: Option<auth::passkey::Passkeys>,
+    oidc_flows: Mutex<HashMap<String, auth::oidc::Flow>>,
 }
 
 #[derive(Clone)]
@@ -82,6 +83,8 @@ pub(crate) struct Ctx {
     pub binding: Binding,
     pub csrf: String,
     pub form: HashMap<String, String>,
+    /// The query string's parameters (the OIDC callback's `code` and `state`).
+    pub query: HashMap<String, String>,
     pub path: String,
     /// The client's source (7.7.2) as the limits count it.
     pub source: String,
@@ -103,6 +106,7 @@ impl Web {
             host_keys: None,
             registry: None,
             passkeys: None,
+            oidc_flows: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -225,6 +229,8 @@ impl Web {
             }
         }
         let path = req.uri().path().to_string();
+        let query: HashMap<String, String> =
+            form_urlencoded::parse(req.uri().query().unwrap_or("").as_bytes()).into_owned().collect();
         let mut form = HashMap::new();
         if spec.method == Method::POST {
             let Ok(bytes) = axum::body::to_bytes(req.into_body(), MAX_FORM).await else {
@@ -237,7 +243,7 @@ impl Web {
             }
         }
         let csrf = csrf::token(&self.0.config.csrf_key, &binding);
-        let ctx = Ctx { now_ms: now, user, binding, csrf, form, path, source, cookies };
+        let ctx = Ctx { now_ms: now, user, binding, csrf, form, query, path, source, cookies };
         let mut resp = pages::render(self, spec.page, &ctx).await;
         for c in set_cookies {
             if let Ok(v) = HeaderValue::from_str(&c) {

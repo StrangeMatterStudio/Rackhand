@@ -27,6 +27,7 @@ pub(super) struct App {
     pub(super) db: Arc<Db>,
     pub(super) router: Router,
     pub(super) clock: Arc<AtomicI64>,
+    pub(super) vault: Arc<Vault>,
 }
 
 impl App {
@@ -65,7 +66,7 @@ pub(super) async fn app_with(name: &str, adjust: impl FnOnce(Web) -> Web) -> App
             .with_clock(Arc::new(move || c.load(Ordering::SeqCst))),
     );
     create_local(&db, &vault, "admin", Role::Admin, PASSWORD, Some(SECRET), T0).await.unwrap();
-    App { db, router: web.router(), clock }
+    App { db, router: web.router(), clock, vault }
 }
 
 /// A browser: its own cookies, at a source address.

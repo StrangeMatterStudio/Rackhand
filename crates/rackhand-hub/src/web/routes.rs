@@ -45,6 +45,9 @@ pub enum Page {
     PasskeySignIn,
     PasskeyStepUpOptions,
     PasskeyStepUp,
+    OidcStart,
+    OidcCallback,
+    SettingsOidc,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +73,8 @@ pub static ROUTES: &[RouteSpec] = &[
     r(Method::POST, "/sign-in/code", Access::Public, Page::SignInCodeSubmit),
     r(Method::POST, "/sign-in/passkey/options", Access::Public, Page::PasskeySignInOptions),
     r(Method::POST, "/sign-in/passkey", Access::Public, Page::PasskeySignIn),
+    r(Method::GET, "/sign-in/oidc", Access::Public, Page::OidcStart),
+    r(Method::GET, "/sign-in/oidc/callback", Access::Public, Page::OidcCallback),
     r(Method::POST, "/sign-out", Access::Perm(Permission::SeeEverything), Page::SignOut),
     r(Method::GET, "/step-up", Access::Perm(Permission::SeeEverything), Page::StepUp),
     r(Method::POST, "/step-up", Access::Perm(Permission::SeeEverything), Page::StepUpSubmit),
@@ -84,6 +89,7 @@ pub static ROUTES: &[RouteSpec] = &[
     r(Method::GET, "/settings", Access::Perm(Permission::Administer), Page::Settings),
     r(Method::POST, "/settings/sources", Access::Perm(Permission::Administer), Page::SettingsSources),
     r(Method::POST, "/settings/git-mirror", Access::Perm(Permission::Administer), Page::SettingsGitMirror),
+    r(Method::POST, "/settings/oidc", Access::Perm(Permission::Administer), Page::SettingsOidc),
     r(Method::POST, "/machines/{id}/host-key/accept", Access::Perm(Permission::Administer), Page::AcceptHostKey),
     r(Method::POST, "/settings/users", Access::Perm(Permission::Administer), Page::UserCreate),
     r(Method::POST, "/settings/users/{id}/role", Access::Perm(Permission::Administer), Page::UserRole),

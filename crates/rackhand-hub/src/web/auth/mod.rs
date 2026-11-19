@@ -5,6 +5,7 @@ pub mod client_addr;
 pub mod devices;
 pub(crate) mod flow;
 pub mod limits;
+pub mod oidc;
 pub mod passkey;
 pub mod password;
 pub mod step_up;
@@ -23,3 +24,6 @@ pub(crate) struct Pending {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod fake_oidc;

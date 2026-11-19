@@ -21,6 +21,7 @@ const MAX_WRONG_CODES: u32 = 5;
 struct PasswordForm<'a> {
     csrf: &'a str,
     error: Option<&'a str>,
+    oidc: bool,
 }
 
 #[derive(Template)]
@@ -58,8 +59,8 @@ fn known_device(web: &Web, ctx: &Ctx, account: Option<&Account>) -> Option<Strin
     devices::is_known(&web.0.db, &account.id, token).then(|| devices::hash_hex(token))
 }
 
-pub(crate) fn password_page(ctx: &Ctx) -> Response<Body> {
-    html(StatusCode::OK, PasswordForm { csrf: &ctx.csrf, error: None }.render())
+pub(crate) fn password_page(web: &Web, ctx: &Ctx) -> Response<Body> {
+    html(StatusCode::OK, PasswordForm { csrf: &ctx.csrf, error: None, oidc: super::oidc::configured(web) }.render())
 }
 
 pub(crate) async fn password_step(web: &Web, ctx: &Ctx) -> Response<Body> {
@@ -85,7 +86,8 @@ pub(crate) async fn password_step(web: &Web, ctx: &Ctx) -> Response<Body> {
             .await;
         return html(
             StatusCode::UNAUTHORIZED,
-            PasswordForm { csrf: &ctx.csrf, error: Some("Wrong name or password") }.render(),
+            PasswordForm { csrf: &ctx.csrf, error: Some("Wrong name or password"), oidc: super::oidc::configured(web) }
+                .render(),
         );
     };
     if !account.has_local_factor() {

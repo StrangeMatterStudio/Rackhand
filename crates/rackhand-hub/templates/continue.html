@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}: Rackhand{% endblock %}
+{% block head %}<meta http-equiv="refresh" content="0; url={{ to }}">{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+<p>{{ text }}</p>
+<p><a href="{{ to }}">Continue</a></p>
+{% endblock %}

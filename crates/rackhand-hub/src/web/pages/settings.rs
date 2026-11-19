@@ -9,7 +9,7 @@ use super::{html, redirect, status};
 use crate::library::config::{self, GitMirror, HubConfig, Sources};
 use crate::library::mirror::DEPLOY_KEY;
 use crate::vault::Secret;
-use crate::web::{Ctx, Web};
+use crate::web::{Ctx, Web, auth};
 
 #[derive(Template)]
 #[template(path = "settings.html")]
@@ -20,6 +20,7 @@ struct Settings<'a> {
     deploy_key: Option<String>,
     users: Vec<UserLine>,
     devices: Vec<crate::registry::devices::DeviceRow>,
+    oidc: config::Oidc,
 }
 
 struct UserLine {
@@ -64,6 +65,7 @@ pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
             deploy_key: deploy_public_key(web),
             users: users(web),
             devices: web.0.registry.as_ref().and_then(|r| r.devices().ok()).unwrap_or_default(),
+            oidc: current.oidc.clone().unwrap_or_default(),
         }
         .render(),
     )
@@ -122,6 +124,44 @@ pub(super) async fn git_mirror(web: &Web, ctx: &Ctx) -> Response<Body> {
         let keep = c.git_mirror.as_ref().filter(|m| m.url == url).and_then(|m| m.host_fingerprint.clone());
         c.git_mirror = Some(GitMirror { url: url.clone(), branch: "main".into(), host_fingerprint: keep });
         serde_json::json!({ "url": url })
+    })
+    .await
+}
+
+/// OIDC sign-in (7.7.2): the client secret goes into the Vault; the settings and the audit log get only its reference.
+/// An empty secret keeps the stored one.
+pub(super) async fn oidc(web: &Web, ctx: &Ctx) -> Response<Body> {
+    let f = |k: &str| ctx.form.get(k).map(|v| v.trim().to_string()).unwrap_or_default();
+    let (issuer, client_id, secret, redirect_url) =
+        (f("issuer"), f("client_id"), f("client_secret"), f("redirect_url"));
+    if !auth::oidc::allowed_url(&issuer) {
+        return status(StatusCode::BAD_REQUEST, "The issuer must be an https:// URL (http:// only on this host)");
+    }
+    if client_id.is_empty()
+        || !redirect_url.starts_with("https://")
+        || !redirect_url.ends_with("/sign-in/oidc/callback")
+    {
+        return status(
+            StatusCode::BAD_REQUEST,
+            "Give the client id and the callback URL https://<hub>/sign-in/oidc/callback as registered",
+        );
+    }
+    if secret.is_empty() {
+        if web.0.vault.get(auth::oidc::SECRET_NAME).is_err() {
+            return status(StatusCode::BAD_REQUEST, "Give the client secret");
+        }
+    } else if let Err(e) = web.0.vault.put(auth::oidc::SECRET_NAME, &Secret::new(secret.into_bytes())).await {
+        tracing::error!(error = %e, "oidc secret");
+        return status(StatusCode::INTERNAL_SERVER_ERROR, "The client secret couldn't be stored");
+    }
+    change(web, ctx, "settings.oidc", |c| {
+        c.oidc = Some(config::Oidc {
+            issuer: issuer.clone(),
+            client_id: client_id.clone(),
+            client_secret: auth::oidc::secret_reference(),
+            redirect_url: redirect_url.clone(),
+        });
+        serde_json::json!({ "issuer": issuer, "client_id": client_id, "redirect_url": redirect_url })
     })
     .await
 }

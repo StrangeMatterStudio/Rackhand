@@ -25,6 +25,17 @@
 </fieldset>
 <button type="submit">Save</button>
 </form>
+<form method="post" action="/settings/oidc">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<fieldset>
+<legend>OIDC sign-in</legend>
+<label>Issuer <input name="issuer" value="{{ oidc.issuer }}" required></label>
+<label>Client id <input name="client_id" value="{{ oidc.client_id }}" required></label>
+<label>Client secret <input type="password" name="client_secret" autocomplete="off" placeholder="{% if oidc.client_secret.is_empty() %}required{% else %}stored; leave empty to keep{% endif %}"></label>
+<label>Callback URL <input name="redirect_url" value="{{ oidc.redirect_url }}" placeholder="https://hub.example/sign-in/oidc/callback" required></label>
+</fieldset>
+<button type="submit">Save</button>
+</form>
 <h2>Users</h2>
 <table>
 <tr><th>Name</th><th>Role</th><th>Sign-in</th><th></th></tr>

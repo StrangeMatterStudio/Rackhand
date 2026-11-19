@@ -20,7 +20,7 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
         Page::Vendor => vendor(ctx.path.strip_prefix("/static/vendor/").unwrap_or("")),
         Page::AppCss => asset("text/css", APP_CSS),
         Page::PasskeyJs => asset("text/javascript", PASSKEY_JS),
-        Page::SignIn => auth::flow::password_page(ctx),
+        Page::SignIn => auth::flow::password_page(web, ctx),
         Page::SignInSubmit => auth::flow::password_step(web, ctx).await,
         Page::SignInCode => auth::flow::code_page(web, ctx),
         Page::SignInCodeSubmit => auth::flow::code_step(web, ctx).await,
@@ -45,6 +45,9 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
         Page::PasskeySignIn => auth::passkey::sign_in(web, ctx).await,
         Page::PasskeyStepUpOptions => auth::passkey::step_up_options(web, ctx),
         Page::PasskeyStepUp => auth::passkey::step_up(web, ctx).await,
+        Page::OidcStart => auth::oidc::start(web, ctx).await,
+        Page::OidcCallback => auth::oidc::callback(web, ctx).await,
+        Page::SettingsOidc => settings::oidc(web, ctx).await,
     }
 }
 
@@ -67,6 +70,22 @@ pub(crate) fn html(status: StatusCode, rendered: askama::Result<String>) -> Resp
             tracing::error!(error = %e, "template");
             plain(StatusCode::INTERNAL_SERVER_ERROR, "template error")
         }
+    }
+}
+
+#[derive(Template)]
+#[template(path = "continue.html")]
+struct Continue<'a> {
+    title: &'a str,
+    text: &'a str,
+    to: &'a str,
+}
+
+/// A short page that moves on to `to` by itself (a same-site navigation, unlike a redirect from another site).
+pub(crate) fn html_text(code: StatusCode, title: &str, text: &str, to: Option<&str>) -> Response<Body> {
+    match to {
+        Some(to) => html(code, Continue { title, text, to }.render()),
+        None => html(code, Message { title, text }.render()),
     }
 }
 

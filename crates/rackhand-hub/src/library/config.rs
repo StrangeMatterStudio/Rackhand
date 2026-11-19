@@ -31,6 +31,18 @@ pub struct HubConfig {
     pub sources: Sources,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_mirror: Option<GitMirror>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oidc: Option<Oidc>,
+}
+
+/// OIDC sign-in (7.7.2). The client secret is in the Vault; `client_secret` names it (`secret:<name>`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Oidc {
+    pub issuer: String,
+    pub client_id: String,
+    pub client_secret: String,
+    /// The hub's callback as registered with the provider: `https://<hub>/sign-in/oidc/callback`.
+    pub redirect_url: String,
 }
 
 /// The library's git mirror (7.3.13). The deploy key is in the Vault, never here.
