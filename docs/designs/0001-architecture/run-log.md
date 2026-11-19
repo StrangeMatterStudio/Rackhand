@@ -38,4 +38,8 @@ the background while T01 was written, since T01 needs only Rust.
 | --- | --- |
 | 2026-11-19 | Preflight; user-level toolchain installed |
 | 2026-11-19 | T01 started; `arch::` tests failed first (27 compile errors: `Model`, `check`, `load` and the rest missing) |
-| 2026-11-19 | T01 done: 5 passed; `arch-check` no violations; build, fmt and clippy clean |
+| 2026-11-19 | T01 done: 5 passed; `arch-check` no violations; build, fmt and clippy clean. Commit `0049131` |
+| 2026-11-19 | T02 started; tests failed first (compile errors). Kernels built from pinned tarballs in a container (D3); vmtest needed a container-built rootfs and a clean PATH (D4) |
+| 2026-11-19 | T02 done: every tier exits 0 with its smoke test (eBPF on 5.10.274, 6.1.192, 6.17.13). Commit `d782953` |
+| 2026-11-19 | T03 done: 6 guard tests, actionlint clean, 6 fixtures as expected (D6, D7). Commit `772eb83` |
+| 2026-11-19 | T04: the push ran both workflows with every job skipped (no runner variables). Runner listing needs org admin. T04 `unverified (MV1)`; tiers run in WSL until the owner sets up the profiles |

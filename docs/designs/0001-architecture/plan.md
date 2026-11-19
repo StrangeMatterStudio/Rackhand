@@ -208,7 +208,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T01 | Workspace scaffold and dependency-rule check | - | unit (xtask), static | done |
 | T02 | Test tiers and `cargo xtask ci` | T01 | scripted | done |
 | T03 | CI workflows and the guard test | T02 | unit (xtask), lint | done |
-| T04 | Runner profiles for Rackhand | T03 | scripted (CI run), owner setup | todo |
+| T04 | Runner profiles for Rackhand | T03 | scripted (CI run), owner setup | unverified (MV1) |
 | L1 | Local lab harness | T02 | unit (xtask) + live (local lab) | todo |
 | T05 | Spike S8: time-series encoding | T02 | scripted measurement | todo |
 | T06 | Spike S6: probe footprint | T02 | scripted measurement | todo |
@@ -516,6 +516,8 @@ ranges for its site networks; the real lab's details live only in the untracked 
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | push of 772eb83; gh run list --repo StrangeMatterStudio/Rackhand --branch design/0001-architecture | runs 44471533915 (ci) and 44471533951 (ci-github-hosted) completed, every job skipped: no runner variables set, RACKHAND_GITHUB_HOSTED unset |
+  | 2026-11-19 | gh variable list --repo StrangeMatterStudio/Rackhand; gh api orgs/StrangeMatterStudio/actions/runners | no variables; runner listing needs org admin (403). Waiting for MV1; every tier runs in WSL meanwhile |
 
 ### L1: Local lab harness
 - **Design refs:** 14 (live tier), D107, D71
