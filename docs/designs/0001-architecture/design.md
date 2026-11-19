@@ -189,7 +189,8 @@ unnoticed.
 - Rust stable, MSRV pinned in `rust-toolchain.toml` (at least what iroh 1.x requires).
 - Libraries: iroh 1.x (QUIC, hole punching, relay), aya (eBPF), rusqlite with bundled SQLite (storage), axum and askama
   (web), rmcp (MCP server and client), russh (SSH), prost (wire messages), webauthn-rs and totp-rs (second factors),
-  openidconnect (OIDC), chacha20poly1305 (Vault). The git mirror library is chosen in spike S7.
+  openidconnect (OIDC), chacha20poly1305 (Vault), git2 with vendored libgit2, libssh2 and OpenSSL (the library's git mirror, hub
+  only; spike S7).
 - Claude Code (native binary) is the first assistant runner. It runs only on operator hosts, never on a hub.
 - CI runs on the maintainers' self-hosted runners. GitHub-hosted copies of every workflow exist and are off by default.
   Self-hosted jobs never run for pull requests from forks.
@@ -2046,6 +2047,9 @@ the owner and the document is updated before the work that depends on it starts.
   run; and running with a configuration directory that holds only the provider credential.
 - **S6** Probe footprint: static musl binary size and steady RSS with iroh, aya and tokio.
 - **S7** Git mirror push in pure Rust (gix) or with libgit2 (git2, statically linked).
+  **Finding (2026-11-19):** `git2` 0.21 (features `ssh`, `vendored-libgit2`, `vendored-openssl`) pushes twice over
+  SSH with an Ed25519 deploy key held in memory, refuses a non-fast-forward update with `NotFastForward`, and builds
+  as a static musl binary; it adds about 5.8 MB to the hub. `gix` 0.90 has no push. Report: `spikes/s7.md`.
 - **S8** Time-series encoding: real bytes per value on recorded data.
 - **S9** TrueNAS API: which API (REST or JSON-RPC over WebSocket) the current releases support for pool, disk and alert
   reads.
@@ -2215,3 +2219,4 @@ None.
 | 2026-11-18 | Approved as a whole, including every decision marked "Claude (delegated)" (D41 to D86, D89, D91 to D104); next step is the implementation plan, whose first steps are the spikes (D87) | Owner approval | Owen |
 | 2026-11-18 | Planning findings: the installer verifies signatures through a small verifier binary (D105, 7.3.12); the version is 0.1.0 with no scheduled pre-releases (D106, section 17) | Gaps found while writing the implementation plan | Owen |
 | 2026-11-18 | Live testing: a local lab on the development machine at each milestone, then a real-lab pass (D107, section 14); CI runners adjusted to fit the tiers (D108) | Owner decision during plan review | Owen |
+| 2026-11-19 | S7 finding: the git mirror uses `git2` (statically linked); `gix` can't push (5.3, section 17) | Spike S7 finding | Implementation run |

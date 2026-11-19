@@ -43,3 +43,6 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-19 | T02 done: every tier exits 0 with its smoke test (eBPF on 5.10.274, 6.1.192, 6.17.13). Commit `d782953` |
 | 2026-11-19 | T03 done: 6 guard tests, actionlint clean, 6 fixtures as expected (D6, D7). Commit `772eb83` |
 | 2026-11-19 | T04: the push ran both workflows with every job skipped (no runner variables). Runner listing needs org admin. T04 `unverified (MV1)`; tiers run in WSL until the owner sets up the profiles |
+| 2026-11-19 | L1 started (lab tests failed first: unresolved `config` and `images`). First bring-up failed on Debian 12: its cloud-init 22.4 needs `ds=nocloud-net` for an HTTP seed; fixed, bring-up restarted |
+| 2026-11-19 | T05 recorder started on the WSL host at 06:28 UTC for 24 hours; T06 measuring for 30 minutes in a VM; owner asked for the T13 sign-in and the T14 TrueNAS key (OWNER-ACTIONS.local.md) |
+| 2026-11-19 | T07 done: git2 chosen (gix can't push). Design 5.3 and 17 updated |

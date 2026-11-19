@@ -212,7 +212,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | L1 | Local lab harness | T02 | unit (xtask) + live (local lab) | todo |
 | T05 | Spike S8: time-series encoding | T02 | scripted measurement | todo |
 | T06 | Spike S6: probe footprint | T02 | scripted measurement | todo |
-| T07 | Spike S7: git mirror library | T02 | scripted measurement | todo |
+| T07 | Spike S7: git mirror library | T02 | scripted measurement | done |
 | T08 | Spike S2: iroh relay admission and limits | T02 | scripted measurement (network VM) | todo |
 | T09 | Spike S3: iroh path detection | T02 | scripted measurement (network VM) | todo |
 | T10 | Spike S1: aya eBPF | T02, L1 | scripted measurement (eBPF VMs, local Proxmox) | todo |
@@ -689,12 +689,15 @@ Every spike step follows the same rules:
 - **Regression:** `cargo xtask ci fast`: exit 0.
 - **Manual verification:** None.
 - **Done when:**
-  - [ ] Report committed; library named in design 5.3 and 17 with a change-log row
-  - [ ] Spike code deleted
+  - [x] Report committed; library named in design 5.3 and 17 with a change-log row
+  - [x] Spike code deleted
 - **Risk / rollback:** if neither pushes from memory, shelling out to `git` is a design change for the owner.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | spikes/s7/run.sh --stub --check | no measurement, exit 1 |
+  | 2026-11-19 | spikes/s7/run.sh --report docs/designs/0001-architecture/spikes/s7.md --check | exit 0: git2 pushed twice from an in-memory Ed25519 key, refused a non-fast-forward push, pushed from a static musl build (6.14 MB, 5.8 MB over baseline); gix 0.90 has no push |
+  | 2026-11-19 | cargo xtask ci fast | exit 0; 19 passed |
 
 ### T08: Spike S2: iroh relay admission and limits
 - **Design refs:** 7.3.10, FR-20, AC31, E27, S2
