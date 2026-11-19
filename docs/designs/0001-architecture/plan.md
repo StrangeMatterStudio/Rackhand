@@ -226,7 +226,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T18 | Store: schema, writer task, read pool | T16 | unit | done |
 | T19 | Time-series encoding and chunks | T18, T05 | unit, property | todo |
 | T20 | Audit log with hash chain and checkpoints | T18 | unit | done |
-| T21 | Vault | T18 | unit | todo |
+| T21 | Vault | T18 | unit | done |
 | T22 | Probe Linux collectors | T16, T06, T11 | collector (fixtures) | todo |
 | T23 | Probe buffer, epochs and label table | T16 | unit | todo |
 | T24 | Bus | T18 | unit | todo |
@@ -1127,6 +1127,9 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-hub -E 'test(vault::)' | compile errors: unresolved super::master_key, Secret, Vault, VaultError |
+  | 2026-11-19 | cargo nextest run -p rackhand-hub -E 'test(vault::)' | 6 passed, 0 failed: round trip; database and WAL files hold no secret bytes and another key can't decrypt; 10 000 unique nonces; a flipped bit or another name fails; recovery code restores the key and a typo fails its checksum; Debug prints `redacted` |
+  | 2026-11-19 | cargo xtask ci fast | exit 0 |
 
 ### T22: Probe Linux collectors
 - **Design refs:** FR-1, FR-2, 7.4.2 (catalogue, exclusions, 200-series cap), 7.7.3 (`collect --once --json`), S11

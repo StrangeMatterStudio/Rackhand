@@ -251,6 +251,23 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
             tx.commit()?;
             Ok(n)
         }
+        WriteCmd::PutSecret(mut row) => {
+            // A replaced secret keeps its created_at and records rotated_at.
+            let tx = conn.transaction()?;
+            let name = text(&row, "name")?.to_string();
+            let created: Option<i64> = {
+                use rusqlite::OptionalExtension;
+                tx.query_row("SELECT created_at FROM secrets WHERE name = ?1", [&name], |r| r.get(0)).optional()?
+            };
+            if let Some(created) = created {
+                let now = int(&row, "created_at")?;
+                row.insert("created_at", Value::Integer(created));
+                row.insert("rotated_at", Value::Integer(now));
+            }
+            let n = write_row(&tx, &RowWrite::replace("secrets", row))?;
+            tx.commit()?;
+            Ok(n)
+        }
         WriteCmd::AppendAudit(row) => {
             let tx = conn.transaction()?;
             append_audit(&tx, &row, false)?;
