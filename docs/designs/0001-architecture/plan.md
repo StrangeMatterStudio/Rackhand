@@ -229,7 +229,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T21 | Vault | T18 | unit | done |
 | T22 | Probe Linux collectors | T16, T06, T11 | collector (fixtures) | todo |
 | T23 | Probe buffer, epochs and label table | T16 | unit | done |
-| T24 | Bus | T18 | unit | todo |
+| T24 | Bus | T18 | unit | done |
 | T25 | Ingest: staging, acks, compaction, recent window, clock | T18, T19, T24 | unit | todo |
 | T26 | Probe contract `rackhand/probe/1` | T17, T23, T25 | contract | todo |
 | T27 | Rollups and retention | T19, T25, T05 | unit | todo |
@@ -1219,6 +1219,9 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-hub -E 'test(bus::)' | compile error: unresolved Bus, BusEvent, Delivery, JobOutcome, MachineId |
+  | 2026-11-19 | cargo nextest run -p rackhand-hub -E 'test(bus::)' | 4 passed, 0 failed: 10 000 notices leave 3; 10 000 sends to a stalled consumer under 50 ms; 3000 state events with a 1024 queue all arrive; JobFinished never waits and a full queue records it for reconciliation |
+  | 2026-11-19 | cargo xtask ci fast | exit 0 |
 
 ### T25: Ingest: staging, acks, compaction, recent window, clock
 - **Design refs:** 7.3.2 (durability, replay limits, clock), 7.4.1 (recent window, compaction), 7.3.8
