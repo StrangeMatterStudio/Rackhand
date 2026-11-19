@@ -7,5 +7,9 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[dependencies]
+rackhand-hub = { path = "../rackhand-hub" }
+rackhand-store = { path = "../rackhand-store" }
+
 [lints]
 workspace = true

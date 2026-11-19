@@ -164,6 +164,8 @@ pub enum StoreError {
     Unimplemented(&'static str),
     #[error("invalid identifier `{0}`")]
     InvalidIdentifier(String),
+    #[error("command is missing column `{0}`")]
+    MissingColumn(&'static str),
     #[error("the store writer has stopped")]
     WriterStopped,
     #[error(transparent)]
@@ -249,6 +251,82 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
             tx.commit()?;
             Ok(n)
         }
+        WriteCmd::AppendAudit(row) => {
+            let tx = conn.transaction()?;
+            append_audit(&tx, &row, false)?;
+            tx.commit()?;
+            Ok(1)
+        }
+        WriteCmd::AppendAuditCheckpoint(row) => {
+            let tx = conn.transaction()?;
+            let through = int(&row, "removed_through_seq")?;
+            let removed_hash: Vec<u8> =
+                tx.query_row("SELECT hash FROM audit_log WHERE seq = ?1", [through], |r| r.get(0))?;
+            let data =
+                format!("{{\"removed_through_seq\":{through},\"hash\":\"{}\"}}", crate::audit::hex(&removed_hash));
+            let mut cp = Row::new();
+            cp.insert("at_ms", Value::Integer(int(&row, "at_ms")?));
+            cp.insert("actor", Value::Text("hub".into()));
+            cp.insert("action", Value::Text("audit.checkpoint".into()));
+            cp.insert("data", Value::Text(data));
+            append_audit(&tx, &cp, true)?;
+            let removed = tx.execute("DELETE FROM audit_log WHERE seq <= ?1", [through])?;
+            tx.commit()?;
+            Ok(removed + 1)
+        }
         other => Err(StoreError::Unimplemented(other.name())),
     }
+}
+
+fn int(row: &Row, col: &'static str) -> Result<i64, StoreError> {
+    match row.get(col) {
+        Some(Value::Integer(i)) => Ok(*i),
+        _ => Err(StoreError::MissingColumn(col)),
+    }
+}
+
+fn text<'a>(row: &'a Row, col: &'static str) -> Result<&'a str, StoreError> {
+    match row.get(col) {
+        Some(Value::Text(s)) => Ok(s),
+        _ => Err(StoreError::MissingColumn(col)),
+    }
+}
+
+/// Appends one audit row after the current head, inside the caller's transaction (the single writer keeps one chain).
+fn append_audit(tx: &rusqlite::Transaction<'_>, row: &Row, checkpoint: bool) -> Result<(), StoreError> {
+    use rusqlite::OptionalExtension;
+    let head: Option<(i64, Vec<u8>)> = tx
+        .query_row("SELECT seq, hash FROM audit_log ORDER BY seq DESC LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()?;
+    let (prev_seq, prev_hash) = head.unwrap_or((0, crate::audit::GENESIS.to_vec()));
+    let target = match row.get("target") {
+        Some(Value::Text(s)) => Some(s.as_str()),
+        _ => None,
+    };
+    let fields = crate::audit::AuditFields {
+        seq: prev_seq + 1,
+        at_ms: int(row, "at_ms")?,
+        actor: text(row, "actor")?,
+        action: text(row, "action")?,
+        target,
+        data: text(row, "data")?,
+        checkpoint,
+    };
+    let hash = crate::audit::row_hash(&prev_hash, &fields);
+    tx.execute(
+        "INSERT INTO audit_log (seq, at_ms, actor, action, target, data, prev_hash, hash, checkpoint) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        rusqlite::params![
+            fields.seq,
+            fields.at_ms,
+            fields.actor,
+            fields.action,
+            fields.target,
+            fields.data,
+            prev_hash,
+            hash.to_vec(),
+            checkpoint
+        ],
+    )?;
+    Ok(())
 }

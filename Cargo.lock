@@ -2657,6 +2657,10 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 [[package]]
 name = "rackhand"
 version = "0.1.0"
+dependencies = [
+ "rackhand-hub",
+ "rackhand-store",
+]
 
 [[package]]
 name = "rackhand-cli"
@@ -2677,6 +2681,14 @@ version = "0.1.0"
 [[package]]
 name = "rackhand-hub"
 version = "0.1.0"
+dependencies = [
+ "rackhand-store",
+ "rusqlite",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "tokio",
+]
 
 [[package]]
 name = "rackhand-it"
@@ -2741,6 +2753,7 @@ name = "rackhand-store"
 version = "0.1.0"
 dependencies = [
  "rusqlite",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
  "tokio",
  "ulid",
