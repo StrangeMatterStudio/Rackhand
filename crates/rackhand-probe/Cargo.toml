@@ -20,6 +20,11 @@ rackhand-proto = { path = "../rackhand-proto" }
 getrandom = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+prost = { workspace = true }
+ed25519-dalek = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+regex = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # statvfs without unsafe code.

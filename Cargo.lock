@@ -2953,6 +2953,9 @@ dependencies = [
 [[package]]
 name = "rackhand-it"
 version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "rackhand-live"
@@ -2987,11 +2990,16 @@ version = "0.1.0"
 name = "rackhand-probe"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
+ "prost",
  "rackhand-proto",
+ "regex",
  "rustix",
+ "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "toml 0.8.23",
 ]
 
 [[package]]

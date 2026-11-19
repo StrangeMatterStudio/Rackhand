@@ -2,3 +2,7 @@
 
 #[cfg(test)]
 mod smoke;
+#[cfg(test)]
+mod support;
+#[cfg(test)]
+mod wrapper;

@@ -13,8 +13,14 @@ fn now_ms() -> i64 {
 }
 
 fn main() -> ExitCode {
+    let argv0 = std::env::args().next().unwrap_or_default();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Installed as /usr/local/lib/rackhand/run, the binary is the command wrapper (7.3.7).
+    if std::path::Path::new(&argv0).file_name().is_some_and(|n| n == "run") {
+        return rackhand_probe::runcmd::main(&args);
+    }
     match args.first().map(String::as_str) {
+        Some("run-cmd") => rackhand_probe::runcmd::main(&args[1..]),
         Some("--version") => {
             println!("rackhand-probe {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
