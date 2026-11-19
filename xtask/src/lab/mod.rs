@@ -175,6 +175,10 @@ fn provision_stamp(lab: &Lab, m: &Machine) -> Result<String> {
     if m.proxmox.is_some() {
         parts.push(std::fs::read(workspace_root().join("lab/provision/proxmox.sh"))?);
     }
+    // The extra disk became an overlay on a provisioned base: machines provisioned before that start over.
+    if m.extra_disk_gb.is_some() {
+        parts.push(b"extra-base overlay".to_vec());
+    }
     Ok(stamp(&m.image, &parts.iter().map(Vec::as_slice).collect::<Vec<_>>()))
 }
 
@@ -252,7 +256,7 @@ pub fn up(lab: &Lab, profile: &str) -> Result<()> {
         if !qemu::is_running(&m.name) {
             ensure_disk(m)?;
             println!("starting {}", m.name);
-            qemu::start(lab, m, &qemu::machine_dir(&m.name).join("disk.qcow2"), None)?;
+            qemu::start(lab, m, qemu::Stage::Run, None)?;
         }
     }
     for m in &machines {
@@ -268,7 +272,16 @@ fn ensure_disk(m: &Machine) -> Result<()> {
     if !disk.exists() {
         qemu::create_overlay(&disk, &dir.join("base.qcow2"), None)?;
     }
+    let extra = dir.join("extra.qcow2");
+    if m.extra_disk_gb.is_some() && !extra.exists() {
+        qemu::create_overlay(&extra, &dir.join("extra-base.qcow2"), None)?;
+    }
     Ok(())
+}
+
+/// The overlays `lab reset` replaces: every disk the machine runs from.
+pub(super) fn reset_files(m: &Machine) -> Vec<&'static str> {
+    if m.extra_disk_gb.is_some() { vec!["disk.qcow2", "extra.qcow2"] } else { vec!["disk.qcow2"] }
 }
 
 /// Discards the machine's changes since provisioning.
@@ -282,16 +295,18 @@ fn reset(lab: &Lab, m: &Machine) -> Result<()> {
         }
     }
     let dir = qemu::machine_dir(&m.name);
-    let disk = dir.join("disk.qcow2");
-    if disk.exists() {
-        std::fs::remove_file(&disk)?;
+    for f in reset_files(m) {
+        let file = dir.join(f);
+        if file.exists() {
+            std::fs::remove_file(&file)?;
+        }
     }
     if !dir.join("base.provisioned").exists() {
         bail!("{} has never been provisioned; run `lab up` first", m.name);
     }
     ensure_disk(m)?;
     if was_running {
-        qemu::start(lab, m, &disk, None)?;
+        qemu::start(lab, m, qemu::Stage::Run, None)?;
         qemu::wait_ssh(m, Duration::from_secs(300))?;
     }
     println!("{} reset", m.name);
@@ -308,17 +323,17 @@ fn provision(lab: &Lab, m: &Machine, server: &seed::Server) -> Result<()> {
     // The stamp is of the inputs this run starts from, even if a script is edited while it runs.
     let stamp = provision_stamp(lab, m)?;
     let _ = std::fs::remove_file(dir.join("base.provisioned"));
-    for f in ["base.qcow2", "disk.qcow2", "extra.qcow2"] {
+    for f in ["base.qcow2", "disk.qcow2", "extra-base.qcow2", "extra.qcow2"] {
         let _ = std::fs::remove_file(dir.join(f));
     }
     let size = if m.proxmox.is_some() { 32 } else { 16 };
     qemu::create_overlay(&base, &image_path, Some(size))?;
     if let Some(gb) = m.extra_disk_gb {
-        qemu::create_blank(&dir.join("extra.qcow2"), gb)?;
+        qemu::create_blank(&dir.join("extra-base.qcow2"), gb)?;
     }
     let url = server.publish(lab, m)?;
     println!("provisioning {} (first boot)", m.name);
-    qemu::start(lab, m, &base, Some(&url))?;
+    qemu::start(lab, m, qemu::Stage::Provision, Some(&url))?;
     qemu::wait_ssh(m, Duration::from_secs(600))?;
     qemu::ssh(m, "sudo cloud-init status --wait >/dev/null 2>&1 || true; test -e /var/lib/rackhand-lab-ready")
         .context("cloud-init didn't finish")?;

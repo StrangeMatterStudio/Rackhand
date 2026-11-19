@@ -24,6 +24,11 @@ fn reset_restores_the_pristine_disk() {
     on("target", "touch /home/lab/rackhand-reset-marker");
     lab(&["reset", "target"]);
     assert!(ok_on("target", "test ! -e /home/lab/rackhand-reset-marker"), "the marker survived a reset");
+    // A Proxmox node's extra disk, which holds its ZFS pool, is reset too.
+    on("pve9", "sudo zfs create tank/rackhand-reset-marker");
+    lab(&["reset", "pve9"]);
+    assert!(eventually(Duration::from_secs(300), || ok_on("pve9", "sudo zpool list tank")), "the pool is back");
+    assert!(ok_on("pve9", "! sudo zfs list tank/rackhand-reset-marker"), "the marker dataset survived a reset");
 }
 
 #[test]

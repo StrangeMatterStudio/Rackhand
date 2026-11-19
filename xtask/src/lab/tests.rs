@@ -82,3 +82,17 @@ fn provision_stamp_follows_the_inputs() {
     assert!(is_provisioned(&dir, &a));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn extra_disk_is_an_overlay_that_reset_replaces() {
+    use super::qemu::{Stage, drives};
+    let lab = lab();
+    let (pve, target) = (lab.machine("pve9").unwrap(), lab.machine("target").unwrap());
+    let dir = std::path::Path::new("/m");
+    // Provisioning writes the bases (the ZFS pool lands on `extra-base.qcow2`); a running machine uses overlays.
+    assert_eq!(drives(dir, pve, Stage::Provision), [dir.join("base.qcow2"), dir.join("extra-base.qcow2")]);
+    assert_eq!(drives(dir, pve, Stage::Run), [dir.join("disk.qcow2"), dir.join("extra.qcow2")]);
+    assert_eq!(drives(dir, target, Stage::Run), [dir.join("disk.qcow2")]);
+    assert_eq!(super::reset_files(pve), ["disk.qcow2", "extra.qcow2"]);
+    assert_eq!(super::reset_files(target), ["disk.qcow2"]);
+}

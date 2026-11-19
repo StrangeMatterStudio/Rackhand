@@ -2,7 +2,9 @@
 //!
 //! Disk layout per machine under `~/.cache/rackhand-lab/machines/<name>/`:
 //! - `base.qcow2`: an overlay on the pinned image, provisioned once (cloud-init, then Proxmox for the nodes);
-//! - `disk.qcow2`: an overlay on `base.qcow2` that the machine runs from; `lab reset` replaces it.
+//! - `disk.qcow2`: an overlay on `base.qcow2` that the machine runs from; `lab reset` replaces it;
+//! - for machines with an extra disk (the Proxmox nodes' ZFS pool), `extra-base.qcow2`, written while provisioning,
+//!   and `extra.qcow2`, an overlay on it that the machine runs from and `lab reset` replaces too.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -74,8 +76,29 @@ pub fn create_blank(file: &Path, size_gb: u32) -> Result<()> {
 }
 
 /// Starts a machine from `disk` (daemonized). `seed_url` is the NoCloud seed for first boot.
-pub fn start(lab: &Lab, machine: &Machine, disk: &Path, seed_url: Option<&str>) -> Result<()> {
+/// Provisioning writes the bases; a running machine uses the overlays on them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    Provision,
+    Run,
+}
+
+/// The disks a machine boots with at a stage, the system disk first.
+pub fn drives(dir: &Path, machine: &Machine, stage: Stage) -> Vec<PathBuf> {
+    let (system, extra) = match stage {
+        Stage::Provision => ("base.qcow2", "extra-base.qcow2"),
+        Stage::Run => ("disk.qcow2", "extra.qcow2"),
+    };
+    let mut out = vec![dir.join(system)];
+    if machine.extra_disk_gb.is_some() {
+        out.push(dir.join(extra));
+    }
+    out
+}
+
+pub fn start(lab: &Lab, machine: &Machine, stage: Stage, seed_url: Option<&str>) -> Result<()> {
     let dir = machine_dir(&machine.name);
+    let disks = drives(&dir, machine, stage);
     std::fs::create_dir_all(&dir)?;
     let qmp = dir.join("qmp.sock");
     let _ = std::fs::remove_file(&qmp);
@@ -96,9 +119,9 @@ pub fn start(lab: &Lab, machine: &Machine, disk: &Path, seed_url: Option<&str>) 
         ))
         .args(["-serial", "chardev:con"])
         .arg("-drive")
-        .arg(format!("file={},if=virtio,cache=writeback,discard=unmap", disk.display()));
-    if machine.extra_disk_gb.is_some() {
-        cmd.arg("-drive").arg(format!("file={},if=virtio,cache=writeback", dir.join("extra.qcow2").display()));
+        .arg(format!("file={},if=virtio,cache=writeback,discard=unmap", disks[0].display()));
+    for extra in &disks[1..] {
+        cmd.arg("-drive").arg(format!("file={},if=virtio,cache=writeback", extra.display()));
     }
     cmd.arg("-netdev")
         .arg(format!("user,id=u0,hostfwd=tcp:127.0.0.1:{}-:22", machine.ssh_port))
@@ -232,18 +255,31 @@ pub fn ssh(machine: &Machine, command: &str) -> Result<String> {
 }
 
 /// Copies a local file to the machine.
+/// Copies a file to the machine. A node just back from a reboot can answer SSH and then drop the connection while its
+/// services settle, so a failed copy is tried again twice, 5 seconds apart.
 pub fn scp_to(machine: &Machine, local: &Path, remote: &str) -> Result<()> {
     let key = ensure_key()?;
-    run_checked(
-        Command::new("scp")
-            .arg("-q")
-            .arg("-i")
-            .arg(key)
-            .args(["-P", &machine.ssh_port.to_string()])
-            .args(["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR"])
-            .arg(local)
-            .arg(format!("lab@127.0.0.1:{remote}")),
-    )
+    let mut last = None;
+    for attempt in 0..3 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_secs(5));
+        }
+        let result = run_checked(
+            Command::new("scp")
+                .arg("-q")
+                .arg("-i")
+                .arg(&key)
+                .args(["-P", &machine.ssh_port.to_string()])
+                .args(["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR"])
+                .arg(local)
+                .arg(format!("lab@127.0.0.1:{remote}")),
+        );
+        match result {
+            Ok(()) => return Ok(()),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("scp to {} failed", machine.name)))
 }
 
 /// Waits until the machine answers SSH, or fails after `timeout`.
