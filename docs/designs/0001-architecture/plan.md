@@ -228,7 +228,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T20 | Audit log with hash chain and checkpoints | T18 | unit | done |
 | T21 | Vault | T18 | unit | done |
 | T22 | Probe Linux collectors | T16, T06, T11 | collector (fixtures) | todo |
-| T23 | Probe buffer, epochs and label table | T16 | unit | todo |
+| T23 | Probe buffer, epochs and label table | T16 | unit | done |
 | T24 | Bus | T18 | unit | todo |
 | T25 | Ingest: staging, acks, compaction, recent window, clock | T18, T19, T24 | unit | todo |
 | T26 | Probe contract `rackhand/probe/1` | T17, T23, T25 | contract | todo |
@@ -1191,6 +1191,9 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-probe -E 'test(buffer::) \| test(epoch::) \| test(labels::)' | compile errors: unresolved super::epoch, labels, segments |
+  | 2026-11-19 | cargo nextest run -p rackhand-probe -E 'test(buffer::) \| test(epoch::) \| test(labels::)' | 8 passed, 0 failed |
+  | 2026-11-19 | cargo xtask ci fast | exit 0 |
 
 ### T24: Bus
 - **Design refs:** 7.3.8 (bus delivery), D102
@@ -4220,6 +4223,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D12 | 2026-11-19 | T17 | `cargo deny check` over every target and every unmaintained notice | `deny.toml` lists the shipped targets (wasm-only crates under Unlicense drop out) and fails on unmaintained crates only when we depend on them directly; vulnerabilities always fail | iroh-relay pulls wasm-only and unmaintained transitive crates that Rackhand never builds or calls | plan | - |
 | D13 | 2026-11-19 | T18 | `WriteCmd` variants carry typed row structs | Each 7.3.8 variant carries a column map (`Row`) for now; a `Batch` variant writes rows to several tables in one transaction; owning systems replace the stubs (and may type the payloads) in their steps | Keeps T18 to the writer's guarantees; the row shapes are owned by the systems built later | plan | - |
 | D14 | 2026-11-19 | T20 | Chain code in `rackhand-hub/src/audit/` | The row hash lives in `rackhand-store::audit` (the writer computes it inside the append transaction); append, checkpoint and verify are in the hub's Audit module | The store writer is the only writer of `audit_log` and must hash inside its transaction; the store can't depend on the hub | plan | - |
+| D15 | 2026-11-19 | T23 | Probe modules in the binary crate | `rackhand-probe` has a library target (`rackhand_probe`) with the buffer and helper modules and a thin binary | Tests and the later daemon share the modules | plan | - |
 
 ## Follow-ups (out of scope)
 
