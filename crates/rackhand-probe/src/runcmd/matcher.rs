@@ -23,6 +23,9 @@ pub struct Template {
 pub struct CommandList {
     pub version: u64,
     pub commands: Vec<Template>,
+    /// Where `receive` may write (the policy's `transfer_roots`, signed with the list).
+    #[serde(default)]
+    pub transfer_roots: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

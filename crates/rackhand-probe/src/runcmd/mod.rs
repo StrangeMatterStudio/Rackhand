@@ -2,8 +2,10 @@
 //! binary in its `run` mode. It executes a request only if it matches `commands.json` exactly, and directly (no
 //! shell). Its paths are fixed: nothing a caller passes through sudo can point it at another list.
 
+pub mod detached;
 pub mod install;
 pub mod matcher;
+pub mod receive;
 
 use std::io::Read;
 use std::path::Path;
@@ -23,12 +25,42 @@ fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
-/// `run <args...>`.
+/// `run <args...>`: the built-in subcommands take only ids the hub generated (and, for `job-start`, a command that
+/// matches the list); anything else is a command to match.
 pub fn main(args: &[String]) -> ExitCode {
+    let rest = args.get(1..).unwrap_or(&[]);
     match args.first().map(String::as_str) {
         Some("install-commands") => install_commands(),
+        Some("job-start") => match load_list() {
+            Some(list) => detached::start(&list, rest),
+            None => no_list(),
+        },
+        Some("job-supervise") => detached::supervise(rest),
+        Some("job-status") => detached::status(rest),
+        Some("job-stop") => detached::stop(rest),
+        Some("job-clean") => detached::clean(rest),
+        Some("receive") => match load_list() {
+            Some(list) => {
+                let roots = if list.transfer_roots.is_empty() {
+                    vec![receive::DEFAULT_ROOT.to_string()]
+                } else {
+                    list.transfer_roots
+                };
+                receive::main(rest, &roots)
+            }
+            None => no_list(),
+        },
         _ => run(args),
     }
+}
+
+fn load_list() -> Option<matcher::CommandList> {
+    std::fs::read(COMMANDS).ok().and_then(|b| serde_json::from_slice::<matcher::CommandList>(&b).ok())
+}
+
+fn no_list() -> ExitCode {
+    eprintln!("run: no command list at {COMMANDS}");
+    ExitCode::from(126)
 }
 
 fn install_commands() -> ExitCode {

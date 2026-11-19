@@ -66,3 +66,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-19 | T37 done: password and single-use TOTP sign-in, step-up, sessions with idle and absolute limits, limits per source, account and known device, trusted proxies (D26) |
 | 2026-11-19 | T22 done: Linux collectors from /proc and /sys with fixtures captured from the lab; `collect --once --json` on the real system found always-full image filesystems, now excluded (D27, for the owner) |
 | 2026-11-19 | T51 done: command wrapper and signed command lists, checked behind sudo in a container; the join half of the first-list test moves to T44 (D28) |
+| 2026-11-19 | T52 done: detached steps under systemd and OpenRC survive a dropped session; `run receive` with resume and a BLAKE3 check (D29) |

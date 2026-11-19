@@ -25,10 +25,11 @@ ed25519-dalek = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
 regex = "1"
+blake3 = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # statvfs without unsafe code.
-rustix = { version = "1", default-features = false, features = ["std", "fs"] }
+rustix = { version = "1", default-features = false, features = ["std", "fs", "process"] }
 
 [lints]
 workspace = true
