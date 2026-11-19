@@ -9,14 +9,20 @@ use axum::body::Body;
 use axum::http::{HeaderValue, Response, StatusCode, header};
 
 use super::routes::Page;
-use super::{Ctx, Web};
+use super::{Ctx, Web, auth};
 
 pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
     match page {
         Page::Healthz => plain(StatusCode::OK, "ok"),
         Page::Vendor => vendor(ctx.path.strip_prefix("/static/vendor/").unwrap_or("")),
         Page::AppCss => asset("text/css", APP_CSS),
-        Page::SignIn => html(StatusCode::OK, SignIn {}.render()),
+        Page::SignIn => auth::flow::password_page(ctx),
+        Page::SignInSubmit => auth::flow::password_step(web, ctx).await,
+        Page::SignInCode => auth::flow::code_page(web, ctx),
+        Page::SignInCodeSubmit => auth::flow::code_step(web, ctx).await,
+        Page::SignOut => auth::flow::sign_out(web, ctx).await,
+        Page::StepUp => auth::flow::step_up_page(ctx),
+        Page::StepUpSubmit => auth::flow::step_up(web, ctx).await,
         Page::FirstRunForm => first_run::form(web, ctx),
         Page::FirstRunSubmit => first_run::submit(web, ctx).await,
         Page::Overview => overview::page(web, ctx),
@@ -24,10 +30,6 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
         Page::SettingsSources => settings::sources(web, ctx).await,
     }
 }
-
-#[derive(Template)]
-#[template(path = "sign_in.html")]
-struct SignIn {}
 
 #[derive(Template)]
 #[template(path = "message.html")]

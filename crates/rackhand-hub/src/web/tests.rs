@@ -33,7 +33,11 @@ async fn app(name: &str) -> App {
     let key = MasterKey::from_bytes([3u8; 32]);
     let recovery = recovery_code(&key);
     let vault = Arc::new(Vault::new(key, db.clone()));
-    let config = WebConfig { setup_code_hash: Sha256::digest(SETUP_CODE.as_bytes()).into(), csrf_key: [9u8; 32] };
+    let config = WebConfig {
+        setup_code_hash: Sha256::digest(SETUP_CODE.as_bytes()).into(),
+        csrf_key: [9u8; 32],
+        trusted_proxies: vec![],
+    };
     let web = Web::new(db.clone(), vault, Audit::new(db.writer()), recovery.clone(), config);
     App { db, router: web.router(), recovery }
 }
@@ -141,9 +145,9 @@ async fn session_for(db: &Arc<Db>, role: Role) -> String {
     format!("{}={token}", session::COOKIE)
 }
 
-/// The CSRF token of a signed-in session, as its pages embed it.
+/// The CSRF token of a signed-in session, as its pages embed it (the overview's sign-out form, for every role).
 async fn csrf_of(app: &App, cookie: &str) -> String {
-    let html = text(send(&app.router, get("/settings", cookie)).await).await;
+    let html = text(send(&app.router, get("/", cookie)).await).await;
     field(&html, "csrf")
 }
 
@@ -217,9 +221,9 @@ async fn post_without_csrf_token_is_403() {
     complete_first_run(&app, SETUP_CODE).await;
     let admin = session_for(&app.db, Role::Admin).await;
     let good = csrf_of(&app, &admin).await;
-    let posts: Vec<_> =
-        ROUTES.iter().filter(|r| r.method == Method::POST && matches!(r.access, Access::Perm(_))).collect();
-    assert!(!posts.is_empty());
+    // Every state-changing route; first run is checked above (after it, the route only redirects).
+    let posts: Vec<_> = ROUTES.iter().filter(|r| r.method == Method::POST && r.access != Access::FirstRun).collect();
+    assert!(posts.len() >= 4, "{posts:?}");
     for r in posts {
         let none = send(&app.router, post(r.path, &admin, &[("x", "1")])).await;
         assert_eq!(none.status(), StatusCode::FORBIDDEN, "{} without a token", r.path);
@@ -307,12 +311,13 @@ async fn permission_matrix_enforced_for_each_role() {
     let app = app("matrix").await;
     complete_first_run(&app, SETUP_CODE).await;
     for role in [Viewer, Responder, Admin] {
-        let cookie = session_for(&app.db, role).await;
         for r in ROUTES.iter() {
             let Access::Perm(p) = r.access else { continue };
+            // A fresh session per route (sign-out ends one).
+            let cookie = session_for(&app.db, role).await;
             let resp = if r.method == Method::POST {
                 // A valid token, so only the permission decides.
-                let csrf = if allowed(role, Administer) { csrf_of(&app, &cookie).await } else { String::new() };
+                let csrf = csrf_of(&app, &cookie).await;
                 send(&app.router, post(r.path, &cookie, &[("csrf", csrf.as_str())])).await
             } else {
                 send(&app.router, get(&sample_path(r.path), &cookie)).await

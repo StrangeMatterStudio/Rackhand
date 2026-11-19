@@ -60,21 +60,47 @@ pub struct SessionUser {
     pub name: String,
     pub role: Role,
     pub step_up_at: Option<i64>,
+    pub last_seen_at: i64,
 }
 
 /// The session's user, if the session exists, hasn't expired or gone idle, and the user is enabled.
 pub fn lookup(db: &Db, token: &str, now_ms: i64) -> rusqlite::Result<Option<SessionUser>> {
     let h = hash(token);
-    let row: Option<(String, String, String, Option<i64>)> = db.readers().with(|c| {
+    let row: Option<(String, String, String, Option<i64>, i64)> = db.readers().with(|c| {
         c.query_row(
-            "SELECT u.id, u.name, u.role, s.step_up_at FROM sessions s JOIN users u ON u.id = s.user_id
+            "SELECT u.id, u.name, u.role, s.step_up_at, s.last_seen_at FROM sessions s JOIN users u ON u.id = s.user_id
              WHERE s.id_hash = ?1 AND s.expires_at > ?2 AND s.last_seen_at > ?3 AND u.disabled_at IS NULL",
             rusqlite::params![h.as_slice(), now_ms, now_ms - IDLE_MS],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()
     })?;
-    Ok(row.and_then(|(user_id, name, role, step_up_at)| {
-        Some(SessionUser { id_hash: h, user_id, name, role: parse_role(&role)?, step_up_at })
+    Ok(row.and_then(|(user_id, name, role, step_up_at, last_seen_at)| {
+        Some(SessionUser { id_hash: h, user_id, name, role: parse_role(&role)?, step_up_at, last_seen_at })
     }))
+}
+
+/// Updates some columns of a session.
+async fn update(db: &Db, id_hash: &[u8; 32], cols: &[(&'static str, i64)]) -> Result<(), StoreError> {
+    let mut row: Row = cols.iter().map(|(k, v)| (*k, Value::Integer(*v))).collect();
+    row.insert("id_hash", Value::Blob(id_hash.to_vec()));
+    db.writer().send(WriteCmd::PutSession(row)).await.map(|_| ())
+}
+
+/// Marks the session used now (the idle limit counts from here).
+pub async fn touch(db: &Db, token: &str, now_ms: i64) -> Result<(), StoreError> {
+    touch_hash(db, &hash(token), now_ms).await
+}
+
+pub(crate) async fn touch_hash(db: &Db, id_hash: &[u8; 32], now_ms: i64) -> Result<(), StoreError> {
+    update(db, id_hash, &[("last_seen_at", now_ms)]).await
+}
+
+pub async fn set_step_up(db: &Db, id_hash: &[u8; 32], now_ms: i64) -> Result<(), StoreError> {
+    update(db, id_hash, &[("step_up_at", now_ms)]).await
+}
+
+/// Ends the session (sign-out).
+pub async fn end(db: &Db, id_hash: &[u8; 32], now_ms: i64) -> Result<(), StoreError> {
+    update(db, id_hash, &[("expires_at", now_ms)]).await
 }

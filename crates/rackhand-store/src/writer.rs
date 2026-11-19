@@ -450,7 +450,42 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
             let n = conn.execute("UPDATE approvals SET state = 'used' WHERE id = ?1 AND state = 'approved'", [&id])?;
             if n == 0 { Err(StoreError::Conflict("approval already used")) } else { Ok(n) }
         }
-        WriteCmd::PutSession(row) => upsert_one(conn, "sessions", "id_hash", row),
+        WriteCmd::PutSession(mut row) => {
+            // A whole row starts a session; a row of just some columns updates one (touch, step-up, sign-out).
+            if row.contains_key("user_id") {
+                return upsert_one(conn, "sessions", "id_hash", row);
+            }
+            let key = row.remove("id_hash").ok_or(StoreError::MissingColumn("id_hash"))?;
+            let tx = conn.transaction()?;
+            let n = update_row(&tx, &RowUpdate { table: "sessions", key: ("id_hash", key), set: row })?;
+            tx.commit()?;
+            Ok(n)
+        }
+        WriteCmd::PutCredential(row) => {
+            // A whole row stores a credential; `id` with `last_totp_step` alone records a used TOTP step, only if it
+            // is later than any used before, so a code works once even when two sign-ins race.
+            if row.contains_key("data") {
+                return upsert_one(conn, "credentials", "id", row);
+            }
+            let n = conn.execute(
+                "UPDATE credentials SET last_totp_step = ?1 WHERE id = ?2 AND (last_totp_step IS NULL OR last_totp_step < ?1)",
+                rusqlite::params![int(&row, "last_totp_step")?, text(&row, "id")?],
+            )?;
+            if n == 0 { Err(StoreError::Conflict("TOTP step already used")) } else { Ok(n) }
+        }
+        WriteCmd::PutKnownDevice(row) => {
+            let n = conn.execute(
+                "INSERT INTO known_devices (user_id, cookie_hash, first_seen_at, last_seen_at) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (user_id, cookie_hash) DO UPDATE SET last_seen_at = excluded.last_seen_at",
+                rusqlite::params![
+                    text(&row, "user_id")?,
+                    row.get("cookie_hash").ok_or(StoreError::MissingColumn("cookie_hash"))?,
+                    int(&row, "first_seen_at")?,
+                    int(&row, "last_seen_at")?
+                ],
+            )?;
+            Ok(n)
+        }
         WriteCmd::PutLibraryRevision(row) => {
             // The next revision of an item, and the item's current revision, in one transaction.
             let tx = conn.transaction()?;

@@ -72,7 +72,8 @@ pub async fn serve(listener: TcpListener, app: Router, config: Arc<ServerConfig>
                 tracing::debug!(%peer, "TLS handshake failed");
                 return;
             };
-            let service = TowerToHyperService::new(app);
+            let service =
+                TowerToHyperService::new(app.layer(axum::Extension(crate::web::auth::client_addr::PeerAddr(peer))));
             if let Err(e) =
                 hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(tls), service).await
             {

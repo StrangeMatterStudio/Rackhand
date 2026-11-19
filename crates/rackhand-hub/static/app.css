@@ -14,3 +14,4 @@ th, td { text-align: left; padding: 0.35rem 0.6rem; border-bottom: 1px solid var
 code.secret, code.recovery { font-size: 1.1rem; letter-spacing: 0.05em; }
 .hint { color: var(--muted); }
 .error { color: var(--bad); font-weight: 600; }
+form.inline { display: inline; margin-left: 1rem; }

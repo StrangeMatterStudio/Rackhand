@@ -18,6 +18,7 @@ pub(super) struct MachineRow {
 #[template(path = "overview.html")]
 struct Overview<'a> {
     user: &'a str,
+    csrf: &'a str,
     sites: Vec<String>,
     machines: Vec<MachineRow>,
 }
@@ -38,5 +39,5 @@ pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
         return status(StatusCode::INTERNAL_SERVER_ERROR, "The database couldn't be read");
     };
     let user = ctx.user.as_ref().map(|u| u.name.as_str()).unwrap_or("");
-    html(StatusCode::OK, Overview { user, sites, machines }.render())
+    html(StatusCode::OK, Overview { user, csrf: &ctx.csrf, sites, machines }.render())
 }

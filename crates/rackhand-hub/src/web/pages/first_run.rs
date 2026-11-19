@@ -3,7 +3,6 @@
 //! written in one command that succeeds only while there is no user, so two first runs can't make two admins; the
 //! recovery code is shown in that one response and never again.
 
-use argon2::password_hash::{PasswordHasher, SaltString};
 use askama::Template;
 use axum::body::Body;
 use axum::http::{Response, StatusCode};
@@ -17,7 +16,7 @@ use crate::registry::peers::{local_site_row, valid_site_name};
 use crate::vault::Secret;
 use crate::web::{Ctx, Web, csrf, totp};
 
-const MIN_PASSWORD: usize = 12;
+use crate::web::auth::password::MIN_LENGTH as MIN_PASSWORD;
 const TOTP_PURPOSE: &str = "first-run-totp";
 
 #[derive(Template)]
@@ -59,16 +58,6 @@ fn valid_user_name(name: &str) -> bool {
         && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
 }
 
-fn hash_password(password: &str) -> Result<String, String> {
-    let mut salt = [0u8; 16];
-    getrandom::fill(&mut salt).map_err(|e| e.to_string())?;
-    let salt = SaltString::encode_b64(&salt).map_err(|e| e.to_string())?;
-    argon2::Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
-        .map(|h| h.to_string())
-        .map_err(|e| e.to_string())
-}
-
 pub(super) async fn submit(web: &Web, ctx: &Ctx) -> Response<Body> {
     let f = |k: &str| ctx.form.get(k).map(String::as_str).unwrap_or("").trim();
     let setup: [u8; 32] = Sha256::digest(f("setup_code").as_bytes()).into();
@@ -98,7 +87,7 @@ pub(super) async fn submit(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some(step) = totp::verify(&secret, f("totp_code"), ctx.now_ms / 1000) else {
         return invalid("That authenticator code doesn't match; check the app's clock and try the next code");
     };
-    let Ok(password_hash) = hash_password(password) else {
+    let Ok(password_hash) = crate::web::auth::password::hash(password) else {
         return status(StatusCode::INTERNAL_SERVER_ERROR, "Password hashing failed");
     };
     let sources = Sources {

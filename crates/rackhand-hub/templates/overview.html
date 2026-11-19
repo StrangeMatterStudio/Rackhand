@@ -1,5 +1,6 @@
 {% extends "base.html" %}
-{% block nav %}<nav><a href="/">Overview</a> <a href="/settings">Settings</a> <span class="user">{{ user }}</span></nav>{% endblock %}
+{% block nav %}<nav><a href="/">Overview</a> <a href="/settings">Settings</a> <span class="user">{{ user }}</span>
+<form class="inline" method="post" action="/sign-out"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Sign out</button></form></nav>{% endblock %}
 {% block content %}
 <h1>Overview</h1>
 {% for site in sites %}<h2>{{ site }}</h2>{% endfor %}

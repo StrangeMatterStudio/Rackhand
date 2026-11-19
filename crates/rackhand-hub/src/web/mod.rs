@@ -1,9 +1,10 @@
 //! Dashboard (7.7): server-rendered pages over HTTPS. Every request goes through one gate that applies, in order, the
 //! first-run redirect, the session, the route's permission (7.7.2) and, for state-changing routes, the CSRF token.
 
+pub mod auth;
 pub mod csp;
 pub mod csrf;
-mod pages;
+pub(crate) mod pages;
 pub mod perms;
 pub mod routes;
 pub mod session;
@@ -11,8 +12,9 @@ pub mod tls;
 pub mod totp;
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::body::Body;
@@ -36,7 +38,12 @@ pub struct WebConfig {
     pub setup_code_hash: [u8; 32],
     /// The key CSRF tokens and signed form values are made with.
     pub csrf_key: [u8; 32],
+    /// `trusted_proxies` from `hub.toml`: networks whose `X-Forwarded-For` is believed (7.7.2).
+    pub trusted_proxies: Vec<(IpAddr, u8)>,
 }
+
+/// The time source, injectable for tests.
+pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
 
 impl std::fmt::Debug for WebConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -51,6 +58,9 @@ struct Inner {
     recovery_code: String,
     config: WebConfig,
     admin_exists: AtomicBool,
+    clock: Clock,
+    limits: Mutex<auth::limits::Limits>,
+    pending: Mutex<HashMap<String, auth::Pending>>,
 }
 
 #[derive(Clone)]
@@ -70,11 +80,32 @@ pub(crate) struct Ctx {
     pub csrf: String,
     pub form: HashMap<String, String>,
     pub path: String,
+    /// The client's source (7.7.2) as the limits count it.
+    pub source: String,
+    pub cookies: HashMap<String, String>,
 }
 
 impl Web {
     pub fn new(db: Arc<Db>, vault: Arc<Vault>, audit: Audit, recovery_code: String, config: WebConfig) -> Web {
-        Web(Arc::new(Inner { db, vault, audit, recovery_code, config, admin_exists: AtomicBool::new(false) }))
+        Web(Arc::new(Inner {
+            db,
+            vault,
+            audit,
+            recovery_code,
+            config,
+            admin_exists: AtomicBool::new(false),
+            clock: Arc::new(now_ms),
+            limits: Mutex::new(auth::limits::Limits::default()),
+            pending: Mutex::new(HashMap::new()),
+        }))
+    }
+
+    /// Replaces the clock; for tests, before the router is built.
+    pub fn with_clock(mut self, clock: Clock) -> Web {
+        if let Some(inner) = Arc::get_mut(&mut self.0) {
+            inner.clock = clock;
+        }
+        self
     }
 
     pub fn router(&self) -> Router {
@@ -116,7 +147,7 @@ impl Web {
     }
 
     async fn handle(&self, spec: &'static RouteSpec, req: Request<Body>) -> Response<Body> {
-        let now = now_ms();
+        let now = (self.0.clock)();
         let admin = self.admin_exists();
         match spec.access {
             Access::FirstRun if admin => return pages::redirect("/sign-in"),
@@ -124,7 +155,22 @@ impl Web {
             _ => {}
         }
         let cookies = parse_cookies(req.headers().get(header::COOKIE));
+        let peer =
+            req.extensions().get::<auth::client_addr::PeerAddr>().map_or(SocketAddr::from(([0, 0, 0, 0], 0)), |p| p.0);
+        let source = auth::client_addr::source_key(auth::client_addr::client_ip(
+            peer,
+            req.headers(),
+            &self.0.config.trusted_proxies,
+        ));
         let user = cookies.get(session::COOKIE).and_then(|t| session::lookup(&self.0.db, t, now).ok().flatten());
+        if let Some(u) = &user {
+            // The idle limit counts from the last use; written at most once a minute.
+            if now - u.last_seen_at > 60_000
+                && let Err(e) = session::touch_hash(&self.0.db, &u.id_hash, now).await
+            {
+                tracing::warn!(error = %e, "session touch");
+            }
+        }
         let mut set_cookies = Vec::new();
         let binding = match &user {
             Some(u) => Binding::Session(u.id_hash),
@@ -164,7 +210,7 @@ impl Web {
             }
         }
         let csrf = csrf::token(&self.0.config.csrf_key, &binding);
-        let ctx = Ctx { now_ms: now, user, binding, csrf, form, path };
+        let ctx = Ctx { now_ms: now, user, binding, csrf, form, path, source, cookies };
         let mut resp = pages::render(self, spec.page, &ctx).await;
         for c in set_cookies {
             if let Ok(v) = HeaderValue::from_str(&c) {
