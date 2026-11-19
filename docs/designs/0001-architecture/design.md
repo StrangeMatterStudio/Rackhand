@@ -2060,6 +2060,10 @@ the owner and the document is updated before the work that depends on it starts.
   deadline; the flag that limits a run to the given MCP config; any extra flag stream-json needs in a non-interactive
   run; and running with a configuration directory that holds only the provider credential.
 - **S6** Probe footprint: static musl binary size and steady RSS with iroh, aya and tokio.
+  **Finding (2026-11-19):** A static musl probe skeleton (iroh 1.5 endpoint, aya tracepoint, tokio, /proc reads and a
+  1.2 KB zstd frame every 15 s) is 5.55 MB on x86_64 and 4.43 MB on aarch64, with 4.9 MB steady RSS and 0.019% of a
+  core over 30 minutes: inside the 15 MB, 25 MB and 1% budgets. The probe uses a current-thread tokio runtime and
+  iroh with only `tls-ring` (default features add 0.7 MB for nothing a probe needs). Report: `spikes/s6.md`.
 - **S7** Git mirror push in pure Rust (gix) or with libgit2 (git2, statically linked).
   **Finding (2026-11-19):** `git2` 0.21 (features `ssh`, `vendored-libgit2`, `vendored-openssl`) pushes twice over
   SSH with an Ed25519 deploy key held in memory, refuses a non-fast-forward update with `NotFastForward`, and builds
@@ -2242,3 +2246,4 @@ None.
 | 2026-11-19 | S2 finding: relay admission by key, one server-wide rate and priority at capacity work; per-key rates and daily quotas are not possible (owner decision pending; section 17) | Spike S2 finding | Implementation run |
 | 2026-11-19 | S3 finding: path detection and `wait_direct` as designed; two masquerade NATs stay relayed, so the network tier builds full cone with a UDP forward (section 17) | Spike S3 finding | Implementation run |
 | 2026-11-19 | S10 finding: default outside sources allowed (CC0, free with credit, CC BY 4.0); 7.8.5 license notes updated; Feodo Tracker nearly empty (owner decision pending before T69) | Spike S10 finding | Implementation run |
+| 2026-11-19 | S6 finding: probe footprint inside the 5.2 budgets; current-thread runtime and iroh `tls-ring` only (section 17) | Spike S6 finding | Implementation run |

@@ -211,7 +211,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T04 | Runner profiles for Rackhand | T03 | scripted (CI run), owner setup | unverified (MV1) |
 | L1 | Local lab harness | T02 | unit (xtask) + live (local lab) | in progress |
 | T05 | Spike S8: time-series encoding | T02 | scripted measurement | todo |
-| T06 | Spike S6: probe footprint | T02 | scripted measurement | todo |
+| T06 | Spike S6: probe footprint | T02 | scripted measurement | done |
 | T07 | Spike S7: git mirror library | T02 | scripted measurement | done |
 | T08 | Spike S2: iroh relay admission and limits | T02 | scripted measurement (network VM) | done (owner decision pending for T82) |
 | T09 | Spike S3: iroh path detection | T02 | scripted measurement (network VM) | done |
@@ -664,13 +664,16 @@ Every spike step follows the same rules:
 - **Regression:** `cargo xtask ci fast`: exit 0.
 - **Manual verification:** None.
 - **Done when:**
-  - [ ] Report committed; finding and the chosen runtime and features appended to design 17
-  - [ ] Budgets met, or the owner has decided and 5.2 is updated
-  - [ ] Spike code deleted
+  - [x] Report committed; finding and the chosen runtime and features appended to design 17
+  - [x] Budgets met, or the owner has decided and 5.2 is updated
+  - [x] Spike code deleted
 - **Risk / rollback:** iroh's size may need trimmed features; recorded as the finding.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | spikes/s6/measure.sh --stub --check | no measurement, exit 1 |
+  | 2026-11-19 | spikes/s6/measure.sh --minutes 30 (first run) | invalid: the VM's loopback was down, so every probe exited at start; the check was tightened to require frames received and non-zero RSS |
+  | 2026-11-19 | spikes/s6/measure.sh --minutes 30 --report docs/designs/0001-architecture/spikes/s6.md --check | exit 0: 5.55 MB static, 4.9 MB steady RSS, 0.019% CPU (ct-minimal); 122 frames received in 30 minutes; aarch64 4.43 MB |
 
 ### T07: Spike S7: git mirror library
 - **Design refs:** 7.3.13, 5.3, S7
