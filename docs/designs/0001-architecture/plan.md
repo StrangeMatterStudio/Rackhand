@@ -39,7 +39,7 @@ directories under `/tmp` (the Windows drive mounted in WSL doesn't keep Unix mod
 | `CARGO_TARGET_DIR` on the Linux filesystem | build speed | `echo $CARGO_TARGET_DIR` | a path under `$HOME`, not under `/mnt/` |
 | GitHub CLI signed in with `repo` and `workflow` scopes | CI runs, PR | `gh auth status` (from PowerShell) | signed in to github.com |
 | Push access | commit and push after each step | `git push --dry-run origin design/0001-architecture` (from PowerShell) | no error |
-| Zeus runner profiles for Rackhand (added in T04) | CI tiers on studio runners | `gh run list --repo StrangeMatterStudio/Rackhand --workflow runner-check.yml --limit 1` (from PowerShell) | latest run `completed success` |
+| Zeus runner profiles for Rackhand (added in T04) | CI tiers on studio runners | `gh variable list --repo StrangeMatterStudio/Rackhand` (from PowerShell) | `RACKHAND_CI_LINUX`, `RACKHAND_CI_DOCKER`, `RACKHAND_CI_KVM` set for the runners that exist |
 | Owner's lab: Proxmox VE 8 and 9 hosts, a TrueNAS instance, a Claude Code login, a Windows 10/11 machine | spikes S1, S4, S5, S9; lab and Windows manual checks | confirmed by the owner (2026-11-18) | available |
 
 One-time setup the owner runs in WSL (needs the sudo password, so the run can't do it):
@@ -110,7 +110,7 @@ step's regression is the fast tier.
 
 | Spike | Step | Gates |
 | --- | --- | --- |
-| S8 time-series encoding | T05 | T19 (encoding), T26 (rollups and storage budget), T96 (fill test) |
+| S8 time-series encoding | T05 | T19 (encoding), T27 (rollups and storage budget), T96 (fill test) |
 | S6 probe footprint | T06 | T22, T42 (probe runtime choices), T68 (eBPF in the probe), T96 |
 | S7 git mirror library | T07 | T56 (library and git mirror) |
 | S2 iroh relay | T08 | T17 (relay config), T82 (relay), AC31's priority clause |
@@ -123,6 +123,9 @@ step's regression is the fast tier.
 | S10 intel terms | T15 | T69 (default outside sources) |
 
 **Tests by tier.** Unit, contract and collector tests (design section 14) run in the fast tier on every step.
+Dashboard tests (`web::`, `auth::`, `oidc::`, `pages::`, `metrics::`) start the real hub web server in-process over
+HTTPS with a real database in a temporary directory, and drive it with an HTTP client; this plan counts them as
+integration tests for the ACs whose design verification says integration (AC40, AC49).
 Container tests run in the integration tier, namespace tests in the network tier, kernel tests in the eBPF tier, the
 soak, load and fill tests in the performance tier, and the shipped PowerShell in the Windows tier. A step's
 verification names the tier it needs. Real hypervisors, internet NATs, a real AI account and real Windows are manual
@@ -179,38 +182,38 @@ names, addresses or account names appear in this plan, the run log or the eviden
 | T21 | Vault | T18 | unit | todo |
 | T22 | Probe Linux collectors | T16, T06, T11 | collector (fixtures) | todo |
 | T23 | Probe buffer, epochs and label table | T16 | unit | todo |
-| T24 | Probe contract `rackhand/probe/1` | T17, T23, T25 | contract | todo |
-| T25 | Ingest: staging, acks, compaction, recent window, clock | T18, T19, T27 | unit | todo |
-| T26 | Rollups and retention | T19, T25, T05 | unit | todo |
-| T27 | Bus | T18 | unit | todo |
+| T24 | Bus | T18 | unit | todo |
+| T25 | Ingest: staging, acks, compaction, recent window, clock | T18, T19, T24 | unit | todo |
+| T26 | Probe contract `rackhand/probe/1` | T17, T23, T25 | contract | todo |
+| T27 | Rollups and retention | T19, T25, T05 | unit | todo |
 | T28 | Detect: threshold rules | T01 | unit | todo |
 | T29 | Detect: forecasts | T28 | unit | todo |
 | T30 | Detect: silence | T28 | unit | todo |
 | T31 | Detect: baselines and counted rules | T28 | unit | todo |
-| T32 | Incidents: lifecycle and evaluation | T25, T27, T28 to T31 | unit | todo |
+| T32 | Incidents: lifecycle and evaluation | T25, T24, T28 to T31 | unit | todo |
 | T33 | Notify: Discord, SMTP, grouping, retries | T32 | unit (HTTP and SMTP fakes) | todo |
-| T34 | Scheduler and windows | T27 | unit | todo |
+| T34 | Scheduler and windows | T24 | unit | todo |
 | T35 | Join contract and Registry | T17, T18, T21 | contract | todo |
 | T36 | Web foundation and first run | T18, T20, T21 | unit (HTTP) | todo |
 | T37 | Sign-in, second factor, step-up and limits | T36 | unit (HTTP) | todo |
-| T38 | Passkeys and OIDC | T37 | unit (HTTP, fake provider) | todo |
+| T38 | Passkeys, OIDC and account settings | T37 | unit (HTTP, fake provider) | todo |
 | T39 | Dashboard pages for monitoring | T32, T36 | unit (HTTP) | todo |
 | T40 | `/metrics` endpoint | T25, T36 | unit (HTTP) | todo |
 | T41 | Hub composition and `rackhand hub` commands | T24 to T40 | integration | todo |
-| T42 | Probe daemon | T22 to T24, T41 | integration | todo |
+| T42 | Probe daemon | T22 to T26, T41 | integration | todo |
 | T43 | Helper basics and package-list refresh | T42 | integration (containers) | todo |
 | T44 | Linux and Alpine installer and enrollment | T35, T43 | integration (containers) | todo |
 | T45 | Hub self-watch, integrity and backups | T41 | unit + integration | todo |
 | T46 | Service checks and network drivers | T41 | unit + integration | todo |
 | T47 | Proxmox driver | T46, T12 | unit (recorded API) | todo |
 | T48 | TrueNAS, Redfish and SNMP drivers | T46, T14 | unit (simulators) + integration | todo |
-| T49 | Agentless enrollment and guest binding | T47, T48, T39 | unit + integration | todo |
+| T49 | Add page, agentless enrollment and guest binding | T47, T48, T39 | unit + integration | todo |
 | T50 | Runbook and playbook model | T01 | unit | todo |
 | T51 | Command wrapper and signed command lists | T50, T16 | unit + integration | todo |
 | T52 | Wrapper detached steps and file receive | T51 | integration (systemd and OpenRC containers) | todo |
 | T53 | SSH system | T21, T35 | unit + integration | todo |
 | T54 | Policy: decisions and approvals | T18 | unit | todo |
-| T55 | Actions and Executor | T52 to T54, T27 | unit + integration | todo |
+| T55 | Actions and Executor | T52 to T54, T24 | unit + integration | todo |
 | T56 | Library and git mirror | T50, T21, T07 | unit + integration | todo |
 | T57 | Incident routing to runbooks and attempt limits | T32, T55 | unit | todo |
 | T58 | Dashboard: approvals, jobs, library, patching | T55, T56, T37 | unit (HTTP) | todo |
@@ -244,7 +247,7 @@ names, addresses or account names appear in this plan, the run log or the eviden
 | T86 | `rackhand-cli` | T84, T75 | integration + network | todo |
 | T87 | Address changes, `set-hub` and identity conflicts | T42, T61 | integration | todo |
 | T88 | Dashboard: peers, relays and peer sites | T81, T82 | unit (HTTP) | todo |
-| T89 | Windows probe and helper | T22 to T24, T66, T67 | collector (recorded outputs) + Windows tier + manual | todo |
+| T89 | Windows probe and helper | T22, T23, T26, T66, T67 | collector (recorded outputs) + Windows tier + manual | todo |
 | T90 | Windows installer, SSH setup, dispatcher and scripts | T89, T61, T72 | Windows tier (Pester) + manual | todo |
 | T91 | Release signing, manifests and reproducible builds | T44 | unit + scripted | todo |
 | T92 | Probe self-update | T91, T43 | unit + integration | todo |
@@ -253,7 +256,7 @@ names, addresses or account names appear in this plan, the run log or the eviden
 | T95 | Version compatibility | T42, T77, T82, T86 | contract | todo |
 | T96 | Performance tier | T42, T68, T05, T06 | performance | todo |
 | T97 | Offline operation | T59 | integration | todo |
-| T98 | Retention for every table | T85, T76, T70 | unit | todo |
+| T98 | Retention for every table and settings ranges | T85, T76, T70 | unit | todo |
 | T99 | Documentation and command check | T94 | scripted | todo |
 
 ## Steps
@@ -364,11 +367,11 @@ names, addresses or account names appear in this plan, the run log or the eviden
     'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'pull_request' &&
     github.event.pull_request.head.repo.full_name == github.repository))`. Toolchains install under `$HOME` (no sudo
     on studio runners); `CARGO_HOME` and `CARGO_TARGET_DIR` use the per-repository `/cache` mount; `CARGO_BUILD_JOBS`
-    is capped to fit the profile's memory.
+    is capped to fit the profile's memory. Each label set is also gated by a repository variable (`RACKHAND_CI_LINUX`,
+    `RACKHAND_CI_DOCKER`, `RACKHAND_CI_KVM`), set to `true` in T04 once that runner exists, so no job queues for a
+    runner that isn't there. A small `runners` job per label set prints kernel, CPU, memory, Docker and `/dev/kvm`.
   - `.github/workflows/ci-github-hosted.yml`: the same jobs on `ubuntu-latest`, each with
     `if: vars.RACKHAND_GITHUB_HOSTED == 'true'`.
-  - `.github/workflows/runner-check.yml` (manual run): one job per label set printing kernel, CPU, memory, Docker and
-    `/dev/kvm` availability (used by T04).
   - `xtask/src/ci_guard.rs`: parses both workflow files, checks every job carries the expected `if:` text, and
     evaluates it with a small evaluator for exactly this expression grammar against `ci/fixtures/*.json`.
   - `ci/fixtures/`: push to upstream, push in a fork, pull request from the same repository, pull request from a
@@ -381,12 +384,13 @@ names, addresses or account names appear in this plan, the run log or the eviden
   | `ci_guard::push_in_a_fork_does_not_run_self_hosted` | `github.repository` differs, so false | AC44 |
   | `ci_guard::hosted_copy_runs_only_with_variable_true` | false with the variable unset or `false`; true with `true` | AC44, D37 |
   | `ci_guard::job_without_guard_is_reported` | a fixture workflow with one unguarded job fails the check | AC44 |
+  | `ci_guard::jobs_skip_when_runner_variable_unset` | with `RACKHAND_CI_KVM` unset, the `net`, `ebpf` and `perf` jobs evaluate to false on an upstream push | 13 |
 - **Fails first:** compile error, `xtask::ci_guard` doesn't exist.
 - **Verification:**
   ```bash
   cargo nextest run -p xtask -E 'test(ci_guard::)' && actionlint && cargo xtask ci-guard
   ```
-  Expected: 5 passed, 0 failed; `actionlint` prints nothing; `ci-guard` reports every fixture as expected.
+  Expected: 6 passed, 0 failed; `actionlint` prints nothing; `ci-guard` reports every fixture as expected.
 - **Regression:** `cargo xtask ci fast`: exit 0.
 - **Manual verification:** None (the live runs are checked in T04).
 - **Done when:**
@@ -416,21 +420,24 @@ names, addresses or account names appear in this plan, the run log or the eviden
   - Owner, in GitHub organization settings: the runner group Zeus uses allows public repositories, limited to
     `StrangeMatterStudio/Rackhand` among public ones. The guard from T03 and the organization's "require approval for
     outside contributors" setting keep fork code off the runners.
-  - This repository: the `runner-check.yml` labels match the profiles created.
+  - Then, for each label set that has a working runner: `gh variable set RACKHAND_CI_LINUX --body true` (and
+    `RACKHAND_CI_DOCKER`, `RACKHAND_CI_KVM`) on the repository. A manually triggered workflow can't be used for this
+    check, because GitHub only runs `workflow_dispatch` for workflows already on the default branch.
 - **Tests to write first:** none new; the T03 guard tests already cover which events may reach these runners.
-- **Fails first:** before the owner's setup, a manual `runner-check.yml` run waits in the queue (no runner matches the
-  new labels) and Zeus fails it visibly after its queue limit.
-- **Verification (from PowerShell):**
+- **Fails first:** before the owner's setup the variables are unset, so a push runs only the guard-free lint job and
+  every runner job is skipped; with a variable set but no runner, the job waits and the runner service fails it after
+  its queue limit.
+- **Verification (from PowerShell, after a push of this branch):**
   ```powershell
-  gh workflow run runner-check.yml --repo StrangeMatterStudio/Rackhand --ref design/0001-architecture; Start-Sleep 20; gh run watch --repo StrangeMatterStudio/Rackhand --exit-status $(gh run list --repo StrangeMatterStudio/Rackhand --workflow runner-check.yml --limit 1 --json databaseId --jq '.[0].databaseId')
+  gh run watch --repo StrangeMatterStudio/Rackhand --exit-status $(gh run list --repo StrangeMatterStudio/Rackhand --workflow ci.yml --branch design/0001-architecture --limit 1 --json databaseId --jq '.[0].databaseId')
   ```
-  Expected: the run succeeds; the `sm-linux-docker` job prints a Docker server version and the `sm-linux-kvm` job
-  prints a writable `/dev/kvm`. Then a push of this branch runs `ci.yml` with every job green.
+  Expected: the run succeeds; the `runners` job for each enabled label set prints its facts (Docker server version on
+  `sm-linux-docker`, a writable `/dev/kvm` on `sm-linux-kvm`), and every enabled tier job is green.
 - **Regression:** `cargo xtask ci fast`: exit 0.
 - **Manual verification:** MV1 (the owner creates the profiles and the runner group setting).
 - **Done when:**
-  - [ ] `runner-check.yml` green on all three label sets (or `sm-linux-kvm` recorded as pending a Zeus change, with
-    the KVM tiers running in WSL meanwhile)
+  - [ ] the `runners` jobs green on all three label sets (or `sm-linux-kvm` recorded as pending a Zeus change, with
+    the KVM tiers running in WSL meanwhile and `RACKHAND_CI_KVM` left unset)
   - [ ] `ci.yml` green on a push of this branch for every job whose runner exists
   - [ ] Evidence recorded below
 - **Risk / rollback:** a public repository on shared runners widens their exposure; the guard, the outside-contributor
@@ -766,7 +773,9 @@ Only additions to that list are written out below.
 - **Changes:** `crates/rackhand-proto/proto/*.proto` (join, probe, peer, operator, MCP auth line, tunnel, xfer, signed
   payload with version and expiry); `build.rs` (prost-build with the system `protoc`); `src/frame.rs` (u32 big-endian
   length prefix); `src/zstd.rs` (bounded decompression); `src/close.rs` (`0x10` to `0x15`); `src/alpn.rs`;
-  `src/helper.rs` (serde types for the helper socket, newline-delimited JSON); `tests/fixtures/golden/*.bin`.
+  `src/helper.rs` (serde types for the helper socket, newline-delimited JSON); `src/signed.rs` (`SignedPayload` signing
+  and verification with a version and an expiry, used by the join response, `KeysUpdate` and command-list updates);
+  `tests/fixtures/golden/*.bin`.
 - **Tests to write first:**
   | Test | Asserts | Covers |
   | --- | --- | --- |
@@ -777,12 +786,13 @@ Only additions to that list are written out below.
   | `golden::encoded_bytes_match_fixtures` | today's encoding of each sample equals its golden file | 5.2 compatibility |
   | `golden::older_message_without_new_optional_field_decodes` | a fixture missing an optional field decodes with the default | 5.2 compatibility |
   | `helper::request_lines_parse_and_reject_unknown_fields` | each `HelperRequest` round-trips as one JSON line; an unknown field is refused | 7.3.3 |
+  | `signed::expired_not_newer_or_wrong_key_refused` | a payload past its expiry, with a version not above the last applied, or signed by another key fails to verify | 7.3.3, D92 |
 - **Fails first:** compile errors, the crate is empty.
 - **Verification:**
   ```bash
   cargo nextest run -p rackhand-proto
   ```
-  Expected: 7 passed, 0 failed.
+  Expected: 8 passed, 0 failed.
 - **Manual verification:** None.
 - **Risk / rollback:** golden files change only on deliberate schema changes (`cargo xtask golden --update`, reviewed
   in the diff). Revert the commit.
@@ -996,7 +1006,67 @@ Only additions to that list are written out below.
   | When | Command | Result |
   | --- | --- | --- |
 
-### T24: Probe contract `rackhand/probe/1`
+### T24: Bus
+- **Design refs:** 7.3.8 (bus delivery), D102
+- **Goal:** each consumer has its own bounded queue of 1024. `ReportIngested` notices coalesce per machine and never
+  wait. Other events wait for space, except `JobFinished` sent by Actions, which never waits.
+- **Depends on:** T18
+- **Changes:** `crates/rackhand-hub/src/bus/{mod.rs, coalesce.rs}`.
+- **Tests to write first:**
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `bus::report_notices_coalesce_per_machine` | 10 000 notices for 3 machines leave 3 pending | D102 |
+  | `bus::notice_send_never_waits_on_stalled_consumer` | with the consumer stalled, 10 000 sends finish within 50 ms | D102, AC66 |
+  | `bus::state_events_are_never_dropped` | with a full queue the sender waits and every event arrives | 7.3.8 |
+  | `bus::job_finished_from_actions_does_not_wait` | a full Incidents queue doesn't block Actions; reconciliation picks the event up | 7.3.8 |
+- **Fails first:** compile errors.
+- **Verification:**
+  ```bash
+  cargo nextest run -p rackhand-hub -E 'test(bus::)'
+  ```
+  Expected: 4 passed, 0 failed.
+- **Manual verification:** None.
+- **Risk / rollback:** revert.
+- **Evidence:**
+  | When | Command | Result |
+  | --- | --- | --- |
+
+### T25: Ingest: staging, acks, compaction, recent window, clock
+- **Design refs:** 7.3.2 (durability, replay limits, clock), 7.4.1 (recent window, compaction), 7.3.8
+  (`Ingest::raise_event`), D100, E1, E4, E32
+- **Goal:** Ingest stages each report before acking it and compacts staged points into open chunks every 5 minutes and
+  on shutdown. It keeps a 35-minute recent window, corrects sample times by each machine's clock offset, limits replay,
+  and is the only writer of `events`.
+- **Depends on:** T18, T19, T24
+- **Changes:** `crates/rackhand-hub/src/ingest/{staging.rs, compact.rs, window.rs, clock.rs, replay_limits.rs,
+  events.rs}`.
+- **Tests to write first:**
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `ingest::ack_follows_commit` | the ack resolves only after the writer reports the staging commit | 7.3.2 |
+  | `ingest::compaction_moves_staged_points_into_open_chunks` | the points end up in chunks and staging is empty, in one transaction per machine | 7.3.2, 11 |
+  | `ingest::startup_compacts_leftover_staging` | rows left by a crash are compacted on start | E44 |
+  | `ingest::recent_window_keeps_35_minutes` | older samples leave the window | D100 |
+  | `ingest::window_rebuilt_from_staging_and_tier0_on_start` | after a restart the window holds the last 35 minutes | D100, AC66 |
+  | `ingest::clock_offset_is_median_of_last_20_live_reports` | samples from a probe 3 h ahead are placed at receive time | E4 |
+  | `ingest::offset_over_30s_raises_clock_skew` | one `clock_skew` warning | E4 |
+  | `ingest::replay_over_limits_stops_reading_stream2` | at 2 MB/s per probe, 20 MB/s across the hub or 512 MB of staging, stream 2 reads pause and stream 1 continues | 7.3.2 |
+  | `ingest::backfill_into_rolled_up_range_marks_dirty` | a dirty range is recorded | 7.3.2 |
+  | `ingest::replayed_sample_older_than_10_min_flagged_history_only` | the sample carries the no-threshold flag | E1, AC2 |
+  | `ingest::disk_below_2_percent_stops_replay_and_new_jobs` | at an injected 1.9% free, stream 2 stops, live ingest continues and a critical event is raised | E32 |
+- **Fails first:** compile errors.
+- **Verification:**
+  ```bash
+  cargo nextest run -p rackhand-hub -E 'test(ingest::)'
+  ```
+  Expected: 11 passed, 0 failed.
+- **Manual verification:** None.
+- **Risk / rollback:** revert.
+- **Evidence:**
+  | When | Command | Result |
+  | --- | --- | --- |
+
+### T26: Probe contract `rackhand/probe/1`
 - **Design refs:** 7.3.2 (all bullets), FR-3, D83, D94, E3, E5, E52, E53, AC48, AC62
 - **Goal:** a contract suite over real endpoints proves the probe client and the hub's probe server agree on Hello,
   Welcome, range acks, `DataDropped`, live and replay streams, label tables, rate limits and error codes.
@@ -1031,42 +1101,7 @@ Only additions to that list are written out below.
   | When | Command | Result |
   | --- | --- | --- |
 
-### T25: Ingest: staging, acks, compaction, recent window, clock
-- **Design refs:** 7.3.2 (durability, replay limits, clock), 7.4.1 (recent window, compaction), 7.3.8
-  (`Ingest::raise_event`), D100, E1, E4, E32
-- **Goal:** Ingest stages each report before acking it and compacts staged points into open chunks every 5 minutes and
-  on shutdown. It keeps a 35-minute recent window, corrects sample times by each machine's clock offset, limits replay,
-  and is the only writer of `events`.
-- **Depends on:** T18, T19, T27
-- **Changes:** `crates/rackhand-hub/src/ingest/{staging.rs, compact.rs, window.rs, clock.rs, replay_limits.rs,
-  events.rs}`.
-- **Tests to write first:**
-  | Test | Asserts | Covers |
-  | --- | --- | --- |
-  | `ingest::ack_follows_commit` | the ack resolves only after the writer reports the staging commit | 7.3.2 |
-  | `ingest::compaction_moves_staged_points_into_open_chunks` | the points end up in chunks and staging is empty, in one transaction per machine | 7.3.2, 11 |
-  | `ingest::startup_compacts_leftover_staging` | rows left by a crash are compacted on start | E44 |
-  | `ingest::recent_window_keeps_35_minutes` | older samples leave the window | D100 |
-  | `ingest::window_rebuilt_from_staging_and_tier0_on_start` | after a restart the window holds the last 35 minutes | D100, AC66 |
-  | `ingest::clock_offset_is_median_of_last_20_live_reports` | samples from a probe 3 h ahead are placed at receive time | E4 |
-  | `ingest::offset_over_30s_raises_clock_skew` | one `clock_skew` warning | E4 |
-  | `ingest::replay_over_limits_stops_reading_stream2` | at 2 MB/s per probe, 20 MB/s across the hub or 512 MB of staging, stream 2 reads pause and stream 1 continues | 7.3.2 |
-  | `ingest::backfill_into_rolled_up_range_marks_dirty` | a dirty range is recorded | 7.3.2 |
-  | `ingest::replayed_sample_older_than_10_min_flagged_history_only` | the sample carries the no-threshold flag | E1, AC2 |
-  | `ingest::disk_below_2_percent_stops_replay_and_new_jobs` | at an injected 1.9% free, stream 2 stops, live ingest continues and a critical event is raised | E32 |
-- **Fails first:** compile errors.
-- **Verification:**
-  ```bash
-  cargo nextest run -p rackhand-hub -E 'test(ingest::)'
-  ```
-  Expected: 11 passed, 0 failed.
-- **Manual verification:** None.
-- **Risk / rollback:** revert.
-- **Evidence:**
-  | When | Command | Result |
-  | --- | --- | --- |
-
-### T26: Rollups and retention
+### T27: Rollups and retention
 - **Design refs:** FR-7, 7.4.1 (rollups, retention), AC4, AC69 (series tables), S8 finding
 - **Goal:** tier-1 and tier-2 rollups hold the min, max and avg of their source, dirty ranges are recomputed, and
   retention removes data older than each tier's limit in batches of 10 000 rows with 50 ms pauses.
@@ -1088,31 +1123,6 @@ Only additions to that list are written out below.
   cargo nextest run -p rackhand-store -E 'test(rollup::) | test(retention::)'
   ```
   Expected: 6 passed, 0 failed.
-- **Manual verification:** None.
-- **Risk / rollback:** revert.
-- **Evidence:**
-  | When | Command | Result |
-  | --- | --- | --- |
-
-### T27: Bus
-- **Design refs:** 7.3.8 (bus delivery), D102
-- **Goal:** each consumer has its own bounded queue of 1024. `ReportIngested` notices coalesce per machine and never
-  wait. Other events wait for space, except `JobFinished` sent by Actions, which never waits.
-- **Depends on:** T18
-- **Changes:** `crates/rackhand-hub/src/bus/{mod.rs, coalesce.rs}`.
-- **Tests to write first:**
-  | Test | Asserts | Covers |
-  | --- | --- | --- |
-  | `bus::report_notices_coalesce_per_machine` | 10 000 notices for 3 machines leave 3 pending | D102 |
-  | `bus::notice_send_never_waits_on_stalled_consumer` | with the consumer stalled, 10 000 sends finish within 50 ms | D102, AC66 |
-  | `bus::state_events_are_never_dropped` | with a full queue the sender waits and every event arrives | 7.3.8 |
-  | `bus::job_finished_from_actions_does_not_wait` | a full Incidents queue doesn't block Actions; reconciliation picks the event up | 7.3.8 |
-- **Fails first:** compile errors.
-- **Verification:**
-  ```bash
-  cargo nextest run -p rackhand-hub -E 'test(bus::)'
-  ```
-  Expected: 4 passed, 0 failed.
 - **Manual verification:** None.
 - **Risk / rollback:** revert.
 - **Evidence:**
@@ -1243,7 +1253,7 @@ Only additions to that list are written out below.
 - **Goal:** Incidents evaluates the rules every 15 s over the recent window, and opens, updates, reopens and resolves
   incidents per 7.5.2. It merges event incidents for 24 hours, honors silences and acknowledgements, and reconciles
   with finished jobs every minute. Routing beyond `human` comes in T57 and T78.
-- **Depends on:** T25, T27, T28 to T31
+- **Depends on:** T25, T24, T28 to T31
 - **Changes:** `crates/rackhand-hub/src/incidents/{lifecycle.rs, evaluate.rs, dedupe.rs, silences.rs, reconcile.rs}`;
   the `UpsertIncident`, `AppendIncidentEvent` and `PutSilence` handlers.
 - **Tests to write first:**
@@ -1309,7 +1319,7 @@ Only additions to that list are written out below.
 - **Goal:** the Scheduler fires daily and weekly windows in each site's timezone, runs a nonexistent daylight-saving
   time at the next valid minute and a repeated one once, tracks maintenance windows, and drives the periodic tasks
   listed in 7.2.
-- **Depends on:** T27
+- **Depends on:** T24
 - **Changes:** `crates/rackhand-hub/src/scheduler/{rrule.rs, windows.rs, tasks.rs}`; the `PutScheduleState` and
   `PutWindow` handlers.
 - **Tests to write first:**
@@ -1428,7 +1438,7 @@ Only additions to that list are written out below.
   | When | Command | Result |
   | --- | --- | --- |
 
-### T38: Passkeys and OIDC
+### T38: Passkeys, OIDC and account settings
 - **Design refs:** FR-25, 7.7.2 (passkeys with a trusted certificate, OIDC with a local factor), D49, AC40
 - **Goal:** passkeys are offered only when the hub is reached by hostname with a trusted certificate. OIDC users sign in
   through their provider and step up with a local factor they enrolled.
@@ -1443,12 +1453,15 @@ Only additions to that list are written out below.
   | `oidc::wrong_issuer_or_nonce_refused` | refused | 10 |
   | `passkey::not_offered_with_self_signed_certificate` | no registration options | D49 |
   | `passkey::register_and_assert_with_software_authenticator` | with a trusted-certificate configuration, a software authenticator registers and signs in | FR-25 |
+  | `settings::users_and_roles_admin_only` | create, change role, disable; a responder gets 403 | 7.7.1, 7.7.2 |
+  | `settings::devices_listed_and_revocable` | a revoked device's next connection gets `0x13` | 7.7.1, 10 |
+  | `settings::oidc_client_secret_stored_in_vault` | the settings row holds a `secret:` reference | 7.7.1, 10 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
-  cargo nextest run -p rackhand-hub -E 'test(oidc::) | test(passkey::)'
+  cargo nextest run -p rackhand-hub -E 'test(oidc::) | test(passkey::) | test(settings::users) | test(settings::devices) | test(settings::oidc)'
   ```
-  Expected: 5 passed, 0 failed.
+  Expected: 8 passed, 0 failed.
 - **Manual verification:** a real-browser passkey check is part of MV12.
 - **Risk / rollback:** revert.
 - **Evidence:**
@@ -1526,6 +1539,7 @@ Only additions to that list are written out below.
   | --- | --- | --- |
   | `hub_cmd::init_creates_keys_and_config_with_modes` | the files exist with their modes; the master key is 0600 | 7.1 |
   | `hub_cmd::run_refuses_missing_master_key_with_clear_message` | exits non-zero, naming the path | 7.7.3 |
+  | `hub_cmd::detect_replay_prints_what_would_have_fired` | `rackhand hub detect replay --machine <id> --from <t> --to <t>` over a seeded database prints the incidents the rules would open, and writes nothing | 12 |
   | `it::hub_start::service_runs_unprivileged_and_healthz_ok` | in a systemd container the hub's uid isn't 0, `/healthz` is ok and first run is reachable | 5.2 security, AC67, AC32 |
   | `it::hub_start::hub_user_cannot_open_master_key_by_path` | `sudo -u rackhand-hub cat /etc/rackhand/master.key` fails | AC67 |
 - **Fails first:** compile errors; then the container tests fail because there is no unit file.
@@ -1533,7 +1547,7 @@ Only additions to that list are written out below.
   ```bash
   cargo nextest run -p rackhand -E 'test(hub_cmd::)' && cargo xtask it-images && cargo nextest run -p rackhand-it -E 'test(hub_start::)'
   ```
-  Expected: 2 passed, then 2 passed; 0 failed.
+  Expected: 3 passed, then 2 passed; 0 failed.
 - **Regression (in addition):** `cargo xtask ci it`: exit 0.
 - **Manual verification:** None.
 - **Risk / rollback:** revert.
@@ -1545,7 +1559,7 @@ Only additions to that list are written out below.
 - **Design refs:** FR-1, FR-3, 7.3.2 (reconnect, state file), 7.3.3 (probe privileges), G1, AC1, AC2, AC3, AC8
 - **Goal:** `rackhand-probe run` samples at its interval, reports to its hub, buffers and replays across outages,
   reconnects with backoff and writes `probe.state`. With a real hub, vitals appear within 30 s and outages backfill.
-- **Depends on:** T22 to T24, T41
+- **Depends on:** T22 to T26, T41
 - **Changes:** `crates/rackhand-probe/src/{main.rs, run.rs, state_file.rs}`; `packaging/systemd/rackhand-probe.service`
   (capabilities per 7.3.3); `tests/it/src/probe_hub.rs`.
 - **Tests to write first:**
@@ -1611,9 +1625,13 @@ Only additions to that list are written out below.
 
   The hub's SSH test completes the enrollment.
 - **Depends on:** T35, T43
-- **Changes:** `packaging/install.sh` (POSIX sh); `crates/rackhand-probe/src/enroll.rs` (join client; writes
-  `probe.toml`); test release keys in `tests/keys/` (test only, never valid for real releases). The hub's SSH test is a
-  `ssh -o BatchMode=yes` check until T53 replaces it with the SSH system.
+- **Changes:** `crates/rackhand-release/` (signature verification against the two pinned public keys, shared later by
+  the helper and the updater; T91 adds manifests and reproducible builds); `rackhand-verify`, a small static binary from
+  that crate that the installer uses, because a POSIX shell can't check minisign signatures itself (the exact trust
+  chain for this verifier is open question Q1, asked at plan review); `packaging/install.sh` (POSIX sh);
+  `crates/rackhand-probe/src/enroll.rs` (join client; writes `probe.toml`); test release keys in `tests/keys/` (test
+  only, never valid for real releases). The hub's SSH test is a `ssh -o BatchMode=yes` check until T53 replaces it with
+  the SSH system.
 - **Tests to write first:**
   | Test | Asserts | Covers |
   | --- | --- | --- |
@@ -1760,15 +1778,17 @@ Only additions to that list are written out below.
   | When | Command | Result |
   | --- | --- | --- |
 
-### T49: Agentless enrollment and guest binding
+### T49: Add page, agentless enrollment and guest binding
 - **Design refs:** 7.3.12 (agentless form, Proxmox token, guest binding), 7.7.1 (Add, Machine page guest binding),
   D93, E50, AC60 (binding part), AC36 (agentless form)
-- **Goal:** admins add appliances and Proxmox clusters through per-driver forms (credentials into the Vault, certificate
+- **Goal:** the Add page issues one-time commands for Linux, Alpine and Windows machines (local or remote, managed or
+  monitor, with the offline variant's SHA-256), invites for devices, operators and peers, and the site bootstrap
+  command. Admins add appliances and Proxmox clusters through per-driver forms (credentials into the Vault, certificate
   fingerprints accepted). The hub proposes a guest binding by MAC address for an admin to confirm; once confirmed it
   is fixed, and a mismatch raises `machine.guest_binding_mismatch` and marks the binding `mismatch`.
 - **Depends on:** T47, T48, T39
-- **Changes:** `crates/rackhand-hub/src/registry/{agentless.rs, guest_binding.rs}`; `web/pages/add.rs` (appliance
-  forms), `web/pages/machine.rs` (binding confirm).
+- **Changes:** `crates/rackhand-hub/src/registry/{agentless.rs, guest_binding.rs}`; `web/pages/add.rs` (machine
+  commands, appliance forms, invites, site bootstrap command), `web/pages/machine.rs` (binding confirm).
 - **Tests to write first:**
   | Test | Asserts | Covers |
   | --- | --- | --- |
@@ -1778,12 +1798,15 @@ Only additions to that list are written out below.
   | `binding::confirm_after_mismatch_needs_admin_step_up` | a responder gets 403; an admin without fresh step-up is prompted | 7.7.2, AC60 |
   | `agentless::form_stores_credentials_in_vault_only` | the `machines` row holds a `secret:` reference, never the credential | 10 |
   | `agentless::form_join_completes_and_used_invite_refused` | the agentless form completes; a second use is refused with its reason | AC36 |
+  | `add::machine_command_per_os_mode_and_level` | the command holds the ticket and a 60-minute token bound to the chosen level; the offline variant holds the script's SHA-256 | 7.3.12, FR-21 |
+  | `add::device_operator_peer_invites_expire_in_24h` | each invite is single use and kind-bound | 7.3.1, FR-21 |
+  | `add::admin_only` | a responder gets 403 | 7.7.2 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
-  cargo nextest run -p rackhand-hub -E 'test(binding::) | test(agentless::)'
+  cargo nextest run -p rackhand-hub -E 'test(binding::) | test(agentless::) | test(add::)'
   ```
-  Expected: 6 passed, 0 failed.
+  Expected: 9 passed, 0 failed.
 - **Manual verification:** None.
 - **Done when (in addition):** blocking of hypervisor-side actions on a mismatched binding is tested in T62.
 - **Risk / rollback:** revert.
@@ -1834,8 +1857,8 @@ Only additions to that list are written out below.
   hub-signed `commands.json` exactly, without a shell. `run install-commands` installs a newer list only if it is signed
   by the pinned hub, is newer than the installed one, and hasn't expired.
 - **Depends on:** T50, T16
-- **Changes:** `crates/rackhand-probe/src/runcmd/{mod.rs, matcher.rs, install.rs}`; `crates/rackhand-proto/src/signed.rs`
-  (verify with version and expiry; shared with `ApplyKeys`).
+- **Changes:** `crates/rackhand-probe/src/runcmd/{mod.rs, matcher.rs, install.rs}`, using the signed-payload checks
+  from T16.
 - **Tests to write first:**
   | Test | Asserts | Covers |
   | --- | --- | --- |
@@ -1963,7 +1986,7 @@ Only additions to that list are written out below.
   each step before it runs, and executes `ssh`, `verify`, `wait_report`, `probe_check`, `reboot_if_required`, `api` and
   `notify` steps with timeouts. Detached steps are polled, monitor machines refuse account steps with `monitor_only`,
   and `JobFinished` is published.
-- **Depends on:** T52, T53, T54, T27
+- **Depends on:** T52, T53, T54, T24
 - **Changes:** `crates/rackhand-hub/src/actions/{coordinator.rs, locks.rs, jobs.rs}`;
   `crates/rackhand-hub/src/executor/{steps/*.rs, detached.rs, verify.rs}`; the `CreateJob`, `UpdateJobStep`, `FinishJob`
   handlers.
@@ -1978,7 +2001,7 @@ Only additions to that list are written out below.
   | `it::executor::output_over_1mb_cut_with_marker_in_job_log` | the job log shows command, exit code and output | AC12 |
   | `it::executor::detached_step_timeout_not_killed_machine_locked` | job `timed_out`, incident open, the machine stays locked until the unit exits and its result is recorded | E55 |
   | `it::executor::ssh_cut_during_detached_step_recovers` | the connection is dropped; polling resumes and the result is recorded | E54 |
-  | `it::executor::exec_waits_on_running_job` | an assistant `exec` while a runbook runs waits and then fails `machine_busy` | AC50 |
+  | `it::executor::second_job_of_any_kind_waits_then_machine_busy` | an assistant-exec job submitted to Actions while a runbook runs waits 60 s, then fails `machine_busy` | AC50 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
@@ -2012,12 +2035,13 @@ Only additions to that list are written out below.
   | `it::mirror::change_pushed_within_60s_and_planted_secret_blocks` | against a bare repository in an `sshd` container | AC38 |
   | `it::mirror::failed_push_raises_warning_and_retries_hourly` | `git_mirror_failed` | 7.3.13 |
   | `library::changes_are_audited` | audit rows | FR-26 |
+  | `settings::git_mirror_url_and_deploy_key_in_vault` | the deploy key is generated into the Vault and its public half shown | 7.7.1, 7.3.13 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
-  cargo nextest run -p rackhand-hub -E 'test(library::) | test(scan::) | test(mirror::)' && cargo xtask it-images && cargo nextest run -p rackhand-it -E 'test(mirror::)'
+  cargo nextest run -p rackhand-hub -E 'test(library::) | test(scan::) | test(mirror::) | test(settings::git_mirror)' && cargo xtask it-images && cargo nextest run -p rackhand-it -E 'test(mirror::)'
   ```
-  Expected: 7 passed, then 2 passed; 0 failed.
+  Expected: 8 passed, then 2 passed; 0 failed.
 - **Regression (in addition):** `cargo xtask ci it`: exit 0.
 - **Manual verification:** None.
 - **Risk / rollback:** revert.
@@ -2073,12 +2097,13 @@ Only additions to that list are written out below.
   | `pages::job_page_shows_commands_exit_codes_output` | with the 1 MB marker | AC12 |
   | `pages::library_diff_and_validation_errors` | rendered | 7.7.1 |
   | `pages::nothing_waiting_empty_state` | "Nothing waiting" | 7.7.1 |
+  | `pages::policy_and_window_editing_admin_only_revisioned` | an admin edits a policy and a maintenance window; a revision is stored and mirrored; a responder gets 403 | 7.7.1, 7.8, D33 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
-  cargo nextest run -p rackhand-hub -E 'test(pages::approval) | test(pages::high_risk) | test(pages::viewer) | test(pages::second_decision) | test(pages::job_page) | test(pages::library) | test(pages::nothing_waiting)'
+  cargo nextest run -p rackhand-hub -E 'test(pages::approval) | test(pages::high_risk) | test(pages::viewer) | test(pages::second_decision) | test(pages::job_page) | test(pages::library) | test(pages::nothing_waiting) | test(pages::policy_and_window)'
   ```
-  Expected: 7 passed, 0 failed.
+  Expected: 8 passed, 0 failed.
 - **Manual verification:** part of MV12 (walk-through repeated at the end of M3).
 - **Risk / rollback:** revert.
 - **Evidence:**
@@ -2119,7 +2144,6 @@ Only additions to that list are written out below.
   | `it::patch::debian_full_flow_with_fake_package_manager` | precheck, record, update, install, reboot, wait, verify; job log shows each step | AC19 |
   | `it::patch::apt_lock_waits_10_min_then_fails_without_changes` | with a shortened wait for the test, the job fails before any change | E9 |
   | `it::patch::verify_fails_on_missing_required_mount` | `patch_failed` opens | D66, AC21 |
-  | `it::patch::hub_restart_during_install_finishes_and_verifies` | the package manager finishes, output and exit code recorded, job goes on to verify | AC63 |
   | `it::patch::ssh_cut_during_install_finishes_and_verifies` | same, with the connection cut | AC63 |
   | `it::patch::no_patch_or_silence_alert_during_maintenance_window` | nothing patches and no silence incident opens | AC20 |
 - **Fails first:** compile errors.
@@ -2127,7 +2151,8 @@ Only additions to that list are written out below.
   ```bash
   cargo nextest run -p rackhand-hub -E 'test(select::) | test(precheck::) | test(rollback::)' && cargo xtask it-images && cargo nextest run -p rackhand-it -E 'test(patch::)'
   ```
-  Expected: 10 passed, then 6 passed; 0 failed.
+  Expected: 10 passed, then 5 passed; 0 failed. (The hub-restart half of AC63 is tested in T65, after restart
+  recovery exists.)
 - **Regression (in addition):** `cargo xtask ci it`: exit 0.
 - **Manual verification:** MV7 (AC19 on a real Proxmox guest: snapshot `rackhand-patch-*` taken, pruned to 3, updates
   installed, reboot, verify; E11 reboot loop with `auto_rollback` on a test guest).
@@ -2185,12 +2210,13 @@ Only additions to that list are written out below.
   | `it::builtins::sudoers_refresh_installs_newer_list` | via the wrapper's `install-commands` | D92 |
   | `it::builtins::keys_rotate_new_key_works_old_refused` | after rotation | 7.3.3 |
   | `it::builtins::unenroll_removes_users_keys_sudoers_list_and_revokes` | nothing left; the endpoint id is revoked | 7.3.12 |
+  | `it::builtins::probe_uninstall_locally_on_monitor_machine` | `rackhand-probe uninstall` as root removes the services and files; as the probe user it fails | 7.3.12, 7.7.3 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
   cargo nextest run -p rackhand-runbook -E 'test(builtins::)' && cargo nextest run -p rackhand-probe -E 'test(keys::)' && cargo xtask it-images && cargo nextest run -p rackhand-it -E 'test(builtins::)'
   ```
-  Expected: 1 passed, then 3 passed, then 4 passed; 0 failed.
+  Expected: 1 passed, then 3 passed, then 5 passed; 0 failed.
 - **Regression (in addition):** `cargo xtask ci it`: exit 0.
 - **Manual verification:** None.
 - **Risk / rollback:** revert.
@@ -2203,8 +2229,8 @@ Only additions to that list are written out below.
   machines), D88, D89, D93, E49, E50, AC58, AC59, AC60
 - **Goal:** the one-time level-change command moves a machine between `monitor` and `managed` in place (adding or
   removing users, keys, sudoers and the command list, keeping its id and history), and nothing the hub does alone
-  changes the level. Hypervisor-side actions on a monitor guest always need an approval, no automatic policy applies,
-  and a mismatched guest binding blocks them.
+  changes the level. Hypervisor-side actions on a monitor guest always need an approval, and a mismatched guest binding
+  blocks them. (That automatic quarantine rules don't apply to monitor machines is tested in T72, with the rules.)
 - **Depends on:** T44, T55, T49
 - **Changes:** `packaging/install.sh` (`--change-level`); `crates/rackhand-hub/src/policy/monitor.rs`;
   `crates/rackhand-hub/src/actions/hypervisor_guard.rs`.
@@ -2213,7 +2239,7 @@ Only additions to that list are written out below.
   | --- | --- | --- |
   | `guard::mismatched_binding_refuses_snapshot_rollback_firewall_power` | each refused before any API call | E50, AC60 |
   | `guard::other_guest_never_touched` | the simulated API records no call on the other vmid | AC60 |
-  | `guard::monitor_guest_hypervisor_action_needs_approval_and_auto_rule_does_nothing` | approval created; the auto rule logs and does nothing | AC58, D89 |
+  | `guard::monitor_guest_hypervisor_action_needs_approval` | a snapshot, rollback, power or firewall action on a monitor guest creates an approval whatever the runbook's level | AC58, D89 |
   | `it::level::monitor_to_managed_keeps_id_and_history` | users, keys, sudoers and list added; same machine id; old series still queryable | AC59 |
   | `it::level::managed_to_monitor_removes_everything` | users, keys, sudoers file and list gone | AC59 |
   | `it::level::hub_cannot_change_level_alone` | no hub route or MCP tool changes `access`; a direct registry write is refused | AC59, D89 |
@@ -2301,12 +2327,13 @@ Only additions to that list are written out below.
   | `recovery::non_resumable_running_job_interrupted_with_incident` | state and incident | E44 |
   | `it::recovery::hub_killed_mid_jobs_resumes_detached_and_resumable` | kill -9 during two jobs; after start, one resumes at its step, the detached one is picked up by polling, a third is `interrupted` | E44 |
   | `it::recovery::no_silence_incident_in_first_3_minutes` | probes reconnect late; no silence incident | E44 |
+  | `it::recovery::hub_restart_during_patch_install_finishes_and_verifies` | the package manager finishes; output and exit code recorded; the job goes on to verify | AC63, E54 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
   cargo nextest run -p rackhand-hub -E 'test(recovery::)' && cargo xtask it-images && cargo nextest run -p rackhand-it -E 'test(recovery::)'
   ```
-  Expected: 2 passed, then 2 passed; 0 failed.
+  Expected: 2 passed, then 3 passed; 0 failed.
 - **Regression (in addition):** `cargo xtask ci it`: exit 0.
 - **Manual verification:** None.
 - **Risk / rollback:** revert.
@@ -2427,12 +2454,13 @@ Only additions to that list are written out below.
   | `intel::optional_sources_off_by_default` | MaxMind, reputation lookups, relay lists and n0 off | NG10 |
   | `intel::freshness_reported_for_security_page` | last success time per source | 7.7.1 |
   | `intel::db_ip_attribution_present` | the Security page shows the CC BY 4.0 attribution | 7.8.5 |
+  | `intel::settings_toggle_each_source_and_air_gapped_mode` | the Settings page turns each source and air-gapped mode on and off; changes are audited | 7.7.1, D65 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
   cargo nextest run -p rackhand-hub -E 'test(intel::)'
   ```
-  Expected: 6 passed, 0 failed.
+  Expected: 7 passed, 0 failed.
 - **Manual verification:** None.
 - **Risk / rollback:** revert.
 - **Evidence:**
@@ -2464,12 +2492,13 @@ Only additions to that list are written out below.
   | `conn_store::summary_mode_stores_country_asn_counts_only_known_bad_still_named` | desktop default | AC55, D56 |
   | `conn_store::off_mode_stores_nothing` | no rows | AC55 |
   | `it::conn::threat_listed_destination_critical_within_60s` | end to end from a probe container | AC14 |
+  | `it::conn::desktop_summary_and_off_modes_end_to_end` | a probe container with role `desktop`: only per-country and per-ASN counts stored; a threat-listed destination still opens a critical naming it; with `off`, nothing stored | AC55 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
   cargo nextest run -p rackhand-hub -E 'test(conn_score::) | test(conn_store::)' && cargo xtask it-images && cargo nextest run -p rackhand-it -E 'test(conn::)'
   ```
-  Expected: 11 passed, then 1 passed; 0 failed.
+  Expected: 11 passed, then 2 passed; 0 failed.
 - **Regression (in addition):** `cargo xtask ci it`: exit 0.
 - **Manual verification:** None.
 - **Risk / rollback:** revert.
@@ -2538,13 +2567,15 @@ Only additions to that list are written out below.
   | `quarantine::changed_config_stops_release` | `quarantine_config_changed` | E66, AC72 |
   | `quarantine::isolation_failure_sets_failed_and_critical` | state `failed`, critical incident | E23 |
   | `quarantine::remote_mode_and_appliance_unsupported_stay_with_person` | incident note | D80 |
+  | `quarantine::auto_rule_matching_monitor_machine_does_nothing` | logged; no state change; an approval is needed instead | AC58, D89 |
   | `it::quarantine::nftables_only_hub_paths_and_dhcp_then_removed` | in a container with nftables: allowed paths work, others fail; `off` restores traffic and touches no other table | AC17 (in-guest part) |
+  | `it::quarantine::auto_rule_dmz_known_bad_quarantines_end_to_end` | a probe container tagged `dmz` connects to a threat-listed test address; the enabled rule quarantines it in-guest without an approval | AC18 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
   cargo nextest run -p rackhand-hub -E 'test(quarantine::)' && cargo xtask it-images && cargo nextest run -p rackhand-it -E 'test(quarantine::)'
   ```
-  Expected: 11 passed, then 1 passed; 0 failed.
+  Expected: 12 passed, then 2 passed; 0 failed.
 - **Regression (in addition):** `cargo xtask ci it`: exit 0.
 - **Manual verification:** MV11 (AC17, AC72 and E66 on the owner's Proxmox with the datacenter firewall on: a test
   guest with its own rules is quarantined after an approval with step-up, reaches only DHCP and the hub, the hub still
@@ -2641,12 +2672,13 @@ Only additions to that list are written out below.
   | `mcp_contract::exec_on_quarantined_machine_refused` | `machine_quarantined` | AC72, D104 |
   | `mcp_contract::exec_on_monitor_machine_refused` | `monitor_only` | E49 |
   | `mcp_contract::propose_library_change_creates_draft_only` | nothing applied until the dashboard applies it | 7.3.6 |
+  | `mcp_contract::exec_on_busy_machine_waits_then_machine_busy` | an `exec` while a runbook runs on the machine fails with `machine_busy` after 60 s (injected clock) | AC50 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
   cargo nextest run -p rackhand-hub --test mcp_contract
   ```
-  Expected: 20 passed (8 from T74 and these 12), 0 failed.
+  Expected: 21 passed (8 from T74 and these 13), 0 failed.
 - **Manual verification:** None.
 - **Done when (in addition):** AC39's list (actions, approvals, configuration changes, sign-ins, MCP calls) all audited.
 - **Risk / rollback:** revert.
@@ -2805,12 +2837,14 @@ Only additions to that list are written out below.
   | `peer_contract::requested_by_not_trusted_as_user` | it never satisfies a role check | 7.3.4 |
   | `peer_contract::unlinked_peer_gets_0x13` | | 7.3.4 |
   | `peer_contract::sensitive_diagnostic_output_never_sent` | `journal` output isn't in any peer answer | 7.8.3 |
+  | `it::peers::responder_on_a_requests_compose_restart_on_b` | two hub containers: hub B runs it only after a hub B approval; A's `JobLog` query is denied | AC28 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
-  cargo nextest run -p rackhand-hub --test peer_contract
+  cargo nextest run -p rackhand-hub --test peer_contract && cargo xtask it-images && cargo nextest run -p rackhand-it -E 'test(peers::)'
   ```
-  Expected: 9 passed, 0 failed.
+  Expected: 9 passed, then 1 passed; 0 failed.
+- **Regression (in addition):** `cargo xtask ci it`: exit 0.
 - **Manual verification:** None.
 - **Risk / rollback:** revert.
 - **Evidence:**
@@ -2830,13 +2864,14 @@ Only additions to that list are written out below.
   | `election::first_sorted_healthy_reporter_calls_out` | table cases | D47 |
   | `election::unhealthy_hub_never_elected` | | 7.5.5 |
   | `deadman::requests_every_5_minutes` | injected clock | 7.5.5 |
+  | `deadman::url_set_in_settings_admin_only` | saved and audited; a responder gets 403 | 7.7.1 |
   | `net_tests::peer_watch::three_hubs_one_cut_exactly_one_callout` | in network namespaces: silent within 2 minutes, down within 10, one callout received by the fake webhook; local monitoring continues on the cut hub | AC9, E25 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
   cargo nextest run -p rackhand-hub -E 'test(election::) | test(deadman::)' && cargo xtask ci net -- -E 'test(peer_watch::)'
   ```
-  Expected: 3 passed, then 1 passed; 0 failed.
+  Expected: 4 passed, then 1 passed; 0 failed.
 - **Regression (in addition):** `cargo xtask ci net`: exit 0.
 - **Manual verification:** None.
 - **Risk / rollback:** revert.
@@ -3064,7 +3099,7 @@ Only additions to that list are written out below.
   every 5 seconds), processes from `%TEMP%` and Downloads, listening ports and logon events, and talks to its helper
   over a named pipe whose ACL allows only `NT SERVICE\RackhandProbe`. The parsing logic is tested in CI on recorded
   outputs, and the services run as a manual checklist on a real Windows machine.
-- **Depends on:** T22, T23, T24, T66, T67
+- **Depends on:** T22, T23, T26, T66, T67
 - **Changes:** `crates/rackhand-probe/src/windows/{collect.rs, conntable.rs, procs.rs, logon.rs, pipe.rs,
   service.rs}`, with platform-neutral parsing in `src/windows/parse/` compiled on every platform; recorded outputs in
   `tests/fixtures/windows/` (invented names).
@@ -3131,10 +3166,9 @@ Only additions to that list are written out below.
 ### T91: Release signing, manifests and reproducible builds
 - **Design refs:** 5.2 (supply chain), 13 (release signing, D90), D36, D55, AC43, AC67 (standby key), E64
 - **Goal:** CI builds static release artifacts and an unsigned manifest; rebuilding a tag elsewhere gives identical
-  hashes; signature verification (minisign, two pinned keys) is one shared crate used by the installer, the helper and
-  the updater. No CI job or run step ever holds a signing key.
+  hashes; the verification crate from T44 also checks manifests. No CI job or run step ever holds a signing key.
 - **Depends on:** T44
-- **Changes:** `crates/rackhand-release/` (manifest format, `verify(file, sig, pinned_keys)`); `xtask release build`
+- **Changes:** `crates/rackhand-release/` (adds the manifest format and manifest checks); `xtask release build`
   (deterministic flags, `SOURCE_DATE_EPOCH`, path remapping) and `xtask release repro` (builds twice in different
   directories and compares); `.github/workflows/release.yml` (self-hosted, builds artifacts for every target in 5.2 and
   uploads them unsigned as workflow artifacts; no secrets); `docs/maintainers/signing.md` (the offline procedure for the
@@ -3180,6 +3214,7 @@ Only additions to that list are written out below.
   | `apply::downgrade_refused` | | D73 |
   | `apply::bad_hash_or_signature_deletes_slot_copy` | | FR-22 |
   | `rollout::canary_first_then_rest_after_1h_without_incidents` | injected clock; a canary incident holds the rest | 13, AC37 |
+  | `rollout::beta_channel_offered_beta_stable_not` | a hub on `stable` never offers a beta release; on `beta` it does | 13 |
   | `download::unreachable_url_reports_info_and_keeps_version` | `update_unreachable` | E65 |
   | `it::update::good_release_switches_slot` | probe reconnects with the new version | FR-22 |
   | `it::update::broken_release_restored_within_3_minutes` | a release that never connects; the guard switches back | E39, AC37 |
@@ -3187,9 +3222,9 @@ Only additions to that list are written out below.
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
-  cargo nextest run -p rackhand-probe -E 'test(apply::) | test(download::)' && cargo nextest run -p rackhand-hub -E 'test(rollout::)' && cargo xtask it-images && cargo nextest run -p rackhand-it -E 'test(update::)'
+  cargo nextest run -p rackhand-probe -E 'test(apply::) | test(download::)' && cargo nextest run -p rackhand-hub -E 'test(rollout::) | test(download::)' && cargo xtask it-images && cargo nextest run -p rackhand-it -E 'test(update::)'
   ```
-  Expected: 4 passed, then 1 passed, then 3 passed; 0 failed.
+  Expected: 4 passed, then 2 passed, then 3 passed; 0 failed.
 - **Regression (in addition):** `cargo xtask ci it`: exit 0.
 - **Manual verification:** None.
 - **Risk / rollback:** revert.
@@ -3260,27 +3295,29 @@ Only additions to that list are written out below.
 
 ### T95: Version compatibility
 - **Design refs:** 5.2 (compatibility), 13 (versions), AC45, AC53
-- **Goal:** a hub accepts probes, operators, relays and CLIs of its own minor version and one minor older, and peers of
-  different minors interoperate on summaries and requests. This is proven with recorded sessions from a pinned "n-1"
-  fixture build, since no older release exists yet.
+- **Goal:** a hub accepts probes, operators, relays and CLIs of its own minor version and one minor older, and refuses
+  older ones with `0x12`. Peers of different minors interoperate on summaries and requests.
 - **Depends on:** T42, T77, T82, T86
-- **Changes:** `tests/compat/` (recorded client sessions per contract at the previous minor's schema, generated by
-  `xtask compat record` from the git tag of the previous minor once one exists, and until then from a schema snapshot
-  taken now with the next minor's optional fields stripped); `crates/rackhand-hub/tests/compat.rs`.
+- **Changes:** `crates/rackhand-hub/src/version.rs` (acceptance rules); `tests/compat/` and `xtask compat`. Once a
+  previous minor release exists, `xtask compat` builds that tag's binaries and runs the main flows of each contract
+  against the current hub. Until then it runs the current binaries with their reported version forced to the previous
+  minor. That proves the version rules but not schema drift between real releases, so AC45 and AC53 stay `unverified`
+  until the first two minor releases exist (this reclassification is put to the owner at plan review).
 - **Tests to write first:**
   | Test | Asserts | Covers |
   | --- | --- | --- |
-  | `compat::older_probe_connects_reports_and_is_offered_update` | | AC45 |
+  | `compat::older_probe_connects_reports_and_is_offered_update` | with the forced previous-minor version | AC45 |
   | `compat::older_operator_relay_and_cli_connect_and_work` | each completes its main flow | AC53 |
   | `compat::two_minors_older_refused_with_0x12` | | 5.2 |
   | `compat::peer_of_other_minor_exchanges_summary_and_request` | | 5.2 |
-- **Fails first:** compile errors.
+- **Fails first:** compile errors; then the version rules refuse the forced older version until they're implemented.
 - **Verification:**
   ```bash
-  cargo nextest run -p rackhand-hub --test compat
+  cargo nextest run -p rackhand-hub --test compat && cargo xtask compat
   ```
-  Expected: 4 passed, 0 failed.
+  Expected: 4 passed, 0 failed; `xtask compat` reports which mode it ran in (previous release or forced version).
 - **Manual verification:** None.
+- **Done when (in addition):** AC45 and AC53 are marked `unverified (needs a previous minor release)` in the matrix.
 - **Risk / rollback:** revert.
 - **Evidence:**
   | When | Command | Result |
@@ -3344,7 +3381,7 @@ Only additions to that list are written out below.
   | When | Command | Result |
   | --- | --- | --- |
 
-### T98: Retention for every table
+### T98: Retention for every table and settings ranges
 - **Design refs:** 7.4.1 (retention rules for every table, the two caps), D100, AC69
 - **Goal:** every table in 7.4.1 that grows has a retention rule, job output and transcripts share a 100 MB budget
   trimmed oldest first (metadata kept), and `peer_summaries` holds one row per peer.
@@ -3358,12 +3395,13 @@ Only additions to that list are written out below.
   | `retention::run_leaves_nothing_older_than_rule` | seeded old rows in every table are gone; boundary rows stay | AC69 |
   | `output_budget::oldest_trimmed_first_metadata_kept` | at 100 MB the oldest output goes; job and step rows stay | AC69 |
   | `retention::peer_summaries_one_row_per_peer` | | AC69 |
+  | `settings::every_setting_in_7_8_1_has_default_and_range` | table-driven over every row of 7.8.1: the default applies, the bounds are accepted, one past each bound is refused | 7.8.1 |
 - **Fails first:** the rule table assertion fails for tables registered as fixed-size placeholders.
 - **Verification:**
   ```bash
-  cargo nextest run -p rackhand-store -E 'test(retention::)' && cargo nextest run -p rackhand-hub -E 'test(output_budget::)'
+  cargo nextest run -p rackhand-store -E 'test(retention::)' && cargo nextest run -p rackhand-hub -E 'test(output_budget::) | test(settings::every_setting)'
   ```
-  Expected: 3 passed (plus the T26 retention tests), then 1 passed; 0 failed.
+  Expected: 3 passed (plus the T27 retention tests), then 2 passed; 0 failed.
 - **Manual verification:** None.
 - **Risk / rollback:** revert.
 - **Evidence:**
@@ -3408,8 +3446,8 @@ the steps and tests that prove it. "MV" marks a manual check (see *Manual verifi
 | --- | --- | --- | --- | --- |
 | AC1 | Vitals, services, containers, updates within 30 s | T22, T39, T42 | `collect::every_catalogue_metric_from_debian_fixture`, `query::vitals_visible_before_compaction`, `it::probe_hub::vitals_visible_within_30s` | todo |
 | AC2 | 2-hour outage backfills, live under 30 s, no stale incidents | T25, T32, T42, T96 | `ingest::replayed_sample_older_than_10_min_flagged_history_only`, `incidents::stale_samples_do_not_open_threshold_incidents`, `it::probe_hub::outage_backfills_and_live_stays_fresh`, `perf::outage_2h_backfills_in_15_min_live_under_30s` | todo |
-| AC3 | Buffer limit drops oldest, `probe.data_gap` | T24, T42 | `probe_contract::data_dropped_closes_gap_and_records_event`, `it::probe_hub::buffer_limit_drops_oldest_with_gap_event` | todo |
-| AC4 | Retention and rollups correct | T26 | `rollup::tier1_equals_min_max_avg_of_minute`, `rollup::tier2_...`, `retention::each_tier_removes_only_older_than_limit` | todo |
+| AC3 | Buffer limit drops oldest, `probe.data_gap` | T26, T42 | `probe_contract::data_dropped_closes_gap_and_records_event`, `it::probe_hub::buffer_limit_drops_oldest_with_gap_event` | todo |
+| AC4 | Retention and rollups correct | T27 | `rollup::tier1_equals_min_max_avg_of_minute`, `rollup::tier2_...`, `retention::each_tier_removes_only_older_than_limit` | todo |
 | AC5 | Critical and warning callouts in time, resolution | T28, T33, T42 | `threshold::worked_example_...`, `notify::critical_sent_immediately_warnings_grouped_5_min`, `it::probe_hub::disk_rule_callouts_and_resolution` | todo |
 | AC6 | Forecast example ETA 62.5 h | T29 | `forecast::worked_example_warns_with_eta_62_5_hours` | todo |
 | AC7 | Baseline example at 14:35, frozen | T31 | `baseline::worked_example_warns_at_14_35_and_freezes` | todo |
@@ -3423,7 +3461,7 @@ the steps and tests that prove it. "MV" marks a manual check (see *Manual verifi
 | AC15 | Exec from /tmp and new port; container start quiet | T71 | `it::security::exec_from_tmp_critical_new_port_warning_container_start_nothing` | todo |
 | AC16 | Key added critical; new-IP login warning; no file contents | T71 | `it::security::authorized_keys_added_outside_job_critical_new_ip_login_warning` | todo |
 | AC17 | Approved guest quarantine and release | T72 | `it::quarantine::nftables_only_hub_paths_and_dhcp_then_removed`; MV11 | todo |
-| AC18 | Auto rule for `dmz`; hypervisor excluded; step-up to enable | T72 | `quarantine::auto_rule_matches_tag_quarantines_without_approval`, `quarantine::hypervisor_with_same_finding_not_quarantined`, `quarantine::enabling_rule_requires_step_up` | todo |
+| AC18 | Auto rule for `dmz`; hypervisor excluded; step-up to enable | T72 | `it::quarantine::auto_rule_dmz_known_bad_quarantines_end_to_end`, `quarantine::auto_rule_matches_tag_quarantines_without_approval`, `quarantine::hypervisor_with_same_finding_not_quarantined`, `quarantine::enabling_rule_requires_step_up` | todo |
 | AC19 | Patch flow with snapshot, verify, job log | T59 | `it::patch::debian_full_flow_with_fake_package_manager`; MV7 | todo |
 | AC20 | Hold, approve-only, maintenance windows | T34, T59 | `select::hold_never_patched`, `select::approve_only_...`, `it::patch::no_patch_or_silence_alert_during_maintenance_window` | todo |
 | AC21 | Failed verify routes to `patch-failure`, offer within 60 s | T59, T77 | `it::patch::verify_fails_on_missing_required_mount`, `it::operator::patch_failure_offer_within_60s` | todo |
@@ -3433,7 +3471,7 @@ the steps and tests that prove it. "MV" marks a manual check (see *Manual verifi
 | AC25 | Real Claude Code fixes a stopped Compose project, 2 of 3 runs | T77 | MV14 | todo |
 | AC26 | Personal `read` vs `read_request` keys, expiry | T74, T75 | `mcp_contract::read_key_refused_for_diagnostic_and_runbook`, `mcp_contract::expired_key_refused`, `mcp_contract::read_request_key_same_gating` | todo |
 | AC27 | Two hubs behind NAT link and exchange summaries | T83 | `net_tests::holepunch::full_cone_connects_direct`, `net_tests::holepunch::symmetric_connects_via_relay`; MV15 | todo |
-| AC28 | Cross-hub request needs owner approval; `JobLog` denied | T80 | `peer_contract::action_request_needs_owner_approval`, `peer_contract::joblog_denied_by_default` | todo |
+| AC28 | Cross-hub request needs owner approval; `JobLog` denied | T80 | `it::peers::responder_on_a_requests_compose_restart_on_b`, `peer_contract::action_request_needs_owner_approval`, `peer_contract::joblog_denied_by_default` | todo |
 | AC29 | 5 GB transfer resumes, hash matches | T85 | `net_tests::xfer::send_5gb_interrupted_at_60_percent_resumes_hash_matches` | todo |
 | AC30 | `connect` as `ProxyCommand`; refused without device | T84 | `net_tests::tunnel::ssh_through_connect_as_proxycommand` | todo |
 | AC31 | Relay modes, limits, lists, priority if S2 allows | T08, T82 | `net_tests::relay::*`, `relay_lists::garbage_and_10000_entries_keep_first_100_valid` | todo |
@@ -3450,31 +3488,31 @@ the steps and tests that prove it. "MV" marks a manual check (see *Manual verifi
 | AC42 | Soak, load, fill within budgets | T96 | `perf::*` | todo |
 | AC43 | Static, signed, reproducible artifacts | T91 | `xtask::repro::two_builds_identical_hashes`, `xtask::release::artifacts_are_static` | todo |
 | AC44 | Workflow guards on recorded payloads | T03, T04 | `ci_guard::*` | todo |
-| AC45 | Older probe connects and is offered the update | T95, T92 | `compat::older_probe_connects_reports_and_is_offered_update` | todo |
+| AC45 | Older probe connects and is offered the update | T95, T92 | `compat::older_probe_connects_reports_and_is_offered_update` (version rules only until a previous minor release exists) | todo |
 | AC46 | Remote-mode probe reports and runs a runbook through the tunnel | T84 | `net_tests::tunnel::runbook_on_remote_mode_machine_through_tunnel` | todo |
 | AC47 | Restored backup; probes reconnect | T45 | `it::backup::restore_on_new_machine_probes_reconnect` | todo |
-| AC48 | Rolled-back guest starts new epoch, accepted at once | T23, T24 | `epoch::hub_ahead_starts_new_epoch_even_with_backlog`, `probe_contract::rollback_epoch_accepted_at_once` | todo |
+| AC48 | Rolled-back guest starts new epoch, accepted at once | T23, T26 | `epoch::hub_ahead_starts_new_epoch_even_with_backlog`, `probe_contract::rollback_epoch_accepted_at_once` | todo |
 | AC49 | `/metrics` 401 without token, every series with | T40 | `metrics::without_token_401`, `metrics::with_token_every_series_latest_value` | todo |
-| AC50 | Second job waits 60 s then `machine_busy` | T55 | `actions::second_job_waits_60s_then_machine_busy`, `it::executor::exec_waits_on_running_job` | todo |
+| AC50 | Second job waits 60 s then `machine_busy` | T55, T75 | `actions::second_job_waits_60s_then_machine_busy`, `it::executor::second_job_of_any_kind_waits_then_machine_busy`, `mcp_contract::exec_on_busy_machine_waits_then_machine_busy` | todo |
 | AC51 | Daily cap routes to a person | T76 | `assist::daily_cap_routes_to_person_with_note` | todo |
 | AC52 | Re-notify at 6 h, ack stops it | T33 | `notify::resent_on_rise_and_every_6h_unacked_and_not_before` | todo |
-| AC53 | Older operator, relay, CLI work | T95 | `compat::older_operator_relay_and_cli_connect_and_work` | todo |
+| AC53 | Older operator, relay, CLI work | T95 | `compat::older_operator_relay_and_cli_connect_and_work` (version rules only until a previous minor release exists) | todo |
 | AC54 | Database without master key reveals nothing | T21 | `vault::database_without_master_key_reveals_nothing` | todo |
-| AC55 | Desktop summary mode; known-bad still named; off stores nothing | T70 | `conn_store::summary_mode_stores_country_asn_counts_only_known_bad_still_named`, `conn_store::off_mode_stores_nothing` | todo |
+| AC55 | Desktop summary mode; known-bad still named; off stores nothing | T70 | `it::conn::desktop_summary_and_off_modes_end_to_end`, `conn_store::summary_mode_stores_country_asn_counts_only_known_bad_still_named`, `conn_store::off_mode_stores_nothing` | todo |
 | AC56 | Windows connections, `%TEMP%` process, new port | T89 | `windows_parse::*`; MV16 | todo |
 | AC57 | Wrapper refuses one-argument difference | T51 | `runcmd::one_argument_different_from_every_template_refused`, `it::runcmd::sudo_entry_runs_wrapper_only` | todo |
-| AC58 | Monitor machine: reports, no accounts, skipped, `monitor_only`; hypervisor actions approved only | T44, T54, T55, T59, T62 | `it::install::monitor_has_no_accounts_keys_or_command_list`, `decide::monitor_machine_always_needs_approval_and_no_auto_policy`, `actions::monitor_machine_ssh_step_fails_monitor_only_before_sending`, `select::auto_pending_not_maintenance_not_quarantined_managed_only`, `guard::monitor_guest_hypervisor_action_needs_approval_and_auto_rule_does_nothing`; MV9 | todo |
+| AC58 | Monitor machine: reports, no accounts, skipped, `monitor_only`; hypervisor actions approved only | T44, T54, T55, T59, T62, T72 | `it::install::monitor_has_no_accounts_keys_or_command_list`, `decide::monitor_machine_always_needs_approval_and_no_auto_policy`, `actions::monitor_machine_ssh_step_fails_monitor_only_before_sending`, `select::auto_pending_not_maintenance_not_quarantined_managed_only`, `guard::monitor_guest_hypervisor_action_needs_approval`, `quarantine::auto_rule_matching_monitor_machine_does_nothing`; MV9 | todo |
 | AC59 | Level change on the machine keeps id; hub can't change it alone | T35, T62 | `join_contract::level_change_token_keeps_machine_id`, `it::level::*` | todo |
 | AC60 | Guest binding mismatch blocks hypervisor actions | T49, T62 | `binding::reported_mac_of_other_guest_sets_mismatch_and_event`, `guard::mismatched_binding_refuses_snapshot_rollback_firewall_power`, `guard::other_guest_never_touched` | todo |
 | AC61 | Leading dash refused; command list install rules; first list with join | T50, T51 | `params::leading_dash_refused_unless_allowed`, `install::unsigned_expired_or_not_newer_list_refused`, `it::runcmd::first_list_arrives_with_join` | todo |
-| AC62 | Labels during outage, unknown label dropped, 16 MB cap | T16, T24 | `zstd::decompression_past_16_mib_fails_with_0x15`, `probe_contract::label_set_first_seen_during_outage_resolves`, `probe_contract::unknown_label_id_drops_sample_keeps_report`, `probe_contract::oversized_decompression_closes_0x15` | todo |
-| AC63 | Install step survives hub restart and SSH cut | T59 | `it::patch::hub_restart_during_install_finishes_and_verifies`, `it::patch::ssh_cut_during_install_finishes_and_verifies` | todo |
+| AC62 | Labels during outage, unknown label dropped, 16 MB cap | T16, T26 | `zstd::decompression_past_16_mib_fails_with_0x15`, `probe_contract::label_set_first_seen_during_outage_resolves`, `probe_contract::unknown_label_id_drops_sample_keeps_report`, `probe_contract::oversized_decompression_closes_0x15` | todo |
+| AC63 | Install step survives hub restart and SSH cut | T59, T65 | `it::recovery::hub_restart_during_patch_install_finishes_and_verifies`, `it::patch::ssh_cut_during_install_finishes_and_verifies` | todo |
 | AC64 | Attempt limit and wait-for-clear | T57 | `attempts::two_automatic_starts_per_24h_then_human`, `routing::success_waits_for_clear_then_failed_after_10_min` | todo |
 | AC65 | 300 s interval rules, silence, clear margin, flapping | T28, T30 | `threshold::duration_below_4_intervals_raised_to_4`, `threshold::flapping_between_84_and_86_stays_one_incident`, `silence::machine_warning_at_max_60s_or_4_intervals` | todo |
-| AC66 | Rule survives restart; acks under 2 s with stalled rules | T25, T27, T32, T96 | `incidents::rule_mid_duration_survives_restart`, `bus::notice_send_never_waits_on_stalled_consumer`, `perf::stalled_rules_60s_acks_still_under_2s` | todo |
+| AC66 | Rule survives restart; acks under 2 s with stalled rules | T25, T24, T32, T96 | `incidents::rule_mid_duration_survives_restart`, `bus::notice_send_never_waits_on_stalled_consumer`, `perf::stalled_rules_60s_acks_still_under_2s` | todo |
 | AC67 | Nothing root; updater refuses unsigned or lower; standby key accepted | T41, T44, T91, T93 | `it::hub_start::*`, `it::install::standby_key_signature_accepted`, `release::verify_accepts_current_and_standby_keys`, `update::unsigned_or_lower_version_refused_no_slot_change_audited`, `it::updater::relay_and_operator_not_root` | todo |
 | AC68 | Account flood, used TOTP, untrusted forwarding header | T37 | `auth::account_flood_limits_new_browsers_not_known_ones`, `auth::used_totp_code_refused`, `auth::forwarded_header_ignored_unless_trusted_proxy` | todo |
-| AC69 | Retention for every table, output budget, connection cap | T26, T70, T80, T96, T98 | `retention::every_table_rule_from_design`, `output_budget::oldest_trimmed_first_metadata_kept`, `conn_store::daily_cap_20000_then_summary_rows_and_overflow`, `perf::fill_2y_50_machines_under_2gb_retention_on_schedule` | todo |
+| AC69 | Retention for every table, output budget, connection cap | T27, T70, T80, T96, T98 | `retention::every_table_rule_from_design`, `output_budget::oldest_trimmed_first_metadata_kept`, `conn_store::daily_cap_20000_then_summary_rows_and_overflow`, `perf::fill_2y_50_machines_under_2gb_retention_on_schedule` | todo |
 | AC70 | Token bound to operator; key capped by role; approval bound; personal key diagnostics | T54, T74, T75, T76 | `operator_contract::token_from_other_endpoint_refused`, `mcp_contract::read_request_key_on_viewer_works_as_read`, `mcp_contract::approval_from_other_caller_or_after_edit_refused`, `mcp_contract::personal_key_journal_needs_approval_df_does_not` | todo |
 | AC71 | Container named on new destination, eBPF and sampling | T67, T68, T70 | `it::sampling::connection_open_across_poll_attributed_to_container`, `ebpf_tests::capture::two_containers_same_exe_attributed` | todo |
 | AC72 | Firewall restored identically; only DHCP and hub; no `exec`; changed config stops release | T47, T72, T75 | `proxmox::firewall_config_read_and_restore_round_trip`, `quarantine::guest_rules_exact_set`, `quarantine::release_restores_identical_configuration`, `quarantine::changed_config_stops_release`, `mcp_contract::exec_on_quarantined_machine_refused`; MV11 | todo |
@@ -3486,11 +3524,11 @@ the steps and tests that prove it. "MV" marks a manual check (see *Manual verifi
 | --- | --- | --- | --- |
 | FR-1 | T22, T42 | `collect::*`, `it::probe_hub::vitals_visible_within_30s` | todo |
 | FR-2 | T22, T43 | `collect::every_catalogue_metric_from_debian_fixture`, `packages::*` | todo |
-| FR-3 | T23, T24, T42 | `buffer::*`, `probe_contract::*`, `it::probe_hub::outage_backfills_and_live_stays_fresh` | todo |
+| FR-3 | T23, T26, T42 | `buffer::*`, `probe_contract::*`, `it::probe_hub::outage_backfills_and_live_stays_fresh` | todo |
 | FR-4 | T67, T68, T89 | `conntable::*`, `ebpf_tests::capture::*`, `windows_parse::tcp_udp_table_records_to_tuples` | todo |
 | FR-5 | T66, T67, T68, T71, T89 | `procscan::*`, `listeners::*`, `ebpf_tests::capture::exec_from_tmp_seen` | todo |
 | FR-6 | T66, T71 | `hash::*`, `auth::*` (helper), `it::helper_scan::*` | todo |
-| FR-7 | T26, T40, T98 | `rollup::*`, `retention::*`, `metrics::*` | todo |
+| FR-7 | T27, T40, T98 | `rollup::*`, `retention::*`, `metrics::*` | todo |
 | FR-8 | T28 to T32, T57 | Detect and Incidents tests | todo |
 | FR-9 | T46 | `drivers::*`, `it::checks::*` | todo |
 | FR-10 | T46, T47, T48 | driver tests, `it::drivers::*` | todo |
@@ -3517,13 +3555,13 @@ the steps and tests that prove it. "MV" marks a manual check (see *Manual verifi
 | --- | --- | --- | --- |
 | Common QUIC rules (framing, limits, close codes, versions) | T16, T17 | `frame::*`, `zstd::*`, `router::*`, `golden::*` | todo |
 | 7.3.1 Join | T35 | `join_contract::*` | todo |
-| 7.3.2 Probe and hub | T23, T24 | `probe_contract::*` | todo |
+| 7.3.2 Probe and hub | T23, T26 | `probe_contract::*` | todo |
 | 7.3.3 Probe and helper | T16, T43, T61, T66, T92 | `helper::*`, `keys::*`, `hash::*`, `apply::*`, `it::helper::*` | todo |
 | 7.3.4 Peer | T80 | `peer_contract::*` | todo |
 | 7.3.5 Operator and Runner | T76, T77 | `operator_contract::*`, `claude_code::*` | todo |
 | 7.3.6 MCP | T74, T75 | `mcp_contract::*` | todo |
 | 7.3.7 SSH, wrapper, detached steps, Windows dispatcher | T51, T52, T53, T90 | `runcmd::*`, `it::detached::*`, `quote::*`, `Dispatch.Tests` | todo |
-| 7.3.8 In-process (`Driver`, `Notifier`, `StoreWriter`, `decide`, Bus) | T18, T27, T33, T46, T54 | `writer::*`, `bus::*`, `notify::*`, `drivers::*`, `decide::*` | todo |
+| 7.3.8 In-process (`Driver`, `Notifier`, `StoreWriter`, `decide`, Bus) | T18, T24, T33, T46, T54 | `writer::*`, `bus::*`, `notify::*`, `drivers::*`, `decide::*` | todo |
 | 7.3.9 Notifiers | T33 | `notify::*` | todo |
 | 7.3.10 Relay | T82 | `relay_keys::*`, `relay_lists::*`, `net_tests::relay::*` | todo |
 | 7.3.11 Tunnels and transfers | T84, T85 | `tunnel_contract::*`, `xfer_contract::*` | todo |
@@ -3536,10 +3574,10 @@ the steps and tests that prove it. "MV" marks a manual check (see *Manual verifi
 | Target | Step(s) | Test(s) / check | Status |
 | --- | --- | --- | --- |
 | E1 | T25, T32, T42, T96 | `it::probe_hub::outage_backfills_and_live_stays_fresh`, `perf::outage_2h_...` | todo |
-| E2 | T23, T24, T42 | `buffer::full_buffer_drops_oldest_and_records_range` | todo |
-| E3 | T23, T24 | `epoch::*`, `probe_contract::rollback_epoch_accepted_at_once` | todo |
+| E2 | T23, T26, T42 | `buffer::full_buffer_drops_oldest_and_records_range` | todo |
+| E3 | T23, T26 | `epoch::*`, `probe_contract::rollback_epoch_accepted_at_once` | todo |
 | E4 | T25 | `ingest::clock_offset_is_median_of_last_20_live_reports`, `ingest::offset_over_30s_raises_clock_skew` | todo |
-| E5 | T24 | `probe_contract::second_probe_with_same_machine_id_gets_0x11` | todo |
+| E5 | T26 | `probe_contract::second_probe_with_same_machine_id_gets_0x11` | todo |
 | E6 | T87 | `identity::same_endpoint_two_boot_ids_both_refused` | todo |
 | E7 | T35 | `join_contract::used_expired_and_wrong_kind_tokens_refused` | todo |
 | E8 | T53 | `hostkeys::changed_key_blocks_and_raises_critical`, `it::ssh::accepting_new_key_needs_admin_step_up` | todo |
@@ -3586,8 +3624,8 @@ the steps and tests that prove it. "MV" marks a manual check (see *Manual verifi
 | E49 | T55, T62, T75 | `actions::monitor_machine_ssh_step_fails_monitor_only_before_sending`, `mcp_contract::exec_on_monitor_machine_refused` | todo |
 | E50 | T49, T62 | `binding::reported_mac_of_other_guest_sets_mismatch_and_event`, `guard::*` | todo |
 | E51 | T50, T51, T63, T90 | `params::leading_dash_refused_unless_allowed`, `runcmd::leading_dash_value_refused` | todo |
-| E52 | T24 | `probe_contract::unknown_label_id_drops_sample_keeps_report` | todo |
-| E53 | T16, T24 | `zstd::decompression_past_16_mib_fails_with_0x15` | todo |
+| E52 | T26 | `probe_contract::unknown_label_id_drops_sample_keeps_report` | todo |
+| E53 | T16, T26 | `zstd::decompression_past_16_mib_fails_with_0x15` | todo |
 | E54 | T52, T55, T59 | `it::detached::job_survives_ssh_disconnect`, `it::executor::ssh_cut_during_detached_step_recovers` | todo |
 | E55 | T55 | `it::executor::detached_step_timeout_not_killed_machine_locked` | todo |
 | E56 | T57 | `attempts::two_automatic_starts_per_24h_then_human` | todo |
@@ -3624,7 +3662,7 @@ evidence redacted per D71.
 
 | ID | Step | Why not automated | Steps | Expected | Verified by / date | Result |
 | --- | --- | --- | --- | --- | --- | --- |
-| MV1 | T04 | Changes Zeus platform configuration and GitHub organization settings, outside this repository | Add the `linux-docker` and `linux-kvm` profiles; allow the repository in the runner group; run `runner-check.yml` | All three label sets green | Owen | |
+| MV1 | T04 | Changes Zeus platform configuration and GitHub organization settings, outside this repository | Add the `linux-docker` and `linux-kvm` profiles; allow the repository in the runner group; set the three repository variables | The `runners` jobs green on all three label sets | Owen | |
 | MV2 | T10, T68 | Needs a real Proxmox host kernel and LXCs | Run the S1 binary, later the probe, on a Proxmox host; connect from inside an unprivileged LXC | The connection is attributed to the LXC's cgroup | Owen | |
 | MV3 | T11 | Needs a host with a ZFS ARC | Run the S11 memory script on a Proxmox host with ZFS | `mem.available_pct` per the chosen formula stays above the warning line on a healthy host | Owen | |
 | MV4 | T12 | Needs PVE 8 and 9 nodes and an API token | Owner creates the token and names a test guest; run the S4 script | Every operation works with the minimal role; firewall round trip identical | Owen | |
