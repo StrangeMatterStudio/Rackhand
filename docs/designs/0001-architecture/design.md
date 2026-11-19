@@ -101,8 +101,9 @@ unnoticed.
   the connection table every 5 seconds, with process attribution from the helper. Windows uses the
   GetExtendedTcpTable and GetExtendedUdpTable APIs every 5 seconds.
 - **FR-5** The probe shall report new listening sockets, and process starts whose executable is under `/tmp`,
-  `/var/tmp`, `/dev/shm` or a deleted file (Linux: eBPF `sched_process_exec` tracepoint, fallback a `/proc` scan every
-  5 seconds), or on Windows under `%TEMP%` or a user's Downloads folder (process list every 5 seconds).
+  `/var/tmp`, `/dev/shm` or a deleted file (Linux: eBPF `sched_process_exec` tracepoint, fallback a helper process scan
+  every 5 seconds, since an unprivileged process can't read other users' `/proc/<pid>/exe`), or on Windows under
+  `%TEMP%` or a user's Downloads folder (process list every 5 seconds).
 - **FR-6** The probe helper (root) shall hash the critical file list (section 7.8.4) every 5 minutes and on inotify
   change, tail authentication logs, and return container states, socket owners and hashes to the probe, never file
   contents.
@@ -412,6 +413,8 @@ enum HelperRequest {
     AuthEventsSince { cursor: Option<String> },
     Containers,                                  // Docker and Podman sockets, read-only calls only
     SocketOwners { inodes: Vec<u64> },           // sampling fallback: inode -> pid, exe, user
+    ProcessScan,                                 // sampling fallback: processes whose exe is in a watched location
+    UpdatesStatus,                               // last package-list refresh result (below)
     ApplyUpdate { version: SemVer, url: String, sha256: [u8; 32], signature: Vec<u8> },
     ApplyKeys { payload: Vec<u8>, hub_signature: Vec<u8> },
 }
@@ -421,14 +424,27 @@ enum HelperResponse {
     AuthEvents { events: Vec<AuthEvent>, cursor: String },
     Containers { items: Vec<ContainerState> },   // id, name, image, state, health, restart_count, started_at
     SocketOwners { owners: Vec<SocketOwner> },
+    Processes { items: Vec<ProcInfo> },          // pid, ppid, exe, user, started_at
+    Updates { summary: UpdateSummary, refreshed_at_ms: i64 },
     UpdateStarted, KeysApplied,
     Error { code: String, message: String },
 }
 ```
 
+- **Probe privileges.** Linux with systemd: the probe runs as `rackhand-probe` with `AmbientCapabilities` and
+  `CapabilityBoundingSet` set to `CAP_BPF CAP_PERFMON` (plus `CAP_SYS_RESOURCE` on kernels before 5.11 for the memlock
+  limit), `NoNewPrivileges=yes`, `ProtectSystem=strict`, `ProtectHome=read-only`, and write access only to its buffer
+  and state directories. Kernels without `CAP_BPF` (before 5.8) get no capabilities and use sampling. OpenRC (Alpine,
+  LXCs): no capabilities, sampling only. Windows: the virtual service account `NT SERVICE\RackhandProbe` with no extra
+  privileges. The helper is the only root process.
 - The helper never returns file contents. `AuthEvent`: time, kind (`ssh_login`, `ssh_failed`, `sudo`, `su`,
   `user_added`, `group_changed`, `logon`), user, source IP, method; on Windows only logon types 2, 3 and 10.
-- **Updates.** The helper verifies the minisign signature against the compiled-in release key and the sha256, writes
+- **Package lists.** Every 6 hours, at `nice 19` and `ionice idle`, the helper runs a fixed command set to refresh
+  package lists and compute pending updates (`apt-get update` then `apt-get -s upgrade` with the security origin
+  marked; `apk update` then `apk version -l '<'`; on Windows the Windows Update Agent search). The probe reads the result
+  with `UpdatesStatus`. Patch jobs are selected from this data (7.5.3).
+- **Updates.** The helper refuses any version lower than the one installed (downgrades only by a local reinstall). It
+  verifies the minisign signature against the compiled-in release key and the sha256, writes
   the new binary to the inactive slot (`/usr/local/lib/rackhand/probe-a` or `probe-b`), points
   `/usr/local/lib/rackhand/rackhand-probe` at it, restarts the probe service, then restarts itself through the service
   manager (systemd, OpenRC, or the Windows Service Control Manager). If the probe hasn't reported `connected` to the
@@ -566,7 +582,8 @@ output from machines is returned as `{"untrusted_output": "..."}`. Errors: `out_
 | Probe | `rackhand-probe` | `nologin` | none | none |
 
 - **Keys** are generated at hub bootstrap, held in the Vault, and installed with
-  `from="<hub addresses>",no-agent-forwarding,no-X11-forwarding,no-port-forwarding`.
+  `from="<hub addresses>",no-agent-forwarding,no-X11-forwarding,no-port-forwarding`. On remote-mode machines the SSH
+  connection arrives through the probe's tunnel from `127.0.0.1`, so `from=` is `127.0.0.1,::1` there.
 - **No assistant account** on machines with role `hub`. Assistant `exec` on roles `operator`, `relay` and `hypervisor`
   is always high risk.
 - **Host keys** come through the authenticated join (7.3.1) and are pinned. A changed host key blocks actions and opens
@@ -608,7 +625,28 @@ pub trait Notifier: Send + Sync {
     async fn send(&self, msg: &Callout) -> Result<(), NotifyError>; // NotifyError::{Transient{retry_after}, Permanent(String)}
 }
 // Store writes go through one task; callers send commands and await the result
-pub enum WriteCmd { StageReport(StagedReport), CompactStaged, PutEvents(Vec<Event>), UpsertIncident(IncidentWrite), /* ... */ }
+pub enum WriteCmd {
+    // Ingest
+    StageReport(StagedReport), CompactStaged, PutEvents(Vec<Event>), PutConnRecords(Vec<ConnRecordRow>),
+    UpdateBaselines(Vec<BaselineUpdate>),
+    // Checks
+    PutCheckResults(Vec<CheckResult>),
+    // Incidents
+    UpsertIncident(IncidentWrite), AppendIncidentEvent(IncidentEventRow), PutSilence(SilenceRow),
+    // Actions
+    CreateJob(JobRow), UpdateJobStep(JobStepRow), FinishJob(JobFinish), AppendTranscript(TranscriptRow),
+    // Policy
+    PutPolicy(PolicyRow), CreateApproval(ApprovalRow), DecideApproval(ApprovalDecision), UseApproval(Ulid),
+    PutQuarantineRule(QuarantineRuleRow), PutWindow(WindowRow),
+    // Registry, Peers, Assist, MCP, Web
+    RegistryChange(RegistryChange), PutPeerSummary(PeerSummaryRow), PutJobToken(JobTokenRow), PutMcpKey(McpKeyRow),
+    PutUser(UserRow), PutCredential(CredentialRow), PutSession(SessionRow),
+    // Library, Vault, Notify, Audit, Scheduler
+    PutLibraryRevision(LibraryRevisionRow), PutDraft(DraftRow), PutSecret(SecretRow), PutNotification(NotificationRow),
+    AppendAudit(AuditRow), PutScheduleState(ScheduleStateRow),
+    // Store maintenance
+    RetentionBatch(Tier), Rollup(Tier),
+}
 pub struct StoreWriter { tx: mpsc::Sender<(WriteCmd, oneshot::Sender<Result<WriteAck, StoreError>>)> }
 // Policy
 pub fn decide(action: &ProposedAction, ctx: &PolicyContext) -> Decision;
@@ -678,15 +716,16 @@ sequenceDiagram
   H-->>M: machine_id, config, public keys, sudoers, hub addresses
   M->>M: create users, install keys and sudoers (visudo -c), install and start services
   M->>H: rackhand/probe/1 Hello
-  H->>M: SSH test as rackhand and rackhand-ai (sudo -n true)
+  H->>M: SSH test as rackhand, and rackhand-ai unless role hub (sudo -n true)
   H-->>U: machine enrolled and healthy
 ```
 
 - **Linux:** `curl -fsSL https://github.com/StrangeMatterStudio/Rackhand/releases/download/v<X>/install.sh | sudo sh -s
   -- --ticket <ticket> --token <token>`. Trust in the script rests on GitHub's TLS; the script then verifies every binary
   with the pinned minisign key; trust in the hub comes from the endpoint id in the ticket. The offline variant fetches
-  from the hub instead and puts the script's SHA-256 in the command (`... | tee install.sh | sha256sum -c <(echo
-  '<sha>  -')` form, documented exactly in the install guide).
+  from the hub over its self-signed HTTPS and checks the script against a SHA-256 the dashboard puts in the command:
+  `curl -fsSLk https://<hub>:8443/install.sh -o /tmp/rackhand-install.sh && echo '<sha256>  /tmp/rackhand-install.sh'
+  | sha256sum -c - && sudo sh /tmp/rackhand-install.sh --ticket <ticket> --token <token>`.
 - **Windows:** the PowerShell equivalent, which also installs OpenSSH Server if missing.
 - **Agentless:** a dashboard form per driver. Credentials go into the Vault. HTTPS APIs (Proxmox, TrueNAS, Redfish) pin
   the certificate fingerprint seen when added (accepted by the admin), like SSH host keys.
@@ -1689,7 +1728,14 @@ Manual checks exist only where real hypervisors, real internet NATs or a real AI
 | D70 | Assistant cost and data | Daily job cap (default 20); provider data use documented | Cost and privacy | Claude (delegated) | 2026-11-18 |
 | D71 | Public evidence | Redacted with documentation IP ranges and invented names | Public repository | Claude (delegated) | 2026-11-18 |
 | D72 | Role names | viewer, responder, admin (not "operator") | Avoid clashing with operator hosts | Claude (delegated) | 2026-11-18 |
-| D73 | Probe updates | The root helper verifies and swaps binaries with A/B slots | The probe must not write its own root-run binary | Claude (delegated) | 2026-11-18 |
+| D73 | Probe updates | The root helper verifies and swaps binaries with A/B slots and refuses downgrades | The probe must not write its own root-run binary | Claude (delegated) | 2026-11-18 |
+| D74 | Permission matrix | As in 7.7.2; people may approve their own requests; responders may open tunnels and run diagnostics | Works for a one-person lab, limits viewers | Claude (delegated) | 2026-11-18 |
+| D75 | Default outside sources | abuse.ch Feodo Tracker, Spamhaus DROP, DB-IP Lite, GitHub Releases | Free, no account needed | Claude (delegated) | 2026-11-18 |
+| D76 | Event incidents | Resolved by a person, or by an assistant at level 2 or 3 for warning kinds only | Security findings need a human look | Claude (delegated) | 2026-11-18 |
+| D77 | In-guest quarantine | Allowed but shown as advisory; only hypervisor firewalls are enforced from outside | Be honest about what root can undo | Claude (delegated) | 2026-11-18 |
+| D78 | Hub, relay and operator updates | Manual (dashboard button or command), with backup and automatic switch back | The hub holds the keys; updates are deliberate | Claude (delegated) | 2026-11-18 |
+| D79 | Package lists | Refreshed by the helper every 6 hours with a fixed command set | The probe is unprivileged | Claude (delegated) | 2026-11-18 |
+| D80 | Remote-mode limits | `from=` is localhost on remote-mode machines; no quarantine for them in v0.1 | The tunnel arrives from localhost; quarantine would cut the mesh | Claude (delegated) | 2026-11-18 |
 
 ## 19. Deferred decisions
 
