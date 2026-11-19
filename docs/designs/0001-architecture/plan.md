@@ -236,7 +236,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T28 | Detect: threshold rules | T01 | unit | done |
 | T29 | Detect: forecasts | T28 | unit | done |
 | T30 | Detect: silence | T28 | unit | done |
-| T31 | Detect: baselines and counted rules | T28 | unit | todo |
+| T31 | Detect: baselines and counted rules | T28 | unit | done |
 | T32 | Incidents: lifecycle and evaluation | T25, T24, T28 to T31 | unit | todo |
 | T33 | Notify: Discord, SMTP, grouping, retries | T32 | unit (HTTP and SMTP fakes) | todo |
 | T34 | Scheduler and windows | T24 | unit | todo |
@@ -1449,6 +1449,9 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-detect -E 'test(baseline::) \\| test(counted::)' | compile errors: unresolved imports `crate::baseline`, `crate::counted`. Before implementing, three test mistakes were fixed: the Tuesday constant was a Monday in May, `never_critical` sat exactly on the 4-sigma line, and `hourly_update` takes the current time (freezing is checked against now, not the bucket's hour) |
+  | 2026-11-19 | cargo nextest run -p rackhand-detect -E 'test(baseline::) \\| test(counted::)' | 11 passed, 0 failed |
+  | 2026-11-19 | cargo xtask ci fast | exit 0 (fmt, clippy, arch-check, nextest 95 passed) |
 
 ### T32: Incidents: lifecycle and evaluation
 - **Design refs:** FR-8, 7.5.2 (states, condition and event incidents, acknowledge, silences), 7.3.8 (reconciliation),
@@ -4239,6 +4242,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D14 | 2026-11-19 | T20 | Chain code in `rackhand-hub/src/audit/` | The row hash lives in `rackhand-store::audit` (the writer computes it inside the append transaction); append, checkpoint and verify are in the hub's Audit module | The store writer is the only writer of `audit_log` and must hash inside its transaction; the store can't depend on the hub | plan | - |
 | D15 | 2026-11-19 | T23 | Probe modules in the binary crate | `rackhand-probe` has a library target (`rackhand_probe`) with the buffer and helper modules and a thin binary | Tests and the later daemon share the modules | plan | - |
 | D16 | 2026-11-19 | T30 | Peer hub silent at 2 min (scaled to the larger of 2 min and 3 summary intervals, 7.9) and down at 10 min | Down is the larger of 10 min and the silent time | At a summary interval over 200 s the silent time passes 10 min, and down can't come before silent. The design doesn't say; this keeps the order. For the owner to confirm | design gap | pending |
+| D17 | 2026-11-19 | T31 | Baseline details as 7.6.4 | Hours are counted in UTC (hour of week 0 is Monday 00:00); a baseline warning clears after 2 samples in a row back inside the band; a deviation freezes the hour-of-day and hour-of-week buckets of the hour it is in, until 2 hours after its last deviating sample | 7.6.4 doesn't say which clock, how a baseline warning clears, or which buckets freeze; these follow the threshold rules and the schema's per-bucket `frozen_until_ms` | design gap | pending |
 
 ## Follow-ups (out of scope)
 
