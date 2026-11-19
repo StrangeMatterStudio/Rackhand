@@ -216,7 +216,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T08 | Spike S2: iroh relay admission and limits | T02 | scripted measurement (network VM) | done (owner decision pending for T82) |
 | T09 | Spike S3: iroh path detection | T02 | scripted measurement (network VM) | done |
 | T10 | Spike S1: aya eBPF | T02, L1 | scripted measurement (eBPF VMs, local Proxmox) | done (owner decision pending for T68) |
-| T11 | Spike S11: collectors on current distributions | T02, L1 | scripted measurement (containers, local Proxmox) | todo |
+| T11 | Spike S11: collectors on current distributions | T02, L1 | scripted measurement (containers, local Proxmox) | done |
 | T12 | Spike S4: Proxmox privileges, firewall, upgrade command | T02, L1 | scripted measurement (local Proxmox) | todo |
 | T13 | Spike S5: Claude Code headless | T02 | scripted measurement (owner's login) | todo |
 | T14 | Spike S9: TrueNAS API | T02 | lab measurement | todo |
@@ -818,12 +818,15 @@ Every spike step follows the same rules:
 - **Regression:** `cargo xtask ci fast`: exit 0.
 - **Manual verification:** None here; MV3 (a real host's ARC under real load) is run in L9.
 - **Done when:**
-  - [ ] Report committed; the chosen method and the memory formula in design 17 (and 7.4.2 if a metric changes)
-  - [ ] Spike code deleted
+  - [x] Report committed; the chosen method and the memory formula in design 17 (and 7.4.2 if a metric changes)
+  - [x] Spike code deleted
 - **Risk / rollback:** none beyond the finding.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 | spikes/s11/run.sh --zfs-node pve9 --report docs/designs/0001-architecture/spikes/s11.md --check | measured on Debian 12, Ubuntu 24.04 and pve9; the first report said NOT every event because the spike's own check expected 3 logins where its script makes 5 (3 plain, 2 for the sudo runs); corrected the expectation, not the data |
+  | 2026-11-19 | spikes/s11/run.sh --stub --zfs-node pve9 --report ... --check | exit 0: both methods return 5 logins, 1 invalid user and 2 sudo events on both systems; the cursor file returns 0 new lines on a second read. pve9 with a full ARC: 16.4% available from MemAvailable, 53.1% counting the ARC above c_min |
+  | 2026-11-19 | report | `spikes/s11.md`, the finding in design 17 and the 7.4.2 note; spike code deleted |
 
 ### T12: Spike S4: Proxmox privileges, firewall, upgrade command
 - **Design refs:** 7.8.6, 7.5.6, 7.5.3 (steps 7 and 8), E24, E66, S4

@@ -1059,7 +1059,7 @@ the epoch's label table in a file beside them.
 | --- | --- | --- |
 | `cpu.busy_pct`, `cpu.iowait_pct`, `cpu.steal_pct` | % | none (per-core `cpu.core_busy_pct` with `core`, off by default) |
 | `load.1m`, `load.5m`, `load.15m`, `load.15m_per_core` | ratio | none |
-| `mem.used_bytes`, `mem.used_pct`, `mem.available_bytes`, `mem.available_pct`, `mem.cached_bytes` | bytes, % | none |
+| `mem.used_bytes`, `mem.used_pct`, `mem.available_bytes`, `mem.available_pct`, `mem.cached_bytes` | bytes, % | none (on ZFS hosts, available counts the ARC above `c_min`: S11) |
 | `swap.used_bytes`, `swap.used_pct` | bytes, % | none |
 | `disk.used_bytes`, `disk.total_bytes`, `disk.used_pct`, `disk.inodes_used_pct` | bytes, % | `mount` |
 | `diskio.read_bps`, `diskio.write_bps`, `diskio.read_iops`, `diskio.write_iops`, `diskio.busy_pct` | B/s, ops/s, % | `device` |
@@ -2087,6 +2087,11 @@ the owner and the document is updated before the work that depends on it starts.
 - **S11** Collectors on current distributions: authentication events on systems that log only to the journal (no
   auth log file), read by a static binary; and memory readings on hosts where a ZFS cache holds most of the memory, so
   the memory rules in 7.6.1 don't fire on a healthy host.
+  **Finding (2026-11-19):** on Debian 12 and Ubuntu 24.04 without an auth log, `journalctl -o json` with a cursor file
+  and a pure-Rust journal reader both return every SSH login, invalid user and sudo event, and the cursor prevents
+  re-reads; the probe uses `journalctl`, with the reader as fallback. On the lab's Proxmox VE 9 node with a full ARC,
+  `MemAvailable` gave 16.4% available against 53.1% when the ARC above `c_min` is counted, so `mem.available_*` counts
+  it (7.4.2). Report: `spikes/s11.md`.
 
 ## 18. Decisions
 
@@ -2253,3 +2258,5 @@ None.
 | 2026-11-19 | S3 finding: path detection and `wait_direct` as designed; two masquerade NATs stay relayed, so the network tier builds full cone with a UDP forward (section 17) | Spike S3 finding | Implementation run |
 | 2026-11-19 | S10 finding: default outside sources allowed (CC0, free with credit, CC BY 4.0); 7.8.5 license notes updated; Feodo Tracker nearly empty (owner decision pending before T69) | Spike S10 finding | Implementation run |
 | 2026-11-19 | S6 finding: probe footprint inside the 5.2 budgets; current-thread runtime and iroh `tls-ring` only (section 17) | Spike S6 finding | Implementation run |
+| 2026-11-19 | S1 finding: aya capture works on 5.10, 6.1 and 7.0 with LXC attribution from the host; an MIT-only program is refused (GPL-only helper), so the eBPF program's licence is the owner's decision before T68 (section 17) | Spike S1 finding | Implementation run |
+| 2026-11-19 | S11 finding: journal-only authentication events read with `journalctl -o json`; `mem.available_*` counts the ZFS ARC above `c_min` (7.4.2, section 17) | Spike S11 finding | Implementation run |
