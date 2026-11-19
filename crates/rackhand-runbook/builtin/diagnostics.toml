@@ -1,0 +1,129 @@
+# The diagnostics allow-list (design 7.8.3): read-only, built in, run as the automation identity. Commands that need
+# root go through the command wrapper and are part of every command list. Parameters follow the runbook rules (7.3.7):
+# each pattern must match the whole value, and a value starting with "-" is refused. The patterns also hold the limits
+# (lines at most 2000, depth at most 3), so the wrapper enforces them too.
+# keep: what the hub keeps of the output ("all", "head:<n>" lines, "tail:<n>" lines, "du" sorted by size).
+# bind: a check on a parameter beyond its pattern ("site": a machine in the same site, "checks": a URL of the
+# machine's checks).
+
+[[diagnostic]]
+name = "journal"
+sensitive = true
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/bin/journalctl", "-u", "{{unit}}", "--since", "{{since}}", "-n", "{{lines}}", "--no-pager"]
+[diagnostic.params.unit]
+type = "string"
+pattern = "[A-Za-z0-9@._:-]{1,128}"
+[diagnostic.params.since]
+type = "string"
+pattern = "[0-9]{4}-[0-9]{2}-[0-9]{2}( [0-9]{2}:[0-9]{2}(:[0-9]{2})?)?|today|yesterday|[1-9][0-9]{0,2} (minutes?|hours?|days?) ago"
+[diagnostic.params.lines]
+type = "int"
+pattern = "[1-9][0-9]{0,2}|1[0-9]{3}|2000"
+
+[[diagnostic]]
+name = "failed_units"
+cmd = ["systemctl", "--failed", "--no-pager"]
+alpine_cmd = ["rc-status", "--crashed"]
+
+[[diagnostic]]
+name = "service_status"
+cmd = ["systemctl", "status", "--no-pager", "{{name}}"]
+alpine_cmd = ["rc-service", "{{name}}", "status"]
+[diagnostic.params.name]
+type = "string"
+pattern = "[A-Za-z0-9@._:-]{1,128}"
+
+[[diagnostic]]
+name = "docker_ps"
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/bin/docker", "ps", "-a"]
+
+[[diagnostic]]
+name = "compose_ps"
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/bin/docker", "compose", "ls"]
+
+[[diagnostic]]
+name = "docker_logs"
+sensitive = true
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/bin/docker", "logs", "--tail", "{{lines}}", "{{container}}"]
+[diagnostic.params.container]
+type = "string"
+pattern = "[A-Za-z0-9][A-Za-z0-9_.-]{0,127}"
+[diagnostic.params.lines]
+type = "int"
+pattern = "[1-9][0-9]{0,2}|1[0-9]{3}|2000"
+
+[[diagnostic]]
+name = "df"
+cmd = ["df", "-hT"]
+
+[[diagnostic]]
+name = "mounts"
+cmd = ["findmnt"]
+alpine_cmd = ["cat", "/proc/mounts"]
+
+[[diagnostic]]
+name = "du_top"
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/bin/du", "-xh", "--max-depth", "{{depth}}", "{{path}}"]
+alpine_cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/bin/du", "-xh", "-d", "{{depth}}", "{{path}}"]
+keep = "du"
+[diagnostic.params.path]
+type = "string"
+pattern = "/[A-Za-z0-9._/-]{0,255}"
+[diagnostic.params.depth]
+type = "int"
+pattern = "[0-3]"
+
+[[diagnostic]]
+name = "free"
+cmd = ["free", "-m"]
+
+[[diagnostic]]
+name = "uptime"
+cmd = ["uptime"]
+
+[[diagnostic]]
+name = "top_processes"
+cmd = ["ps", "-eo", "pid,user,pcpu,pmem,rss,comm", "--sort=-pcpu"]
+alpine_cmd = ["ps", "-o", "pid,user,rss,comm"]
+keep = "head:21"
+
+[[diagnostic]]
+name = "ss_listen"
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/bin/ss", "-ltnup"]
+alpine_cmd = ["sudo", "/usr/local/lib/rackhand/run", "/bin/netstat", "-ltnup"]
+
+[[diagnostic]]
+name = "ss_established"
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/bin/ss", "-tnp", "state", "established"]
+alpine_cmd = ["sudo", "/usr/local/lib/rackhand/run", "/bin/netstat", "-tnp"]
+
+[[diagnostic]]
+name = "dmesg_tail"
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/bin/dmesg", "-T"]
+alpine_cmd = ["sudo", "/usr/local/lib/rackhand/run", "/bin/dmesg"]
+keep = "tail:200"
+
+[[diagnostic]]
+name = "updates_pending"
+cmd = ["apt", "list", "--upgradable"]
+alpine_cmd = ["apk", "version", "-l", "<"]
+
+[[diagnostic]]
+name = "last_logins"
+cmd = ["last", "-n", "50"]
+
+[[diagnostic]]
+name = "ping"
+cmd = ["ping", "-c", "4", "{{target}}"]
+[diagnostic.params.target]
+type = "string"
+pattern = "[A-Za-z0-9.:-]{1,253}"
+bind = "site"
+
+[[diagnostic]]
+name = "http_head"
+cmd = ["curl", "-sSI", "--max-time", "10", "{{url}}"]
+[diagnostic.params.url]
+type = "string"
+pattern = 'https?://[A-Za-z0-9.:\[\]-]+(/[A-Za-z0-9._~%!$&()*+,;=:@/?-]*)?'
+bind = "checks"

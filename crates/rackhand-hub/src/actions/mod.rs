@@ -3,6 +3,7 @@
 //! records each step before it runs, and publishes `JobFinished` on the Bus.
 
 mod coordinator;
+pub mod diagnostics;
 pub mod jobs;
 mod locks;
 pub mod runner;
@@ -74,6 +75,10 @@ pub enum ActionsError {
     UnknownRunbook,
     #[error("no such job")]
     UnknownJob,
+    #[error("no such diagnostic")]
+    UnknownDiagnostic,
+    #[error("not available yet: {0}")]
+    Unsupported(String),
     #[error("the runbook doesn't validate: {0}")]
     InvalidRunbook(String),
     #[error("parameter `{0}`: {1}")]

@@ -75,19 +75,19 @@ timeout = "{timeout}"
         )
     }
 
-    struct Lab {
-        db: Arc<Db>,
-        machine: Container,
-        actions: Actions,
-        events: Subscription,
+    pub(super) struct Lab {
+        pub(super) db: Arc<Db>,
+        pub(super) machine: Container,
+        pub(super) actions: Actions,
+        pub(super) events: Subscription,
     }
 
-    fn sh(c: &Container, script: &str) {
+    pub(super) fn sh(c: &Container, script: &str) {
         let out = c.root(script);
         assert!(out.status.success(), "{script}: {}", String::from_utf8_lossy(&out.stderr));
     }
 
-    async fn lab(name: &str, slow_timeout: &str, lock_wait: Duration) -> Lab {
+    pub(super) async fn lab(name: &str, slow_timeout: &str, lock_wait: Duration) -> Lab {
         let dir = std::env::temp_dir().join(format!("rackhand-it-exec-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -348,5 +348,86 @@ timeout = "{timeout}"
         // Free again: the exec runs as the assistant identity.
         let ran = lab.actions.exec(&assistant, "m1", "id -un", Duration::from_secs(30)).await.unwrap();
         assert_eq!(String::from_utf8_lossy(&ran.stdout).trim(), "rackhand-ai");
+    }
+}
+
+mod diagnostics {
+    use std::collections::BTreeMap;
+    use std::time::Duration;
+
+    use rackhand_hub::actions::diagnostics::OUTPUT_LIMIT;
+    use rackhand_store::{Row, RowWrite, WriteCmd};
+    use rusqlite::types::Value;
+
+    use super::executor::{lab, sh};
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn each_linux_diagnostic_runs_read_only() {
+        let lab = lab("diagnostics", "60s", Duration::from_secs(5)).await;
+        let (ip, gateway) = lab.machine.ip_and_gateway();
+        // An HTTP endpoint the machine's check watches, on the host side of the container network.
+        let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let app = axum::Router::new().route("/healthz", axum::routing::get(|| async { "ok" }));
+            axum::serve(listener, app).await.unwrap();
+        });
+        let url = format!("http://{gateway}:{port}/healthz");
+        lab.db
+            .writer()
+            .send(WriteCmd::Batch(vec![RowWrite::insert(
+                "checks",
+                Row::from([
+                    ("id", Value::Text("c1".into())),
+                    ("kind", Value::Text("http".into())),
+                    ("target", Value::Text(url.clone())),
+                    ("interval_s", Value::Integer(60)),
+                    ("machine_id", Value::Text("m1".into())),
+                ]),
+            )]))
+            .await
+            .unwrap();
+        sh(&lab.machine, "touch /tmp/before-diagnostics && sleep 1");
+        let calls: Vec<(&str, Vec<(&str, String)>)> = vec![
+            ("journal", vec![("unit", "ssh.service".into()), ("since", "today".into()), ("lines", "50".into())]),
+            ("failed_units", vec![]),
+            ("service_status", vec![("name", "ssh".into())]),
+            ("docker_ps", vec![]),
+            ("compose_ps", vec![]),
+            ("docker_logs", vec![("container", "web".into()), ("lines", "100".into())]),
+            ("df", vec![]),
+            ("mounts", vec![]),
+            ("du_top", vec![("path", "/var/lib".into()), ("depth", "1".into())]),
+            ("free", vec![]),
+            ("uptime", vec![]),
+            ("top_processes", vec![]),
+            ("ss_listen", vec![]),
+            ("ss_established", vec![]),
+            ("dmesg_tail", vec![]),
+            ("updates_pending", vec![]),
+            ("last_logins", vec![]),
+            ("ping", vec![("target", ip.clone())]),
+            ("http_head", vec![("url", url.clone())]),
+        ];
+        let names: Vec<&str> = calls.iter().map(|(n, _)| *n).collect();
+        let all: Vec<&str> = rackhand_runbook::diagnostics::builtin().iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, all, "every diagnostic is run");
+        for (name, args) in &calls {
+            let args: BTreeMap<String, String> = args.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+            let out = lab.actions.run_diagnostic(None, "user:admin", "m1", name, &args).await.unwrap();
+            let text = String::from_utf8_lossy(&out.output);
+            assert_eq!(out.exit_code, Some(0), "{name}: {text}");
+            assert!(!out.output.is_empty() && out.output.len() <= OUTPUT_LIMIT, "{name}: {} bytes", out.output.len());
+            match *name {
+                "ss_listen" => assert!(text.contains(":22"), "{text}"),
+                "http_head" => assert!(text.starts_with("HTTP/1.1 200"), "{text}"),
+                "top_processes" => assert!(text.lines().count() <= 21, "{text}"),
+                "docker_logs" => assert!(text.contains("a log line"), "{text}"),
+                _ => {}
+            }
+        }
+        // Read-only: nothing under /etc, /usr, /opt or the home directories changed.
+        let changed = lab.machine.root("find /etc /usr /opt /home -newer /tmp/before-diagnostics -print");
+        assert_eq!(String::from_utf8_lossy(&changed.stdout).trim(), "", "files changed");
     }
 }

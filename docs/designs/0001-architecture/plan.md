@@ -270,7 +270,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T60 | Hypervisor and hub-host patching | T59 | unit + integration + live (L4, L9) | todo |
 | T61 | Remaining built-in runbooks and key rotation | T55, T43 | unit + integration | todo |
 | T62 | Access levels and monitor enforcement | T44, T55, T49 | unit + integration | todo |
-| T63 | Diagnostics allow-list | T55 | unit + integration | todo |
+| T63 | Diagnostics allow-list | T55 | unit + integration | done |
 | T64 | Provisioning VMs and LXCs | T59, T49 | unit (recorded API) + live (L4, L9) | todo |
 | T65 | Hub restart recovery for jobs | T55, T59 | integration | todo |
 | L4 | Live pass for M3: actions and patching | T65, L3 | live (local lab) | todo |
@@ -2715,6 +2715,10 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-hub -E 'test(diagnostics::)' | compile errors: unresolved `super::prepare`, `OUTPUT_LIMIT`, `untrusted`, no `ActionsError::UnknownDiagnostic` |
+  | 2026-11-19 | cargo nextest run -p rackhand-hub -E 'test(diagnostics::)' | 4 passed: the 19 names equal 7.8.3; `lines` 2001 and `depth` 4 refused (2000 and 3 accepted; the patterns hold the limits, so the wrapper enforces them too); `ping` only to a machine of the same site by name or address; `http_head` only to a URL of the machine's checks; `journal` and `docker_logs` alone are sensitive; `-f`, `--all` and `-x` refused |
+  | 2026-11-19 | cargo xtask it-images && cargo nextest run -p rackhand-it -E 'test(diagnostics::)' | 1 passed: all 19 run over SSH on a systemd machine (the root ones through the wrapper, from a command list signed with the diagnostics' templates in it), each exit 0 and at most 256 KB, and nothing under `/etc`, `/usr`, `/opt` or `/home` changed. This test was written after the hub code, so it wasn't seen failing first; its first runs failed for real reasons: `systemctl` as a non-root user needs D-Bus (added to the image, as on real hosts) |
+  | 2026-11-19 | cargo xtask ci fast; cargo xtask ci it; cargo xtask arch-check | exit 0 (197 passed); exit 0 (21 passed); no violations |
 
 ### T64: Provisioning VMs and LXCs
 - **Design refs:** FR-23, G7, 7.3.12 (binding set by the runbook), AC33, S4 finding
@@ -3724,6 +3728,11 @@ Only additions to that list are written out below.
   | `Install.Tests: bad signature stops before installing` | with mocked downloads | AC35 |
   | `Install.Tests: monitor installs no OpenSSH and no accounts` | mocked calls not made | 7.3.12 |
   | `Quarantine.Tests: rules allow only hub paths and DHCP` | generated rule set | 7.5.6 |
+
+  Carried in from T63:
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `it::windows::diagnostics_run_through_dispatcher` | each 7.8.3 diagnostic's Windows form runs through the dispatcher with the same parameter limits | 7.8.3 |
 - **Fails first:** Pester reports the scripts don't exist.
 - **Verification:**
   ```bash
@@ -4394,6 +4403,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D33 | 2026-11-19 | T55 | 7.3.7: the quoted argument list is sent as the exec request | Plain runbook `ssh` steps are sent as `timeout -k 5 <seconds> <quoted argv>`: dropping the connection at the step's timeout doesn't stop a command without a terminal (the container test showed `sleep 600` still running), so without it the machine is free while the old command runs. Assistant `exec` is still sent as-is (7.3.7), so a timed-out `exec` may keep running; Windows steps (T90) need their own stop | AC12's timeout must not leave work running behind the lock | design gap | pending (confirm the `timeout` prefix, and what a timed-out `exec` should do) |
 | D34 | 2026-11-19 | T38 | 5.3: `openidconnect` (OIDC) | The code flow with PKCE is written in `web/auth/oidc.rs`, and ID tokens are checked with ring (RS256, ES256, EdDSA; `none` and HMAC refused); the provider is reached with hyper over rustls on ring with the Mozilla roots (`webpki-roots`). `openidconnect` depends on the `rsa` crate, whose RUSTSEC-2023-0071 (Marvin) has no fixed version, so `cargo deny` fails with it (checked: `cargo deny check advisories` failed after adding it with default features off). The fake provider is `web/auth/fake_oidc.rs`, not `tests/support/fake_oidc.rs` | Keeps one crypto provider and the advisory gate as it is; negative tests cover each check | design | pending (confirm the library change; 5.3 still names `openidconnect`) |
 | D35 | 2026-11-19 | T38 | 7.7.2: accounts, OIDC users and their local factor | An admin creates every account on the settings page: a local one with a password, an OIDC one with the provider's subject (`sub`), and each gets a TOTP secret shown once, so an OIDC user has a local factor from the start (the provider alone never approves high risk, D49) and nobody gets in through the provider without an account. The store refuses to demote or disable the last enabled admin. The OIDC callback answers with a page that moves on to `/` (the session cookie is `SameSite=Strict`, so it isn't sent on the redirect chain from the provider's site); the cookie binding `state` to the browser is `SameSite=Lax` for the same reason. Passkeys are turned on by the composition (`Web::with_passkeys`) when the hub has a hostname and a trusted certificate; the browser half is `static/passkey.js`, checked only by MV12 | The design names the factors but not how accounts come to exist | design gap | pending (how OIDC accounts are created, and whether an admin issuing their TOTP is right) |
+| D36 | 2026-11-19 | T63 | `crates/rackhand-runbook/builtin/diagnostics.toml`; `actions/diagnostics.rs`; templates in `commands.json` generation | As planned, plus: Linux and Alpine commands only (the Windows ones run through the dispatcher's scripts, T90: `Unsupported` until then); a diagnostic doesn't wait for the machine's job lock, since it is read-only and a detached step can hold a machine for long (E55); within a job it is a step of that job (output stored there only), otherwise it is audited without its output; the hub keeps stdout then stderr, and `du_top` is sorted by size, `top_processes` cut to 20 and `dmesg_tail` to 200 lines by the hub; the diagnostics' templates are added by the hub's `signed_command_list`, not by the runbook crate's `command_list`. The container image has a stand-in `docker` CLI | Read-only work shouldn't queue behind a stuck package step | plan | - |
 
 ## Follow-ups (out of scope)
 

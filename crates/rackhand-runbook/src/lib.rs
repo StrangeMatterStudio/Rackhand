@@ -2,6 +2,7 @@
 //! Runbook model). Depends on nothing of ours.
 
 pub mod check_cmd;
+pub mod diagnostics;
 pub mod error;
 pub mod params;
 pub mod playbook;

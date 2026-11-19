@@ -19,15 +19,15 @@ use crate::bus::JobOutcome;
 use crate::library::items::{Kind, Library};
 use crate::policy::approvals::{ApprovalRequest, Approvals, approval_hash};
 
-struct Machine {
-    id: String,
-    kind: String,
-    access: String,
-    address: Option<String>,
+pub(super) struct Machine {
+    pub(super) id: String,
+    pub(super) kind: String,
+    pub(super) access: String,
+    pub(super) address: Option<String>,
 }
 
 impl Machine {
-    fn monitor_only(&self) -> bool {
+    pub(super) fn monitor_only(&self) -> bool {
         self.access == "monitor"
     }
 }
@@ -76,7 +76,7 @@ enum StepEndState {
 }
 
 impl Actions {
-    fn machine(&self, id: &str) -> Result<Machine, ActionsError> {
+    pub(super) fn machine(&self, id: &str) -> Result<Machine, ActionsError> {
         self.inner
             .db
             .readers()
@@ -104,7 +104,7 @@ impl Actions {
         Ok((rev, runbook))
     }
 
-    async fn audit(&self, actor: &str, action: &str, target: &str, data: serde_json::Value) {
+    pub(super) async fn audit(&self, actor: &str, action: &str, target: &str, data: serde_json::Value) {
         // The audit row follows the change it records; a failed append is logged by the writer and doesn't undo it.
         let _ = self.inner.audit.append(actor, action, Some(target), &data.to_string()).await;
     }
