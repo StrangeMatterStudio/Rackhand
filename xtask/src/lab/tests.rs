@@ -1,0 +1,64 @@
+//! Tests for the lab configuration and its guards (plan L1).
+
+use super::config::*;
+use super::images::*;
+
+fn lab() -> Lab {
+    Lab::load().unwrap()
+}
+
+#[test]
+fn profiles_reference_known_machines() {
+    let lab = lab();
+    assert!(lab.check().is_empty(), "{:?}", lab.check());
+    let mut broken = lab.clone();
+    broken.profiles.insert("bad".into(), vec!["hub".into(), "nonexistent".into()]);
+    let problems = broken.check();
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("nonexistent"));
+}
+
+#[test]
+fn image_checksum_mismatch_is_refused() {
+    let dir = std::env::temp_dir().join(format!("rackhand-lab-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("image.qcow2");
+    std::fs::write(&file, b"not an image").unwrap();
+    let image = Image {
+        name: "test".into(),
+        url: "https://example.invalid/image.qcow2".into(),
+        sha256: None,
+        sha512: Some("0".repeat(128)),
+    };
+    let err = image.verify(&file).unwrap_err().to_string();
+    assert!(err.contains("SHA-512"), "{err}");
+    assert!(!file.exists(), "a mismatched image must be deleted");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn profile_over_memory_budget_is_refused() {
+    let lab = lab();
+    // m2 is the largest profile: 13.5 GB. With 20 GB available and 12 GB kept for builds it doesn't fit.
+    let err = lab.check_budget("m2", 20 * 1024, 12 * 1024).unwrap_err().to_string();
+    assert!(err.contains("m2"), "{err}");
+    lab.check_budget("m2", 28 * 1024, 12 * 1024).unwrap();
+    assert_eq!(lab.profile_memory_mb("m2").unwrap(), 13_824);
+}
+
+#[test]
+fn site_networks_use_documentation_ranges() {
+    let lab = lab();
+    for machine in &lab.machines {
+        for nic in &machine.nics {
+            assert!(
+                nic.address.starts_with("192.0.2.") || nic.address.starts_with("198.51.100."),
+                "{} uses {}",
+                machine.name,
+                nic.address
+            );
+            let site = &lab.sites[&nic.site];
+            assert!(site.contains(&nic.address), "{} {} outside site {}", machine.name, nic.address, nic.site);
+        }
+    }
+}

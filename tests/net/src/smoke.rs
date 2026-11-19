@@ -3,10 +3,7 @@
 use std::process::Command;
 
 fn ip(args: &str) {
-    let status = Command::new("ip")
-        .args(args.split_whitespace())
-        .status()
-        .expect("ip is installed");
+    let status = Command::new("ip").args(args.split_whitespace()).status().expect("ip is installed");
     assert!(status.success(), "ip {args} failed");
 }
 

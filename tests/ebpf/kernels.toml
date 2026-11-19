@@ -15,9 +15,9 @@ version = "6.1.192"
 url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.1.192.tar.xz"
 sha256 = "1e88e317e20dbc79a2cb9e3d9667e908b262d12e76eb66eed894c5460eb87fca"
 
-# Proxmox VE 9's kernel series (checked against the lab's pve9 node in L1).
+# Proxmox VE 9's kernel series: the lab's pve9 node installs proxmox-kernel-7.0.14 (L1).
 [[kernel]]
-series = "6.17"
-version = "6.17.13"
-url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.17.13.tar.xz"
-sha256 = "116802dc3ad1646163cc6ffe9bddba24a8069b569135ec0523cd799064f2edb9"
+series = "7.0"
+version = "7.0.14"
+url = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.0.14.tar.xz"
+sha256 = "de9999b784d2293f00d39c62d8f92a08ab8a54bc4e80ffd250a0c09cb07a0f98"

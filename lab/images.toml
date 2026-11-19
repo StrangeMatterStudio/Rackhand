@@ -1,0 +1,23 @@
+# Local lab base images (plan L1, D107). Each is pinned to a dated build by the hash in the publisher's checksum
+# file (Debian and Alpine publish SHA-512, Ubuntu SHA-256). `cargo xtask lab fetch` deletes a download that
+# doesn't match. Files are cached under ~/.cache/rackhand-lab/images.
+
+[[image]]
+name = "debian-12"
+url = "https://cloud.debian.org/images/cloud/bookworm/20261117-2665/debian-12-genericcloud-amd64-20261117-2665.qcow2"
+sha512 = "946b917a37882f16e5b3b0b2cbe5744637d0cd36190b5b53cbb21d14a54557d5b45e9e523021b8f52c1707dbe470489f3515458e0680ded76ee2574b4a8daf1b"
+
+[[image]]
+name = "debian-13"
+url = "https://cloud.debian.org/images/cloud/trixie/20261116-2664/debian-13-genericcloud-amd64-20261116-2664.qcow2"
+sha512 = "37cb32b320820417eb04b335afcf489bfb4cecce4a957190d09cb2bffbe02b56a1cadd62d78c6ead92aa7839d5ea65e4260f994bbb4b54490df59fdf11ee1d97"
+
+[[image]]
+name = "ubuntu-24.04"
+url = "https://cloud-images.ubuntu.com/releases/noble/release-20261017/ubuntu-24.04-server-cloudimg-amd64.img"
+sha256 = "04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94"
+
+[[image]]
+name = "alpine-3.20"
+url = "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/cloud/nocloud_alpine-3.20.9-x86_64-bios-cloudinit-r0.qcow2"
+sha512 = "1aa57dc508820f2fbafcd7ef735fa33cb7e5445ad6b21185d015373ab1fa11815b5d5cd8c967585f4355ca5acca487103f18f591fcf10cef19e89060151f78af"

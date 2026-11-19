@@ -3,6 +3,7 @@
 mod arch;
 mod ci_guard;
 mod kernels;
+mod lab;
 mod tiers;
 mod vm;
 
@@ -12,7 +13,9 @@ use std::process::ExitCode;
 const USAGE: &str = "usage: cargo xtask <command>
 commands:
   arch-check                 check the dependency rules (design 7.2)
-  ci <tier> [args]           run a test tier: fast, it, net, ebpf, win, perf
+  ci <tier> [args]           run a test tier: fast, it, net, ebpf, win, perf, live
+  lab <command>              the local lab (see `cargo xtask lab`)
+  golden --update            rewrite the wire format's golden files (review the diff)
   ci-guard                   check the workflow guards against the recorded event payloads
   kernels fetch              download, verify and build the test kernels
   rootfs build               build the root filesystem for test VMs
@@ -33,6 +36,13 @@ fn main() -> ExitCode {
         Some("kernels") if rest.first().map(String::as_str) == Some("fetch") => kernels::fetch_all(),
         Some("rootfs") if rest.first().map(String::as_str) == Some("build") => vm::build_rootfs().map(|_| ()),
         Some("it-images") => tiers::build_it_images(),
+        Some("lab") => lab::run(rest),
+        Some("golden") if rest.first().map(String::as_str) == Some("--update") => vm::run_checked(
+            std::process::Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+                .args(["nextest", "run", "-p", "rackhand-proto", "-E", "test(golden::)"])
+                .env("RACKHAND_GOLDEN_UPDATE", "1")
+                .current_dir(workspace_root()),
+        ),
         Some(other) => Err(anyhow::anyhow!("unknown command `{other}`\n{USAGE}")),
         None => Err(anyhow::anyhow!("{USAGE}")),
     };

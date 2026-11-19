@@ -209,7 +209,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T02 | Test tiers and `cargo xtask ci` | T01 | scripted | done |
 | T03 | CI workflows and the guard test | T02 | unit (xtask), lint | done |
 | T04 | Runner profiles for Rackhand | T03 | scripted (CI run), owner setup | unverified (MV1) |
-| L1 | Local lab harness | T02 | unit (xtask) + live (local lab) | todo |
+| L1 | Local lab harness | T02 | unit (xtask) + live (local lab) | in progress |
 | T05 | Spike S8: time-series encoding | T02 | scripted measurement | todo |
 | T06 | Spike S6: probe footprint | T02 | scripted measurement | todo |
 | T07 | Spike S7: git mirror library | T02 | scripted measurement | done |
@@ -4192,11 +4192,12 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D2 | 2026-11-19 | preflight | `cargo install --locked bpf-linker` | The static `bpf-linker` 0.13.0 binary from the project's GitHub release, in `~/.local/bin` | Building it needs a system libLLVM matching rustc's LLVM 23; Ubuntu 22.04 has LLVM 14 | plan | - |
 | D3 | 2026-11-19 | T02 | `xtask kernels fetch` downloads prebuilt test kernels | Fetches the pinned kernel.org tarballs (SHA-256 from sha256sums.asc) and builds bzImages in a Debian container with `tests/vm/kernel.config` | No trustworthy prebuilt kernels with built-in 9p and BTF; the plan names this fallback | plan | - |
 | D4 | 2026-11-19 | T02 | VM tests run on the host rootfs | A Debian bookworm rootfs built with Docker (has `qemu-guest-agent`), run with `unshare -r vmtest`, with a PATH that drops WSL's Windows entries | vmtest needs qemu-guest-agent in the guest (not installed on the host, and installing needs sudo); WSL's PATH breaks vmtest's init script | plan | - |
-| D5 | 2026-11-19 | T02 | The current Proxmox kernel series | 6.17 (Proxmox VE 9's series), checked against the lab's `pve9` node in L1 | Needed a concrete series to pin | plan | - |
+| D5 | 2026-11-19 | T02 | The current Proxmox kernel series | First pinned 6.17; the lab's `pve9` node installed `proxmox-kernel-7.0.14`, so the third eBPF kernel is now 7.0.14 (kernel.org `linux-7.0.14.tar.xz`, SHA-256 pinned) | Needed a concrete series to pin; corrected from the real node | plan | - |
 | D6 | 2026-11-19 | T03, T04 | A guard-free lint job runs on every push | No unguarded job: every `ci.yml` job carries the guard and its runner variable (lint runs in `fast`); one `runners-*` job per label set | An unguarded job would need a GitHub-hosted runner or would let fork events reach self-hosted ones; `job_without_guard_is_reported` forbids it | plan | - |
 | D7 | 2026-11-19 | T03 | `perf` runs nightly | `perf` also needs `schedule` or `workflow_dispatch` in its condition; the fixtures carry a separate `perf` expectation | Keeps the slow tier off every push | plan | - |
 | D8 | 2026-11-19 | T08, T09, T10 | Spike support in xtask lands with the first spike that uses it | `ci net --spike` and `ci ebpf --spike` (build `spikes/<id>`, run `measure` in the VM with a writable out dir, then `report` on the host) commit with L1, which edits the same file | L1 was in progress in `tiers.rs` | plan | - |
 | D9 | 2026-11-19 | T09, T83 | Full-cone NAT in the network VM | Full cone is a static UDP DNAT of the listener's fixed port at its NAT; plain masquerade on both sides is the symmetric-like case | Linux masquerade never hole punches against masquerade (spike S3) | plan | - |
+| D10 | 2026-11-19 | T16 onward | M1 starts after every spike is done (T16 depends on T15) | M1 steps start once the spikes in their own Depends on are done; T05 (24-hour recording), T06, T10 to T14 finish in parallel | T05 needs 24 h of data and T13, T14 wait for the owner; the gating table already lists which steps each spike gates | plan | - |
 
 ## Follow-ups (out of scope)
 

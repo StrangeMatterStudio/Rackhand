@@ -46,3 +46,7 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-19 | L1 started (lab tests failed first: unresolved `config` and `images`). First bring-up failed on Debian 12: its cloud-init 22.4 needs `ds=nocloud-net` for an HTTP seed; fixed, bring-up restarted |
 | 2026-11-19 | T05 recorder started on the WSL host at 06:28 UTC for 24 hours; T06 measuring for 30 minutes in a VM; owner asked for the T13 sign-in and the T14 TrueNAS key (OWNER-ACTIONS.local.md) |
 | 2026-11-19 | T07 done: git2 chosen (gix can't push). Design 5.3 and 17 updated |
+| 2026-11-19 | T08 done: relay admission, server-wide rate and priority work; per-key rate and daily quota not possible (owner decision pending, T82). T09 done: path detection works; masquerade-to-masquerade never goes direct (D9) |
+| 2026-11-19 | L1 bring-up fixes: Alpine `lab` account unlocked for sshd; Proxmox phase 1 static DNS and grub preseed; cloud-init disabled before the first reboot; static uplink (no dhclient for ifupdown2). The pve9 node runs kernel 7.0.14, so the eBPF tier's third kernel moved from 6.17 to 7.0 (D5) |
+| 2026-11-19 | T10: eBPF capture works on 5.10, 6.1 and 7.0; an MIT-only license is refused (GPL-only helper); LXC part waits for the lab. T11 and T06 re-running (S6's first run was invalid: VM loopback down). T15 done |
+| 2026-11-19 | D10: M1 started while T05 (24 h recording), T06, T10 to T14 finish; each M1 step still waits for the spikes in its own Depends on |

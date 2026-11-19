@@ -11,9 +11,7 @@ use sha2::{Digest, Sha256};
 use crate::workspace_root;
 
 pub fn cache_dir() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
     home.join(".cache/rackhand-vm")
 }
 
@@ -34,18 +32,12 @@ pub fn build_rootfs() -> Result<PathBuf> {
     let hash: String = Sha256::digest(&recipe).iter().map(|b| format!("{b:02x}")).collect();
     let dir = cache_dir().join("rootfs");
     let stamp = dir.join(".rackhand-rootfs");
-    if std::fs::read_to_string(&stamp)
-        .map(|s| s.trim() == hash)
-        .unwrap_or(false)
-    {
+    if std::fs::read_to_string(&stamp).map(|s| s.trim() == hash).unwrap_or(false) {
         return Ok(dir);
     }
     println!("building the test VM root filesystem");
     run_checked(
-        Command::new("docker")
-            .args(["build", "-q", "-t", "rackhand-vm-rootfs", "-f"])
-            .arg(&dockerfile)
-            .arg(&vm_dir),
+        Command::new("docker").args(["build", "-q", "-t", "rackhand-vm-rootfs", "-f"]).arg(&dockerfile).arg(&vm_dir),
     )?;
     let out = Command::new("docker").args(["create", "rackhand-vm-rootfs"]).output()?;
     if !out.status.success() {
@@ -57,16 +49,10 @@ pub fn build_rootfs() -> Result<PathBuf> {
         std::fs::remove_dir_all(&staging)?;
     }
     std::fs::create_dir_all(&staging)?;
-    let export = format!(
-        "docker export {container} | tar -x -C '{}' --no-same-owner --exclude='dev/*'",
-        staging.display()
-    );
+    let export =
+        format!("docker export {container} | tar -x -C '{}' --no-same-owner --exclude='dev/*'", staging.display());
     let result = run_checked(Command::new("sh").args(["-c", &export]));
-    run_checked(
-        Command::new("docker")
-            .args(["rm", "-f", &container])
-            .stdout(std::process::Stdio::null()),
-    )?;
+    run_checked(Command::new("docker").args(["rm", "-f", &container]).stdout(std::process::Stdio::null()))?;
     result?;
     if dir.exists() {
         std::fs::remove_dir_all(&dir)?;
@@ -83,8 +69,8 @@ pub struct VmRun<'a> {
     pub kernel: &'a Path,
     pub command: String,
     pub env: Vec<(&'a str, String)>,
-    /// Host directories mounted at the same path in the guest.
-    pub mounts: Vec<PathBuf>,
+    /// Host directories mounted at the same path in the guest, and whether the guest may write to them.
+    pub mounts: Vec<(PathBuf, bool)>,
     pub memory: &'a str,
     pub cpus: u32,
 }
@@ -114,9 +100,9 @@ pub fn run(spec: &VmRun<'_>) -> Result<()> {
         cpus = spec.cpus,
         memory = spec.memory,
     );
-    for mount in &spec.mounts {
+    for (mount, writable) in &spec.mounts {
         let path = mount.display().to_string();
-        toml.push_str(&format!("{path:?} = {{ host_path = {path:?}, writable = false }}\n"));
+        toml.push_str(&format!("{path:?} = {{ host_path = {path:?}, writable = {writable} }}\n"));
     }
     let config = dir.join(format!("{}.toml", spec.name.replace(' ', "-")));
     std::fs::write(&config, toml)?;

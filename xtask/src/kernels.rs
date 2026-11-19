@@ -50,10 +50,7 @@ pub fn verify_sha256(path: &Path, expected: &str) -> Result<()> {
     let actual: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
     if actual != expected.to_ascii_lowercase() {
         std::fs::remove_file(path).with_context(|| format!("deleting {}", path.display()))?;
-        bail!(
-            "SHA-256 mismatch for {}: expected {expected}, got {actual}; the file was deleted",
-            path.display()
-        );
+        bail!("SHA-256 mismatch for {}: expected {expected}, got {actual}; the file was deleted", path.display());
     }
     Ok(())
 }
@@ -81,21 +78,12 @@ pub fn ensure(kernel: &Kernel) -> Result<PathBuf> {
     let tarball = src.join(format!("linux-{}.tar.xz", kernel.version));
     if !tarball.exists() {
         println!("fetching {}", kernel.url);
-        run_checked(
-            Command::new("curl")
-                .args(["-fsSL", "-o"])
-                .arg(&tarball)
-                .arg(&kernel.url),
-        )?;
+        run_checked(Command::new("curl").args(["-fsSL", "-o"]).arg(&tarball).arg(&kernel.url))?;
     }
     verify_sha256(&tarball, &kernel.sha256)?;
     build(kernel)?;
     if !image.exists() {
-        bail!(
-            "kernel build for {} produced no image at {}",
-            kernel.version,
-            image.display()
-        );
+        bail!("kernel build for {} produced no image at {}", kernel.version, image.display());
     }
     Ok(image)
 }
@@ -114,13 +102,7 @@ fn build(kernel: &Kernel) -> Result<()> {
     run_checked(
         Command::new("docker")
             .args(["run", "--rm", "-u", &format!("{uid}:{gid}"), "-e", "HOME=/tmp"])
-            .args([
-                "-e",
-                "KBUILD_BUILD_USER=rackhand",
-                "-e",
-                "KBUILD_BUILD_HOST=rackhand",
-                "-v",
-            ])
+            .args(["-e", "KBUILD_BUILD_USER=rackhand", "-e", "KBUILD_BUILD_HOST=rackhand", "-v"])
             .arg(format!("{}:/cache", cache_dir().display()))
             .arg("-v")
             .arg(format!("{}:/cfg:ro", vm_dir.display()))
@@ -170,11 +152,7 @@ mod tests {
         let text = std::fs::read_to_string(workspace_root().join("tests/ebpf/kernels.toml")).unwrap();
         let kernels = parse_kernels(&text).unwrap();
         let series: Vec<&str> = kernels.iter().map(|k| k.series.as_str()).collect();
-        assert_eq!(series, ["5.10", "6.1", "6.17"]);
-        assert!(
-            kernels
-                .iter()
-                .all(|k| k.sha256.len() == 64 && k.url.starts_with("https://cdn.kernel.org/"))
-        );
+        assert_eq!(series, ["5.10", "6.1", "7.0"]);
+        assert!(kernels.iter().all(|k| k.sha256.len() == 64 && k.url.starts_with("https://cdn.kernel.org/")));
     }
 }

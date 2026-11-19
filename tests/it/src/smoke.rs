@@ -8,11 +8,7 @@ fn docker_answers() {
         .args(["version", "--format", "{{.Server.Version}}"])
         .output()
         .expect("docker CLI is installed");
-    assert!(
-        out.status.success(),
-        "docker version failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert!(out.status.success(), "docker version failed: {}", String::from_utf8_lossy(&out.stderr));
     let version = String::from_utf8_lossy(&out.stdout);
     assert!(!version.trim().is_empty(), "docker reported no server version");
 }

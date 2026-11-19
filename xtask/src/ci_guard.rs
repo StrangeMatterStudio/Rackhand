@@ -69,9 +69,7 @@ pub fn load_fixture(name: &str) -> Result<serde_json::Value> {
 pub fn parse_workflow(text: &str) -> Result<Vec<Job>> {
     let docs = YamlLoader::load_from_str(text).context("parsing workflow YAML")?;
     let doc = docs.first().context("empty workflow")?;
-    let Yaml::Hash(jobs) = &doc["jobs"] else {
-        bail!("workflow has no jobs")
-    };
+    let Yaml::Hash(jobs) = &doc["jobs"] else { bail!("workflow has no jobs") };
     let mut out = Vec::new();
     for (name, job) in jobs {
         let name = name.as_str().context("job name")?.to_string();
@@ -85,16 +83,9 @@ pub fn parse_workflow(text: &str) -> Result<Vec<Job>> {
             Yaml::Boolean(b) => b.to_string(),
             _ => String::new(),
         };
-        let condition = raw
-            .strip_prefix("${{")
-            .and_then(|s| s.strip_suffix("}}"))
-            .map(|s| s.trim().to_string())
-            .unwrap_or(raw);
-        out.push(Job {
-            name,
-            labels,
-            condition,
-        });
+        let condition =
+            raw.strip_prefix("${{").and_then(|s| s.strip_suffix("}}")).map(|s| s.trim().to_string()).unwrap_or(raw);
+        out.push(Job { name, labels, condition });
     }
     Ok(out)
 }
@@ -114,28 +105,14 @@ pub fn check_self_hosted_jobs(jobs: &[Job]) -> Vec<String> {
     let mut problems = Vec::new();
     for job in jobs {
         if !job.labels.iter().any(|l| l == "self-hosted") {
-            problems.push(format!(
-                "job `{}` in ci.yml doesn't run on self-hosted runners",
-                job.name
-            ));
+            problems.push(format!("job `{}` in ci.yml doesn't run on self-hosted runners", job.name));
             continue;
         }
-        let label = job
-            .labels
-            .iter()
-            .find(|l| l.starts_with("sm-"))
-            .map(String::as_str)
-            .unwrap_or("");
+        let label = job.labels.iter().find(|l| l.starts_with("sm-")).map(String::as_str).unwrap_or("");
         match expected_condition(label, job.name == "perf") {
             Some(expected) if normalize(&job.condition) == normalize(&expected) => {}
-            Some(_) => problems.push(format!(
-                "job `{}` lacks the fork guard and its runner variable",
-                job.name
-            )),
-            None => problems.push(format!(
-                "job `{}` uses unknown runner labels {:?}",
-                job.name, job.labels
-            )),
+            Some(_) => problems.push(format!("job `{}` lacks the fork guard and its runner variable", job.name)),
+            None => problems.push(format!("job `{}` uses unknown runner labels {:?}", job.name, job.labels)),
         }
     }
     problems
@@ -223,11 +200,7 @@ fn tokenize(expr: &str) -> Result<Vec<Token>> {
             }
             '\'' => {
                 let start = i + 1;
-                let end = chars[start..]
-                    .iter()
-                    .position(|&ch| ch == '\'')
-                    .context("unterminated string")?
-                    + start;
+                let end = chars[start..].iter().position(|&ch| ch == '\'').context("unterminated string")? + start;
                 tokens.push(Token::Str(chars[start..end].iter().collect()));
                 i = end + 1;
             }
@@ -294,11 +267,7 @@ impl Parser<'_> {
     }
 
     fn primary(&mut self) -> Result<Value> {
-        let token = self
-            .tokens
-            .get(self.pos)
-            .cloned()
-            .context("unexpected end of expression")?;
+        let token = self.tokens.get(self.pos).cloned().context("unexpected end of expression")?;
         self.pos += 1;
         match token {
             Token::Open => {
@@ -322,12 +291,7 @@ impl Parser<'_> {
             _ => {}
         }
         if let Some(name) = path.strip_prefix("vars.") {
-            return self
-                .vars
-                .0
-                .get(name)
-                .map(|v| Value::Str(v.clone()))
-                .unwrap_or(Value::Null);
+            return self.vars.0.get(name).map(|v| Value::Str(v.clone())).unwrap_or(Value::Null);
         }
         let Some(rest) = path.strip_prefix("github.") else {
             return Value::Null;
@@ -349,12 +313,7 @@ pub fn evaluate(expr: &str, ctx: &Context, vars: &Vars) -> Result<bool> {
     if expr.trim().is_empty() {
         return Ok(true);
     }
-    let mut parser = Parser {
-        tokens: tokenize(expr)?,
-        pos: 0,
-        ctx,
-        vars,
-    };
+    let mut parser = Parser { tokens: tokenize(expr)?, pos: 0, ctx, vars };
     let value = parser.or()?;
     if parser.pos != parser.tokens.len() {
         bail!("trailing tokens in `{expr}`");
@@ -366,25 +325,14 @@ pub fn evaluate(expr: &str, ctx: &Context, vars: &Vars) -> Result<bool> {
 pub fn run() -> Result<()> {
     let root = workspace_root();
     let ci = parse_workflow(&std::fs::read_to_string(root.join(".github/workflows/ci.yml"))?)?;
-    let hosted = parse_workflow(&std::fs::read_to_string(
-        root.join(".github/workflows/ci-github-hosted.yml"),
-    )?)?;
+    let hosted = parse_workflow(&std::fs::read_to_string(root.join(".github/workflows/ci-github-hosted.yml"))?)?;
     let mut problems = check_self_hosted_jobs(&ci);
     problems.extend(check_hosted_jobs(&hosted));
 
-    let all = Vars::from([
-        ("RACKHAND_CI_LINUX", "true"),
-        ("RACKHAND_CI_DOCKER", "true"),
-        ("RACKHAND_CI_KVM", "true"),
-    ]);
+    let all = Vars::from([("RACKHAND_CI_LINUX", "true"), ("RACKHAND_CI_DOCKER", "true"), ("RACKHAND_CI_KVM", "true")]);
     let mut names: Vec<String> = std::fs::read_dir(root.join("ci/fixtures"))?
         .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            e.file_name()
-                .to_str()
-                .and_then(|n| n.strip_suffix(".json"))
-                .map(str::to_string)
-        })
+        .filter_map(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".json")).map(str::to_string))
         .collect();
     names.sort();
     for name in &names {
@@ -396,31 +344,21 @@ pub fn run() -> Result<()> {
             let want = expect[key].as_bool().with_context(|| format!("{name}: expect.{key}"))?;
             let got = evaluate(&job.condition, &ctx, &all)?;
             if got != want {
-                problems.push(format!(
-                    "{name}: ci.yml job `{}` gives {got}, expected {want}",
-                    job.name
-                ));
+                problems.push(format!("{name}: ci.yml job `{}` gives {got}, expected {want}", job.name));
             }
         }
         for job in &hosted {
             let on = evaluate(&job.condition, &ctx, &Vars::from([("RACKHAND_GITHUB_HOSTED", "true")]))?;
             let off = evaluate(&job.condition, &ctx, &Vars::new())?;
             if !on || off {
-                problems.push(format!(
-                    "{name}: ci-github-hosted.yml job `{}` ignores RACKHAND_GITHUB_HOSTED",
-                    job.name
-                ));
+                problems
+                    .push(format!("{name}: ci-github-hosted.yml job `{}` ignores RACKHAND_GITHUB_HOSTED", job.name));
             }
         }
         println!("{name}: as expected");
     }
     if problems.is_empty() {
-        println!(
-            "{} fixtures, {} self-hosted and {} hosted jobs checked",
-            names.len(),
-            ci.len(),
-            hosted.len()
-        );
+        println!("{} fixtures, {} self-hosted and {} hosted jobs checked", names.len(), ci.len(), hosted.len());
         Ok(())
     } else {
         for p in &problems {
@@ -439,11 +377,7 @@ mod tests {
     }
 
     fn all_vars() -> Vars {
-        Vars::from([
-            ("RACKHAND_CI_LINUX", "true"),
-            ("RACKHAND_CI_DOCKER", "true"),
-            ("RACKHAND_CI_KVM", "true"),
-        ])
+        Vars::from([("RACKHAND_CI_LINUX", "true"), ("RACKHAND_CI_DOCKER", "true"), ("RACKHAND_CI_KVM", "true")])
     }
 
     fn ci_jobs() -> Vec<Job> {
@@ -455,11 +389,7 @@ mod tests {
     fn fork_pull_request_does_not_run_self_hosted() {
         let ctx = Context::from_fixture(&load_fixture("pr-from-fork").unwrap());
         for job in ci_jobs() {
-            assert!(
-                !evaluate(&job.condition, &ctx, &all_vars()).unwrap(),
-                "job {} would run",
-                job.name
-            );
+            assert!(!evaluate(&job.condition, &ctx, &all_vars()).unwrap(), "job {} would run", job.name);
         }
     }
 
@@ -468,11 +398,7 @@ mod tests {
         for fixture in ["push-upstream", "pr-same-repo"] {
             let ctx = Context::from_fixture(&load_fixture(fixture).unwrap());
             for job in ci_jobs().into_iter().filter(|j| j.name != "perf") {
-                assert!(
-                    evaluate(&job.condition, &ctx, &all_vars()).unwrap(),
-                    "{fixture}: job {} skipped",
-                    job.name
-                );
+                assert!(evaluate(&job.condition, &ctx, &all_vars()).unwrap(), "{fixture}: job {} skipped", job.name);
             }
         }
     }
@@ -481,11 +407,7 @@ mod tests {
     fn push_in_a_fork_does_not_run_self_hosted() {
         let ctx = Context::from_fixture(&load_fixture("push-fork").unwrap());
         for job in ci_jobs() {
-            assert!(
-                !evaluate(&job.condition, &ctx, &all_vars()).unwrap(),
-                "job {} would run",
-                job.name
-            );
+            assert!(!evaluate(&job.condition, &ctx, &all_vars()).unwrap(), "job {} would run", job.name);
         }
     }
 

@@ -82,10 +82,7 @@ pub fn check(model: &Model) -> Vec<Violation> {
             });
         }
         if r.from == "incidents" && r.to == "actions" {
-            let allowed = r
-                .item
-                .as_deref()
-                .is_some_and(|item| INCIDENTS_ACTIONS_ALLOWED.contains(&item));
+            let allowed = r.item.as_deref().is_some_and(|item| INCIDENTS_ACTIONS_ALLOWED.contains(&item));
             if !allowed {
                 let what = r.item.as_deref().unwrap_or("the module itself");
                 violations.push(Violation {
@@ -173,10 +170,7 @@ fn find_path_start(haystack: &str, prefix: &str) -> Option<usize> {
 fn paths_after(after: &str) -> Vec<(String, Option<String>)> {
     if let Some(group) = after.strip_prefix('{') {
         let end = matching_brace(group).unwrap_or(group.len());
-        return split_top_level(&group[..end])
-            .iter()
-            .flat_map(|p| single_path(p.trim()))
-            .collect();
+        return split_top_level(&group[..end]).iter().flat_map(|p| single_path(p.trim())).collect();
     }
     single_path(after)
 }
@@ -291,10 +285,7 @@ pub fn load(root: &Path) -> Result<Model> {
     }
     let meta: serde_json::Value = serde_json::from_slice(&output.stdout).context("parsing cargo metadata")?;
     let packages = meta["packages"].as_array().context("cargo metadata has no packages")?;
-    let names: Vec<String> = packages
-        .iter()
-        .filter_map(|p| p["name"].as_str().map(str::to_string))
-        .collect();
+    let names: Vec<String> = packages.iter().filter_map(|p| p["name"].as_str().map(str::to_string)).collect();
 
     let mut model = Model::default();
     for package in packages {
@@ -313,19 +304,14 @@ pub fn load(root: &Path) -> Result<Model> {
         let build_rs = crate_dir.join("build.rs");
         if let Ok(script) = std::fs::read_to_string(&build_rs) {
             for program in build_script_programs(&script) {
-                model.files.push(FileFact::BuildScriptRuns {
-                    crate_name: name.clone(),
-                    program,
-                });
+                model.files.push(FileFact::BuildScriptRuns { crate_name: name.clone(), program });
             }
         }
         model.crates.push(CrateNode { name, internal_deps });
     }
 
     for dir in [root.join("crates"), root.join("xtask")] {
-        find_files(&dir, "package.json", &mut |path| {
-            model.files.push(FileFact::PackageJson(path))
-        })?;
+        find_files(&dir, "package.json", &mut |path| model.files.push(FileFact::PackageJson(path)))?;
     }
 
     let hub_src = root.join("crates/rackhand-hub/src");
@@ -340,11 +326,7 @@ pub fn load(root: &Path) -> Result<Model> {
             find_files(&entry.path(), ".rs", &mut |p| files.push(p))?;
             for file in files {
                 let src = std::fs::read_to_string(&file)?;
-                let rel = file
-                    .strip_prefix(&hub_src)
-                    .unwrap_or(&file)
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                let rel = file.strip_prefix(&hub_src).unwrap_or(&file).to_string_lossy().replace('\\', "/");
                 model.hub_refs.extend(scan_hub_source(&module, &rel, &src));
             }
         }
@@ -391,19 +373,13 @@ mod tests {
     use super::*;
 
     fn crate_node(name: &str, deps: &[&str]) -> CrateNode {
-        CrateNode {
-            name: name.to_string(),
-            internal_deps: deps.iter().map(|d| d.to_string()).collect(),
-        }
+        CrateNode { name: name.to_string(), internal_deps: deps.iter().map(|d| d.to_string()).collect() }
     }
 
     #[test]
     fn policy_crate_with_internal_dependency_is_reported() {
         let model = Model {
-            crates: vec![
-                crate_node("rackhand-detect", &["rackhand-store"]),
-                crate_node("rackhand-store", &[]),
-            ],
+            crates: vec![crate_node("rackhand-detect", &["rackhand-store"]), crate_node("rackhand-store", &[])],
             ..Model::default()
         };
         let violations = check(&model);
@@ -415,10 +391,7 @@ mod tests {
     #[test]
     fn hub_module_using_web_is_reported() {
         let refs = scan_hub_source("incidents", "incidents/mod.rs", "use crate::web::pages;\n");
-        let model = Model {
-            hub_refs: refs,
-            ..Model::default()
-        };
+        let model = Model { hub_refs: refs, ..Model::default() };
         let violations = check(&model);
         assert_eq!(violations.len(), 1, "{violations:?}");
         assert!(violations[0].message.contains("web"));
@@ -431,20 +404,11 @@ mod tests {
             "incidents/route.rs",
             "use crate::actions::{StartJob, Executor};\nfn f() { crate::actions::cancel(); }\n",
         );
-        let violations = check(&Model {
-            hub_refs: bad,
-            ..Model::default()
-        });
+        let violations = check(&Model { hub_refs: bad, ..Model::default() });
         assert_eq!(violations.len(), 2, "{violations:?}");
 
         let good = scan_hub_source("incidents", "incidents/route.rs", "use crate::actions::StartJob;\n");
-        assert!(
-            check(&Model {
-                hub_refs: good,
-                ..Model::default()
-            })
-            .is_empty()
-        );
+        assert!(check(&Model { hub_refs: good, ..Model::default() }).is_empty());
     }
 
     #[test]
@@ -461,10 +425,7 @@ mod tests {
         let model = Model {
             files: vec![
                 FileFact::PackageJson("crates/rackhand-hub/web/package.json".into()),
-                FileFact::BuildScriptRuns {
-                    crate_name: "rackhand-hub".into(),
-                    program: "node".into(),
-                },
+                FileFact::BuildScriptRuns { crate_name: "rackhand-hub".into(), program: "node".into() },
             ],
             ..Model::default()
         };
