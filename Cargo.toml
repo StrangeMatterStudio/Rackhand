@@ -31,6 +31,8 @@ ulid = "1"
 chacha20poly1305 = { version = "0.10", features = ["std"] }
 zeroize = { version = "1", features = ["derive"] }
 getrandom = "0.3"
+# Timezones and daylight saving for windows (7.5.3); the bundled database gives the same answers on every host.
+jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

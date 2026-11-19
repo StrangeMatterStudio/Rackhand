@@ -239,6 +239,13 @@ fn write_row(tx: &rusqlite::Transaction<'_>, w: &RowWrite) -> Result<usize, Stor
     Ok(tx.execute(&sql, rusqlite::params_from_iter(values))?)
 }
 
+fn replace_one(conn: &mut Connection, table: &'static str, row: Row) -> Result<usize, StoreError> {
+    let tx = conn.transaction()?;
+    let n = write_row(&tx, &RowWrite::replace(table, row))?;
+    tx.commit()?;
+    Ok(n)
+}
+
 /// Runs one command in one transaction; nothing is committed if any part fails.
 fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
     match cmd {
@@ -291,6 +298,8 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
             tx.commit()?;
             Ok(removed + 1)
         }
+        WriteCmd::PutScheduleState(row) => replace_one(conn, "schedule_state", row),
+        WriteCmd::PutWindow(row) => replace_one(conn, "windows", row),
         other => Err(StoreError::Unimplemented(other.name())),
     }
 }

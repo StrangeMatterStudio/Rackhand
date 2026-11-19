@@ -239,7 +239,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T31 | Detect: baselines and counted rules | T28 | unit | done |
 | T32 | Incidents: lifecycle and evaluation | T25, T24, T28 to T31 | unit | todo |
 | T33 | Notify: Discord, SMTP, grouping, retries | T32 | unit (HTTP and SMTP fakes) | todo |
-| T34 | Scheduler and windows | T24 | unit | todo |
+| T34 | Scheduler and windows | T24 | unit | done |
 | T35 | Join contract and Registry | T17, T18, T21 | contract | todo |
 | T36 | Web foundation and first run | T18, T20, T21 | unit (HTTP) | todo |
 | T37 | Sign-in, second factor, step-up and limits | T36 | unit (HTTP) | todo |
@@ -1547,6 +1547,9 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-hub -E 'test(scheduler::)' | compile errors: unresolved imports `super::rrule`, `super::tasks`, `super::windows` |
+  | 2026-11-19 | cargo nextest run -p rackhand-hub -E 'test(scheduler::)' | 5 passed, 0 failed |
+  | 2026-11-19 | cargo xtask ci fast; cargo deny check | exit 0 (nextest 100 passed); advisories, bans, licenses, sources ok (jiff 0.2.46, MIT or Unlicense) |
 
 ### T35: Join contract and Registry
 - **Design refs:** 7.3.1, 7.3.12 (enrollment, access level change tokens), FR-21, D27, D62, D88, D89, E7, AC36, AC59
@@ -4243,6 +4246,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D15 | 2026-11-19 | T23 | Probe modules in the binary crate | `rackhand-probe` has a library target (`rackhand_probe`) with the buffer and helper modules and a thin binary | Tests and the later daemon share the modules | plan | - |
 | D16 | 2026-11-19 | T30 | Peer hub silent at 2 min (scaled to the larger of 2 min and 3 summary intervals, 7.9) and down at 10 min | Down is the larger of 10 min and the silent time | At a summary interval over 200 s the silent time passes 10 min, and down can't come before silent. The design doesn't say; this keeps the order. For the owner to confirm | design gap | pending |
 | D17 | 2026-11-19 | T31 | Baseline details as 7.6.4 | Hours are counted in UTC (hour of week 0 is Monday 00:00); a baseline warning clears after 2 samples in a row back inside the band; a deviation freezes the hour-of-day and hour-of-week buckets of the hour it is in, until 2 hours after its last deviating sample | 7.6.4 doesn't say which clock, how a baseline warning clears, or which buckets freeze; these follow the threshold rules and the schema's per-bucket `frozen_until_ms` | design gap | pending |
+| D18 | 2026-11-19 | T34 | `windows.rrule` holds a daily or weekly rule, start time and duration (format not set) | The text is `daily HH:MM <minutes>m` or `weekly <mon..sun> HH:MM <minutes>m` (at most 7 days); timezones come from jiff with its bundled database. With no saved state a window already open fires once, and a window missed entirely while the hub was down is skipped; periodic tasks run at start and collapse missed runs into one | The design names the parts but not the text or the restart rules; the restart rule makes `schedule_state` the only thing preventing a second run, as `state_survives_restart_without_double_firing` checks | plan | - |
 
 ## Follow-ups (out of scope)
 
