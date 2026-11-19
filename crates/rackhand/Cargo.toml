@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 rackhand-hub = { path = "../rackhand-hub" }
+rackhand-runbook = { path = "../rackhand-runbook" }
 rackhand-store = { path = "../rackhand-store" }
 
 [lints]

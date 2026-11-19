@@ -257,7 +257,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T48 | TrueNAS, Redfish and SNMP drivers | T46, T14 | unit (simulators) + integration | todo |
 | T49 | Add page, agentless enrollment and guest binding | T47, T48, T39 | unit + integration | todo |
 | L3 | Live pass for M2: agentless and Proxmox | T49, L2 | live (local lab) | todo |
-| T50 | Runbook and playbook model | T01 | unit | todo |
+| T50 | Runbook and playbook model | T01 | unit | done |
 | T51 | Command wrapper and signed command lists | T50, T16 | unit + integration | todo |
 | T52 | Wrapper detached steps and file receive | T51 | integration (systemd and OpenRC containers) | todo |
 | T53 | SSH system | T21, T35 | unit + integration | todo |
@@ -2163,6 +2163,10 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-runbook | compile errors: unresolved imports `crate::runbook`, `params`, `playbook`, `templates`, `check_cmd` |
+  | 2026-11-19 | cargo nextest run -p rackhand-runbook | 9 passed, 0 failed |
+  | 2026-11-19 | rackhand hub runbook check <file> | a step running `sudo /usr/bin/docker` directly: exit 1 naming the step and the wrapper form; through `sudo /usr/local/lib/rackhand/run`: exit 0, "1 root step, all allowed by sudo" |
+  | 2026-11-19 | cargo xtask ci fast | exit 0 (fmt, clippy, arch-check: `rackhand-runbook` depends on nothing of ours; nextest 120 passed) |
 
 ### T51: Command wrapper and signed command lists
 - **Design refs:** 7.3.7 (command wrapper, command list updates), 7.3.3 (signed payload rules), D84, D92, E51, E60,
@@ -4266,6 +4270,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D20 | 2026-11-19 | T35 | A failed join counts against 10 per minute per remote address | Direct callers are counted per IP (any port); relayed callers per relay, since the relay is the only address the hub sees; at most 4096 addresses are tracked, dropping the one idle longest | The design doesn't say what the remote address of a relayed caller is; an endpoint id costs nothing to change, so counting by it limits nothing. Counting per relay means failures through one relay can delay other joins through it for a minute. For the owner to confirm | design gap | pending |
 | D21 | 2026-11-19 | T35 | Registry tables written by plain row commands; join writes the host keys | `WriteCmd::RegistryChange` carries a typed change: an optional token to use up (checked for kind, use and expiry in the same transaction) plus inserts and column updates (never a row replace, so a machine's policy, tags and guest binding survive). The join hands a managed machine's host keys to the SSH system through a `Joined` event, since SSH owns `ssh_host_keys`; the keys, sudoers and command list come from a `ManagedSetupSource` that T51 and T53 provide. Joins register machines for `probe`, devices for `tunnel` and `xfer`, operators for `operator` and `mcp`, peers for `peer` and `xfer`. Tokens are 26 Crockford base32 characters (128 bits), hashed upper case | Single use under concurrency, ownership per 7.2, and the ALPN users in 7.3.2 to 7.3.11 | plan | - |
 | D22 | 2026-11-19 | L1 | Proxmox nodes snapshotted as `pristine`; 6 live tests | The provisioned base image is the pristine state (`lab reset` drops the overlay); `base.provisioned` holds a hash of the image, the cloud-init seed and `proxmox.sh`, so a changed input provisions that base again. The site NIC's bridge port has learning off. A seventh live test checks that every guest answers steadily | QEMU's multicast socket NIC hands frames back to their sender, which made the bridges learn guest MACs on the uplink; one lucky ping had passed the VM test | plan | - |
+| D23 | 2026-11-19 | T50 | Runbook model as 7.8.7 and 7.8.8 | Parameter types are `string`, `int` and `bool`; a parameter's regex is its pattern wrapped as `^(?:...)$` (or the type's own); a `cmd` parameter must be a whole argument; steps take `cmd`, `windows_script`/`windows_args`, `checks`, `call`, `message`, `source`/`dest`, `port`, `timeout` (`30s`, `5m`, `2h`), `on_failure`, `retries`, `idempotent`, `resumable` and `detached`, and nothing else; `commands.json` lists `{runbook, step, args}` with each arg `{"literal"}` or `{"param", "regex", "allow_leading_dash"}`; a playbook needs all five sections and `max_runtime` of at most 2 h. `builtin/` is created by the steps that add built-in runbooks | The design gives the example and the rules, not the full field list or the JSON shape; the wrapper (T51) reads this shape | plan | - |
 
 ## Follow-ups (out of scope)
 
