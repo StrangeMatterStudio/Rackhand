@@ -4,10 +4,12 @@
 pub mod forecast;
 pub mod rules;
 pub mod samples;
+pub mod silence;
 pub mod threshold;
 
 #[cfg(test)]
 mod tests {
     mod forecast;
+    mod silence;
     mod threshold;
 }
