@@ -1004,7 +1004,8 @@ Applying:
    addresses; flush the guest's conntrack entries on the host. Other Linux: `/usr/local/lib/rackhand/quarantine on
    <hub-addresses>` (in the automation allow-list) loads an nftables table `rackhand_quarantine` with the same rules and
    flushes conntrack. Windows: the shipped script adds Windows Firewall rules that block all but the hub and DHCP.
-   Appliances: not supported; the incident says so.
+   Appliances and remote-mode machines: not supported in v0.1 (cutting a remote machine's network would also cut its
+   mesh path to the hub); the incident says so and stays with a person.
 2. **Then snapshot** for forensics (Proxmox guests): `rackhand-quarantine-<time>`, with RAM for VMs when the storage
    supports it. Quarantine snapshots are never pruned automatically.
 3. Health shows `quarantined`. Patching and runbooks other than diagnostics and release are blocked.
