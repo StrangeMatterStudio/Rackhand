@@ -206,7 +206,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | ID | Title | Depends on | Verification type | Status |
 | --- | --- | --- | --- | --- |
 | T01 | Workspace scaffold and dependency-rule check | - | unit (xtask), static | done |
-| T02 | Test tiers and `cargo xtask ci` | T01 | scripted | todo |
+| T02 | Test tiers and `cargo xtask ci` | T01 | scripted | done |
 | T03 | CI workflows and the guard test | T02 | unit (xtask), lint | todo |
 | T04 | Runner profiles for Rackhand | T03 | scripted (CI run), owner setup | todo |
 | L1 | Local lab harness | T02 | unit (xtask) + live (local lab) | todo |
@@ -401,15 +401,22 @@ ranges for its site networks; the real lab's details live only in the untracked 
 - **Regression:** `cargo xtask ci fast`: exit 0.
 - **Manual verification:** None.
 - **Done when:**
-  - [ ] New tests observed failing before the implementation
-  - [ ] Every tier runs locally and its smoke test passes
-  - [ ] `cargo xtask ci fast` clean
-  - [ ] Evidence recorded below
+  - [x] New tests observed failing before the implementation
+  - [x] Every tier runs locally and its smoke test passes
+  - [x] `cargo xtask ci fast` clean
+  - [x] Evidence recorded below
 - **Risk / rollback:** kernel images for 5.10 and 6.1 with BTF may need building; `xtask kernels build` from pinned
   kernel.org tarballs is the fallback (recorded as a plan deviation). Revert the commit.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p xtask -E 'test(tiers::) \| test(kernels::)' | compile errors: Tier, verify_sha256, parse_kernels, tiers::run, kernels::fetch_all, vm::build_rootfs missing |
+  | 2026-11-19 | cargo nextest run -p xtask -E 'test(tiers::) \| test(kernels::)' | 3 passed, 0 failed (the plan's 2, plus kernels_toml_lists_the_three_series) |
+  | 2026-11-19 | cargo xtask ci fast | exit 0: fmt, clippy, arch-check, cargo deny clean; 8 passed |
+  | 2026-11-19 | cargo xtask ci it | exit 0: 1 passed (smoke::docker_answers) |
+  | 2026-11-19 | cargo xtask ci net | exit 0: 1 passed (smoke::can_create_netns) in a VM on 6.1.192 |
+  | 2026-11-19 | cargo xtask ci ebpf | exit 0: smoke::kernel_has_btf passed on 5.10.274, 6.1.192 and 6.17.13 |
+  | 2026-11-19 | cargo xtask ci win; cargo xtask ci perf | exit 0 (Windows cross build; no Pester scripts or perf tests yet) |
 
 ### T03: CI workflows and the guard test
 - **Design refs:** 13 (CI), 5.3, D37, D81, AC44
@@ -471,8 +478,9 @@ ranges for its site networks; the real lab's details live only in the untracked 
 - **Changes:**
   - Owner, in the runner service's configuration (not in this repository): profile `linux-docker` with labels
     `[self-hosted, sm-linux-docker]`, `docker: true`, at least 4 CPUs, 8 GB memory and 40 GB disk; profile `linux-kvm`
-    with labels `[self-hosted, sm-linux-kvm]`, `/dev/kvm` passed into the runner container, at least 4 CPUs, 8 GB
-    memory; runner time limits of at least 60 minutes for `it`, `net` and `ebpf`. Where a profile needs something the
+    with labels `[self-hosted, sm-linux-kvm]`, `/dev/kvm` passed into the runner container, `docker: true` (the net
+    and eBPF tiers build their kernels and VM root filesystem in containers), user namespaces allowed (`unshare -r`),
+    at least 4 CPUs, 8 GB memory and 40 GB disk; runner time limits of at least 60 minutes for `it`, `net` and `ebpf`. Where a profile needs something the
     runner service doesn't offer yet (for example passing `/dev/kvm` into the container), the owner adjusts the
     service (D108).
   - Owner, in GitHub organization settings: the runner group the runner service uses allows public repositories, limited to
@@ -4166,6 +4174,9 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | D1 | 2026-11-19 | all | Test names `<module>::<name>` | Unit tests sit in a `tests` submodule, so nextest reports `<module>::tests::<name>` | Rust convention; the plan's `test(<module>::)` filters still select them | plan | - |
 | D2 | 2026-11-19 | preflight | `cargo install --locked bpf-linker` | The static `bpf-linker` 0.13.0 binary from the project's GitHub release, in `~/.local/bin` | Building it needs a system libLLVM matching rustc's LLVM 23; Ubuntu 22.04 has LLVM 14 | plan | - |
+| D3 | 2026-11-19 | T02 | `xtask kernels fetch` downloads prebuilt test kernels | Fetches the pinned kernel.org tarballs (SHA-256 from sha256sums.asc) and builds bzImages in a Debian container with `tests/vm/kernel.config` | No trustworthy prebuilt kernels with built-in 9p and BTF; the plan names this fallback | plan | - |
+| D4 | 2026-11-19 | T02 | VM tests run on the host rootfs | A Debian bookworm rootfs built with Docker (has `qemu-guest-agent`), run with `unshare -r vmtest`, with a PATH that drops WSL's Windows entries | vmtest needs qemu-guest-agent in the guest (not installed on the host, and installing needs sudo); WSL's PATH breaks vmtest's init script | plan | - |
+| D5 | 2026-11-19 | T02 | The current Proxmox kernel series | 6.17 (Proxmox VE 9's series), checked against the lab's `pve9` node in L1 | Needed a concrete series to pin | plan | - |
 
 ## Follow-ups (out of scope)
 

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/*", "xtask"]
+members = ["crates/*", "tests/it", "tests/net", "tests/ebpf", "tests/perf", "xtask"]
 default-members = ["crates/*", "xtask"]
 
 [workspace.package]
@@ -12,7 +12,10 @@ repository = "https://github.com/StrangeMatterStudio/Rackhand"
 
 [workspace.dependencies]
 anyhow = "1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
+toml = "0.8"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

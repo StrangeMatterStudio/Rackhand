@@ -1,0 +1,15 @@
+[package]
+name = "rackhand-net-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "net_tests"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

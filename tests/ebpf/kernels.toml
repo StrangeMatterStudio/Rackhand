@@ -1,0 +1,23 @@
+# Kernels for the eBPF tier (design 14: 5.10, 6.1 and the current Proxmox VE kernel series).
+# Each tarball is pinned by the SHA-256 published in kernel.org's sha256sums.asc; `cargo xtask kernels fetch`
+# refuses (and deletes) a download that doesn't match, then builds a bzImage with `tests/vm/kernel.config`.
+# The 6.1 kernel also runs the network tier.
+
+[[kernel]]
+series = "5.10"
+version = "5.10.274"
+url = "https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.10.274.tar.xz"
+sha256 = "9f87a8b523560ca7740ea4a149c6dc0dab7814c2a41bccdb739b291a7e120b8c"
+
+[[kernel]]
+series = "6.1"
+version = "6.1.192"
+url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.1.192.tar.xz"
+sha256 = "1e88e317e20dbc79a2cb9e3d9667e908b262d12e76eb66eed894c5460eb87fca"
+
+# Proxmox VE 9's kernel series (checked against the lab's pve9 node in L1).
+[[kernel]]
+series = "6.17"
+version = "6.17.13"
+url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.17.13.tar.xz"
+sha256 = "116802dc3ad1646163cc6ffe9bddba24a8069b569135ec0523cd799064f2edb9"
