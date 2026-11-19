@@ -7,7 +7,7 @@
 | Authors | Owen Ravelo, Claude |
 | Approver | Pending |
 | Created / Updated | 2026-11-18 / 2026-11-18 |
-| Related | Orbit board "Rackhand" (Internal Tools), Athena space "Rackhand" |
+| Related | none (first design) |
 
 ## 1. Summary
 
@@ -23,20 +23,21 @@ tunnels and large transfers for existing backup tools.
 
 ## 2. Problem and context
 
-A homelab with several sites (a main rack with a few hypervisors, a small second site, an offsite backup box, a VPS)
-has dozens of VMs and containers. Today the maintainer finds problems when a site is already down: a VM rebooted after
-an automatic kernel update, Docker started before an NFS share mounted, and six websites stayed down until someone
-noticed. Uptime checks catch "the site is down" but not "the disk fills in three days", "this VM never came back after
-patching", or "this container started talking to an IP it has never talked to".
+A typical larger homelab has several sites (a main rack with a few hypervisors, a second location, an offsite backup
+box, a small VPS) and dozens of VMs and containers. Problems are usually found when something is already down. A
+common example: a VM reboots after an automatic kernel update, Docker starts before an NFS share is mounted, and the
+containers that depend on it stay down until someone notices. Uptime checks catch "the site is down" but not "the disk
+fills in three days", "this VM never came back after patching", or "this container started talking to an IP it has
+never talked to".
 
-Fixing things is also manual. The maintainer SSHes into each box, remembers which ones must not be updated, takes
-snapshots by hand (or forgets), and has no record of what was changed. An AI assistant can help, but only with safe,
-scoped, audited access and a reliable picture of the machines.
+Fixing things is also manual. The owner SSHes into each box, remembers which ones must not be updated, takes snapshots
+by hand (or forgets), and has no record of what was changed. An AI assistant can help, but only with safe, scoped,
+audited access and a reliable picture of the machines.
 
 Existing tools each cover a slice: Prometheus and Grafana for metrics, Uptime Kuma for service checks, Wazuh or
 CrowdSec for security, Ansible for changes, Tailscale for connectivity. Running and wiring five systems is the work a
-small homelab doesn't have time for, and none of them hands an incident to an assistant with guard rails. The studio's
-internal hub is cloud-hosted and studio-scoped, so it can't reach private networks and isn't a fit.
+small homelab doesn't have time for, and none of them hands an incident to an assistant with guard rails. Cloud-hosted
+operations tools can't reach private networks.
 
 If we do nothing, outages keep being found by visitors, patching stays manual and unsnapshotted, and compromises go
 unnoticed.
@@ -96,8 +97,9 @@ unnoticed.
   (count, security count, reboot required).
 - **FR-3** The probe shall buffer reports on disk while the hub is unreachable, up to 64 MB or 24 hours (whichever comes
   first, oldest dropped first), and replay them in order when the hub returns, without delaying live reports.
-- **FR-4** On Linux with kernel 5.8 or later and BTF available, the probe shall record every outbound TCP connect and
-  UDP flow with pid, process name, executable path, user, destination IP and port, using eBPF. Elsewhere it shall read
+- **FR-4** On systemd Linux with kernel 5.8 or later and BTF available, the probe shall record every outbound TCP
+  connect and UDP flow with pid, process name, executable path, user, destination IP and port, using eBPF (OpenRC
+  machines and LXCs have no capabilities for it, 7.3.3). Elsewhere it shall read
   the connection table every 5 seconds, with process attribution from the helper. Windows uses the
   GetExtendedTcpTable and GetExtendedUdpTable APIs every 5 seconds.
 - **FR-5** The probe shall report new listening sockets, and process starts whose executable is under `/tmp`,
@@ -190,24 +192,23 @@ unnoticed.
 - CI runs on the maintainers' self-hosted runners. GitHub-hosted copies of every workflow exist and are off by default.
   Self-hosted jobs never run for pull requests from forks.
 - License MIT OR Apache-2.0; dependencies license-compatible (`cargo deny`).
-- Rackhand stays independent of studio systems. It is tracked on the studio's Orbit board and documented in its own
-  Athena space.
+- Rackhand is standalone: it integrates with no other product of its maintainers.
 
 ## 6. Current state
 
-This is a new project. The repository holds a README and the licenses. The environment it must fit (the maintainer's
-lab is the first deployment, described here without private details):
+This is a new project. The repository holds a README and the licenses. The environment it targets, using a
+representative homelab as the reference:
 
 - **Hypervisors:** Proxmox VE 8 and 9 hosts, some clustered and some standalone, with VMs and LXCs. Proxmox has a REST
   API with API tokens, a per-guest firewall (which only applies when the datacenter firewall is on), and snapshots for
   VMs and LXCs on supported storage.
-- **Guests:** mostly Debian and Ubuntu VMs running Docker or Docker Compose, some Alpine LXCs, at least one Windows
-  desktop, and appliances (a TrueNAS server, DNS filters, a Wi-Fi controller, BMCs, a network TV tuner).
-- **Sites:** one main site with three hypervisors, a second site with one hypervisor, an offsite backup machine not yet
-  set up, and a small public VPS. Some sites are linked with Tailscale, some only through the internet.
-- **Existing monitoring:** an Uptime Kuma instance. No vitals history, no security monitoring.
-- **Known hazards:** a host that must not be updated; services that need an NFS mount at boot; a game server with a
-  daily scheduled reboot; desktops that go offline normally.
+- **Guests:** mostly Debian and Ubuntu VMs running Docker or Docker Compose, some Alpine LXCs, Windows desktops, and
+  appliances (a NAS such as TrueNAS, DNS filters, a Wi-Fi controller, server BMCs, network devices).
+- **Sites:** a main site with several hypervisors, one or more smaller sites, an offsite backup machine, and a small
+  public VPS. Some sites are linked by an existing VPN, some only through the internet, often behind NAT.
+- **Existing monitoring:** typically an uptime checker such as Uptime Kuma. No vitals history, no security monitoring.
+- **Common hazards:** hosts that must not be updated; services that need a network mount at boot; servers with
+  scheduled daily reboots; desktops that go offline normally.
 
 ## 7. Proposed design
 
@@ -280,7 +281,7 @@ remote-mode machines over SSH through a tunnel to their probe.
 | Scheduler | Time-based triggers: patch windows, checks, retention, rollups, backups, intel refresh, git mirror debounce, dead-man calls | `schedule_state` | Bus, Store | detail | `crates/rackhand-hub/src/scheduler` |
 | Audit | Append-only hash-chained log | `audit_log` | Store | detail | `crates/rackhand-hub/src/audit` |
 | Web | Dashboard, auth, approvals, enrollment UI | `users`, `credentials`, `sessions` | everything above (reads, commands) | detail | `crates/rackhand-hub/src/web` |
-| Bus | In-process typed events between hub systems | Nothing | tokio broadcast | contract | `crates/rackhand-hub/src/bus` |
+| Bus | In-process typed messages between hub systems: one bounded mpsc queue per consumer, never lossy | Nothing | tokio mpsc | contract | `crates/rackhand-hub/src/bus` |
 | Relay | iroh relay with Rackhand admission and limits | `relay.db` (keys, usage) | iroh-relay, Net | detail | `crates/rackhand-relay` |
 | Operator | Run assistant jobs with a `Runner` | Job workdirs | Net, Proto, rmcp | detail | `crates/rackhand-operator` |
 | Probe | Collectors, buffer, reports, remote-mode tunnel endpoint | Report buffer, config cache | Net, Proto, aya, OS APIs | detail | `crates/rackhand-probe` |
@@ -361,8 +362,10 @@ carries replay batches. QUIC orders bytes within a stream, so reports on each st
 struct Hello { probe_version: SemVer, machine_id: Ulid, epoch: u64, os: OsInfo, boot_id: String,
                capabilities: Vec<Capability>, interfaces: Vec<IfaceInfo> /* name, mac, addrs */ }
 // hub -> probe on stream 0
-struct Welcome { hub_version: SemVer, config: ProbeConfig, config_rev: u64, last_acked: Option<EpochSeq>, server_time_ms: i64 }
-struct Ack { epoch: u64, up_to_seq: u64 }
+struct Welcome { hub_version: SemVer, config: ProbeConfig, config_rev: u64, received: Option<EpochRanges>, server_time_ms: i64 }
+struct Ack { epoch: u64, ranges: Vec<SeqRange> }      // SeqRange { from: u64, to: u64 }, inclusive, every range the hub has committed
+// probe -> hub on stream 0
+struct DataDropped { epoch: u64, from_seq: u64, to_seq: u64 } // the probe deleted these unsent reports (buffer full)
 struct ConfigUpdate { config: ProbeConfig, config_rev: u64 }
 struct UpdateAvailable { version: SemVer, url: String, sha256: [u8; 32], signature: Vec<u8> }
 struct KeysUpdate { payload: Vec<u8>, hub_signature: Vec<u8> } // signed by the hub's node key, relayed to the helper
@@ -380,18 +383,25 @@ struct Report {
 }
 ```
 
-- **Epoch and seq.** The probe picks a random 64-bit `epoch` whenever it starts with an empty or missing buffer, and
-  numbers reports from 1 within an epoch. The hub keeps `(epoch, last_seq)` per machine. A report from the current epoch
-  with a seq at or below `last_seq` is a duplicate and dropped. A new epoch is accepted from its first report and
-  recorded as event `probe.epoch_changed` (info), which covers reinstalls, lost buffers and guest rollbacks.
-- **Gaps.** A seq jump within an epoch is accepted and recorded as `probe.data_gap` with the missing range.
+- **Epoch and seq.** The probe picks a random 64-bit `epoch` when it starts with an empty or missing buffer, and numbers
+  reports from 1 within an epoch. If `Welcome.received` shows the hub already holds this epoch's seqs at or beyond the
+  probe's next seq (a guest rolled back to a snapshot with a non-empty buffer), the probe starts a new epoch at once.
+  A new epoch is recorded as `probe.epoch_changed` (info).
+- **Received ranges.** The hub keeps, per machine and epoch, the set of committed seq ranges (merged, at most 64 ranges;
+  older epochs are forgotten after 48 h). A report whose seq is already in a range is a duplicate and dropped. Any other
+  seq is accepted, whether it arrives on stream 1 or stream 2, in any order between streams.
+- **Acks.** `Ack` lists the committed ranges; the probe deletes buffered reports inside them, and only those.
+- **Gaps.** The hub never infers a gap from a seq jump. A gap is recorded (`probe.data_gap`) only when the probe sends
+  `DataDropped` for reports it deleted unsent.
 - **Durability.** The hub writes each report to `report_staging` (one row, the compressed frame) and commits before
-  sending `Ack`. A compaction task folds staged reports into series chunks every 5 minutes and on shutdown. On start
-  the hub compacts anything left in staging.
-- **Replay.** While the backlog is non-empty, the probe sends live reports on stream 1 and old ones on stream 2. The
-  hub applies replay batches at up to 2 MB/s per probe and never lets them delay stream 1. Reports older than 10
-  minutes feed history and baselines but don't open threshold incidents.
-- **Rate limits.** Stream 1: 1 report per second, burst 10. Stream 2: 2 MB/s. Excess closes with `0x14`.
+  acking. Every 5 minutes and on shutdown, compaction appends the staged points to each series' open chunk row (created
+  if needed) and deletes the staged rows in the same transaction. On start the hub compacts anything left in staging.
+- **Replay.** While the backlog is non-empty, the probe sends live reports on stream 1 and old ones on stream 2. Replay
+  is limited to 2 MB/s per probe and 20 MB/s across the hub, and staging to 512 MB; past those limits the hub stops
+  reading stream 2 (QUIC flow control holds the probe back, and the probe keeps the reports buffered). Stream 1 is never
+  delayed. Reports older than 10 minutes feed history and baselines but don't open threshold incidents. When backfilled
+  points land in a minute or hour that was already rolled up, that range is marked dirty and rolled up again.
+- **Rate limits.** Stream 1: 1 report per second, burst 10. Excess closes with `0x14`.
 - **Clock.** The hub stores `sampled_at_ms` and its receive time. Skew over 30 s raises a `clock_skew` warning; live
   alerting uses receive time.
 - **Errors.** `0x11` when the endpoint id isn't the one registered to `machine_id`; `0x12` (the probe keeps buffering
@@ -444,16 +454,20 @@ enum HelperResponse {
   marked; `apk update` then `apk version -l '<'`; on Windows the Windows Update Agent search). The probe reads the result
   with `UpdatesStatus`. Patch jobs are selected from this data (7.5.3).
 - **Updates.** The helper refuses any version lower than the one installed (downgrades only by a local reinstall). It
-  verifies the minisign signature against the compiled-in release key and the sha256, writes
-  the new binary to the inactive slot (`/usr/local/lib/rackhand/probe-a` or `probe-b`), points
-  `/usr/local/lib/rackhand/rackhand-probe` at it, restarts the probe service, then restarts itself through the service
-  manager (systemd, OpenRC, or the Windows Service Control Manager). If the probe hasn't reported `connected` to the
-  helper within 2 minutes, the helper points back to the previous slot and restarts both. The probe never writes its
-  own binary.
+  verifies the minisign signature against the compiled-in release key and the sha256, and writes the new binary to the
+  inactive slot (`/usr/local/lib/rackhand/probe-a` or `probe-b`). It then copies the current, known-good binary to
+  `/run/rackhand/update-guard` and starts it as a separate transient unit (`systemd-run --unit=rackhand-update-guard`,
+  an OpenRC one-shot, or a Windows scheduled task) with `update-guard <old-slot> <new-slot>`. The guard points
+  `/usr/local/lib/rackhand/rackhand-probe` at the new slot, restarts the helper and probe services, and waits up to 2
+  minutes for the probe's state file (`/run/rackhand/probe.state`) to say `connected` with the new version. If it
+  doesn't, the guard points back to the old slot and restarts both. Because the guard runs the old binary, a broken new
+  helper can't block the rollback. The probe never writes its own binary.
 - **Version skew.** Probe and helper must be the same version; on mismatch the probe runs without the helper's features
   and reports `helper_version_mismatch`.
 - **Keys.** `ApplyKeys` carries a payload signed by the hub's node key (pinned at enrollment) that can only rewrite the
-  `from=` option and the key lines of the `rackhand` and `rackhand-ai` users' `authorized_keys`.
+  `from=` option and the key lines of the `rackhand` and `rackhand-ai` users' `authorized_keys`. The payload holds a
+  version (monotonic per machine) and an expiry (at most 1 hour after signing); the helper stores the last applied
+  version and refuses any payload that is older, equal or expired, so a replayed payload can't restore rotated keys.
 
 #### 7.3.4 Hub and peer hub (`rackhand/peer/1`)
 
@@ -524,6 +538,7 @@ pub trait Runner: Send + Sync {
     fn info(&self) -> RunnerInfo;                          // name ("claude-code"), version
     async fn start(&self, job: &JobSpec, mcp_bridge: Command) -> Result<RunHandle, RunnerError>;
 }
+// JobSpec is JobOffer without job_token (the token stays inside the MCP bridge process).
 pub struct RunHandle { pub events: mpsc::Receiver<JobEvent>, pub cancel: CancellationToken, pub done: oneshot::Receiver<Outcome> }
 ```
 
@@ -563,7 +578,8 @@ Machines are named by id or `site/name`.
 | `finish_job` | outcome, summary | ok | jobs only |
 
 **Gating.** For `exec` and `run_runbook`, the hub computes what the call needs from the autonomy level, the action's
-risk, the target's roles and the policy (section 7.6.8). If no approval is needed, it runs. Otherwise it returns at once
+risk, the target's roles and the policy (section 7.6.8). Calls with a personal MCP key are always treated as level 1:
+every `run_runbook` from a device needs an approval, so a stolen laptop and key can't change anything alone. If no approval is needed, it runs. Otherwise it returns at once
 with error `needs_approval {approval_id}`; the approval stores the exact tool, target and arguments and their SHA-256
 hash. After a person approves in the dashboard, the caller repeats the same call with `approval_id`; the hub runs it
 only if the hash matches and the approval is unused, then marks it used. There is no tool that approves or rejects.
@@ -577,7 +593,7 @@ output from machines is returned as `{"untrusted_output": "..."}`. Errors: `out_
 
 | Identity | Unix user | Shell | Key | sudo |
 | --- | --- | --- | --- | --- |
-| Automation | `rackhand` | `/bin/sh` | hub key `automation` (Ed25519) | `/etc/sudoers.d/rackhand`: generated allow-list, `NOPASSWD` |
+| Automation | `rackhand` | `/bin/sh` | hub key `automation` (Ed25519) | `/etc/sudoers.d/rackhand`: only the command wrapper (below), `NOPASSWD` |
 | Assistant | `rackhand-ai` | `/bin/bash` | hub key `assistant` (Ed25519) | `ALL`, with `Defaults:rackhand-ai log_output, iolog_dir=/var/log/rackhand/sudo-io` |
 | Probe | `rackhand-probe` | `nologin` | none | none |
 
@@ -592,11 +608,13 @@ output from machines is returned as `{"untrusted_output": "..."}`. Errors: `out_
   quotes, replace `'` with `'\''`), joins them with spaces, and sends the string as the SSH exec request, which the
   user's `/bin/sh` runs. Parameters substitute whole arguments only and are validated against their declared type and
   pattern first. Assistant `exec` sends the given command string as-is (it's the assistant's shell, logged).
-- **Sudoers generation.** For each command of each enabled runbook, the allow-list holds the exact command when all
-  arguments are fixed. Parameterized arguments use sudo regular expressions (`^...$`, sudo 1.9.10 or later). On older
-  sudo the parameterized command is left out and runbooks that need it fail their precheck on that machine with
-  `sudo_too_old`. The file is checked with `visudo -c` before install. Changing it is the high-risk runbook
-  `sudoers-refresh`.
+- **Command wrapper.** The automation user's sudo allow-list has one entry:
+  `rackhand ALL=(root) NOPASSWD: /usr/local/lib/rackhand/run`. `run` is part of the probe binary (`rackhand-probe run-cmd`
+  behind a fixed path) and reads `/etc/rackhand/commands.json` (root-owned, 0644), which lists each allowed command as
+  an argument template with a regular expression per parameter, generated from the enabled runbooks. `run` matches the
+  requested argument list against the templates, refuses anything that doesn't match exactly, and executes the match
+  directly (no shell). This works with any sudo version. Runbook `ssh` steps call `sudo /usr/local/lib/rackhand/run
+  <args...>` for steps that need root. Changing `commands.json` is the high-risk runbook `sudoers-refresh`.
 - **Alpine.** The installer adds `sudo` and `bash` with apk.
 - **Windows.** OpenSSH Server (installed if missing). `sshd_config` gets `Match User rackhand,rackhand-ai` with
   `AuthorizedKeysFile __PROGRAMDATA__/rackhand/keys/%u`, placed before the default `Match Group administrators` block
@@ -628,9 +646,11 @@ pub trait Notifier: Send + Sync {
 pub enum WriteCmd {
     // Ingest
     StageReport(StagedReport), CompactStaged, PutEvents(Vec<Event>), PutConnRecords(Vec<ConnRecordRow>),
-    UpdateBaselines(Vec<BaselineUpdate>),
+    UpdateBaselines(Vec<BaselineUpdate>), PutConnBaseline(Vec<ConnBaselineRow>), MarkRollupDirty(DirtyRange),
     // Checks
-    PutCheckResults(Vec<CheckResult>),
+    PutCheck(CheckRow), PutCheckResults(Vec<CheckResult>),
+    // SSH
+    PutHostKey(HostKeyRow),
     // Incidents
     UpsertIncident(IncidentWrite), AppendIncidentEvent(IncidentEventRow), PutSilence(SilenceRow),
     // Actions
@@ -642,10 +662,11 @@ pub enum WriteCmd {
     RegistryChange(RegistryChange), PutPeerSummary(PeerSummaryRow), PutJobToken(JobTokenRow), PutMcpKey(McpKeyRow),
     PutUser(UserRow), PutCredential(CredentialRow), PutSession(SessionRow),
     // Library, Vault, Notify, Audit, Scheduler
-    PutLibraryRevision(LibraryRevisionRow), PutDraft(DraftRow), PutSecret(SecretRow), PutNotification(NotificationRow),
-    AppendAudit(AuditRow), PutScheduleState(ScheduleStateRow),
-    // Store maintenance
-    RetentionBatch(Tier), Rollup(Tier),
+    CreateLibraryItem(LibraryItemRow), PutLibraryRevision(LibraryRevisionRow), PutDraft(DraftRow), PutSecret(SecretRow),
+    PutNotification(NotificationRow), AppendAudit(AuditRow), AppendAuditCheckpoint(AuditCheckpoint),
+    PutScheduleState(ScheduleStateRow),
+    // Store maintenance (retention covers every table with a retention rule in 7.4.1)
+    RetentionBatch(RetentionTarget), Rollup(Tier, TimeRange),
 }
 pub struct StoreWriter { tx: mpsc::Sender<(WriteCmd, oneshot::Sender<Result<WriteAck, StoreError>>)> }
 // Policy
@@ -656,8 +677,14 @@ pub enum BusEvent { ReportIngested { machine: Ulid }, IncidentChanged { id: Ulid
                     ApprovalDecided { id: Ulid, approved: bool }, Tick(ScheduleKind) }
 ```
 
-`WriteCmd` is the complete list of write operations in the implementation; each system only sends commands for the
-tables it owns (7.2).
+`WriteCmd` lists the write operations; each system only sends commands for the tables it owns (7.2). Systems other
+than Ingest raise events (`notifier_failed`, `git_mirror_failed`, `ssh.host_key_changed`, `quarantine_failed`,
+`clock_skew` and others) through `Ingest::raise_event`, so Ingest stays the single writer of `events`.
+
+**Bus delivery.** Each consumer has its own bounded queue (capacity 1024). Senders await space, so nothing is dropped;
+a full queue slows the sender. Because a crash can still lose queued messages, Incidents also reconciles on start and
+every minute: any incident in `automation` or `assistant` whose job has finished is advanced as if `JobFinished` had
+arrived.
 
 #### 7.3.9 Notifiers
 
@@ -689,15 +716,23 @@ tables it owns (7.2).
 #### 7.3.11 Tunnels and transfers (`rackhand/tunnel/1`, `rackhand/xfer/1`)
 
 - **Who may open one:** devices (with an account on the owning hub, role responder or admin, tunnel ports allowed by
-  the target's policy, default 22), runbook jobs (`tunnel` and `transfer` steps), and hubs reaching their remote-mode
-  probes. The caller dials the hub that owns the target machine directly (iroh picks direct or relay).
+  the target's policy, default 22), runbook jobs (`tunnel` and `transfer` steps), hubs reaching their remote-mode
+  probes, and peer hubs sending a backup to a hub that granted them a backup quota. The caller dials the hub that owns the target machine directly (iroh picks direct or relay).
 - **Tunnel:** `TunnelOpen { target: Ulid, port: u16, purpose: String }` on a bidirectional stream; the hub checks
   policy, opens TCP to the machine (or a tunnel to its remote-mode probe) and splices bytes. Errors: `out_of_scope`,
   `port_not_allowed`, `machine_unreachable`.
 - **CLI:** `rackhand-cli connect <site>/<machine> <port>` (stdin/stdout, for SSH `ProxyCommand`);
   `rackhand-cli forward <local-port> <site>/<machine>:<port>` binds 127.0.0.1 only.
 - **Transfer:** content-addressed, BLAKE3-verified, 1 MiB chunks, resumable from the last verified chunk.
-  `rackhand-cli send <path> <site>/<machine>:<dest>` and the runbook `transfer` step. Bulk transfers use direct paths
+  `rackhand-cli send <path> <site>/<machine>:<dest>` and the runbook `transfer` step. The sender streams to the hub that
+  owns the target; that hub writes to the machine over SSH as `rackhand`, through the wrapper command
+  `run receive <dest>`, which only accepts destinations under the policy's `transfer_roots` (default
+  `/var/lib/rackhand/incoming`), writes to a temporary file, checks the hash, then renames it into place (owner root,
+  mode 0640). Partial files stay in the temporary location for resume.
+- **Streams for backup tools:** runbook steps `zfs-replicate`, `pbs-sync` and `restic-backup` don't use files. The
+  source hub runs the sending command over SSH (for example `run zfs-send <dataset>@<snap>`), streams its output over
+  `rackhand/xfer/1` to the destination hub, which pipes it into the receiving command over SSH (`run zfs-recv
+  <dataset>`). PBS sync and restic use a `tunnel` step to reach the remote server's port instead. Bulk transfers use direct paths
   only unless `allow_relay = true`; with only a relay path, a transfer waits and raises `bulk_waiting_direct_path`
   (info) after 10 minutes. Path detection is spike S3.
 
@@ -768,7 +803,7 @@ ULIDs for ids, Unix milliseconds (UTC) for times. SQLite in WAL mode at `/var/li
 | `peers` | id, site, endpoint_id, allowed_queries (JSON), backup_quota_bytes (0 = off), added_at, last_seen_ms, revoked_at |
 | `peer_summaries` | peer_id, received_at_ms, summary (protobuf) |
 | `join_tokens` | id, kind, hash, site_id, created_by, expires_at, used_at |
-| `policies` | id, name, patch (`auto`, `approve-only`, `hold`), security_window, full_window, window_length_min (default 180), auto_reboot, auto_rollback (default false), snapshot (`required`, `optional`), quarantine (`approval`, `never`), expected_offline, connections (`full`, `off`), watch_internal, peer_requests (`approval`, `auto`), tunnel_ports, required_mounts (JSON), thresholds (JSON overrides) |
+| `policies` | id, name, patch (`auto`, `approve-only`, `hold`), security_window, full_window, window_length_min (default 180), auto_reboot, auto_rollback (default false), snapshot (`required`, `optional`), quarantine (`approval`, `never`), expected_offline, connections (`full`, `summary`, `off`; default `summary` for role `desktop`, else `full`), transfer_roots, watch_internal, peer_requests (`approval`, `auto`), tunnel_ports, required_mounts (JSON), thresholds (JSON overrides) |
 | `windows` | id, machine_id or tag, kind (`maintenance`), rrule (daily or weekly, start time, duration), timezone |
 | `metric_keys` | id, name, unit, label_set (JSON) |
 | `report_staging` | machine_id, epoch, seq, received_at_ms, frame (zstd protobuf) |
@@ -804,15 +839,17 @@ ULIDs for ids, Unix milliseconds (UTC) for times. SQLite in WAL mode at `/var/li
 runs hourly and deletes in batches of 10 000 rows until nothing older is left, pausing 50 ms between batches.
 
 **Rollups.** Every minute the rollup task turns tier-0 data from the last completed minute into tier-1 min, max and avg;
-every hour it does the same from tier 1 into tier 2. Chunks are written when they reach 120 points or at the end of the
-hour, whichever is first.
+every hour it does the same from tier 1 into tier 2. Then it recomputes any ranges marked dirty by backfilled data
+(7.3.2). A chunk row is open (appended to by compaction) until it holds 120 points or its hour ends, then it is closed.
 
 **Storage estimate for 50 machines with 100 series each (the cardinality cap's typical case):** tier 0 is 50 x 100 x
 11 520 points = 57.6 M points at about 1.4 bytes each (Gorilla) = about 81 MB. Tier 1 is 50 x 100 x 43 200 x 3 values
 at about 1.4 bytes = about 0.9 GB. Tier 2 is 50 x 100 x 17 520 x 3 at about 2 bytes = about 0.53 GB. Connection records
 at about 2 000 rows per machine per day x 30 d x 80 bytes = about 0.24 GB. Events, jobs and the rest about 0.2 GB.
-Total about 1.95 GB, inside the 2 GB budget. Spike S8 measures the real bytes per value; if it's above 1.4, the default
-tier-1 retention drops to 14 days to stay in budget.
+Total about 1.95 GB, inside the 2 GB budget. The budget assumes an average of 100 series per machine; machines near
+the 200-series cap use proportionally more, and the dashboard shows the projected database size. Spike S8 measures
+the real bytes per value; if the budget can't be met with the retention in G1, the maintainer decides the trade-off and
+this document is updated before the code changes.
 
 **Secrets at rest.** XChaCha20-Poly1305 per secret with a 256-bit master key in `/etc/rackhand/master.key` (0600, root,
 outside the database). The first-run page shows the key once as a recovery code for the admin to store.
@@ -857,6 +894,7 @@ stateDiagram-v2
   Enrolled --> Silent: no report for 60 s
   Silent --> Enrolled: report arrives
   Enrolled --> Maintenance: maintenance window starts
+  Silent --> Maintenance: maintenance window starts
   Maintenance --> Enrolled: window ends
   Enrolled --> Revoked: unenroll
   Silent --> Revoked: unenroll
@@ -893,7 +931,8 @@ stateDiagram-v2
 - **Routing.** Runbooks declare `triggers = { incident_kinds = [...], auto = true }`. The most specific match wins: a
   runbook bound to the machine, then to one of its tags, then to its kind, then a general one; ties go to the name that
   sorts first. Playbooks match by `incident_kinds` with the same precedence. A runbook is tried first; a playbook only
-  if no runbook matches or the runbook failed.
+  if no runbook matches or the runbook failed. When a failed runbook step names `on_failure = { playbook = ... }`, that
+  playbook is used and `incident_kinds` matching is skipped.
 - **Acknowledge** stops re-notification without changing the state. **Silences** (with an end time, at most 30 days)
   suppress new incidents for a machine or tag and rule or kind.
 
@@ -1020,10 +1059,12 @@ step-up.
 #### 7.5.7 Hub upgrade
 
 `rackhand` updates only when an admin clicks Update (or runs `rackhand self-update`): the hub takes a backup, downloads
-the signed release, verifies it, swaps the binary, and restarts through systemd; migrations run on start. If the new
-version fails its health check within 2 minutes, the systemd `ExecStartPre` guard switches back to the previous binary
-(migrations are forward-only, so a rollback across a schema change restores the pre-update backup). Relays and
-operators update the same way with their own command. Probes follow FR-22.
+the signed release, verifies it, writes it to the inactive slot, and starts a transient guard unit running the old
+binary (`systemd-run --unit=rackhand-update-guard /run/rackhand/update-guard hub <old> <new>`). The guard switches the
+slot, restarts the hub, and polls `https://127.0.0.1:8443/healthz` for up to 2 minutes. If it never answers healthy,
+the guard switches back and restarts the old version; if migrations ran, it first restores the pre-update backup
+(migrations are forward-only). Relays and operators update the same way with their own command. After a hub update,
+probes are offered only the hub's own version (FR-22).
 
 ### 7.6 Algorithms and rules
 
@@ -1078,9 +1119,13 @@ wait step ends), and for the first 3 minutes after the hub starts.
 
 #### 7.6.4 Baselines
 
-- Per machine and metric, 168 hour-of-week buckets with a mean and variance, updated once an hour from the tier-2
-  average with weight 0.1 (so each bucket learns over about 10 weeks of that hour).
-- Learning: no baseline alerts for a machine until it has 7 days of data.
+- Per machine and metric, 24 hour-of-day buckets and 168 hour-of-week buckets, each with a mean, variance and count
+  `n`, updated once an hour from the tier-2 average. The first value seeds the mean with variance 0; later values update
+  with weight 0.1, so buckets adapt slowly to lasting change.
+- A bucket is usable once `n` is at least 3. The hour-of-week bucket is used when usable, otherwise the hour-of-day
+  bucket. The standard deviation used is never below half the metric's floor, so a bucket with almost no variance can't
+  fire on noise.
+- Learning: no baseline alerts for a machine until it has 7 days of data (by then hour-of-day buckets are usable).
 - Fires a warning when the tier-1 value deviates from the bucket mean by more than 4 standard deviations for 15 minutes
   and the difference exceeds the metric's floor (CPU 20 points, network 5 Mbit/s, disk I/O 20 MB/s, outbound
   connections 50 per interval). Never critical.
@@ -1129,9 +1174,11 @@ apply.
 | `conn.new_destination` | info, or warning per 7.6.5 |
 
 **Exemptions.** Executables named `memfd:*` whose parent is `runc`, `crun`, `containerd-shim*` or `conmon` (container
-runtime internals). File, key and account changes made while a Rackhand job that is expected to make them is running on
-that machine (patch, `sudoers-refresh`, key rotation, enrollment, unenroll, rollback) are recorded with the job id at
-info instead.
+runtime internals). During a patch job, `file.changed` for files owned by a package the job upgraded (checked with
+`dpkg -S`, `apk info -W` or the Windows installer record) is recorded at info with the job id. Key changes
+(`auth.keys_changed`) and account changes are exempt only during `sudoers-refresh`, `keys-rotate`, enrollment and
+unenroll, and only for the `rackhand` and `rackhand-ai` users and files those jobs write. Nothing is exempt for any
+other user's keys or accounts.
 
 #### 7.6.7 Callout grouping
 
@@ -1153,7 +1200,10 @@ info instead.
 | Risk | Examples | Rule |
 | --- | --- | --- |
 | low | diagnostics, `service-restart`, `compose-restart` | follows the level |
-| normal | patching, `snapshot`, `compose-update`, provisioning | follows the level; peer requests always need approval unless `peer_requests = "auto"` |
+| normal | patching, `snapshot`, `compose-update`, provisioning, assistant `exec` on ordinary machines | follows the level |
+
+At every risk, requests from peers and from personal MCP keys need an approval (peer requests skip it only when the
+owning hub's policy sets `peer_requests = "auto"` for that runbook, and never for high risk).
 | high | quarantine and release, rollback, hypervisor reboot, `sudoers-refresh`, `unenroll`, key rotation, assistant `exec` on roles `operator`, `relay` or `hypervisor`, accepting a changed host key | always an approval with step-up |
 
 **Exceptions** (D61): an enabled auto-quarantine rule may apply quarantine, and a policy with `auto_rollback` may roll
@@ -1164,8 +1214,12 @@ New user runbooks and playbooks start at level 1. A runbook with `identity = "as
 `exec` of each of its commands.
 
 **Assistant `exec` patterns that always need step-up**, whatever the level: `rm -rf` on `/` or a top-level directory,
-`mkfs`, `dd` writing to a device, `zpool destroy`, `zfs destroy` of anything not named `rackhand-*`, `qm destroy`,
-`pct destroy`, `do-release-upgrade`, edits to files under `/etc/apt/sources.list*`, `shutdown` or `poweroff`.
+`mkfs`, `dd` writing to a device, `zpool destroy`, `zfs destroy` of anything not named `rackhand-patch-*`, `qm destroy`,
+`pct destroy`, `do-release-upgrade`, edits to files under `/etc/apt/sources.list*`, `shutdown` or `poweroff`. This
+pattern list is best-effort (a determined command can avoid matching it); the real controls are scope, levels and
+approvals.
+
+Other `exec` calls by an assistant are normal risk on ordinary machines, so a responder can approve them.
 
 ### 7.7 User and developer experience
 
@@ -1249,7 +1303,7 @@ probe's `/etc/rackhand-probe/probe.toml` (hub ticket).
 | Service check interval | 60 s | 15 s to 1 h |
 | Security / full patch window | daily 04:00 / Sunday 03:00, 180 min | any |
 | Max concurrent patch jobs per site | 3 | 1 to 20 |
-| Peer summary interval | 30 s | 10 to 300 s |
+| Peer summary interval | 30 s | 10 to 300 s (peer silent warning is the larger of 2 min and 3 intervals) |
 | Assistant job deadline / max turns | 30 min / 60 | 5 to 120 min / 10 to 200 |
 | Assistant jobs per day per hub | 20 | 0 to 500 |
 | Approval expiry | 24 h (patch: end of window) | 1 h to 7 d |
@@ -1344,7 +1398,7 @@ pattern = "^[a-zA-Z0-9_-]{1,64}$"
 [[step]]
 id = "restart"
 kind = "ssh"
-cmd = ["sudo", "/usr/bin/docker", "compose", "-p", "{{project}}", "restart"]
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/bin/docker", "compose", "-p", "{{project}}", "restart"]
 timeout = "5m"
 [[step]]
 id = "verify"
@@ -1391,7 +1445,7 @@ Built-in playbooks: `patch-failure`, `service-down`, `disk-filling`, `security-f
 | --- | --- | --- | --- |
 | E1 | Hub down for 6 hours | Probes buffer and replay on stream 2 while live reports flow on stream 1; history backfills; samples older than 10 min don't open threshold incidents | Integration test |
 | E2 | Probe buffer full | Oldest segments dropped; hub records `probe.data_gap` | Unit test |
-| E3 | Probe reinstalled, buffer lost, or guest rolled back | New epoch; hub accepts it and records `probe.epoch_changed` | Contract test |
+| E3 | Probe reinstalled, buffer lost, or guest rolled back (even with reports still buffered) | New epoch (from an empty buffer, or because `Welcome.received` is ahead); hub accepts it and records `probe.epoch_changed` | Contract test (AC48) |
 | E4 | Machine clock wrong by hours | Receive time used for alerting; `clock_skew` warning | Unit test |
 | E5 | Two probes claim one machine id | Second rejected with `0x11`; critical `probe.identity_conflict` | Contract test |
 | E6 | VM cloned with the probe installed | Same endpoint id from two addresses with different boot ids: `identity_conflict`, both refused until one re-enrolls | Integration test |
@@ -1448,9 +1502,12 @@ Built-in playbooks: `patch-failure`, `service-down`, `disk-filling`, `security-f
   `idempotent`. Notifiers retry three times.
 - **What people see:** every failure names the step, machine, command and what came back.
 - **Hub backups:** nightly at 02:00 site time: `VACUUM INTO` a temporary file, zstd-compress, add the node key, encrypt
-  with the master key; keep 2 locally. Peers with a backup quota (opt-in) get the latest copy over `rackhand/xfer/1`
-  (allowed over relays, as backups are small) and keep one. Restore: `rackhand hub restore <file>` with the master key,
-  which also restores the node key so probes stay pinned.
+  with the master key; keep 2 locally. A peer's `backup_quota_bytes` is the space this hub gives that peer for its
+  backups (0, the default, means none). A hub sends its latest backup to each peer that granted it space, over
+  `rackhand/xfer/1`, direct paths only like other bulk transfers; the peer keeps one copy. Restore:
+  `rackhand hub restore <file>` with the master key, which also restores the node key so probes stay pinned. To get a
+  backup from a peer when the original hub is gone, an admin on the peer runs `rackhand hub peer-backup export <site>
+  <file>` and copies the file to the new machine.
 - **Integrity:** multi-table writes use one transaction. Each job step is recorded before it runs.
 - **Logs:** JSON lines to journald (Windows: event log), info level by default, filterable.
 
@@ -1480,8 +1537,10 @@ Built-in playbooks: `patch-failure`, `service-down`, `disk-filling`, `security-f
 - **AI provider data:** an assistant job sends the brief and every tool result (including machine output) to the AI
   provider configured on the operator. The operator setup page and docs say so, and the assistant daily cap limits
   volume and cost.
-- **Privacy:** connection records include destinations on every machine, desktops included (D56); the Machine page shows
-  that recording is on, and `connections = "off"` per machine turns it off. No telemetry.
+- **Privacy:** machines with role `desktop` default to `connections = "summary"`: counts per country and ASN per 5
+  minutes, checks against threat lists still run (a known-bad hit is still critical and names the destination), but no
+  per-destination history is stored. Servers default to `full`. Any machine can be set to `full`, `summary` or `off`, and
+  the Machine page shows the mode. No telemetry.
 - **Public evidence:** test evidence committed to `docs/evidence/` uses documentation IP ranges (192.0.2.0/24,
   198.51.100.0/24, 203.0.113.0/24) and invented names; raw lab output stays out of the repository.
 
@@ -1511,16 +1570,16 @@ Built-in playbooks: `patch-failure`, `service-down`, `disk-filling`, `security-f
 
 ## 13. Migration, compatibility and rollout
 
-- **Greenfield.** The archived personal repository held only a scaffold.
+- **Greenfield.** No data or users to migrate.
 - **Versions.** 0.x. Forward-only migrations; the hub refuses a database newer than itself. Probes, operators, relays
   and CLIs one minor version older are accepted.
 - **Channels.** `stable` and `beta`. Probe updates go to one canary machine per site, then the rest after 1 hour without
   new incidents on the canary.
 - **Rollback.** Probes: automatic (7.3.3). Hub, relay, operator: 7.5.7.
-- **First deployment.** The maintainer's lab: a hub at each site, an operator host at the main site invited to all
-  hubs, a relay on the VPS (its own probe enrolled to the main hub in remote mode), the offsite box bootstrapped as a
-  third site, and Uptime Kuma retired after Rackhand checks cover its monitors for 2 weeks. The host-level plan lives in
-  the maintainer's private notes.
+- **First deployment.** A multi-site homelab run by a maintainer: a hub at each site, an operator host at the main site
+  invited to all hubs, a relay on a VPS (its own probe enrolled to the main hub in remote mode), an offsite box
+  bootstrapped as a new site, and the existing uptime checker retired after Rackhand checks cover its monitors for 2
+  weeks. Host-level rollout plans stay out of this repository.
 - **CI.** `ci.yml` runs on self-hosted runners only when `github.repository == 'StrangeMatterStudio/Rackhand'` and the
   event is a push, a manual run, or a pull request whose head repository is this repository.
   `ci-github-hosted.yml` has the same jobs on GitHub-hosted runners and runs only when the repository variable
@@ -1537,7 +1596,7 @@ Built-in playbooks: `patch-failure`, `service-down`, `disk-filling`, `security-f
 | eBPF | Load and capture a known connect and exec on kernels 5.10, 6.1 and the current Proxmox kernel | Self-hosted privileged Linux runner |
 | Integration | Hub, probes and helpers in containers with sshd; enrollment; runbooks; patch flow with a fake package manager; assistant flow with a fake runner; backups and restore | Self-hosted Linux runner |
 | Network | Hubs, a relay, devices and probes in Linux network namespaces with nftables NAT (full cone, symmetric, UDP blocked): hole punching, relay fallback, peer watch with three hubs, tunnels, transfers | Self-hosted privileged Linux runner |
-| Windows | Probe and helper services, collectors, pipe, enrollment, dispatch script, patch script dry run | Self-hosted Windows runner |
+| Windows | Probe and helper services, collectors, pipe, enrollment, dispatch script, patch script dry run | Manual on a Windows test machine with a recorded checklist until a self-hosted Windows runner exists; the GitHub-hosted workflow copy can run them in forks |
 | Performance | Probe soak; hub load; synthetic 2-year fill | Nightly, self-hosted |
 | Lab (manual) | Proxmox snapshot, rollback, guest firewall quarantine, LXC cgroup attribution, multi-site link over the internet, a real Claude Code job | Before each minor release, evidence redacted per section 10 |
 
@@ -1547,7 +1606,7 @@ Manual checks exist only where real hypervisors, real internet NATs or a real AI
 
 | ID | Criterion (Given / When / Then) | Covers | Verification |
 | --- | --- | --- | --- |
-| AC1 | Given an enrolled Debian VM, when 15 s pass, then every catalogue metric it supports, its services, containers and pending updates appear on its machine page within 30 s | G1, FR-1, FR-2 | integration |
+| AC1 | Given an enrolled Debian 12 test VM (one mount, one disk, one interface, Docker with two containers), when 15 s pass, then every metric in 7.4.2 except `temp.c`, its services, containers and pending updates appear on its machine page within 30 s | G1, FR-1, FR-2 | integration |
 | AC2 | Given the hub stopped for 2 hours, when it restarts, then the machine's series for the gap are complete within 15 minutes, live vitals stay under 30 s during replay, and no threshold incident opens for samples older than 10 minutes | G1, FR-3, E1 | integration |
 | AC3 | Given the buffer limit, when the hub is down past 64 MB of reports, then the oldest are dropped and `probe.data_gap` names the missing range | FR-3, E2 | integration |
 | AC4 | Given retention settings, when retention and rollups run, then data older than each tier's limit is gone, newer data remains, and tier-1 and tier-2 values equal the min, max and avg of their source | FR-7 | unit |
@@ -1557,7 +1616,7 @@ Manual checks exist only where real hypervisors, real internet NATs or a real AI
 | AC8 | Given an enrolled machine whose probe stops, then a silent warning opens at 60 s (callout within 6 min); with `expected_offline`, only an info event | G2, E38 | integration |
 | AC9 | Given three linked hubs, when one hub's network is cut, then the other two mark it silent within 2 minutes and down within 10, and exactly one of them sends the callout | G2, G6, FR-18 | network |
 | AC10 | Given an HTTP check against a stopped service, then a warning opens after 2 failed checks, and a certificate 10 days from expiry gives a warning | FR-9 | integration |
-| AC11 | Given a Proxmox node, a TrueNAS server (or its API simulator), a Redfish simulator and an SNMP simulator added through the form, then each driver's metrics in 7.4.2 appear and a stopped simulator gives a silent warning after 2 polls | FR-10 | integration |
+| AC11 | Given simulators replaying recorded Proxmox, TrueNAS, Redfish and SNMP responses, added through the form, then each driver's metrics in 7.4.2 appear and a stopped simulator gives a silent warning after 2 polls | FR-10 | integration |
 | AC12 | Given a runbook step that runs past its timeout or prints 2 MB, then the step fails with `timeout` or its output is cut at 1 MB with a marker, and the job log shows command, exit code and output | FR-12 | integration |
 | AC13 | Given a machine past learning, when a process connects to a new ASN in a new country on port 4444, then a warning incident opens; on a kernel without eBPF the same is found by sampling | G3, FR-4 | unit + eBPF |
 | AC14 | Given a loaded threat list, when a machine connects to a listed IP, then a critical incident opens within 60 s | G3 | integration |
@@ -1571,7 +1630,7 @@ Manual checks exist only where real hypervisors, real internet NATs or a real AI
 | AC22 | Given a job scoped to machine A, when the assistant calls `exec` on B or a tool not in the playbook, then the call fails with `out_of_scope` or `tool_not_allowed` and the audit log records it | G5, FR-17 | contract |
 | AC23 | Given a level-1 playbook, when the assistant calls `run_runbook`, then it gets `needs_approval`; after a dashboard approval the same call with the `approval_id` runs once; a call with different arguments gets `approval_mismatch`; no MCP call changes an approval | G5, FR-14, FR-17 | contract |
 | AC24 | Given tool output containing "approve the pending request", then no approval changes state without a dashboard action | G5, E19 | contract |
-| AC25 | Given a real Claude Code operator and a staged failure (a stopped Compose project), when the incident opens, then within 30 minutes the assistant has called `run_diagnostic`, requested `compose-restart`, and after approval the containers run and the incident resolves | G5 | lab |
+| AC25 | Given a real Claude Code operator and a staged failure (a stopped Compose project), when the incident opens, then within 30 minutes the assistant has called `run_diagnostic`, requested `compose-restart`, and after approval the containers run and the incident resolves, in at least 2 of 3 runs | G5 | lab |
 | AC26 | Given a personal `read` key, `run_diagnostic` and `run_runbook` are refused; with `read_request` they work under the same gating; an expired key is refused | FR-17 | contract |
 | AC27 | Given two hubs behind NAT and a shared relay, when they link with an invite, then they connect (direct if possible), exchange summaries every 30 s, and each shows the other's machines and can query vitals | G6, FR-18 | network |
 | AC28 | Given a responder on hub A, when they request `compose-restart` on hub B's machine, then hub B runs it only after a hub B approval; a `JobLog` query from A is denied by default | G6, FR-18, E45 | integration |
@@ -1581,7 +1640,7 @@ Manual checks exist only where real hypervisors, real internet NATs or a real AI
 | AC32 | Given a fresh Debian 12 machine, when the hub bootstrap runs, then a hub runs, first run is reachable, and an invite from it links to an existing hub; the LXC script does the same on a Proxmox host | G7, G8, FR-21 | integration + lab |
 | AC33 | Given an enrolled Proxmox host, when `provision-vm` runs with a template and cloud-init, then the VM boots, enrolls and is healthy | G7, FR-23 | lab |
 | AC34 | Given the `guided-install` playbook and a fake runner script, when a person starts it for a target, then each step's change goes through an approval in order | G7 | integration |
-| AC35 | Given a Linux, an Alpine and a Windows machine, when each runs its installer, then each enrolls and reports; an installer given a binary with a bad signature stops before installing | G8, FR-21 | integration, Windows runner |
+| AC35 | Given a Linux, an Alpine and a Windows machine, when each runs its installer, then each enrolls and reports; an installer given a binary with a bad signature stops before installing | G8, FR-21 | integration (Linux, Alpine), manual checklist (Windows) |
 | AC36 | Given an agentless form, an operator invite and a device invite, each completes its join; a used or expired invite is refused with its reason | FR-21, E7 | contract |
 | AC37 | Given a new probe release, then the canary updates first and the rest after 1 hour; given a broken release, the helper restores the previous version within 3 minutes of the update | FR-22, E39 | integration |
 | AC38 | Given a library change, then a new revision exists and it is pushed to the git mirror within 60 s with no secret values; a planted secret blocks the push | FR-24, E40 | unit + integration |
@@ -1594,6 +1653,16 @@ Manual checks exist only where real hypervisors, real internet NATs or a real AI
 | AC45 | Given a probe one minor version older than its hub, then it connects and reports, and is offered the update | 5.2 compatibility | integration |
 | AC46 | Given a remote-mode probe on a machine at a site without a hub, then it reports to its hub over the mesh and a runbook runs on it through the tunnel | G6, FR-21 | network |
 | AC47 | Given a hub backup restored on a new machine with the master key, then probes reconnect without re-enrolling | 9 | integration |
+| AC48 | Given a probe whose guest is rolled back to a snapshot with unacked reports in its buffer, then it starts a new epoch on reconnect and its reports are accepted at once | FR-3, E3 | contract |
+| AC49 | Given `/metrics` with and without the bearer token, then it returns 401 without it and every series' latest value with it | FR-7 | integration |
+| AC50 | Given a job running on a machine, when another runbook or an assistant `exec` targets it, then the second waits up to 60 s and then fails with `machine_busy` | FR-12 | integration |
+| AC51 | Given the daily assistant cap reached, when another incident matches a playbook, then it routes to a person with a note | FR-16, E47 | unit |
+| AC52 | Given an open, unacknowledged warning, then it is re-sent after 6 hours and not before; acknowledging stops it | FR-11 | unit |
+| AC53 | Given an operator, a relay and a `rackhand-cli` one minor version older than the hub, then each connects and works | 5.2 compatibility | integration |
+| AC54 | Given the hub database file copied to another machine without the master key, then no secret can be read from it | 5.2 security | unit |
+| AC55 | Given a desktop with `connections = "summary"`, then only per-country and per-ASN counts are stored, and a connection to a threat-listed IP still opens a critical incident naming it; with `off`, nothing is stored | 10 privacy, D56 | integration |
+| AC56 | Given a Windows machine, then connections, a process started from `%TEMP%`, and a new listening port are reported | FR-4, FR-5 | manual checklist until a Windows runner exists |
+| AC57 | Given the command wrapper, when the automation user requests a command that differs from every template in one argument, then it is refused and nothing runs | 7.3.7 | unit + integration |
 
 ## 16. Alternatives considered
 
@@ -1601,7 +1670,7 @@ Manual checks exist only where real hypervisors, real internet NATs or a real AI
 | --- | --- | --- | --- |
 | Do nothing (Uptime Kuma, manual SSH) | No work | The failures in section 2 continue | Rejected |
 | Assemble existing tools (Prometheus, Grafana, Alertmanager, Wazuh, Ansible, Tailscale) | Mature parts | Five systems to run and wire; no assistant hand-off with guard rails | The integration is the product |
-| Extend the studio's internal cloud hub | Existing dashboard | Cloud-hosted, can't reach LANs, studio-only | Rejected |
+| Extend a cloud-hosted operations hub | Existing dashboard | Can't reach private networks | Rejected |
 | Full layer-3 VPN | Any program works across sites | Root networking everywhere, clashes with existing VPNs, largest surface | Rejected: Rackhand-only mesh plus tunnels |
 | Require an existing overlay | Least work | Ties Rackhand to another product | Rejected |
 | Go | Mature WireGuard libraries | Garbage-collected runtime, more memory | Rejected: Rust |
@@ -1629,7 +1698,7 @@ Manual checks exist only where real hypervisors, real internet NATs or a real AI
 | iroh relay can't do key-based priority as designed | Medium | Medium | Spike S2; modes and keys without priority as fallback, maintainer told |
 | Hole punching often fails for some users | Medium | Medium | Relays, dashboard diagnostics, relay guide |
 | Security detection is noisy | Medium | High | Learning period, info for new destinations, replay tool, silences |
-| Windows support is large | High | Medium | Fixed signal list; Windows runner in CI |
+| Windows support is large, and there's no Windows runner yet | High | Medium | Fixed signal list; manual checklist until a Windows runner is added |
 | Self-hosted runners exposed | Low | High | Repository guard, fork exclusion, outside-contributor approval, AC44 |
 | Time-series size or speed misses budget | Medium | Medium | Spike S8, cardinality cap, retention fallback |
 | Probe footprint misses budget with iroh, aya and tokio | Medium | Medium | Spike S6; trim features, single-threaded runtime |
@@ -1657,10 +1726,10 @@ Manual checks exist only where real hypervisors, real internet NATs or a real AI
 
 | # | Question | Decision | Rationale | Decided by | Date |
 | --- | --- | --- | --- | --- | --- |
-| D1 | Where does the project live? | Public repo StrangeMatterStudio/Rackhand; old personal repo archived | Open source from day one | Owen | 2026-11-18 |
+| D1 | Where does the project live? | Public repo StrangeMatterStudio/Rackhand | Open source from day one | Owen | 2026-11-18 |
 | D2 | Name | Rackhand (a play on "ranch hand") | | Owen | 2026-11-18 |
 | D3 | License | MIT OR Apache-2.0 | Rust default, permissive, patent grant | Owen | 2026-11-18 |
-| D4 | Studio integration | None; tracked on Orbit and documented in Athena | Must work for anyone | Owen | 2026-11-18 |
+| D4 | Integration with other products of the maintainers | None; standalone | Must work for anyone | Owen | 2026-11-18 |
 | D5 | Assistant phasing | MCP for desktops and headless jobs on failure, both in v0.1 | AI only on failure | Owen | 2026-11-18 |
 | D6 | Topology | Equal peer hubs per site | Each site works alone | Owen | 2026-11-18 |
 | D7 | Mesh | Rackhand-only QUIC mesh with hole punching and relays; local machines on local IPs; cross-site hops through Rackhand nodes | Smaller than a VPN | Owen | 2026-11-18 |
@@ -1712,7 +1781,7 @@ Manual checks exist only where real hypervisors, real internet NATs or a real AI
 | D53 | Windows privileges | Forced-command script dispatcher for automation, transcription for the assistant, per-user key files | Windows has no sudo allow-list | Claude (delegated) | 2026-11-18 |
 | D54 | Alpine patching | Full window only | No security marker | Claude (delegated) | 2026-11-18 |
 | D55 | Installer download | Signed binaries from GitHub releases; hub trust from endpoint id | Avoid trusting self-signed TLS | Claude (delegated) | 2026-11-18 |
-| D56 | Desktop connections | Full records like servers (no summary-only default) | Security watch on the likeliest targets | Owen | 2026-11-18 |
+| D56 | Desktop connections | Summary by default on role `desktop` (threat-list hits still reported); servers full | Personal browsing privacy | Owen | 2026-11-18 |
 | D57 | Quarantine exclusions | Roles hub, operator, relay, hypervisor; tag `no-quarantine` | Protect core infrastructure | Claude (delegated) | 2026-11-18 |
 | D58 | Hub backups | 2 local compressed copies; peers keep 1 only with an opt-in quota; 20 GB minimum disk | Fit the disk | Owen | 2026-11-18 |
 | D59 | Cross-site people access | Devices enroll per hub with a user on that hub; the CLI dials the owning hub | Per-hub accounts | Owen | 2026-11-18 |
@@ -1737,6 +1806,12 @@ Manual checks exist only where real hypervisors, real internet NATs or a real AI
 | D78 | Hub, relay and operator updates | Manual (dashboard button or command), with backup and automatic switch back | The hub holds the keys; updates are deliberate | Claude (delegated) | 2026-11-18 |
 | D79 | Package lists | Refreshed by the helper every 6 hours with a fixed command set | The probe is unprivileged | Claude (delegated) | 2026-11-18 |
 | D80 | Remote-mode limits | `from=` is localhost on remote-mode machines; no quarantine for them in v0.1 | The tunnel arrives from localhost; quarantine would cut the mesh | Claude (delegated) | 2026-11-18 |
+| D81 | Windows testing | Manual checklist until a self-hosted Windows runner exists (a privileged Linux runner exists) | No Windows runner today | Owen | 2026-11-18 |
+| D82 | Public wording | The design describes a generic homelab; no maintainer-specific lab details or internal tool names | Public repository | Owen | 2026-11-18 |
+| D83 | Report acks | Range acks and explicit `DataDropped`; epochs restart when the hub is ahead | Replay must not be dropped | Claude (delegated) | 2026-11-18 |
+| D84 | Root commands | One sudo entry for a command wrapper that matches argument templates, instead of sudo regular expressions | Works on every sudo version (Ubuntu 22.04 has 1.9.9) | Claude (delegated) | 2026-11-18 |
+| D85 | Personal MCP keys | Always level 1: their runbook calls need an approval | A stolen laptop can't act alone | Claude (delegated) | 2026-11-18 |
+| D86 | Update rollback | A guard process running the old binary switches back on failure, for probes and hubs | A broken new version can't block its own rollback | Claude (delegated) | 2026-11-18 |
 
 ## 19. Deferred decisions
 
@@ -1760,7 +1835,7 @@ None.
 | Playbook | Markdown guidance for an assistant, with tools and an autonomy level |
 | Incident | A tracked problem with a lifecycle and timeline |
 | Autonomy level | 0 tell, 1 propose, 2 act then report, 3 act quietly |
-| Risk | low, normal or high; high always needs an approval with step-up |
+| Risk | low, normal or high; high always needs an approval with step-up, except the opt-in automatic actions in D61 |
 | Step-up | A fresh second-factor check |
 | Quarantine | Cutting a machine's network except the hub's path and DHCP |
 | Maintenance window | A recurring period with no patching or silence alerts for a machine |
@@ -1774,3 +1849,4 @@ None.
 | --- | --- | --- | --- |
 | 2026-11-18 | First draft | Design interview | Owen (review pending) |
 | 2026-11-18 | Revision after independent review: join contract, epochs and replay streams, helper-driven updates, approval binding, per-hub devices, operators on several hubs, no assistant on hubs, metric catalogue and storage recount, silence rules, baseline freezing, event incidents, routing, roles, outside sources, backups, maintenance windows, ACs for every FR | Review findings and Owen's answers | Owen (review pending) |
+| 2026-11-18 | Closure check fixes: range acks and epoch restart, hub-wide replay budget, compaction into open chunks and re-rollups, lossless bus with reconciliation, command wrapper instead of sudo regex, update guard processes, versioned key updates, transfer write path, peer backup export, baseline seeding, narrower exemptions, desktop summary mode, generic public wording, Windows tests manual, ACs 48 to 57 | Closure review and Owen's answers | Owen (review pending) |
