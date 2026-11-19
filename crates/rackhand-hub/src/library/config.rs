@@ -29,6 +29,23 @@ impl Default for Sources {
 pub struct HubConfig {
     #[serde(default)]
     pub sources: Sources,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_mirror: Option<GitMirror>,
+}
+
+/// The library's git mirror (7.3.13). The deploy key is in the Vault, never here.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitMirror {
+    pub url: String,
+    #[serde(default = "main_branch")]
+    pub branch: String,
+    /// The server's SHA-256 host key, learned on the first push.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_fingerprint: Option<String>,
+}
+
+fn main_branch() -> String {
+    "main".into()
 }
 
 impl HubConfig {

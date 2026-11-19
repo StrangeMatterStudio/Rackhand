@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: rackhand hub audit verify [--db <path>]\n       rackhand hub runbook check <file>";
+const USAGE: &str = "usage: rackhand hub audit verify [--db <path>]\n       rackhand hub runbook check <file>\n       rackhand hub restore-library <checkout> [--db <path>]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -15,6 +15,7 @@ fn main() -> ExitCode {
         }
         ["hub", "audit", "verify", rest @ ..] => audit_verify(rest),
         ["hub", "runbook", "check", file] => runbook_check(file),
+        ["hub", "restore-library", checkout, rest @ ..] => restore_library(checkout, rest),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -79,4 +80,41 @@ fn audit_verify(rest: &[&str]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Loads the files of a git mirror checkout into the library as new revisions (7.3.13).
+fn restore_library(checkout: &str, rest: &[&str]) -> ExitCode {
+    let db = match rest {
+        ["--db", path] => PathBuf::from(path),
+        [] => PathBuf::from("/var/lib/rackhand/hub.db"),
+        _ => {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    let db = match rackhand_store::Db::open(&db) {
+        Ok(db) => std::sync::Arc::new(db),
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let report = runtime.block_on(async {
+        let (lib, _changes) =
+            rackhand_hub::library::items::Library::new(db.clone(), rackhand_hub::audit::Audit::new(db.writer()));
+        rackhand_hub::library::mirror::restore(&lib, std::path::Path::new(checkout), rackhand_store::ids::now_ms())
+            .await
+    });
+    println!("restored {} files", report.restored);
+    for (file, why) in &report.refused {
+        eprintln!("refused {file}: {why}");
+    }
+    if report.refused.is_empty() { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }

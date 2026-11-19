@@ -263,7 +263,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T53 | SSH system | T21, T35 | unit + integration | done |
 | T54 | Policy: decisions and approvals | T18 | unit | done |
 | T55 | Actions and Executor | T52 to T54, T24 | unit + integration | todo |
-| T56 | Library and git mirror | T50, T21, T07 | unit + integration | todo |
+| T56 | Library and git mirror | T50, T21, T07 | unit + integration | done |
 | T57 | Incident routing to runbooks and attempt limits | T32, T55 | unit | todo |
 | T58 | Dashboard: approvals, jobs, library, patching | T55, T56, T37 | unit (HTTP) | todo |
 | T59 | Patching | T55, T34, T47, T12 | unit + integration + live (L4, L9) | todo |
@@ -2406,6 +2406,10 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-hub -E 'test(library::)' | compile error: unresolved `super::items` |
+  | 2026-11-19 | cargo nextest run -p rackhand-hub -E 'test(library::) \\| test(scan::) \\| test(mirror::) \\| test(settings::git_mirror)' | 9 passed, 0 failed (the 8 planned and `restore_reads_the_layout_back`, seen failing first: no `restore`) |
+  | 2026-11-19 | cargo xtask it-images && cargo nextest run -p rackhand-it -E 'test(mirror::)' | 2 passed: against a git server over SSH (git-shell, non-fast-forward refused), a saved runbook is pushed in under 60 s with message `admin: add runbook/compose-restart` and a README; a planted AWS key blocks the next push (nothing pushed, `git_mirror.secret_blocked` audited as critical); a push to a closed port gives `git_mirror_failed` (warning) with the retry an hour later. These two were written after the mirror code, so they weren't seen failing first |
+  | 2026-11-19 | cargo xtask ci it; cargo xtask ci fast; cargo deny check | exit 0 (14 passed); exit 0 (177 passed); ok |
 
 ### T57: Incident routing to runbooks and attempt limits
 - **Design refs:** 7.5.2 (routing precedence, job success isn't the end, attempt limits), 7.6.8 (level 0 tell), D96,
@@ -4318,6 +4322,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D28 | 2026-11-19 | T51 | `it::runcmd::first_list_arrives_with_join` in T51 | Moved to T44, which builds enrollment (the probe side of the join); T51 provides the installer it uses. The wrapper is the probe binary when started as `run` (or `rackhand-probe run-cmd`); it clears the environment and execs the matched program with no shell; its paths are fixed (no override, so nothing passed through sudo can point it at another list). `commands.json` is the signed list's body plus its `version`; `probe.toml` pins the hub as `[hub] id` (64 hex characters), which T42 extends | The join's probe side doesn't exist until T44 | plan | - |
 | D29 | 2026-11-19 | T52 | Detached steps start the command in its own unit | `job-start` records the matched command and starts a supervisor (the wrapper's internal `job-supervise`) as a `systemd-run --collect` unit, or with `start-stop-daemon --background` on OpenRC, or in a new session elsewhere; the supervisor runs the command without a shell and records its output and exit code under `/var/lib/rackhand-run/jobs/<job>/<step>/`. `job-status` prints JSON (`state` running, exited, stopped, lost or unknown; `exit_code`; `output` from the offset, at most 1 MiB; `next_offset`). `receive <dest> <blake3> <offset>` appends to `<dest>.rackhand-partial` (offset 0 starts over) and renames when the hash matches; `transfer_roots` travel in the signed command list. The survival test runs a 10-second command rather than 30 seconds | Uniform behaviour across init systems with the exit code kept; the hub-side policy roots must be signed to be trusted on the machine | plan | - |
 | D30 | 2026-11-19 | T53 | `ssh/{client, quote, hostkeys, pool}.rs` | No connection pool yet: one connection per command (the Executor in T55 can add reuse). Host key alerts go out on a channel for the composition (T41) to turn into events and incidents, since `events` belongs to Ingest; the key a machine offers instead is held in memory until an admin accepts it on `POST /machines/{id}/host-key/accept` (admin; a stale step-up redirects to /step-up). Keys are Ed25519 only (russh without its RSA feature). T44's installer check uses this client when T44 is built | Keeps table ownership per 7.2; nothing yet needs pooling | plan | - |
+| D31 | 2026-11-19 | T56 | Library modules `items, revisions, drafts, builtins, mirror, scan` | Items, revisions and drafts are one `items.rs`; there are no built-ins to load yet (the steps that write them add the loader's list). The 30 s debounce counts from the first change of a run, so a run of edits is one commit `<users>: <summaries>`. The mirror learns the server's host key on its first push (the fingerprint is kept in the config afterwards when T41 wires the worker); a later mismatch fails the push. `restore-library` reads a checkout directory (`git clone` it first), since the hub's mirror credentials are push-only | One coherent module; the host key has no other channel to arrive by | plan | - |
 
 ## Follow-ups (out of scope)
 

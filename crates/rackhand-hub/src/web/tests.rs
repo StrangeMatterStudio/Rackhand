@@ -422,3 +422,47 @@ fn totp_matches_rfc6238_vectors() {
     assert_eq!(b32, "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
     assert_eq!(totp::decode_base32(&b32).unwrap(), secret);
 }
+
+mod settings {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn git_mirror_url_and_deploy_key_in_vault() {
+        let app = app("git-mirror").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let csrf = csrf_of(&app, &admin).await;
+        let url = "ssh://git@git.example.invalid/homelab/rackhand.git";
+        let resp =
+            send(&app.router, post("/settings/git-mirror", &admin, &[("csrf", csrf.as_str()), ("url", url)])).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let html = text(send(&app.router, get("/settings", &admin)).await).await;
+        assert!(html.contains(url), "the URL is shown");
+        let line = html.lines().find(|l| l.contains("ssh-ed25519 ")).expect("the deploy key's public half is shown");
+        assert!(!html.contains("PRIVATE KEY"), "never the private half");
+        // The private half is in the Vault, sealed; the stored settings refer to nothing secret.
+        let sealed: i64 = app
+            .db
+            .readers()
+            .with(|c| c.query_row("SELECT count(*) FROM secrets WHERE name = 'git.deploy_key'", [], |r| r.get(0)))
+            .unwrap();
+        assert_eq!(sealed, 1);
+        let config = crate::library::config::current(&app.db, "hub").unwrap().unwrap();
+        assert!(config.contains(url) && !config.contains("BEGIN"), "{config}");
+        // Saving again keeps the same key.
+        let csrf = csrf_of(&app, &admin).await;
+        send(&app.router, post("/settings/git-mirror", &admin, &[("csrf", csrf.as_str()), ("url", url)])).await;
+        let again = text(send(&app.router, get("/settings", &admin)).await).await;
+        assert!(again.contains(line.trim()), "the deploy key is kept");
+        let bad = send(
+            &app.router,
+            post(
+                "/settings/git-mirror",
+                &admin,
+                &[("csrf", csrf_of(&app, &admin).await.as_str()), ("url", "file:///etc")],
+            ),
+        )
+        .await;
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST, "only ssh:// URLs");
+    }
+}

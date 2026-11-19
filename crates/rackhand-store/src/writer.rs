@@ -511,6 +511,20 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
             tx.commit()?;
             Ok(rev as usize)
         }
+        WriteCmd::PutDraft(mut row) => {
+            // A whole row proposes a draft; `id` with `state` alone marks it applied or dismissed.
+            if row.contains_key("content") {
+                let tx = conn.transaction()?;
+                let n = write_row(&tx, &RowWrite::insert("library_drafts", row))?;
+                tx.commit()?;
+                return Ok(n);
+            }
+            let key = row.remove("id").ok_or(StoreError::MissingColumn("id"))?;
+            let tx = conn.transaction()?;
+            let n = update_row(&tx, &RowUpdate { table: "library_drafts", key: ("id", key), set: row })?;
+            tx.commit()?;
+            Ok(n)
+        }
         WriteCmd::PutHostKey(row) => {
             // A machine's pinned keys, replaced as a whole: `machine_id` and `keys` (a JSON list).
             let machine = text(&row, "machine_id")?.to_string();

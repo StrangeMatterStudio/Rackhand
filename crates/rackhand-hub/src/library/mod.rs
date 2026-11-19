@@ -2,3 +2,9 @@
 //! stored the same way.
 
 pub mod config;
+pub mod items;
+pub mod mirror;
+pub mod scan;
+
+#[cfg(test)]
+pub(crate) mod tests;

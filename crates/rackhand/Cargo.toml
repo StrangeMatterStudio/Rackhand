@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 rackhand-hub = { path = "../rackhand-hub" }
 rackhand-runbook = { path = "../rackhand-runbook" }
+tokio = { workspace = true, features = ["rt"] }
 rackhand-store = { path = "../rackhand-store" }
 
 [lints]

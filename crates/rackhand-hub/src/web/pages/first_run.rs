@@ -95,7 +95,7 @@ pub(super) async fn submit(web: &Web, ctx: &Ctx) -> Response<Body> {
         spamhaus: f("source_spamhaus") == "on",
         dbip: f("source_dbip") == "on",
     };
-    let settings = HubConfig { sources }.to_toml();
+    let settings = HubConfig { sources, ..HubConfig::default() }.to_toml();
 
     let user_id = ulid::Ulid::new().to_string();
     let vault_name = format!("totp:{user_id}");

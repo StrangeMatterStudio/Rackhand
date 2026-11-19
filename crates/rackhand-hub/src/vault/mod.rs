@@ -89,6 +89,20 @@ impl Vault {
         let nonce: [u8; 24] = nonce.try_into().map_err(|_| VaultError::Decrypt(name.to_string()))?;
         self.key.open(name, &Sealed { nonce, ciphertext })
     }
+
+    /// Every stored value, for the git mirror's pre-push scan (7.3.13). Values that don't open are skipped.
+    pub fn all_values(&self) -> Vec<Secret> {
+        let names: Vec<String> = self
+            .db
+            .readers()
+            .with(|c| {
+                let mut s = c.prepare("SELECT name FROM secrets")?;
+                let rows = s.query_map([], |r| r.get(0))?;
+                rows.collect()
+            })
+            .unwrap_or_default();
+        names.iter().filter_map(|n| self.get(n).ok()).collect()
+    }
 }
 
 #[cfg(test)]
