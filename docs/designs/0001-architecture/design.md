@@ -2045,6 +2045,13 @@ the owner and the document is updated before the work that depends on it starts.
   (QUIC address discovery). The per-key `--rate` and `--daily` and the unkeyed daily quota in 7.3.10 wait for the
   owner's decision (options in `spikes/s2.md`); T82 waits for it. Report: `spikes/s2.md`.
 - **S3** iroh path detection: direct versus relayed, waiting for a direct path.
+  **Finding (2026-11-19):** iroh 1.5 reports paths with `Connection::paths()` (`is_ip`, `is_relay`, `is_selected`)
+  and `paths_stream()` for changes; a `wait_direct(timeout)` over the stream works. Without NAT, or with full-cone
+  NAT (a UDP port forward) at one side, the connection went direct within 1 ms of connecting; with UDP blocked it
+  stayed on the relay and `wait_direct` timed out cleanly. Two Linux masquerade NATs never went direct, even with
+  addresses given, because masquerade re-maps the port after a conntrack clash. So the network tier builds full cone
+  with a static UDP forward, and the relay guide should mention port forwarding or UPnP for hubs behind Linux NATs.
+  Report: `spikes/s3.md`.
 - **S4** Proxmox: role privileges (snapshot, rollback, guest firewall, conntrack flush, clone, power) on PVE 8 and 9,
   and the datacenter firewall prerequisite; whether each network device's own firewall setting must be on for guest
   rules to apply, and saving and restoring it; and which upgrade command Proxmox requires on its own hosts (a full
@@ -2228,3 +2235,4 @@ None.
 | 2026-11-18 | Live testing: a local lab on the development machine at each milestone, then a real-lab pass (D107, section 14); CI runners adjusted to fit the tiers (D108) | Owner decision during plan review | Owen |
 | 2026-11-19 | S7 finding: the git mirror uses `git2` (statically linked); `gix` can't push (5.3, section 17) | Spike S7 finding | Implementation run |
 | 2026-11-19 | S2 finding: relay admission by key, one server-wide rate and priority at capacity work; per-key rates and daily quotas are not possible (owner decision pending; section 17) | Spike S2 finding | Implementation run |
+| 2026-11-19 | S3 finding: path detection and `wait_direct` as designed; two masquerade NATs stay relayed, so the network tier builds full cone with a UDP forward (section 17) | Spike S3 finding | Implementation run |

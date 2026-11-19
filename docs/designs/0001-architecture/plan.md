@@ -214,7 +214,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T06 | Spike S6: probe footprint | T02 | scripted measurement | todo |
 | T07 | Spike S7: git mirror library | T02 | scripted measurement | done |
 | T08 | Spike S2: iroh relay admission and limits | T02 | scripted measurement (network VM) | done (owner decision pending for T82) |
-| T09 | Spike S3: iroh path detection | T02 | scripted measurement (network VM) | todo |
+| T09 | Spike S3: iroh path detection | T02 | scripted measurement (network VM) | done |
 | T10 | Spike S1: aya eBPF | T02, L1 | scripted measurement (eBPF VMs, local Proxmox) | todo |
 | T11 | Spike S11: collectors on current distributions | T02, L1 | scripted measurement (containers, local Proxmox) | todo |
 | T12 | Spike S4: Proxmox privileges, firewall, upgrade command | T02, L1 | scripted measurement (local Proxmox) | todo |
@@ -746,12 +746,15 @@ Every spike step follows the same rules:
 - **Regression:** `cargo xtask ci fast`: exit 0.
 - **Manual verification:** None.
 - **Done when:**
-  - [ ] Report committed; finding in design 17
-  - [ ] Spike code deleted
+  - [x] Report committed; finding in design 17
+  - [x] Spike code deleted
 - **Risk / rollback:** none beyond the finding.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | s3 report --out <empty dir> --check | no measurement, exit 1 |
+  | 2026-11-19 | cargo xtask ci net --spike s3 -- --report docs/designs/0001-architecture/spikes/s3.md --check | exit 0: full cone direct within 1 ms; UDP blocked stays relayed, wait_direct times out at 15 s; no NAT direct; two masquerade NATs stay relayed (finding) |
+  | 2026-11-19 | cargo xtask ci fast | exit 0 |
 
 ### T10: Spike S1: aya eBPF
 - **Design refs:** FR-4, FR-5, D17, D103, E36, E37, 5.3 (license), S1
@@ -4191,6 +4194,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D6 | 2026-11-19 | T03, T04 | A guard-free lint job runs on every push | No unguarded job: every `ci.yml` job carries the guard and its runner variable (lint runs in `fast`); one `runners-*` job per label set | An unguarded job would need a GitHub-hosted runner or would let fork events reach self-hosted ones; `job_without_guard_is_reported` forbids it | plan | - |
 | D7 | 2026-11-19 | T03 | `perf` runs nightly | `perf` also needs `schedule` or `workflow_dispatch` in its condition; the fixtures carry a separate `perf` expectation | Keeps the slow tier off every push | plan | - |
 | D8 | 2026-11-19 | T08, T09, T10 | Spike support in xtask lands with the first spike that uses it | `ci net --spike` and `ci ebpf --spike` (build `spikes/<id>`, run `measure` in the VM with a writable out dir, then `report` on the host) commit with L1, which edits the same file | L1 was in progress in `tiers.rs` | plan | - |
+| D9 | 2026-11-19 | T09, T83 | Full-cone NAT in the network VM | Full cone is a static UDP DNAT of the listener's fixed port at its NAT; plain masquerade on both sides is the symmetric-like case | Linux masquerade never hole punches against masquerade (spike S3) | plan | - |
 
 ## Follow-ups (out of scope)
 
