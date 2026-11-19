@@ -207,7 +207,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | --- | --- | --- | --- | --- |
 | T01 | Workspace scaffold and dependency-rule check | - | unit (xtask), static | done |
 | T02 | Test tiers and `cargo xtask ci` | T01 | scripted | done |
-| T03 | CI workflows and the guard test | T02 | unit (xtask), lint | todo |
+| T03 | CI workflows and the guard test | T02 | unit (xtask), lint | done |
 | T04 | Runner profiles for Rackhand | T03 | scripted (CI run), owner setup | todo |
 | L1 | Local lab harness | T02 | unit (xtask) + live (local lab) | todo |
 | T05 | Spike S8: time-series encoding | T02 | scripted measurement | todo |
@@ -459,15 +459,18 @@ ranges for its site networks; the real lab's details live only in the untracked 
 - **Regression:** `cargo xtask ci fast`: exit 0.
 - **Manual verification:** None (the live runs are checked in T04).
 - **Done when:**
-  - [ ] New tests observed failing before the implementation
-  - [ ] New tests pass; `actionlint` clean
-  - [ ] Regression suite passes
-  - [ ] Evidence recorded below
+  - [x] New tests observed failing before the implementation
+  - [x] New tests pass; `actionlint` clean
+  - [x] Regression suite passes
+  - [x] Evidence recorded below
 - **Risk / rollback:** the maintainers' rule against GitHub-hosted labels conflicts with `ci-github-hosted.yml`; it is off by
   default and the conflict is reported to the owner. Revert the commit.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p xtask -E 'test(ci_guard::)' --no-fail-fast | 5 failed (no workflows or fixtures yet: No such file or directory); job_without_guard_is_reported passed on its first run because the checker was written before the tests were first run |
+  | 2026-11-19 | cargo nextest run -p xtask -E 'test(ci_guard::)' && actionlint && cargo xtask ci-guard | 6 passed, 0 failed; actionlint clean; 6 fixtures as expected (9 self-hosted, 5 hosted jobs) |
+  | 2026-11-19 | cargo xtask ci fast | exit 0; 14 passed |
 
 ### T04: Runner profiles for Rackhand
 - **Design refs:** 13 (CI), 14 (tiers), D37, D81
@@ -4177,6 +4180,8 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D3 | 2026-11-19 | T02 | `xtask kernels fetch` downloads prebuilt test kernels | Fetches the pinned kernel.org tarballs (SHA-256 from sha256sums.asc) and builds bzImages in a Debian container with `tests/vm/kernel.config` | No trustworthy prebuilt kernels with built-in 9p and BTF; the plan names this fallback | plan | - |
 | D4 | 2026-11-19 | T02 | VM tests run on the host rootfs | A Debian bookworm rootfs built with Docker (has `qemu-guest-agent`), run with `unshare -r vmtest`, with a PATH that drops WSL's Windows entries | vmtest needs qemu-guest-agent in the guest (not installed on the host, and installing needs sudo); WSL's PATH breaks vmtest's init script | plan | - |
 | D5 | 2026-11-19 | T02 | The current Proxmox kernel series | 6.17 (Proxmox VE 9's series), checked against the lab's `pve9` node in L1 | Needed a concrete series to pin | plan | - |
+| D6 | 2026-11-19 | T03, T04 | A guard-free lint job runs on every push | No unguarded job: every `ci.yml` job carries the guard and its runner variable (lint runs in `fast`); one `runners-*` job per label set | An unguarded job would need a GitHub-hosted runner or would let fork events reach self-hosted ones; `job_without_guard_is_reported` forbids it | plan | - |
+| D7 | 2026-11-19 | T03 | `perf` runs nightly | `perf` also needs `schedule` or `workflow_dispatch` in its condition; the fixtures carry a separate `perf` expectation | Keeps the slow tier off every push | plan | - |
 
 ## Follow-ups (out of scope)
 

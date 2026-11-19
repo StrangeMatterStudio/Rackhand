@@ -1,0 +1,26 @@
+{
+  "description": "A pull request from a branch of the upstream repository",
+  "github": {
+    "repository": "StrangeMatterStudio/Rackhand",
+    "event_name": "pull_request",
+    "event": {
+      "pull_request": {
+        "head": {
+          "repo": {
+            "full_name": "StrangeMatterStudio/Rackhand"
+          }
+        },
+        "base": {
+          "repo": {
+            "full_name": "StrangeMatterStudio/Rackhand"
+          }
+        }
+      }
+    }
+  },
+  "expect": {
+    "self_hosted": true,
+    "perf": false,
+    "hosted_with_variable": true
+  }
+}

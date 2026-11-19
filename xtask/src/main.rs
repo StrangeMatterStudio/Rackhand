@@ -1,6 +1,7 @@
 //! Project automation: `cargo xtask <command>`.
 
 mod arch;
+mod ci_guard;
 mod kernels;
 mod tiers;
 mod vm;
@@ -12,6 +13,7 @@ const USAGE: &str = "usage: cargo xtask <command>
 commands:
   arch-check                 check the dependency rules (design 7.2)
   ci <tier> [args]           run a test tier: fast, it, net, ebpf, win, perf
+  ci-guard                   check the workflow guards against the recorded event payloads
   kernels fetch              download, verify and build the test kernels
   rootfs build               build the root filesystem for test VMs
   it-images                  build the integration tier's container images";
@@ -27,6 +29,7 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("arch-check") => arch::run(&workspace_root()),
         Some("ci") => tiers::run(rest),
+        Some("ci-guard") => ci_guard::run(),
         Some("kernels") if rest.first().map(String::as_str) == Some("fetch") => kernels::fetch_all(),
         Some("rootfs") if rest.first().map(String::as_str) == Some("build") => vm::build_rootfs().map(|_| ()),
         Some("it-images") => tiers::build_it_images(),

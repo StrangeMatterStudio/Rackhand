@@ -1,0 +1,109 @@
+# CI on the maintainers' self-hosted runners (design 13, D37, D108).
+# Every job carries the fork guard: it runs only for this repository's pushes, scheduled and manual runs, and pull
+# requests from branches of this repository; never for forks. Each runner label set is also gated by a repository
+# variable that says such a runner exists (T04). `cargo xtask ci-guard` checks all of this against ci/fixtures/.
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_HOME: /cache/cargo
+  RUSTUP_HOME: /cache/rustup
+  CARGO_TARGET_DIR: /cache/target
+  CARGO_BUILD_JOBS: "4"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fast:
+    runs-on: [self-hosted, sm-linux]
+    if: ${{ (github.repository == 'StrangeMatterStudio/Rackhand' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))) && vars.RACKHAND_CI_LINUX == 'true' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: ci/setup-toolchain.sh nextest deny
+      - name: cargo xtask ci fast
+        run: cargo xtask ci fast
+  win:
+    runs-on: [self-hosted, sm-linux]
+    if: ${{ (github.repository == 'StrangeMatterStudio/Rackhand' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))) && vars.RACKHAND_CI_LINUX == 'true' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: ci/setup-toolchain.sh pwsh
+      - name: cargo xtask ci win
+        run: cargo xtask ci win
+  it:
+    runs-on: [self-hosted, sm-linux-docker]
+    if: ${{ (github.repository == 'StrangeMatterStudio/Rackhand' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))) && vars.RACKHAND_CI_DOCKER == 'true' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: ci/setup-toolchain.sh nextest
+      - name: cargo xtask ci it
+        run: cargo xtask ci it
+  net:
+    runs-on: [self-hosted, sm-linux-kvm]
+    if: ${{ (github.repository == 'StrangeMatterStudio/Rackhand' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))) && vars.RACKHAND_CI_KVM == 'true' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: ci/setup-toolchain.sh vmtest
+      - name: cargo xtask ci net
+        run: cargo xtask ci net
+  ebpf:
+    runs-on: [self-hosted, sm-linux-kvm]
+    if: ${{ (github.repository == 'StrangeMatterStudio/Rackhand' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))) && vars.RACKHAND_CI_KVM == 'true' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: ci/setup-toolchain.sh vmtest
+      - name: cargo xtask ci ebpf
+        run: cargo xtask ci ebpf
+  perf:
+    runs-on: [self-hosted, sm-linux-kvm]
+    if: ${{ (github.repository == 'StrangeMatterStudio/Rackhand' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))) && vars.RACKHAND_CI_KVM == 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: ci/setup-toolchain.sh nextest
+      - name: cargo xtask ci perf
+        run: cargo xtask ci perf
+  runners-linux:
+    runs-on: [self-hosted, sm-linux]
+    if: ${{ (github.repository == 'StrangeMatterStudio/Rackhand' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))) && vars.RACKHAND_CI_LINUX == 'true' }}
+    timeout-minutes: 30
+    steps:
+      - name: Runner facts
+        run: ci/runner-facts.sh
+  runners-docker:
+    runs-on: [self-hosted, sm-linux-docker]
+    if: ${{ (github.repository == 'StrangeMatterStudio/Rackhand' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))) && vars.RACKHAND_CI_DOCKER == 'true' }}
+    timeout-minutes: 60
+    steps:
+      - name: Runner facts
+        run: ci/runner-facts.sh
+  runners-kvm:
+    runs-on: [self-hosted, sm-linux-kvm]
+    if: ${{ (github.repository == 'StrangeMatterStudio/Rackhand' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))) && vars.RACKHAND_CI_KVM == 'true' }}
+    timeout-minutes: 60
+    steps:
+      - name: Runner facts
+        run: ci/runner-facts.sh

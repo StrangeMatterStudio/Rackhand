@@ -1,0 +1,5 @@
+self-hosted-runner:
+  labels:
+    - sm-linux
+    - sm-linux-docker
+    - sm-linux-kvm

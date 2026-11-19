@@ -1,0 +1,16 @@
+{
+  "description": "A push to a branch of the upstream repository",
+  "github": {
+    "repository": "StrangeMatterStudio/Rackhand",
+    "event_name": "push",
+    "ref": "refs/heads/feature",
+    "event": {
+      "ref": "refs/heads/feature"
+    }
+  },
+  "expect": {
+    "self_hosted": true,
+    "perf": false,
+    "hosted_with_variable": true
+  }
+}

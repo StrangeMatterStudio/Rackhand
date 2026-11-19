@@ -1,0 +1,13 @@
+{
+  "description": "A manual run in the upstream repository",
+  "github": {
+    "repository": "StrangeMatterStudio/Rackhand",
+    "event_name": "workflow_dispatch",
+    "event": {}
+  },
+  "expect": {
+    "self_hosted": true,
+    "perf": true,
+    "hosted_with_variable": true
+  }
+}

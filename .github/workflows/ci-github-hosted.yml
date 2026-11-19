@@ -1,0 +1,70 @@
+# The same jobs on GitHub-hosted runners, off by default (D37). For forks: set the repository variable
+# RACKHAND_GITHUB_HOSTED to `true` to run them. The upstream repository leaves it unset.
+name: ci-github-hosted
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fast:
+    runs-on: ubuntu-latest
+    if: ${{ vars.RACKHAND_GITHUB_HOSTED == 'true' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: ci/setup-toolchain.sh nextest deny
+      - name: cargo xtask ci fast
+        run: cargo xtask ci fast
+  win:
+    runs-on: ubuntu-latest
+    if: ${{ vars.RACKHAND_GITHUB_HOSTED == 'true' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: ci/setup-toolchain.sh pwsh
+      - name: cargo xtask ci win
+        run: cargo xtask ci win
+  it:
+    runs-on: ubuntu-latest
+    if: ${{ vars.RACKHAND_GITHUB_HOSTED == 'true' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: ci/setup-toolchain.sh nextest
+      - name: cargo xtask ci it
+        run: cargo xtask ci it
+  net:
+    runs-on: ubuntu-latest
+    if: ${{ vars.RACKHAND_GITHUB_HOSTED == 'true' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: ci/setup-toolchain.sh vmtest
+      - name: cargo xtask ci net
+        run: cargo xtask ci net
+  ebpf:
+    runs-on: ubuntu-latest
+    if: ${{ vars.RACKHAND_GITHUB_HOSTED == 'true' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: ci/setup-toolchain.sh vmtest
+      - name: cargo xtask ci ebpf
+        run: cargo xtask ci ebpf

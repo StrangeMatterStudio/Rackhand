@@ -1,0 +1,15 @@
+{
+  "description": "The nightly scheduled run in the upstream repository",
+  "github": {
+    "repository": "StrangeMatterStudio/Rackhand",
+    "event_name": "schedule",
+    "event": {
+      "schedule": "17 4 * * *"
+    }
+  },
+  "expect": {
+    "self_hosted": true,
+    "perf": true,
+    "hosted_with_variable": true
+  }
+}
