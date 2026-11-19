@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Design | [design.md](design.md) (Approved 2026-11-18 by Owen Ravelo) |
-| Status | Approved |
+| Status | In progress |
 | Plan approved by | Owen Ravelo (2026-11-18), including the local lab downloads listed under *Environment and tools* |
 | Branch | `design/0001-architecture` |
 | Run log | [run-log.md](run-log.md) (written by `/design:run`) |
@@ -205,7 +205,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 
 | ID | Title | Depends on | Verification type | Status |
 | --- | --- | --- | --- | --- |
-| T01 | Workspace scaffold and dependency-rule check | - | unit (xtask), static | todo |
+| T01 | Workspace scaffold and dependency-rule check | - | unit (xtask), static | done |
 | T02 | Test tiers and `cargo xtask ci` | T01 | scripted | todo |
 | T03 | CI workflows and the guard test | T02 | unit (xtask), lint | todo |
 | T04 | Runner profiles for Rackhand | T03 | scripted (CI run), owner setup | todo |
@@ -353,14 +353,17 @@ ranges for its site networks; the real lab's details live only in the untracked 
 - **Regression:** `cargo test --workspace`: all pass (the fast tier doesn't exist until T02).
 - **Manual verification:** None.
 - **Done when:**
-  - [ ] New tests observed failing before the implementation (missing module)
-  - [ ] New tests pass; `arch-check` clean; workspace builds
-  - [ ] `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` clean
-  - [ ] Evidence recorded below
+  - [x] New tests observed failing before the implementation (missing module)
+  - [x] New tests pass; `arch-check` clean; workspace builds
+  - [x] `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` clean
+  - [x] Evidence recorded below
 - **Risk / rollback:** the MSRV may move when iroh is added in T17; bump `rust-toolchain.toml` then. Revert the commit.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p xtask -E 'test(arch::)' | compile errors: Model, CrateNode, FileFact, check, load, scan_hub_source, build_script_programs, run missing |
+  | 2026-11-19 | cargo nextest run -p xtask -E 'test(arch::)' && cargo xtask arch-check && cargo build --workspace --all-targets | 5 passed, 0 failed; no violations; build exit 0 |
+  | 2026-11-19 | cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings; cargo test --workspace | clean; 5 passed, 0 failed |
 
 ### T02: Test tiers and `cargo xtask ci`
 - **Design refs:** 14 (testing strategy layers), 13 (CI)
@@ -4161,6 +4164,8 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 
 | ID | Date | Step | Planned | Actually done | Reason | Level (plan / design) | Agreed by (design-level) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| D1 | 2026-11-19 | all | Test names `<module>::<name>` | Unit tests sit in a `tests` submodule, so nextest reports `<module>::tests::<name>` | Rust convention; the plan's `test(<module>::)` filters still select them | plan | - |
+| D2 | 2026-11-19 | preflight | `cargo install --locked bpf-linker` | The static `bpf-linker` 0.13.0 binary from the project's GitHub release, in `~/.local/bin` | Building it needs a system libLLVM matching rustc's LLVM 23; Ubuntu 22.04 has LLVM 14 | plan | - |
 
 ## Follow-ups (out of scope)
 

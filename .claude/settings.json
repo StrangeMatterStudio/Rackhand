@@ -1,0 +1,7 @@
+{
+  "enabledPlugins": {
+    "coding@agentic-resources": true,
+    "design@agentic-resources": true,
+    "studio@agentic-resources": true
+  }
+}

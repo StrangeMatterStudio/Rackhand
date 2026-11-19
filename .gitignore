@@ -1,4 +1,9 @@
 /target
+target/
+# Spike code is throwaway and never committed (plan, Spikes)
+/spikes/
+# The owner's real-lab hosts (plan L9)
+lab/real.env
 *.db
 *.db-*
 .env
