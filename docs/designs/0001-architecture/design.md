@@ -2037,6 +2037,13 @@ the owner and the document is updated before the work that depends on it starts.
   cgroup from the host; resolving the executable path and the cgroup id inside the eBPF program; and the licence the
   kernel requires an eBPF program to declare for the helpers it uses, against this project's licence (5.3).
 - **S2** iroh relay: admission with keys, per-endpoint rate limits, priority at capacity, ports.
+  **Finding (2026-11-19):** iroh-relay 1.5 admits by key (an `AccessControl` hook sees the handshake-verified
+  endpoint id and the client's bearer token, sent with `RelayConfig::with_auth_token`), enforces one rate limit for
+  every connection (1 MB in 8.4 s at 1 Mbit/s), and supports priority at capacity (a keyed endpoint evicts an unkeyed
+  one with `Clients::disconnect`). Per-key rates and daily quotas are not possible: there is no per-endpoint rate
+  setting and no per-endpoint byte counter. Ports: TCP 80 (HTTP, captive-portal probe), TCP 443 (HTTPS), UDP 7842
+  (QUIC address discovery). The per-key `--rate` and `--daily` and the unkeyed daily quota in 7.3.10 wait for the
+  owner's decision (options in `spikes/s2.md`); T82 waits for it. Report: `spikes/s2.md`.
 - **S3** iroh path detection: direct versus relayed, waiting for a direct path.
 - **S4** Proxmox: role privileges (snapshot, rollback, guest firewall, conntrack flush, clone, power) on PVE 8 and 9,
   and the datacenter firewall prerequisite; whether each network device's own firewall setting must be on for guest
@@ -2220,3 +2227,4 @@ None.
 | 2026-11-18 | Planning findings: the installer verifies signatures through a small verifier binary (D105, 7.3.12); the version is 0.1.0 with no scheduled pre-releases (D106, section 17) | Gaps found while writing the implementation plan | Owen |
 | 2026-11-18 | Live testing: a local lab on the development machine at each milestone, then a real-lab pass (D107, section 14); CI runners adjusted to fit the tiers (D108) | Owner decision during plan review | Owen |
 | 2026-11-19 | S7 finding: the git mirror uses `git2` (statically linked); `gix` can't push (5.3, section 17) | Spike S7 finding | Implementation run |
+| 2026-11-19 | S2 finding: relay admission by key, one server-wide rate and priority at capacity work; per-key rates and daily quotas are not possible (owner decision pending; section 17) | Spike S2 finding | Implementation run |

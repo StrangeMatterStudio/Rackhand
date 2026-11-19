@@ -213,7 +213,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T05 | Spike S8: time-series encoding | T02 | scripted measurement | todo |
 | T06 | Spike S6: probe footprint | T02 | scripted measurement | todo |
 | T07 | Spike S7: git mirror library | T02 | scripted measurement | done |
-| T08 | Spike S2: iroh relay admission and limits | T02 | scripted measurement (network VM) | todo |
+| T08 | Spike S2: iroh relay admission and limits | T02 | scripted measurement (network VM) | done (owner decision pending for T82) |
 | T09 | Spike S3: iroh path detection | T02 | scripted measurement (network VM) | todo |
 | T10 | Spike S1: aya eBPF | T02, L1 | scripted measurement (eBPF VMs, local Proxmox) | todo |
 | T11 | Spike S11: collectors on current distributions | T02, L1 | scripted measurement (containers, local Proxmox) | todo |
@@ -726,6 +726,9 @@ Every spike step follows the same rules:
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | s2 report --out <empty dir> --check | no measurement, exit 1 |
+  | 2026-11-19 | cargo xtask ci net --spike s2 -- --report docs/designs/0001-architecture/spikes/s2.md --check | exit 0: admission by key works; server-wide rate 1 MB in 8.4 s at 1 Mbit/s; priority at capacity works by eviction; per-key rate and daily quota not possible; ports TCP 80/443, UDP 7842 |
+  | 2026-11-19 | design 17 | finding appended; 7.3.10's per-key rate and daily quota left as written until the owner picks an option (spikes/s2.md) |
 
 ### T09: Spike S3: iroh path detection
 - **Design refs:** 7.3.11 (bulk transfers direct only), E29, S3
@@ -4187,6 +4190,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D5 | 2026-11-19 | T02 | The current Proxmox kernel series | 6.17 (Proxmox VE 9's series), checked against the lab's `pve9` node in L1 | Needed a concrete series to pin | plan | - |
 | D6 | 2026-11-19 | T03, T04 | A guard-free lint job runs on every push | No unguarded job: every `ci.yml` job carries the guard and its runner variable (lint runs in `fast`); one `runners-*` job per label set | An unguarded job would need a GitHub-hosted runner or would let fork events reach self-hosted ones; `job_without_guard_is_reported` forbids it | plan | - |
 | D7 | 2026-11-19 | T03 | `perf` runs nightly | `perf` also needs `schedule` or `workflow_dispatch` in its condition; the fixtures carry a separate `perf` expectation | Keeps the slow tier off every push | plan | - |
+| D8 | 2026-11-19 | T08, T09, T10 | Spike support in xtask lands with the first spike that uses it | `ci net --spike` and `ci ebpf --spike` (build `spikes/<id>`, run `measure` in the VM with a writable out dir, then `report` on the host) commit with L1, which edits the same file | L1 was in progress in `tiers.rs` | plan | - |
 
 ## Follow-ups (out of scope)
 
