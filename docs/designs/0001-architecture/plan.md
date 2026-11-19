@@ -1888,6 +1888,7 @@ Only additions to that list are written out below.
   | `it::install::standby_key_signature_accepted` | a binary signed with the standby test key installs | E64, AC67 |
   | `it::install::offline_variant_checks_script_hash` | a wrong SHA-256 stops it | 7.3.12 |
   | `it::install::role_hub_machine_gets_no_assistant_account` | no `rackhand-ai` | D62 |
+  | `it::runcmd::first_list_arrives_with_join` | after enrollment, `commands.json` equals the one from the join response (moved from T51, D28) | AC61 |
 - **Fails first:** the container tests fail (no installer).
 - **Verification:**
   ```bash
