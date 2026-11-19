@@ -542,6 +542,52 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
             tx.commit()?;
             Ok(keys.len())
         }
+        WriteCmd::CreateJob(row) => {
+            let tx = conn.transaction()?;
+            let n = write_row(&tx, &RowWrite::insert("jobs", row))?;
+            tx.commit()?;
+            Ok(n)
+        }
+        WriteCmd::UpdateJobStep(row) => {
+            // Keyed on (job_id, step_id): the first write records the step before it runs, later ones fill in the
+            // columns they name and leave the rest.
+            let cols: Vec<&str> = row.keys().copied().collect();
+            for c in &cols {
+                check_ident(c)?;
+            }
+            let quoted: Vec<String> = cols.iter().map(|c| format!("\"{c}\"")).collect();
+            let placeholders: Vec<String> = (1..=cols.len()).map(|i| format!("?{i}")).collect();
+            let updates: Vec<String> = cols
+                .iter()
+                .filter(|c| !matches!(**c, "job_id" | "step_id"))
+                .map(|c| format!("\"{c}\" = excluded.\"{c}\""))
+                .collect();
+            if updates.is_empty() {
+                return Err(StoreError::MissingColumn("state"));
+            }
+            let sql = format!(
+                "INSERT INTO job_steps ({}) VALUES ({}) ON CONFLICT(job_id, step_id) DO UPDATE SET {}",
+                quoted.join(", "),
+                placeholders.join(", "),
+                updates.join(", ")
+            );
+            let values: Vec<&Value> = row.values().collect();
+            Ok(conn.execute(&sql, rusqlite::params_from_iter(values))?)
+        }
+        WriteCmd::FinishJob(row) => {
+            // Only a job that hasn't finished: the first finish wins.
+            let n = conn.execute(
+                "UPDATE jobs SET state = ?2, ended_at = ?3, outcome = ?4
+                 WHERE id = ?1 AND state IN ('queued', 'waiting_approval', 'running')",
+                rusqlite::params![
+                    text(&row, "id")?,
+                    text(&row, "state")?,
+                    int(&row, "ended_at")?,
+                    opt_text(&row, "outcome")
+                ],
+            )?;
+            if n == 0 { Err(StoreError::Conflict("job already finished")) } else { Ok(n) }
+        }
         WriteCmd::PutPolicy(row) => upsert_one(conn, "policies", "id", row),
         WriteCmd::PutQuarantineRule(row) => upsert_one(conn, "quarantine_rules", "id", row),
         WriteCmd::PutScheduleState(row) => replace_one(conn, "schedule_state", row),
@@ -554,6 +600,13 @@ fn int(row: &Row, col: &'static str) -> Result<i64, StoreError> {
     match row.get(col) {
         Some(Value::Integer(i)) => Ok(*i),
         _ => Err(StoreError::MissingColumn(col)),
+    }
+}
+
+fn opt_text<'a>(row: &'a Row, col: &str) -> Option<&'a str> {
+    match row.get(col) {
+        Some(Value::Text(s)) => Some(s),
+        _ => None,
     }
 }
 

@@ -1,0 +1,66 @@
+//! The interface between Actions and whatever runs a step (the Executor, or a fake in tests).
+
+use std::future::Future;
+use std::pin::Pin;
+use std::time::Duration;
+
+use rackhand_runbook::runbook::{Identity, Step};
+
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// What a step runs against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepCtx {
+    pub job_id: String,
+    pub machine_id: String,
+    pub machine_kind: String,
+    pub address: Option<String>,
+    pub identity: Identity,
+    /// The step's timeout. Actions enforces it; a runner may use it to size its own waits.
+    pub timeout: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StepOutcome {
+    Succeeded,
+    /// The step failed; the text is the job's reason (`exit_code 3`, `machine_unreachable`, ...).
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepResult {
+    pub outcome: StepOutcome,
+    /// The command as shown in the job log, if the step ran one.
+    pub command: Option<String>,
+    pub exit_code: Option<i64>,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+impl StepResult {
+    pub fn failed(reason: impl Into<String>) -> StepResult {
+        StepResult {
+            outcome: StepOutcome::Failed(reason.into()),
+            command: None,
+            exit_code: None,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        }
+    }
+}
+
+/// How the job log shows an argument list: plain words as they are, anything else POSIX-quoted.
+pub fn display(argv: &[String]) -> String {
+    let plain = |a: &str| !a.is_empty() && a.bytes().all(|b| b.is_ascii_alphanumeric() || b"_./:=@%+,-".contains(&b));
+    argv.iter().map(|a| if plain(a) { a.clone() } else { crate::ssh::quote::quote(a) }).collect::<Vec<_>>().join(" ")
+}
+
+pub trait StepRunner: Send + Sync {
+    /// Runs one runbook step. `argv` is the `ssh` step's argument array with parameters substituted.
+    fn run<'a>(&'a self, ctx: &'a StepCtx, step: &'a Step, argv: Option<&'a [String]>) -> BoxFuture<'a, StepResult>;
+
+    /// Runs an assistant `exec` command string as-is (7.3.7).
+    fn exec<'a>(&'a self, _ctx: &'a StepCtx, _command: &'a str) -> BoxFuture<'a, StepResult> {
+        Box::pin(async { StepResult::failed("exec_unavailable") })
+    }
+}

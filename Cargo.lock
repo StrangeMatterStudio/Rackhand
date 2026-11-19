@@ -3578,7 +3578,9 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "blake3",
+ "ed25519-dalek 2.2.0",
  "rackhand-hub",
+ "rackhand-runbook",
  "rackhand-store",
  "rusqlite",
  "russh",

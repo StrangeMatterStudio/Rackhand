@@ -262,7 +262,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T52 | Wrapper detached steps and file receive | T51 | integration (systemd and OpenRC containers) | done |
 | T53 | SSH system | T21, T35 | unit + integration | done |
 | T54 | Policy: decisions and approvals | T18 | unit | done |
-| T55 | Actions and Executor | T52 to T54, T24 | unit + integration | todo |
+| T55 | Actions and Executor | T52 to T54, T24 | unit + integration | done |
 | T56 | Library and git mirror | T50, T21, T07 | unit + integration | done |
 | T57 | Incident routing to runbooks and attempt limits | T32, T55 | unit | todo |
 | T58 | Dashboard: approvals, jobs, library, patching | T55, T56, T37 | unit (HTTP) | todo |
@@ -1529,6 +1529,11 @@ Only additions to that list are written out below.
   | `notify::resolution_sent_for_called_out_incidents_only` | info incidents get none | 7.6.7 |
   | `notify::retries_1_5_15_then_failed_raises_notifier_failed` | `notifier_failed` is also sent through the other notifier | E31 |
   | `notify::callouts_carry_no_secrets_or_command_output` | a callout built from an incident with job output contains none of it | 7.3.9 |
+
+  Carried in from T55 (the Executor passes these step kinds to the system that owns them; until then they fail `<kind>_unavailable`):
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `it::executor::notify_step_sends_message` | a runbook `notify` step sends its message through Notify and the step succeeds; a failed send fails the step | 7.8.7 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
@@ -1826,6 +1831,12 @@ Only additions to that list are written out below.
   | `it::probe_hub::buffer_limit_drops_oldest_with_gap_event` | with the buffer cap set to 1 MB for the test, `probe.data_gap` names the range | AC3, E2 |
   | `it::probe_hub::stopped_probe_opens_silent_warning_at_60s` | and `expected_offline` gives info only | AC8, E38 |
   | `it::probe_hub::disk_rule_callouts_and_resolution` | a probe started with a test-only fixture root (the collector's root-path seam from T22) whose `/data` usage the test rewrites: at 96% for 5 minutes a critical goes to the fake Discord endpoint and the SMTP sink within 60 s; at 86% for 5 minutes a warning within 6 minutes; at 70% for two samples a resolution message | AC5 |
+
+  Carried in from T55 (the Executor passes these step kinds to the system that owns them; until then they fail `<kind>_unavailable`):
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `it::executor::wait_report_step_waits_for_fresh_report` | a `wait_report` step succeeds once the probe's next report arrives after the step started, and fails `timeout` if none does | 7.8.7 |
+  | `it::executor::probe_check_step_runs_check_on_probe` | a `probe_check` step asks the probe to run the check and fails when it fails | 7.8.7 |
 - **Fails first:** compile errors; then the container tests fail (no daemon).
 - **Verification:**
   ```bash
@@ -2015,6 +2026,12 @@ Only additions to that list are written out below.
   | `checks::interval_bounds_15s_to_1h` | out-of-range intervals are refused | 7.8.1 |
   | `checks::two_failures_warn_four_critical` | through Incidents | AC10 |
   | `it::checks::http_check_on_stopped_service_and_expiring_cert` | in containers: warning after 2 failed checks; a certificate 10 days from expiry gives a warning | AC10 |
+
+  Carried in from T55 (the Executor passes these step kinds to the system that owns them; until then they fail `<kind>_unavailable`):
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `executor::verify_step_runs_named_checks` | `verify` with `containers_running:{{project}}` evaluates the check for the substituted project; a failing check fails the step with its name | 7.8.7 |
+  | `executor::api_step_calls_driver` | an `api` step makes the driver call and records its result | 7.8.7 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
@@ -2045,6 +2062,11 @@ Only additions to that list are written out below.
   | `proxmox::snapshot_and_rollback_requests_match_api` | method, path and body equal the recorded calls | 7.5.3 |
   | `proxmox::firewall_config_read_and_restore_round_trip` | options, rules and per-device flags read, written and read back identically | D104, AC72 |
   | `proxmox::task_polling_reports_failure_detail` | a failed task's exit status reaches the caller | 9 |
+
+  Carried in from T55 (the Executor passes these step kinds to the system that owns them; until then they fail `<kind>_unavailable`):
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `it::executor::snapshot_and_rollback_steps_use_proxmox_driver` | `snapshot` and `rollback` steps call the Proxmox driver for the guest | 7.8.7 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
@@ -2375,6 +2397,8 @@ Only additions to that list are written out below.
   | `it::executor::detached_step_timeout_not_killed_machine_locked` | job `timed_out`, incident open, the machine stays locked until the unit exits and its result is recorded | E55 |
   | `it::executor::ssh_cut_during_detached_step_recovers` | the connection is dropped; polling resumes and the result is recorded | E54 |
   | `it::executor::second_job_of_any_kind_waits_then_machine_busy` | an assistant-exec job submitted to Actions while a runbook runs waits 60 s, then fails `machine_busy` | AC50 |
+  | `actions::concurrent_execs_of_one_job_keep_their_own_rows` (added in the run) | two execs of one assistant job on two machines leave two step rows | 9 |
+  | `tests::writer::job_rows_created_stepped_and_finished_once` (store, added in the run) | a step row recorded before it runs keeps its command when the result fills in; the first `FinishJob` wins | 9 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
@@ -2387,6 +2411,14 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-store -E 'test(job_rows)' | `Unimplemented("CreateJob")` |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-hub -E 'test(actions::)' | compile errors: unresolved `super::runner`, `super::Actions`, `DEFAULT_LOCK_WAIT` |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-it -E 'test(executor::)' | compile errors: unresolved `rackhand_hub::executor::Executor`, `executor::commands` |
+  | 2026-11-19 | cargo nextest run -p rackhand-hub -E 'test(actions::)' | 5 passed (the 4 planned and the concurrent-exec test) |
+  | 2026-11-19 | cargo xtask it-images && cargo nextest run -p rackhand-it -E 'test(executor::)' | 5 passed, against systemd, sshd and the wrapper in a container: the runbooks become a signed command list installed by `run install-commands`, then plain and detached steps run through it. The first run failed the cut test because `pkill -f` matched its own shell; fixed in the test |
+  | 2026-11-19 review | same two commands | review: a busy machine now leaves a `failed`/`machine_busy` job row with `JobFinished`; a timed-out plain step is stopped on the machine (with the old code the test's new check failed: `sleep 600` was still running after `timed_out`); concurrent execs of one job no longer share a row (the new test failed with the old ids); a refused `job-status` ends the step; a store error still finishes the job. 5 passed; 5 passed |
+  | 2026-11-19 | cargo xtask ci fast; cargo xtask ci it; cargo xtask arch-check; cargo deny check; cargo audit | exit 0 (183 passed); exit 0 (19 passed); no violations; ok; 2 allowed warnings (chrono, basic-toml unmaintained) |
+  | 2026-11-19 scope | - | Only `ssh` steps (plain and detached) and assistant `exec` execute in T55. `wait_report`, `verify`, `probe_check`, `reboot_if_required`, `api` and `notify` fail `<kind>_unavailable` until their systems exist; their tests are carried into T33, T42, T46, T47 and T59, and E55's incident into T57 (D32) |
 
 ### T56: Library and git mirror
 - **Design refs:** FR-24, 7.3.13 (layout, pre-push scan, debounce, restore), D33, E40, AC38, S7 finding
@@ -2445,6 +2477,11 @@ Only additions to that list are written out below.
   | `attempts::two_automatic_starts_per_24h_then_human` | the third reopen goes to a person with the note | E56, AC64 |
   | `attempts::person_started_jobs_not_counted` | a dashboard start doesn't count | 7.5.2 |
   | `attempts::limits_count_across_reopens` | reopen keeps the count | 7.5.2 |
+
+  Carried in from T55 (E55's incident; T55 checks the `JobFinished(TimedOut)` it opens from):
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `incidents::timed_out_detached_step_opens_incident` | `JobFinished(TimedOut)` for a job whose detached step is still running opens an incident; the machine stays locked until the step's result is recorded | E55 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
@@ -2523,6 +2560,11 @@ Only additions to that list are written out below.
   | `it::patch::verify_fails_on_missing_required_mount` | `patch_failed` opens | D66, AC21 |
   | `it::patch::ssh_cut_during_install_finishes_and_verifies` | same, with the connection cut | AC63 |
   | `it::patch::no_patch_or_silence_alert_during_maintenance_window` | nothing patches and no silence incident opens | AC20 |
+
+  Carried in from T55 (the Executor passes these step kinds to the system that owns them; until then they fail `<kind>_unavailable`):
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `it::executor::reboot_if_required_reboots_only_when_flagged` | the step reboots when the latest report has `reboot_required` and waits for the next report; otherwise it does nothing | 7.8.7 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
@@ -4245,7 +4287,7 @@ the steps and tests that prove it. "MV" marks a manual check (see *Manual verifi
 | E52 | T26 | `probe_contract::unknown_label_id_drops_sample_keeps_report` | todo |
 | E53 | T16, T26 | `zstd::decompression_past_16_mib_fails_with_0x15` | todo |
 | E54 | T52, T55, T59 | `it::detached::job_survives_ssh_disconnect`, `it::executor::ssh_cut_during_detached_step_recovers` | todo |
-| E55 | T55 | `it::executor::detached_step_timeout_not_killed_machine_locked` | todo |
+| E55 | T55, T57 | `it::executor::detached_step_timeout_not_killed_machine_locked`, `incidents::timed_out_detached_step_opens_incident` | todo |
 | E56 | T57 | `attempts::two_automatic_starts_per_24h_then_human` | todo |
 | E57 | T57 | `routing::success_waits_for_clear_then_failed_after_10_min` | todo |
 | E58 | T28, T30 | `threshold::duration_below_4_intervals_raised_to_4`, `silence::machine_warning_at_max_60s_or_4_intervals` | todo |
@@ -4338,6 +4380,8 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D29 | 2026-11-19 | T52 | Detached steps start the command in its own unit | `job-start` records the matched command and starts a supervisor (the wrapper's internal `job-supervise`) as a `systemd-run --collect` unit, or with `start-stop-daemon --background` on OpenRC, or in a new session elsewhere; the supervisor runs the command without a shell and records its output and exit code under `/var/lib/rackhand-run/jobs/<job>/<step>/`. `job-status` prints JSON (`state` running, exited, stopped, lost or unknown; `exit_code`; `output` from the offset, at most 1 MiB; `next_offset`). `receive <dest> <blake3> <offset>` appends to `<dest>.rackhand-partial` (offset 0 starts over) and renames when the hash matches; `transfer_roots` travel in the signed command list. The survival test runs a 10-second command rather than 30 seconds | Uniform behaviour across init systems with the exit code kept; the hub-side policy roots must be signed to be trusted on the machine | plan | - |
 | D30 | 2026-11-19 | T53 | `ssh/{client, quote, hostkeys, pool}.rs` | No connection pool yet: one connection per command (the Executor in T55 can add reuse). Host key alerts go out on a channel for the composition (T41) to turn into events and incidents, since `events` belongs to Ingest; the key a machine offers instead is held in memory until an admin accepts it on `POST /machines/{id}/host-key/accept` (admin; a stale step-up redirects to /step-up). Keys are Ed25519 only (russh without its RSA feature). T44's installer check uses this client when T44 is built | Keeps table ownership per 7.2; nothing yet needs pooling | plan | - |
 | D31 | 2026-11-19 | T56 | Library modules `items, revisions, drafts, builtins, mirror, scan` | Items, revisions and drafts are one `items.rs`; there are no built-ins to load yet (the steps that write them add the loader's list). The 30 s debounce counts from the first change of a run, so a run of edits is one commit `<users>: <summaries>`. The mirror learns the server's host key on its first push (the fingerprint is kept in the config afterwards when T41 wires the worker); a later mismatch fails the push. `restore-library` reads a checkout directory (`git clone` it first), since the hub's mirror credentials are push-only | One coherent module; the host key has no other channel to arrive by | plan | - |
+| D32 | 2026-11-19 | T55 | `actions/{coordinator, locks, jobs}.rs`, `executor/{steps/*.rs, detached.rs, verify.rs}`; every step kind executes | Files are `actions/{coordinator, jobs, locks, runner}.rs` (`runner` is the step interface the Executor and test fakes implement) and `executor/{mod, detached, commands}.rs` (`commands` signs the command list built from the runbooks). Only `ssh` steps (plain and detached) and assistant `exec` execute; the other step kinds go to a runner that fails `<kind>_unavailable` until their owning systems exist (tests carried into T33, T42, T46, T47, T59), and E55's incident is carried into T57. A job that waits out the machine lock is a row `queued` then `failed` with outcome `machine_busy` and `JobFinished`; `run` returns `Err` only when no job was created (unknown machine or runbook, bad parameters, an approval that doesn't hold). The unit test sets a 600 ms lock wait instead of an injected clock. New `Actions::exec` and `open_assistant_job` cover AC50's assistant half (T76 builds on them); `Library::current_in` and `revision_in` let Actions read runbooks; `ed25519-dalek` is a normal hub dependency (signing); a new `executor` container image (systemd, sshd, wrapper). Added tests: concurrent execs and the store's job handlers | The systems these step kinds need don't exist yet; a row for every attempt keeps Incidents' reconciliation to one rule | plan | - |
+| D33 | 2026-11-19 | T55 | 7.3.7: the quoted argument list is sent as the exec request | Plain runbook `ssh` steps are sent as `timeout -k 5 <seconds> <quoted argv>`: dropping the connection at the step's timeout doesn't stop a command without a terminal (the container test showed `sleep 600` still running), so without it the machine is free while the old command runs. Assistant `exec` is still sent as-is (7.3.7), so a timed-out `exec` may keep running; Windows steps (T90) need their own stop | AC12's timeout must not leave work running behind the lock | design gap | pending (confirm the `timeout` prefix, and what a timed-out `exec` should do) |
 
 ## Follow-ups (out of scope)
 

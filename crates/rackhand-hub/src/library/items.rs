@@ -149,7 +149,12 @@ impl Library {
     }
 
     pub fn current(&self, kind: Kind, name: &str) -> Result<Option<(i64, String)>, SaveError> {
-        Ok(self.db.readers().with(|c| {
+        Library::current_in(&self.db, kind, name)
+    }
+
+    /// The current revision and content, read from the database (for systems that only read the library).
+    pub fn current_in(db: &Db, kind: Kind, name: &str) -> Result<Option<(i64, String)>, SaveError> {
+        Ok(db.readers().with(|c| {
             c.query_row(
                 "SELECT i.rev, r.content FROM library_items i JOIN library_revisions r ON r.kind = i.kind AND r.name = i.name AND r.rev = i.rev
                  WHERE i.kind = ?1 AND i.name = ?2",
@@ -161,7 +166,11 @@ impl Library {
     }
 
     pub fn revision(&self, kind: Kind, name: &str, rev: i64) -> Result<Option<String>, SaveError> {
-        Ok(self.db.readers().with(|c| {
+        Library::revision_in(&self.db, kind, name, rev)
+    }
+
+    pub fn revision_in(db: &Db, kind: Kind, name: &str, rev: i64) -> Result<Option<String>, SaveError> {
+        Ok(db.readers().with(|c| {
             c.query_row(
                 "SELECT content FROM library_revisions WHERE kind = ?1 AND name = ?2 AND rev = ?3",
                 rusqlite::params![kind.as_str(), name, rev],

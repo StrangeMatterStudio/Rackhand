@@ -113,3 +113,56 @@ async fn put_policy_updates_in_place() {
         .unwrap();
     assert_eq!((patch.as_str(), policy_id.as_str()), ("auto", "p1"));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn job_rows_created_stepped_and_finished_once() {
+    let path = temp("jobs");
+    let db = Db::open(&path).unwrap();
+    let w = db.writer();
+    let t = |s: &str| Value::Text(s.into());
+    w.send(WriteCmd::CreateJob(Row::from([
+        ("id", t("j1")),
+        ("kind", t("runbook")),
+        ("name", t("restart-web")),
+        ("requested_by", t("admin")),
+        ("state", t("running")),
+        ("started_at", Value::Integer(1)),
+    ])))
+    .await
+    .unwrap();
+    // A step is recorded before it runs, then its result fills in the rest; the command stays.
+    let step = |cols: Vec<(&'static str, Value)>| {
+        let mut row = Row::from([("job_id", t("j1")), ("step_id", t("restart"))]);
+        row.extend(cols);
+        WriteCmd::UpdateJobStep(row)
+    };
+    w.send(step(vec![
+        ("state", t("running")),
+        ("command", t("systemctl restart nginx")),
+        ("started_at", Value::Integer(2)),
+    ]))
+    .await
+    .unwrap();
+    w.send(step(vec![
+        ("state", t("succeeded")),
+        ("exit_code", Value::Integer(0)),
+        ("stdout", Value::Blob(b"ok".to_vec())),
+    ]))
+    .await
+    .unwrap();
+    let finish = |state: &str| {
+        WriteCmd::FinishJob(Row::from([("id", t("j1")), ("state", t(state)), ("ended_at", Value::Integer(3))]))
+    };
+    w.send(finish("succeeded")).await.unwrap();
+    // The first finish wins.
+    assert!(matches!(w.send(finish("failed")).await, Err(StoreError::Conflict(_))));
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let (state, command, code): (String, String, i64) = conn
+        .query_row("SELECT state, command, exit_code FROM job_steps WHERE job_id = 'j1'", [], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .unwrap();
+    assert_eq!((state.as_str(), command.as_str(), code), ("succeeded", "systemctl restart nginx", 0));
+    let job: String = conn.query_row("SELECT state FROM jobs WHERE id = 'j1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(job, "succeeded");
+}

@@ -40,13 +40,13 @@ toml = { workspace = true }
 russh = { workspace = true }
 git2 = { workspace = true }
 regex = "1"
+ed25519-dalek = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 rackhand-net = { path = "../rackhand-net", features = ["testing"] }
 iroh-relay = { workspace = true }
-ed25519-dalek = { workspace = true }
 
 [lints]
 workspace = true
