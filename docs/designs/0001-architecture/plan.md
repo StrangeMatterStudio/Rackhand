@@ -234,7 +234,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T26 | Probe contract `rackhand/probe/1` | T17, T23, T25 | contract | todo |
 | T27 | Rollups and retention | T19, T25, T05 | unit | todo |
 | T28 | Detect: threshold rules | T01 | unit | done |
-| T29 | Detect: forecasts | T28 | unit | todo |
+| T29 | Detect: forecasts | T28 | unit | done |
 | T30 | Detect: silence | T28 | unit | todo |
 | T31 | Detect: baselines and counted rules | T28 | unit | todo |
 | T32 | Incidents: lifecycle and evaluation | T25, T24, T28 to T31 | unit | todo |
@@ -1382,6 +1382,9 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-detect -E 'test(forecast::)' | compile error: unresolved import `crate::forecast` |
+  | 2026-11-19 | cargo nextest run -p rackhand-detect -E 'test(forecast::)' | 6 passed, 0 failed |
+  | 2026-11-19 | cargo xtask ci fast | exit 0 (fmt, clippy, arch-check, nextest 76 passed) |
 
 ### T30: Detect: silence
 - **Design refs:** 7.6.3, 7.5.1 (Silent), D95, E38, E58, AC8, AC65
