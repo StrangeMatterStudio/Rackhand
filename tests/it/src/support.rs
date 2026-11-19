@@ -118,6 +118,22 @@ impl Container {
         child.wait_with_output().unwrap_or_else(|e| panic!("docker exec: {e}"))
     }
 
+    /// The container's address and its network's gateway (the address the host connects from).
+    pub fn ip_and_gateway(&self) -> (String, String) {
+        let out = Command::new("docker")
+            .args([
+                "inspect",
+                "-f",
+                "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{.Gateway}}{{end}}",
+                &self.name,
+            ])
+            .output()
+            .unwrap_or_else(|e| panic!("docker inspect: {e}"));
+        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let (ip, gw) = text.split_once(' ').unwrap_or_else(|| panic!("no address: {text}"));
+        (ip.to_string(), gw.to_string())
+    }
+
     /// Starts a command as `user` in the background (`docker exec -d`); it lives until it ends or is killed.
     pub fn spawn_detached(&self, user: &str, script: &str) {
         let out = Command::new("docker")

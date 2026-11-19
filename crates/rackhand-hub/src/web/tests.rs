@@ -152,7 +152,7 @@ async fn csrf_of(app: &App, cookie: &str) -> String {
 }
 
 fn sample_path(path: &str) -> String {
-    path.replace("{file}", "htmx-2.0.11.min.js")
+    path.replace("{file}", "htmx-2.0.11.min.js").replace("{id}", "m1")
 }
 
 #[tokio::test(flavor = "multi_thread")]

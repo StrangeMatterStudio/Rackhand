@@ -44,6 +44,8 @@ hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }
 tower = { version = "0.5", features = ["util"] }
 form_urlencoded = "1"
+# SSH to managed machines (7.3.7): ring as everywhere else, Ed25519 keys only (no RSA crate).
+russh = { version = "0.65", default-features = false, features = ["ring"] }
 # Timezones and daylight saving for windows (7.5.3); the bundled database gives the same answers on every host.
 jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
 

@@ -31,6 +31,7 @@ pub enum Page {
     Overview,
     Settings,
     SettingsSources,
+    AcceptHostKey,
 }
 
 #[derive(Debug, Clone)]
@@ -61,4 +62,5 @@ pub static ROUTES: &[RouteSpec] = &[
     r(Method::GET, "/", Access::Perm(Permission::SeeEverything), Page::Overview),
     r(Method::GET, "/settings", Access::Perm(Permission::Administer), Page::Settings),
     r(Method::POST, "/settings/sources", Access::Perm(Permission::Administer), Page::SettingsSources),
+    r(Method::POST, "/machines/{id}/host-key/accept", Access::Perm(Permission::Administer), Page::AcceptHostKey),
 ];

@@ -260,7 +260,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T50 | Runbook and playbook model | T01 | unit | done |
 | T51 | Command wrapper and signed command lists | T50, T16 | unit + integration | done |
 | T52 | Wrapper detached steps and file receive | T51 | integration (systemd and OpenRC containers) | done |
-| T53 | SSH system | T21, T35 | unit + integration | todo |
+| T53 | SSH system | T21, T35 | unit + integration | done |
 | T54 | Policy: decisions and approvals | T18 | unit | done |
 | T55 | Actions and Executor | T52 to T54, T24 | unit + integration | todo |
 | T56 | Library and git mirror | T50, T21, T07 | unit + integration | todo |
@@ -2291,6 +2291,11 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-19 fails first | cargo nextest run -p rackhand-hub -E 'test(quote::) \\| test(hostkeys::)' | compile errors: unresolved `super::{hostkeys, keys, quote}` |
+  | 2026-11-19 | cargo nextest run -p rackhand-hub -E 'test(quote::) \\| test(hostkeys::)' | 2 passed (300 random argument lists of quotes, `$()`, backticks, newlines, globs and Unicode round-trip through a real sh; a changed key is refused with one critical `ssh.host_key_changed` alert and stays refused until accepted; pins survive a reload) |
+  | 2026-11-19 | cargo xtask it-images && cargo nextest run -p rackhand-it -E 'test(ssh::)' | 4 passed, 0 failed against OpenSSH in Debian 12: `id -un` gives rackhand and rackhand-ai; a 2 MB print gives 1 MiB plus the marker; a key limited to another address is refused; after the server's host keys are regenerated, actions fail, the dashboard route sends an admin without a fresh step-up to /step-up, and after a step-up accepts the key (audited) and actions run again |
+  | 2026-11-19 | cargo tree -p rackhand-hub -i aws-lc-rs; -i rsa | neither is in the tree (russh 0.65 with only `ring`) |
+  | 2026-11-19 | cargo xtask ci it; cargo xtask ci fast; cargo deny check | exit 0 (12 passed); exit 0 (168 passed); ok |
 
 ### T54: Policy: decisions and approvals
 - **Design refs:** 7.6.8 (levels, risk, exceptions, step-up patterns), 7.7.2 (who approves), 7.3.6 (approval binding),
@@ -4312,6 +4317,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D27 | 2026-11-19 | T22 | The 7.4.2 catalogue and default exclusions | Metric ids live in `rackhand_proto::catalogue` (stable numbers shared by probe and hub). `cpu.busy_pct` counts user, nice, system, irq and softirq time; `disk.used_pct` is df's used over used plus available; `net.errors` is new errors in the interval; `conn.outbound_count` counts established TCP sockets on ephemeral local ports until T67's capture replaces it. The ZFS ARC is added only when `/proc/meminfo` isn't an lxcfs view (inside an LXC the host's ARC isn't the container's). Besides the design's list, the read-only image filesystems `fuse.snapfuse`, `fuse.squashfuse`, `iso9660`, `udf` and `erofs` are excluded, and pseudo filesystems with no space are skipped. `ServiceState.since_ms` is 0 until T42 | Found on the captured fixtures and the real WSL system: snaps through FUSE and mounted images always read 100% and would open disk incidents | design gap | pending (the extra exclusions) |
 | D28 | 2026-11-19 | T51 | `it::runcmd::first_list_arrives_with_join` in T51 | Moved to T44, which builds enrollment (the probe side of the join); T51 provides the installer it uses. The wrapper is the probe binary when started as `run` (or `rackhand-probe run-cmd`); it clears the environment and execs the matched program with no shell; its paths are fixed (no override, so nothing passed through sudo can point it at another list). `commands.json` is the signed list's body plus its `version`; `probe.toml` pins the hub as `[hub] id` (64 hex characters), which T42 extends | The join's probe side doesn't exist until T44 | plan | - |
 | D29 | 2026-11-19 | T52 | Detached steps start the command in its own unit | `job-start` records the matched command and starts a supervisor (the wrapper's internal `job-supervise`) as a `systemd-run --collect` unit, or with `start-stop-daemon --background` on OpenRC, or in a new session elsewhere; the supervisor runs the command without a shell and records its output and exit code under `/var/lib/rackhand-run/jobs/<job>/<step>/`. `job-status` prints JSON (`state` running, exited, stopped, lost or unknown; `exit_code`; `output` from the offset, at most 1 MiB; `next_offset`). `receive <dest> <blake3> <offset>` appends to `<dest>.rackhand-partial` (offset 0 starts over) and renames when the hash matches; `transfer_roots` travel in the signed command list. The survival test runs a 10-second command rather than 30 seconds | Uniform behaviour across init systems with the exit code kept; the hub-side policy roots must be signed to be trusted on the machine | plan | - |
+| D30 | 2026-11-19 | T53 | `ssh/{client, quote, hostkeys, pool}.rs` | No connection pool yet: one connection per command (the Executor in T55 can add reuse). Host key alerts go out on a channel for the composition (T41) to turn into events and incidents, since `events` belongs to Ingest; the key a machine offers instead is held in memory until an admin accepts it on `POST /machines/{id}/host-key/accept` (admin; a stale step-up redirects to /step-up). Keys are Ed25519 only (russh without its RSA feature). T44's installer check uses this client when T44 is built | Keeps table ownership per 7.2; nothing yet needs pooling | plan | - |
 
 ## Follow-ups (out of scope)
 

@@ -61,6 +61,7 @@ struct Inner {
     clock: Clock,
     limits: Mutex<auth::limits::Limits>,
     pending: Mutex<HashMap<String, auth::Pending>>,
+    host_keys: Option<Arc<crate::ssh::hostkeys::HostKeys>>,
 }
 
 #[derive(Clone)]
@@ -97,7 +98,16 @@ impl Web {
             clock: Arc::new(now_ms),
             limits: Mutex::new(auth::limits::Limits::default()),
             pending: Mutex::new(HashMap::new()),
+            host_keys: None,
         }))
+    }
+
+    /// The SSH system's host keys, for accepting a changed one; before the router is built.
+    pub fn with_host_keys(mut self, keys: Arc<crate::ssh::hostkeys::HostKeys>) -> Web {
+        if let Some(inner) = Arc::get_mut(&mut self.0) {
+            inner.host_keys = Some(keys);
+        }
+        self
     }
 
     /// Replaces the clock; for tests, before the router is built.

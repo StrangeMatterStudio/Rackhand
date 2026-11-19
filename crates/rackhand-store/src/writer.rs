@@ -511,6 +511,23 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
             tx.commit()?;
             Ok(rev as usize)
         }
+        WriteCmd::PutHostKey(row) => {
+            // A machine's pinned keys, replaced as a whole: `machine_id` and `keys` (a JSON list).
+            let machine = text(&row, "machine_id")?.to_string();
+            let keys: Vec<serde_json::Value> =
+                serde_json::from_str(text(&row, "keys")?).map_err(|_| StoreError::MissingColumn("keys"))?;
+            let tx = conn.transaction()?;
+            tx.execute("DELETE FROM ssh_host_keys WHERE machine_id = ?1", [&machine])?;
+            for k in &keys {
+                let s = |f: &str| k[f].as_str().map(str::to_string).ok_or(StoreError::MissingColumn("keys"));
+                tx.execute(
+                    "INSERT INTO ssh_host_keys (machine_id, key_type, fingerprint, accepted_at, accepted_by) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![machine, s("key_type")?, s("fingerprint")?, k["accepted_at"].as_i64().unwrap_or(0), s("accepted_by")?],
+                )?;
+            }
+            tx.commit()?;
+            Ok(keys.len())
+        }
         WriteCmd::PutPolicy(row) => upsert_one(conn, "policies", "id", row),
         WriteCmd::PutQuarantineRule(row) => upsert_one(conn, "quarantine_rules", "id", row),
         WriteCmd::PutScheduleState(row) => replace_one(conn, "schedule_state", row),

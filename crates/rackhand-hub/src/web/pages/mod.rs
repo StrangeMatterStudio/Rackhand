@@ -1,6 +1,7 @@
 //! Page handlers, called by the gate once its checks have passed.
 
 mod first_run;
+mod machines;
 mod overview;
 mod settings;
 
@@ -28,6 +29,7 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
         Page::Overview => overview::page(web, ctx),
         Page::Settings => settings::page(web, ctx),
         Page::SettingsSources => settings::sources(web, ctx).await,
+        Page::AcceptHostKey => machines::accept_host_key(web, ctx).await,
     }
 }
 
