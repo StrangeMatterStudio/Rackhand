@@ -1786,6 +1786,17 @@ Only additions to that list are written out below.
   | `hub_cmd::detect_replay_prints_what_would_have_fired` | `rackhand hub detect replay --machine <id> --from <t> --to <t>` over a seeded database prints the incidents the rules would open, and writes nothing | 12 |
   | `it::hub_start::service_runs_unprivileged_and_healthz_ok` | in a systemd container the hub's uid isn't 0, `/healthz` is ok and first run is reachable | 5.2 security, AC67, AC32 |
   | `it::hub_start::hub_user_cannot_open_master_key_by_path` | `sudo -u rackhand-hub cat /etc/rackhand/master.key` fails | AC67 |
+
+  Carried in from the run's reviews (wiring the systems together is where these land):
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `it::mirror::push_after_lost_work_tree_builds_on_remote` | push, delete the mirror's work tree, save again: the push succeeds on top of the remote branch | 7.3.13 |
+  | `mirror::settings_changes_reach_the_mirror` | a settings change produces a mirror commit | 7.3.13 |
+  | `mirror::learned_host_key_is_pinned` | the fingerprint from the first push is stored; a different server key fails the push | 7.3.13 |
+  | `hub_cmd::join_and_host_key_events_wired` | `Joined` pins host keys in SSH; `HostKeyAlert` and `MirrorAlert` become events | 7.3.1, E8 |
+  | `web::first_run_setup_code_guessing_limited` | first-run attempts count against the source limiter | 7.7.2 |
+  | `collect::series_cap_keeps_net_and_diskio_before_extra_mounts` | on a host with 300 mounts, network and disk I/O series survive the cap | 7.4.2 |
+  | `it::receive::root_not_owned_by_root_refused` | a transfer root writable by another user is refused | 7.3.11 |
 - **Fails first:** compile errors; then the container tests fail because there is no unit file.
 - **Verification:**
   ```bash
