@@ -99,6 +99,11 @@ mod detached {
         assert_eq!(status(&c, "offsets", 7)["output"], "line 2\nline 3\ndone\n", "from the second line");
         let rest = status(&c, "offsets", end);
         assert_eq!((rest["output"].as_str(), rest["next_offset"].as_u64()), (Some(""), Some(end)));
+        // The internal supervisor can't be replayed through sudo to run the step again.
+        let replay = run(&c, &["job-supervise", &format!("{JOB}/offsets")]);
+        assert!(!replay.status.success(), "replayed");
+        std::thread::sleep(Duration::from_secs(4));
+        assert_eq!(status(&c, "offsets", 0)["next_offset"], 26, "nothing ran again");
         // Clean removes the files once the result is recorded.
         assert!(run(&c, &["job-clean", &format!("{JOB}/offsets")]).status.success());
         assert!(!c.root(&format!("test -e /var/lib/rackhand-run/jobs/{JOB}/offsets")).status.success());

@@ -19,12 +19,16 @@ pub(super) async fn accept_host_key(web: &Web, ctx: &Ctx) -> Response<Body> {
     }
     let Some(id) = machine_id(&ctx.path) else { return status(StatusCode::NOT_FOUND, "No such machine") };
     let Some(keys) = web.0.host_keys.as_ref() else { return status(StatusCode::NOT_FOUND, "No such machine") };
-    let Some((key_type, fingerprint)) = keys.offered(id) else {
+    // Bound to the key the admin was shown: if the machine offers another one meanwhile, nothing is accepted.
+    let Some(fingerprint) = ctx.form.get("fingerprint").map(|f| f.trim().to_string()).filter(|f| !f.is_empty()) else {
+        return status(StatusCode::BAD_REQUEST, "Name the fingerprint you are accepting");
+    };
+    let Some((key_type, _)) = keys.offered(id) else {
         return status(StatusCode::NOT_FOUND, "This machine hasn't offered a new host key");
     };
-    match keys.accept_offered(id, &user.name, ctx.now_ms).await {
+    match keys.accept_offered(id, &fingerprint, &user.name, ctx.now_ms).await {
         Ok(true) => {}
-        Ok(false) => return status(StatusCode::NOT_FOUND, "This machine hasn't offered a new host key"),
+        Ok(false) => return status(StatusCode::CONFLICT, "The machine now offers a different key; check it again"),
         Err(e) => {
             tracing::error!(error = %e, "host key");
             return status(StatusCode::INTERNAL_SERVER_ERROR, "The key couldn't be stored");

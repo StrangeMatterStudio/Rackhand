@@ -47,6 +47,13 @@ impl std::fmt::Display for Refusal {
     }
 }
 
+/// The value matches the regex as a whole. The wrapper anchors it itself rather than trusting the list, after checking
+/// that the regex compiles on its own (one like `a)|(.*` would otherwise escape the anchors). A regex that doesn't
+/// compile matches nothing.
+fn whole_match(regex: &str, value: &str) -> bool {
+    Regex::new(regex).is_ok() && Regex::new(&format!("^(?:{regex})$")).is_ok_and(|r| r.is_match(value))
+}
+
 enum Fit {
     Yes,
     No,
@@ -70,8 +77,7 @@ fn fits(t: &Template, args: &[String]) -> Fit {
                     dash = true;
                     continue;
                 }
-                // A regex that doesn't compile matches nothing.
-                if !Regex::new(regex).is_ok_and(|r| r.is_match(got)) {
+                if !whole_match(regex, got) {
                     return Fit::No;
                 }
             }

@@ -80,8 +80,8 @@ pub fn start(list: &CommandList, args: &[String]) -> ExitCode {
     if let Err(e) = written {
         return fail(&format!("job directory: {e}"), 1);
     }
-    let Ok(me) = std::env::current_exe() else { return fail("can't find the wrapper", 1) };
-    let supervise = [me.to_string_lossy().into_owned(), "job-supervise".into(), r.text()];
+    // The fixed path, so the supervisor starts in wrapper mode however this binary was invoked.
+    let supervise = [super::WRAPPER.to_string(), "job-supervise".into(), r.text()];
     let started = if Path::new("/run/systemd/system").exists() {
         Command::new("systemd-run")
             .args(["--quiet", "--collect", &format!("--unit={}", r.unit()), "--"])
@@ -119,7 +119,10 @@ pub fn start(list: &CommandList, args: &[String]) -> ExitCode {
             println!("started {}", r.text());
             ExitCode::SUCCESS
         }
-        _ => fail("the supervisor didn't start", 1),
+        _ => {
+            let _ = std::fs::remove_dir_all(&dir);
+            fail("the supervisor didn't start", 1)
+        }
     }
 }
 
@@ -137,6 +140,14 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
 pub fn supervise(args: &[String]) -> ExitCode {
     let Some(r) = args.first().and_then(|a| parse_ref(a)) else { return fail("bad job id", 2) };
     let dir = r.dir();
+    if !dir.join("argv.json").exists() {
+        return fail("no recorded command", 1);
+    }
+    // Once only: a step that has started (or ended) can't be run again by calling this through sudo.
+    let claim = OpenOptions::new().write(true).create_new(true).open(dir.join("supervised"));
+    if claim.is_err() || dir.join("exit").exists() {
+        return fail("that step has already been supervised", 1);
+    }
     let argv: Vec<String> =
         match std::fs::read(dir.join("argv.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
             Some(a) => a,
@@ -196,11 +207,12 @@ pub fn status(args: &[String]) -> ExitCode {
         "stopped"
     } else if exit.is_some() {
         "exited"
-    } else if std::fs::read_to_string(dir.join("pid")).is_ok_and(|p| !alive(&p)) {
+    } else if let Ok(p) = std::fs::read_to_string(dir.join("pid")) {
         // The supervisor went away without recording an end (the machine rebooted, or it was killed).
-        "lost"
+        if alive(&p) { "running" } else { "lost" }
     } else {
-        "running"
+        // Recorded, and the command hasn't been started yet.
+        "starting"
     };
     let exit_code: Option<i64> = exit.and_then(|e| e.trim().parse().ok());
     let (output, next) = read_from(&dir.join("output"), offset);

@@ -46,6 +46,12 @@ pub(crate) fn runbook(rb: &Runbook, source: &str) -> Result<(), ModelError> {
     for step in &rb.steps {
         let fail =
             |msg: String| Err(ModelError::new(format!("step `{}`: {msg}", step.id), step_line(source, &step.id)));
+        let id_ok = (1..=64).contains(&step.id.len())
+            && step.id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            && !step.id.starts_with('-');
+        if !id_ok {
+            return fail("a step id is 1 to 64 of a-z, 0-9 and -, not starting with -".into());
+        }
         if !ids.insert(step.id.as_str()) {
             return fail("the id is used twice".into());
         }

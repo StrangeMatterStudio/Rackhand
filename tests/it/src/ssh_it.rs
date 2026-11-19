@@ -24,6 +24,12 @@ mod ssh {
 
     use crate::support::Container;
 
+    fn form_urlencoded_byte(s: &str) -> String {
+        s.bytes()
+            .map(|b| if b.is_ascii_alphanumeric() { (b as char).to_string() } else { format!("%{b:02X}") })
+            .collect()
+    }
+
     struct Hub {
         db: Arc<Db>,
         vault: Arc<Vault>,
@@ -177,13 +183,15 @@ mod ssh {
         let marker = "name=\"csrf\" value=\"";
         let start = html.find(marker).unwrap() + marker.len();
         let csrf = html[start..start + 64].to_string();
-        let accept = || {
+        let offered = hub.keys.offered("m1").unwrap().1;
+        let accept_with = |fingerprint: &str| {
             Request::post("/machines/m1/host-key/accept")
                 .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from(format!("csrf={csrf}")))
+                .body(Body::from(format!("csrf={csrf}&fingerprint={}", form_urlencoded_byte(fingerprint))))
                 .unwrap()
         };
+        let accept = || accept_with(&offered);
         let resp = router.clone().oneshot(accept()).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         assert_eq!(resp.headers().get(header::LOCATION).unwrap(), "/step-up");
@@ -191,6 +199,8 @@ mod ssh {
         // After a step-up the admin accepts it, and actions run again.
         let id_hash: [u8; 32] = Sha256::digest(token.as_bytes()).into();
         session::set_step_up(&hub.db, &id_hash, rackhand_store::ids::now_ms()).await.unwrap();
+        let wrong = router.clone().oneshot(accept_with("SHA256:something-else")).await.unwrap();
+        assert_eq!(wrong.status(), StatusCode::CONFLICT, "only the key the admin was shown");
         let resp = router.clone().oneshot(accept()).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         assert_eq!(resp.headers().get(header::LOCATION).unwrap(), "/");

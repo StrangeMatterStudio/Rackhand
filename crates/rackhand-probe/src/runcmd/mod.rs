@@ -12,6 +12,8 @@ use std::path::Path;
 use std::process::{Command, ExitCode};
 
 pub const COMMANDS: &str = "/etc/rackhand/commands.json";
+/// The automation user's one sudo entry.
+pub const WRAPPER: &str = "/usr/local/lib/rackhand/run";
 pub const PROBE_TOML: &str = "/etc/rackhand-probe/probe.toml";
 
 /// Runs the matched command and returns its standard output (for tests and the hub's own checks).

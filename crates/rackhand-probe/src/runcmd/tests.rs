@@ -57,6 +57,18 @@ fn one_argument_different_from_every_template_refused() {
     }]));
     assert_eq!(matching(&p, &args(&["/usr/bin/true", "web;rm"])), Err(Refusal::NoTemplate));
     assert!(matching(&p, &args(&["/usr/bin/true", "web"])).is_ok());
+    // The wrapper anchors every regex itself (7.3.7), whatever the list says, and refuses one that would escape.
+    let loose = list(json!([{
+        "runbook": "test", "step": "p",
+        "args": [{"literal": "/usr/bin/true"}, {"param": "project", "regex": "[a-z]+", "allow_leading_dash": false}]
+    }]));
+    assert_eq!(matching(&loose, &args(&["/usr/bin/true", "web;rm"])), Err(Refusal::NoTemplate));
+    assert!(matching(&loose, &args(&["/usr/bin/true", "web"])).is_ok());
+    let escape = list(json!([{
+        "runbook": "test", "step": "p",
+        "args": [{"literal": "/usr/bin/true"}, {"param": "project", "regex": "a)|(.*", "allow_leading_dash": false}]
+    }]));
+    assert_eq!(matching(&escape, &args(&["/usr/bin/true", "x;rm"])), Err(Refusal::NoTemplate));
 }
 
 #[test]

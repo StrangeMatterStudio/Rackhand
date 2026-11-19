@@ -2188,6 +2188,7 @@ Only additions to that list are written out below.
   | 2026-11-19 | rackhand hub runbook check <file> | a step running `sudo /usr/bin/docker` directly: exit 1 naming the step and the wrapper form; through `sudo /usr/local/lib/rackhand/run`: exit 0, "1 root step, all allowed by sudo" |
   | 2026-11-19 | cargo xtask ci fast | exit 0 (fmt, clippy, arch-check: `rackhand-runbook` depends on nothing of ours; nextest 120 passed) |
   | 2026-11-19 fix | cargo nextest run -p rackhand-runbook | review found a pattern like `a)\|(.*` escaped the `^(?:...)$` wrapping and accepted `x; rm -rf /`; new assertions failed first (`Ok(())`), then: the raw pattern must compile on its own, and `check_value` always matches the same anchored regex as commands.json (an `int` with `allow_leading_dash` no longer passes `-1` where the wrapper wouldn't). 9 passed |
+  | 2026-11-19 fix | cargo nextest run -p rackhand-runbook | review: step ids now follow the wrapper's job-step format (`a-z`, `0-9`, `-`); five bad ids failed first. 9 passed |
 
 ### T51: Command wrapper and signed command lists
 - **Design refs:** 7.3.7 (command wrapper, command list updates), 7.3.3 (signed payload rules), D84, D92, E51, E60,
@@ -2224,6 +2225,7 @@ Only additions to that list are written out below.
   | 2026-11-19 | cargo nextest run -p rackhand-probe -E 'test(runcmd::) \\| test(install::)' | 5 passed, 0 failed (arguments with spaces, quotes, `$(...)` and backticks reach printf as single arguments; each refused install leaves commands.json byte-identical) |
   | 2026-11-19 | cargo xtask it-images && cargo nextest run -p rackhand-it -E 'test(runcmd::)' | 1 passed: in a Debian 12 container, `rackhand` runs `sudo -n /usr/local/lib/rackhand/run /usr/bin/id -u` as root (prints 0); a request outside the list exits 126 and creates nothing; `sudo -n` of anything else fails; an unsigned `install-commands` payload is refused and the list's SHA-256 is unchanged |
   | 2026-11-19 | cargo xtask ci it; cargo xtask ci fast | exit 0 (2 passed); exit 0 (164 passed) |
+  | 2026-11-19 fix | cargo nextest run -p rackhand-probe -E 'test(runcmd::)' | review: the wrapper trusted the list's anchoring; a list regex `[a-z]+` let `web;rm` through. New cases failed first; the wrapper now anchors every regex itself and refuses one that doesn't compile alone. 7 passed |
 
 ### T52: Wrapper detached steps and file receive
 - **Design refs:** 7.3.7 (detached steps), 7.3.11 (`run receive`, `transfer_roots`), D97, E54, E55
@@ -2261,6 +2263,7 @@ Only additions to that list are written out below.
   | 2026-11-19 first container run | cargo nextest run -p rackhand-it -E 'test(detached::) \\| test(receive::)' | 3 passed, 3 failed: two in the tests (pgrep matched its own shell; dash's `kill` refuses `--` before a negative pid), one in the code: job-stop ran an external `kill`, which a minimal Debian doesn't have; now rustix's `kill_process`. On Alpine the test container needed `--init` so the killed session doesn't linger as zombies |
   | 2026-11-19 | cargo xtask it-images && cargo nextest run -p rackhand-it -E 'test(detached::) \\| test(receive::)' | 6 passed, 0 failed: a 10-line job survives killing its session's process group on systemd (own unit) and OpenRC (start-stop-daemon), status offsets return only new output, job-stop leaves no unit or process, /etc/passwd as a destination exits 126 and is unchanged, a part with a non-matching BLAKE3 keeps the partial file, a wrong resume offset is refused and the right one renames into place as root 0640 |
   | 2026-11-19 | cargo xtask ci it; cargo xtask ci fast | exit 0 (8 passed); exit 0 (166 passed) |
+  | 2026-11-19 fix | cargo nextest run -p rackhand-it -E 'test(detached::)' | review: `job-supervise` could be replayed through sudo to run a finished step again (the new check failed first); it now claims the step once. The supervisor is started by the wrapper's fixed path (not `current_exe`, which a symlinked install would break), a failed start removes the step, and a recorded step with no process yet reads `starting`. 4 passed |
 
 ### T53: SSH system
 - **Design refs:** 7.3.7 (identities, keys, host keys, command execution, quoting), FR-12 (output limits), E8
@@ -2296,6 +2299,7 @@ Only additions to that list are written out below.
   | 2026-11-19 | cargo xtask it-images && cargo nextest run -p rackhand-it -E 'test(ssh::)' | 4 passed, 0 failed against OpenSSH in Debian 12: `id -un` gives rackhand and rackhand-ai; a 2 MB print gives 1 MiB plus the marker; a key limited to another address is refused; after the server's host keys are regenerated, actions fail, the dashboard route sends an admin without a fresh step-up to /step-up, and after a step-up accepts the key (audited) and actions run again |
   | 2026-11-19 | cargo tree -p rackhand-hub -i aws-lc-rs; -i rsa | neither is in the tree (russh 0.65 with only `ring`) |
   | 2026-11-19 | cargo xtask ci it; cargo xtask ci fast; cargo deny check | exit 0 (12 passed); exit 0 (168 passed); ok |
+  | 2026-11-19 fix | cargo nextest run -p rackhand-hub -E 'test(hostkeys::)'; cargo nextest run -p rackhand-it -E 'test(ssh::)' | review: accepting a host key now names the fingerprint the admin was shown; another one gets 409 and nothing changes. 1 passed; 4 passed |
 
 ### T54: Policy: decisions and approvals
 - **Design refs:** 7.6.8 (levels, risk, exceptions, step-up patterns), 7.7.2 (who approves), 7.3.6 (approval binding),

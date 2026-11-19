@@ -69,3 +69,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-19 | T52 done: detached steps under systemd and OpenRC survive a dropped session; `run receive` with resume and a BLAKE3 check (D29) |
 | 2026-11-19 | T53 done: SSH system with russh on ring, POSIX quoting, host key pinning with admin step-up acceptance, 1 MiB output caps; checked against OpenSSH in a container (D30) |
 | 2026-11-19 | T56 done: library revisions and drafts, pre-push secret scan, debounced git mirror with git2 checked against a git server, restore-library (D31) |
+| 2026-11-19 | Review fixes before T55: the wrapper anchors list regexes itself; job-supervise runs once; fixed wrapper path; step ids match the wrapper format; host key acceptance bound to the shown fingerprint. Noted for T41: mirror on top of the remote branch after a lost work tree, settings changes through the mirror, mirror host key pinning, receive root ownership, setup-code guessing, series-cap ordering |

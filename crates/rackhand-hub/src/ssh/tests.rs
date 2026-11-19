@@ -121,7 +121,11 @@ mod hostkeys {
         assert_eq!(offered, &super::super::hostkeys::fingerprint(&other).unwrap());
         // Still refused until an admin accepts the offered key; then the old one is the stranger.
         assert_eq!(keys.check("m1", &other), Err(HostKeyError::Changed));
-        keys.accept_offered("m1", "admin", 2_000).await.unwrap();
+        // Accepting names the fingerprint the admin was shown; any other is refused.
+        assert!(!keys.accept_offered("m1", "SHA256:not-the-offered-one", "admin", 2_000).await.unwrap());
+        assert_eq!(keys.check("m1", &other), Err(HostKeyError::Changed));
+        let offered = super::super::hostkeys::fingerprint(&other).unwrap();
+        assert!(keys.accept_offered("m1", &offered, "admin", 2_000).await.unwrap());
         assert_eq!(keys.check("m1", &other), Ok(()));
         assert_eq!(keys.check("m1", &pinned), Err(HostKeyError::Changed));
         let (reloaded, _) = HostKeys::new(db.clone());

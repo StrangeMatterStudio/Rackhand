@@ -134,9 +134,20 @@ impl HostKeys {
         self.offered.lock().ok()?.get(machine_id).cloned()
     }
 
-    /// An admin (after step-up) accepts the offered key in place of the pinned ones.
-    pub async fn accept_offered(&self, machine_id: &str, by: &str, now_ms: i64) -> Result<bool, StoreError> {
-        let Some(offer) = self.offered.lock().ok().and_then(|mut o| o.remove(machine_id)) else { return Ok(false) };
+    /// An admin (after step-up) accepts the offered key in place of the pinned ones, if it is still the one they were
+    /// shown (`fingerprint`).
+    pub async fn accept_offered(
+        &self,
+        machine_id: &str,
+        fingerprint: &str,
+        by: &str,
+        now_ms: i64,
+    ) -> Result<bool, StoreError> {
+        let offer = self.offered.lock().ok().and_then(|mut o| {
+            let matches = o.get(machine_id).is_some_and(|(_, fp)| fp == fingerprint);
+            if matches { o.remove(machine_id) } else { None }
+        });
+        let Some(offer) = offer else { return Ok(false) };
         self.store(machine_id, &[offer], by, now_ms).await?;
         Ok(true)
     }

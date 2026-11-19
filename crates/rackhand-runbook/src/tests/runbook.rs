@@ -49,6 +49,13 @@ fn unknown_step_kind_or_field_is_an_error_with_location() {
     assert!(err.to_string().contains(&format!("line {line}")), "{err}");
     assert!(err.to_string().contains("teleport"), "{err}");
 
+    // Step ids follow the wrapper's job-step format (`a-z`, `0-9`, `-`, not starting with `-`), so a detached step
+    // can't fail on its id at run time.
+    for bad in ["Restart", "re start", "-restart", "restart/now", ""] {
+        let src = COMPOSE_RESTART.replace("id = \"restart\"", &format!("id = \"{bad}\""));
+        let err = Runbook::parse(&src).unwrap_err();
+        assert!(err.to_string().contains("step id"), "{bad:?}: {err}");
+    }
     let field = COMPOSE_RESTART.replace("timeout = \"5m\"", "timeout = \"5m\"\nshell = true");
     let err = Runbook::parse(&field).unwrap_err();
     let line = 1 + field[..field.find("shell = true").unwrap()].matches('\n').count();
