@@ -305,6 +305,9 @@ fn provision(lab: &Lab, m: &Machine, server: &seed::Server) -> Result<()> {
     let dir = qemu::machine_dir(&m.name);
     std::fs::create_dir_all(&dir)?;
     let base = dir.join("base.qcow2");
+    // The stamp is of the inputs this run starts from, even if a script is edited while it runs.
+    let stamp = provision_stamp(lab, m)?;
+    let _ = std::fs::remove_file(dir.join("base.provisioned"));
     for f in ["base.qcow2", "disk.qcow2", "extra.qcow2"] {
         let _ = std::fs::remove_file(dir.join(f));
     }
@@ -326,7 +329,7 @@ fn provision(lab: &Lab, m: &Machine, server: &seed::Server) -> Result<()> {
         provision_proxmox(lab, m, major)?;
     }
     qemu::stop(m)?;
-    std::fs::write(dir.join("base.provisioned"), provision_stamp(lab, m)?)?;
+    std::fs::write(dir.join("base.provisioned"), stamp)?;
     println!("{} provisioned", m.name);
     Ok(())
 }

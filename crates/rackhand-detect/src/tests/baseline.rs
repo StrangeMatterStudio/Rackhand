@@ -49,7 +49,7 @@ fn first_value_seeds_mean_variance_zero_then_weight_0_1() {
     assert_eq!((k.mean, k.var, k.n), (50.0, 0.0, 1));
     k.update(60.0, HOUR);
     assert!((k.mean - 51.0).abs() < 1e-9, "{k:?}");
-    assert!((k.var - 9.0).abs() < 1e-9, "0.9 * (0 + 0.1 * 10Â²): {k:?}");
+    assert!((k.var - 9.0).abs() < 1e-9, "0.9 * (0 + 0.1 * 10^2): {k:?}");
     assert_eq!(k.n, 2);
     let mut b = Baseline::new(20.0);
     let at = TUESDAY + 9 * HOUR;
