@@ -1222,6 +1222,7 @@ Only additions to that list are written out below.
   | 2026-11-19 fails first | cargo nextest run -p rackhand-hub -E 'test(bus::)' | compile error: unresolved Bus, BusEvent, Delivery, JobOutcome, MachineId |
   | 2026-11-19 | cargo nextest run -p rackhand-hub -E 'test(bus::)' | 4 passed, 0 failed: 10 000 notices leave 3; 10 000 sends to a stalled consumer under 50 ms; 3000 state events with a 1024 queue all arrive; JobFinished never waits and a full queue records it for reconciliation |
   | 2026-11-19 | cargo xtask ci fast | exit 0 |
+  | 2026-11-19 correction | cargo xtask ci fast | the run recorded for 208b422 had failed: clippy `field name is never read` (an exit status read from the wrong shell showed 0). Fixed in the next commit; fast tier exit 0, 62 passed |
 
 ### T25: Ingest: staging, acks, compaction, recent window, clock
 - **Design refs:** 7.3.2 (durability, replay limits, clock), 7.4.1 (recent window, compaction), 7.3.8

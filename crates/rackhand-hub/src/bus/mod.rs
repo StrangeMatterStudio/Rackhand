@@ -60,7 +60,6 @@ pub enum Delivery {
 
 #[derive(Debug)]
 struct Consumer {
-    name: &'static str,
     tx: mpsc::Sender<BusEvent>,
     notices: Arc<Notices>,
     notify: Arc<Notify>,
@@ -80,7 +79,6 @@ impl Bus {
     pub fn subscribe(&self, name: &'static str) -> Subscription {
         let (tx, rx) = mpsc::channel(QUEUE);
         let consumer = Arc::new(Consumer {
-            name,
             tx,
             notices: Arc::new(Notices::default()),
             notify: Arc::new(Notify::new()),
