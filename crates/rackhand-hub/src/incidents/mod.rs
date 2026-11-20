@@ -1,9 +1,14 @@
 //! Incidents (7.2, 7.5.2): lifecycle, evaluation, silences, reconciliation and notes. Owns `incidents`,
 //! `incident_events` and `silences`. Routing beyond a person comes with runbooks and playbooks (T57, T78).
 
+mod baselines;
+mod conditions;
+mod counted;
 mod dedupe;
 mod evaluate;
+mod forecasts;
 mod lifecycle;
+mod machine_silence;
 pub mod notes;
 mod reconcile;
 mod silences;
@@ -29,6 +34,8 @@ pub enum IncidentsError {
     SilenceEnded,
     #[error("no such incident")]
     NoSuchIncident,
+    #[error("reading series: {0}")]
+    Ingest(String),
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
@@ -50,6 +57,13 @@ struct Eval {
     suppressed: HashSet<SeriesRule>,
     /// The newest `events` row already looked at.
     last_event: i64,
+    /// Forecasts, baselines, machine silence and counted rules.
+    conditions: HashMap<conditions::CondKey, conditions::CondState>,
+    baselines: std::collections::BTreeMap<conditions::CondKey, baselines::Learned>,
+    /// Machines expected offline that are silent (their info event went out).
+    asleep: HashSet<String>,
+    started_ms: i64,
+    last_forecast_ms: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -74,7 +88,17 @@ impl Incidents {
             .with(|c| c.query_row("SELECT coalesce(max(rowid), 0) FROM events", [], |r| r.get(0)))
             .unwrap_or(0);
         let rules = rackhand_detect::rules::default_rules();
-        let eval = Eval { last_event, rules: open_rule_states(&db, &rules), ..Eval::default() };
+        let now = rackhand_store::ids::now_ms();
+        let (thresholds, conditions) = open_rule_states(&db, &rules);
+        let eval = Eval {
+            last_event,
+            rules: thresholds,
+            conditions,
+            baselines: baselines::load(&db, now),
+            started_ms: now,
+            last_forecast_ms: i64::MIN / 2,
+            ..Eval::default()
+        };
         Incidents { inner: Arc::new(Inner { db, ingest, bus, rules, eval: Mutex::new(eval) }) }
     }
 
@@ -84,8 +108,11 @@ impl Incidents {
 }
 
 /// The rule states of condition incidents still open when the hub starts, so their condition can clear them (a rule's
-/// state is in memory; without this an incident open across a restart would never resolve).
-fn open_rule_states(db: &Db, rules: &[Rule]) -> HashMap<SeriesRule, RuleState> {
+/// state is in memory; without this an incident open across a restart would never resolve). Threshold rules, then
+/// the other condition rules.
+type OpenStates = (HashMap<SeriesRule, RuleState>, HashMap<conditions::CondKey, conditions::CondState>);
+
+fn open_rule_states(db: &Db, rules: &[Rule]) -> OpenStates {
     let open: Vec<(String, String, String)> = db
         .readers()
         .with(|c| {
@@ -95,15 +122,28 @@ fn open_rule_states(db: &Db, rules: &[Rule]) -> HashMap<SeriesRule, RuleState> {
             s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect()
         })
         .unwrap_or_default();
-    let mut states = HashMap::new();
+    let (mut states, mut others) = (HashMap::new(), HashMap::new());
     for (key, rule_id, severity) in open {
-        let Some(rule) = rules.iter().find(|r| r.id == rule_id) else { continue };
         let Some((machine, rest)) = key.split_once(':') else { continue };
         let Some(labels) = rest.strip_prefix(&format!("{rule_id}:")) else { continue };
-        let state = RuleState { active: Some(lifecycle::parse_severity(&severity)), last_sample_ms: None };
-        states.insert(SeriesRule { machine: machine.to_string(), rule: rule.id, labels: labels.to_string() }, state);
+        let active = Some(lifecycle::parse_severity(&severity));
+        match rules.iter().find(|r| r.id == rule_id) {
+            Some(rule) => {
+                let state = RuleState { active, last_sample_ms: None };
+                states.insert(
+                    SeriesRule { machine: machine.to_string(), rule: rule.id, labels: labels.to_string() },
+                    state,
+                );
+            }
+            None => {
+                others.insert(
+                    conditions::CondKey::new(machine, &rule_id, labels),
+                    conditions::CondState { active, calm: 0 },
+                );
+            }
+        }
     }
-    states
+    (states, others)
 }
 
 #[cfg(test)]

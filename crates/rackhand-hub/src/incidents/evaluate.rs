@@ -32,11 +32,19 @@ enum Change {
 }
 
 impl Incidents {
+    /// Every 15 s: threshold rules over the recent window, new events, counted rules, machine silence, new tier 1
+    /// values against baselines, and the forecasts every 5 minutes.
     pub async fn evaluate(&self, now_ms: i64) -> Result<EvalStats, IncidentsError> {
         let mut stats = self.evaluate_rules(now_ms).await?;
         let events = self.evaluate_events().await?;
         stats.opened += events.opened;
         stats.changed += events.changed;
+        self.evaluate_counted(now_ms).await?;
+        self.evaluate_silence(now_ms).await?;
+        self.evaluate_baselines(now_ms).await?;
+        if now_ms - self.eval().last_forecast_ms >= super::forecasts::FORECAST_EVERY_MS {
+            self.evaluate_forecasts(now_ms).await?;
+        }
         Ok(stats)
     }
 

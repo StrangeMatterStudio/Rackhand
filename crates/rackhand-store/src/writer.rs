@@ -365,6 +365,17 @@ fn update_row(tx: &rusqlite::Transaction<'_>, u: &RowUpdate) -> Result<usize, St
 
 /// Inserts the row, or updates the given columns of the existing one (never a delete and re-insert, which would break
 /// rows that reference it).
+/// Inserts or replaces whole rows, in one transaction (only for tables nothing references).
+fn replace_rows(conn: &mut Connection, table: &'static str, rows: Vec<Row>) -> Result<usize, StoreError> {
+    let tx = conn.transaction()?;
+    let mut n = 0;
+    for row in rows {
+        n += write_row(&tx, &RowWrite::replace(table, row))?;
+    }
+    tx.commit()?;
+    Ok(n)
+}
+
 /// Inserts rows, skipping any whose key is already present, in one transaction.
 fn insert_or_ignore(conn: &mut Connection, table: &'static str, rows: &[Row]) -> Result<usize, StoreError> {
     check_ident(table)?;
@@ -744,6 +755,8 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
         WriteCmd::UpsertIncident(row) => upsert_one(conn, "incidents", "id", row),
         WriteCmd::PutSilence(row) => upsert_one(conn, "silences", "id", row),
         WriteCmd::PutNotification(row) => upsert_one(conn, "notifications", "id", row),
+        // a bucket row is the whole state of its bucket
+        WriteCmd::UpdateBaselines(rows) => replace_rows(conn, "baseline_buckets", rows),
         WriteCmd::PutPolicy(row) => upsert_one(conn, "policies", "id", row),
         WriteCmd::PutQuarantineRule(row) => upsert_one(conn, "quarantine_rules", "id", row),
         WriteCmd::PutScheduleState(row) => replace_one(conn, "schedule_state", row),

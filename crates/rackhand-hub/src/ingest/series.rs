@@ -59,6 +59,57 @@ impl Ingest {
         Ok(self.inner.writer.send(WriteCmd::Rollup { tier: 2, from_ms: hour_ms, to_ms: hour_ms + HOUR_MS }).await?.rows)
     }
 
+    /// The stored series of a metric in a tier with a point since `since_ms`: (machine, label set, metric key id).
+    pub fn stored_series(
+        &self,
+        metric: &str,
+        tier: Tier,
+        since_ms: i64,
+    ) -> Result<Vec<(String, String, i64)>, IngestError> {
+        Ok(self.inner.db.readers().with(|c| {
+            let mut s = c.prepare(
+                "SELECT DISTINCT sc.machine_id, mk.label_set, mk.id FROM series_chunks sc
+                 JOIN metric_keys mk ON mk.id = sc.metric_key_id
+                 WHERE mk.name = ?1 AND sc.tier = ?2 AND sc.end_ms >= ?3 ORDER BY sc.machine_id, mk.label_set",
+            )?;
+            s.query_map(rusqlite::params![metric, tier as i64, since_ms], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect()
+        })?)
+    }
+
+    /// One tier of a stored series (every column) over `[from_ms, to_ms]`.
+    pub fn tier_series(
+        &self,
+        machine: &str,
+        metric: &str,
+        label_set: &str,
+        tier: Tier,
+        from_ms: i64,
+        to_ms: i64,
+    ) -> Result<Vec<(i64, Vec<f64>)>, IngestError> {
+        Ok(self.inner.db.readers().with(|c| {
+            let id: Option<i64> = c
+                .query_row(
+                    "SELECT id FROM metric_keys WHERE name = ?1 AND label_set = ?2",
+                    rusqlite::params![metric, label_set],
+                    |r| r.get(0),
+                )
+                .ok();
+            let Some(metric_key_id) = id else { return Ok(Vec::new()) };
+            let key = SeriesKey { machine_id: machine.to_string(), metric_key_id };
+            rackhand_store::series::query::range(c, &key, tier, from_ms, to_ms)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })?)
+    }
+
+    /// Baseline buckets go through Ingest, the owner of `baseline_buckets` (7.2).
+    pub async fn put_baselines(&self, rows: Vec<rackhand_store::Row>) -> Result<(), IngestError> {
+        if !rows.is_empty() {
+            self.inner.writer.send(WriteCmd::UpdateBaselines(rows)).await?;
+        }
+        Ok(())
+    }
+
     /// A series over `[from_ms, to_ms]`: tier 0 and the recent window for ranges up to 2 days, tier 1's averages up to
     /// 30 days, tier 2's beyond.
     pub fn series(

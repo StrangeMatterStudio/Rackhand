@@ -47,6 +47,10 @@ impl Env {
         let rows = vec![
             RowWrite::insert("sites", Row::from([("id", t("s1")), ("name", t("home")), ("timezone", t("UTC"))])),
             RowWrite::insert(
+                "policies",
+                Row::from([("id", t("asleep")), ("name", t("desktops")), ("expected_offline", Value::Integer(1))]),
+            ),
+            RowWrite::insert(
                 "machines",
                 Row::from([
                     ("id", t(M1)),
@@ -54,6 +58,7 @@ impl Env {
                     ("name", t("web")),
                     ("kind", t("linux")),
                     ("tags", t("[\"web\"]")),
+                    ("state", t("enrolled")),
                 ]),
             ),
             RowWrite::insert(
@@ -64,6 +69,8 @@ impl Env {
                     ("name", t("nas")),
                     ("kind", t("linux")),
                     ("tags", t("[\"lab\"]")),
+                    ("state", t("enrolled")),
+                    ("policy_id", t("asleep")),
                 ]),
             ),
         ];
@@ -77,6 +84,8 @@ impl Env {
             ingest.hello(m, 1, &[LabelEntry::default()]).await.unwrap();
         }
         let incidents = Incidents::new(db.clone(), ingest.clone(), Bus::new());
+        // machine silence stays in its start-up grace unless a test sets when the hub started
+        incidents.set_started(i64::MAX / 4);
         Env { db, ingest, incidents, path, seq }
     }
 
@@ -383,4 +392,218 @@ async fn condition_resolves_after_restart() {
     env.ingest.start(T0 + 16 * MIN).await.unwrap();
     env.run(M1, CPU, T0 + 16 * MIN, 1, 50.0).await;
     assert_eq!(env.incidents()[0].1, "resolved");
+}
+
+const DAY: i64 = 86_400_000;
+const H: i64 = 3_600_000;
+const GB: f64 = 1e9;
+
+/// Rollup points for one series, as the rollup task writes them.
+async fn rollups(env: &Env, tier: u8, name: &str, unit: &str, labels: &str, points: Vec<(i64, f64)>) {
+    let series = rackhand_store::rollup::RollupSeries {
+        machine_id: M1.into(),
+        name: name.into(),
+        unit: unit.into(),
+        label_set: labels.into(),
+        points: points.into_iter().map(|(t, v)| (t, [v, v, v])).collect(),
+    };
+    env.db.writer().send(WriteCmd::PutRollups { tier, series: vec![series] }).await.unwrap();
+}
+
+const DATA: &str = "{\"mount\":\"/data\"}";
+
+/// The worked example of 7.6.2: 400 of 500 GB used; the 6-hour fit rises 1.2 GB/h, the 7-day fit 1.6 GB/h.
+async fn filling_disk(env: &Env, now: i64) {
+    let minutes: Vec<(i64, f64)> =
+        (0..360).map(|i| (now - i * MIN, 400.0 * GB - 1.2 * GB * i as f64 / 60.0)).rev().collect();
+    let hours: Vec<(i64, f64)> = (1..168).map(|i| (now - i * H, 400.0 * GB - 1.6 * GB * i as f64)).rev().collect();
+    rollups(env, 1, "disk.used_bytes", "bytes", DATA, minutes).await;
+    rollups(env, 2, "disk.used_bytes", "bytes", DATA, hours).await;
+    rollups(env, 1, "disk.total_bytes", "bytes", DATA, vec![(now, 500.0 * GB)]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn disk_fill_forecast_warns_with_eta() {
+    let env = Env::new("forecast").await;
+    let now = T0 + 10 * DAY;
+    filling_disk(&env, now).await;
+    env.incidents.evaluate_forecasts(now).await.unwrap();
+    let inc = env.incidents();
+    assert_eq!(inc.len(), 1);
+    assert_eq!((inc[0].2.as_str(), inc[0].3.clone()), ("warning", format!("{M1}:disk.fill:{DATA}")));
+    let title: String =
+        env.db.readers().with(|c| c.query_row("SELECT title FROM incidents", [], |r| r.get(0))).unwrap();
+    assert_eq!(title, "/data fills in about 2.6 days");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn forecast_clears_after_2_recomputations() {
+    let env = Env::new("forecast-clear").await;
+    let now = T0 + 10 * DAY;
+    filling_disk(&env, now).await;
+    env.incidents.evaluate_forecasts(now).await.unwrap();
+    // the disk is grown to 5 TB: no fit reaches it soon
+    rollups(&env, 1, "disk.total_bytes", "bytes", DATA, vec![(now + MIN, 5_000.0 * GB)]).await;
+    env.incidents.evaluate_forecasts(now + 5 * MIN).await.unwrap();
+    assert_eq!(env.incidents()[0].1, "open", "one recomputation isn't enough");
+    env.incidents.evaluate_forecasts(now + 10 * MIN).await.unwrap();
+    assert_eq!(env.incidents()[0].1, "resolved");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn baseline_deviation_opens_and_clears() {
+    let env = Env::new("baseline").await;
+    // 8 days of net.tx_bps around 2 Mbit/s, learned hour by hour from tier 2
+    let start = T0 - 8 * DAY;
+    let mut rng = 0u64;
+    let hours: Vec<(i64, f64)> = (0..8 * 24)
+        .map(|i| {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (start + i * H, 250_000.0 + (rng >> 40) as f64 % 25_000.0)
+        })
+        .collect();
+    rollups(&env, 2, "net.tx_bps", "B/s", "{\"iface\":\"eth0\"}", hours.clone()).await;
+    for (hour, _) in &hours {
+        env.incidents.baseline_hourly(*hour, hour + H).await.unwrap();
+    }
+    // then 40 Mbit/s: a warning after 15 minutes, and 2 normal minutes clear it
+    let mut minutes = Vec::new();
+    for i in 0..17 {
+        minutes.push((T0 + i * MIN, 5_000_000.0));
+    }
+    for (t, v) in minutes {
+        rollups(&env, 1, "net.tx_bps", "B/s", "{\"iface\":\"eth0\"}", vec![(t, v)]).await;
+        env.incidents.evaluate_baselines(t + 1_000).await.unwrap();
+    }
+    let inc = env.incidents();
+    assert_eq!(inc.len(), 1, "warning after 15 minutes");
+    assert_eq!(
+        (inc[0].2.as_str(), inc[0].3.clone()),
+        ("warning", format!("{M1}:baseline.net.tx_bps:{{\"iface\":\"eth0\"}}"))
+    );
+    for i in 17..19 {
+        rollups(&env, 1, "net.tx_bps", "B/s", "{\"iface\":\"eth0\"}", vec![(T0 + i * MIN, 260_000.0)]).await;
+        env.incidents.evaluate_baselines(T0 + i * MIN + 1_000).await.unwrap();
+    }
+    assert_eq!(env.incidents()[0].1, "resolved");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn silent_machine_warns_after_60s_and_clears_on_report() {
+    let mut env = Env::new("silent").await;
+    env.incidents.set_started(T0 - 10 * MIN);
+    env.sample(M1, CPU, T0, 1.0, Stream::Live, T0).await;
+    env.incidents.evaluate(T0 + 59_000).await.unwrap();
+    assert!(env.incidents().is_empty(), "not before 60 s");
+    env.incidents.evaluate(T0 + 60_000).await.unwrap();
+    let inc = env.incidents();
+    assert_eq!(inc.len(), 1, "machine 2 expects to be offline: no incident for it");
+    assert_eq!((inc[0].2.as_str(), inc[0].3.clone()), ("warning", format!("{M1}:machine.silent:{{}}")));
+    env.sample(M1, CPU, T0 + 70_000, 1.0, Stream::Live, T0 + 70_000).await;
+    env.incidents.evaluate(T0 + 70_000).await.unwrap();
+    assert_eq!(env.incidents()[0].1, "resolved", "the first report resolves it");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn expected_offline_is_info_only() {
+    let env = Env::new("asleep").await;
+    env.incidents.set_started(T0 - 10 * MIN);
+    env.incidents.evaluate(T0).await.unwrap();
+    env.incidents.evaluate(T0 + 30_000).await.unwrap();
+    let infos: i64 = env
+        .db
+        .readers()
+        .with(|c| {
+            c.query_row(
+                "SELECT count(*) FROM events WHERE kind = 'machine.silent' AND severity = 'info' AND machine_id = ?1",
+                [M2],
+                |r| r.get(0),
+            )
+        })
+        .unwrap();
+    assert_eq!(infos, 1, "one info event, once");
+    assert!(env.incidents().iter().all(|i| !i.3.starts_with(M2)), "no incident for the sleeping machine");
+}
+
+impl Env {
+    async fn report(&mut self, machine: &str, at: i64, f: impl FnOnce(&mut Report)) {
+        self.seq += 1;
+        let mut r = Report { epoch: 1, seq: self.seq, sampled_at_ms: at, ..Default::default() };
+        f(&mut r);
+        self.ingest.receive(machine, Stream::Live, vec![r], 100, at).await.unwrap();
+        self.incidents.evaluate(at).await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn watched_service_not_active_2_and_4_reports() {
+    let mut env = Env::new("service").await;
+    let service = |status: i32| {
+        move |r: &mut Report| {
+            r.services =
+                vec![rackhand_proto::probe::ServiceState { name: "nginx".into(), status, enabled: true, since_ms: 0 }]
+        }
+    };
+    env.report(M1, T0, service(3)).await;
+    assert!(env.incidents().is_empty(), "one report isn't enough");
+    env.report(M1, T0 + 15_000, service(3)).await;
+    assert_eq!(env.incidents()[0].2, "warning");
+    assert_eq!(env.incidents()[0].3, format!("{M1}:service.not_active:{{\"service\":\"nginx\"}}"));
+    env.report(M1, T0 + 30_000, service(3)).await;
+    env.report(M1, T0 + 45_000, service(3)).await;
+    assert_eq!(env.incidents()[0].2, "critical", "4 reports");
+    env.report(M1, T0 + 60_000, service(1)).await;
+    assert_eq!(env.incidents()[0].1, "resolved", "active again");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn container_restarts_over_3_in_10_min() {
+    let mut env = Env::new("restarts").await;
+    for (i, count) in (0..=11u32).enumerate() {
+        env.report(M1, T0 + i as i64 * 30_000, |r| {
+            r.containers = vec![rackhand_proto::probe::ContainerState {
+                id: "c1".into(),
+                name: "web".into(),
+                restart_count: count,
+                ..Default::default()
+            }]
+        })
+        .await;
+        let inc = env.incidents();
+        match count {
+            0..=3 => assert!(inc.is_empty(), "{count} restarts"),
+            4..=10 => assert_eq!(inc[0].2, "warning", "{count} restarts"),
+            _ => assert_eq!(inc[0].2, "critical", "{count} restarts"),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn security_updates_older_than_7_days() {
+    let mut env = Env::new("updates").await;
+    let pending = |r: &mut Report| {
+        r.updates = Some(rackhand_proto::probe::UpdateSummary {
+            pending: 5,
+            security: 2,
+            reboot_required: false,
+            packages: vec![],
+        })
+    };
+    env.report(M1, T0, pending).await;
+    env.report(M1, T0 + 7 * DAY, |_| {}).await;
+    assert!(env.incidents().is_empty(), "7 days isn't older than 7 days");
+    env.report(M1, T0 + 8 * DAY, |_| {}).await;
+    assert_eq!(env.incidents()[0].2, "warning");
+    env.report(M1, T0 + 15 * DAY, |_| {}).await;
+    assert_eq!(env.incidents()[0].2, "critical");
+    env.report(M1, T0 + 15 * DAY + MIN, |r| {
+        r.updates = Some(rackhand_proto::probe::UpdateSummary {
+            pending: 0,
+            security: 0,
+            reboot_required: false,
+            packages: vec![],
+        })
+    })
+    .await;
+    assert_eq!(env.incidents()[0].1, "resolved", "installed");
 }

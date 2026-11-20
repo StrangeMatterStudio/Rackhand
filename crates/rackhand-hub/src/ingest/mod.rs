@@ -142,6 +142,20 @@ struct Machine {
     interval_ms: i64,
     latest: Option<LatestFacts>,
     unknown_labels_reported_ms: i64,
+    counted: Counted,
+    /// When the newest live report arrived.
+    last_seen_ms: Option<i64>,
+}
+
+/// What the counted rules (7.6.1) need from a machine's live reports.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Counted {
+    /// Services reported not active, with how many reports in a row.
+    pub services_down: std::collections::BTreeMap<String, u32>,
+    /// Per container (by name): its last restart count and the arrival times of the restarts seen.
+    pub restarts: std::collections::BTreeMap<String, (u32, Vec<i64>)>,
+    /// Since when security updates have been pending, while they are.
+    pub security_since: Option<i64>,
 }
 
 impl Default for Machine {
@@ -155,6 +169,8 @@ impl Default for Machine {
             interval_ms: DEFAULT_INTERVAL_MS,
             latest: None,
             unknown_labels_reported_ms: i64::MIN,
+            counted: Counted::default(),
+            last_seen_ms: None,
         }
     }
 }
@@ -191,6 +207,16 @@ impl Ingest {
     /// The machine's sample interval, for placing samples on their tick (default 15 s).
     pub fn set_interval(&self, machine: &str, interval_ms: i64) {
         self.state().machines.entry(machine.to_string()).or_default().interval_ms = interval_ms.max(1);
+    }
+
+    /// The counted-rule inputs of a machine's live reports.
+    pub fn counted(&self, machine: &str) -> Counted {
+        self.state().machines.get(machine).map(|m| m.counted.clone()).unwrap_or_default()
+    }
+
+    /// When the machine's newest live report arrived.
+    pub fn last_seen(&self, machine: &str) -> Option<i64> {
+        self.state().machines.get(machine).and_then(|m| m.last_seen_ms)
     }
 
     /// The machines Ingest has heard from.

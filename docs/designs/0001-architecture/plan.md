@@ -239,7 +239,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T31 | Detect: baselines and counted rules | T28 | unit | done |
 | T32 | Incidents: lifecycle and evaluation | T25, T24, T28 to T31 | unit | done |
 | T33 | Notify: Discord, SMTP, grouping, retries | T32 | unit (HTTP and SMTP fakes) | done |
-| T32b | Incidents: forecasts, baselines, machine silence and counted rules | T32, T27, T29 to T31 | unit | todo |
+| T32b | Incidents: forecasts, baselines, machine silence and counted rules | T32, T27, T29 to T31 | unit | done |
 | T34 | Scheduler and windows | T24 | unit | done |
 | T35 | Join contract and Registry | T17, T18, T21 | contract | done |
 | T36 | Web foundation and first run | T18, T20, T21 | unit (HTTP) | done |
@@ -1639,12 +1639,15 @@ Only additions to that list are written out below.
 - **Regression:** `cargo xtask ci fast`: exit 0.
 - **Manual verification:** None.
 - **Done when:**
-  - [ ] New tests seen failing first
-  - [ ] New tests and regression suite pass
+  - [x] New tests seen failing first
+  - [x] New tests and regression suite pass
 - **Risk / rollback:** revert.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-20 | cargo nextest run -p rackhand-hub -E 'test(incidents::)' (before) | compile errors: `evaluate_forecasts`, `evaluate_baselines`, `baseline_hourly`, `set_started` not found |
+  | 2026-11-20 | same (after) | first run 18 passed, 1 failed: `event_incident_merges_for_24_hours` runs past the real clock, so machine silence (now evaluated) fired for a machine that never reports; the incident tests now keep silence in its start-up grace unless a test sets the start. Then 19 passed |
+  | 2026-11-20 | cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0 (a row tuple factored into a struct); fast 318 passed; no violations |
 
 ### T34: Scheduler and windows
 - **Design refs:** 7.2 (Scheduler), 7.5.3 step 1, the `windows` table, E46, AC20 (maintenance window part)
@@ -1927,7 +1930,7 @@ Only additions to that list are written out below.
   Carried in from T27:
   | Test | Asserts | Covers |
   | --- | --- | --- |
-  | `hub::rollup_and_retention_ticks_run` (carried in from T27) | the scheduler's `Rollup` tick runs `Ingest::rollup_minute` for the last completed minute and `rollup_hour` on the hour, and the `Retention` tick runs `retention::run` hourly | 7.4.1 |
+  | `hub::rollup_and_retention_ticks_run` (carried in from T27) | the scheduler's `Rollup` tick runs `Ingest::rollup_minute` for the last completed minute and `rollup_hour` on the hour, then `Incidents::baseline_hourly` (T32b), and the `Retention` tick runs `retention::run` hourly | 7.4.1, 7.6.4 |
   Carried in from T33:
   | Test | Asserts | Covers |
   | --- | --- | --- |
@@ -2174,6 +2177,11 @@ Only additions to that list are written out below.
   | --- | --- | --- |
   | `executor::verify_step_runs_named_checks` | `verify` with `containers_running:{{project}}` evaluates the check for the substituted project; a failing check fails the step with its name | 7.8.7 |
   | `executor::api_step_calls_driver` | an `api` step makes the driver call and records its result | 7.8.7 |
+  Carried in from T32b:
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `incidents::check_failing_2_and_4_runs` (carried in from T32b) | a check failing 2 runs in a row warns and 4 is critical, through `Incidents::condition`; 2 good runs resolve it | 7.6.1 |
+  | `incidents::cert_expiry_warns_at_14_days` (carried in from T32b) | a TLS check's certificate with 14 days left warns, 3 days critical | 7.6.2 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
@@ -2716,6 +2724,10 @@ Only additions to that list are written out below.
   | Test | Asserts | Covers |
   | --- | --- | --- |
   | `pages::patching_shows_pending_updates_per_machine` (carried in from T58) | the patching page lists each machine's pending updates from its latest report, and the holds | 7.7.1 |
+  Carried in from T32b:
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `incidents::no_silence_during_maintenance_or_reboot_wait` (carried in from T32b) | machine silence's context gets the maintenance window and the reboot job's wait from the scheduler and Actions, so neither raises `machine.silent` | 7.6.3, AC20 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
@@ -4588,6 +4600,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D46 | 2026-11-20 | T32 | `incidents/{lifecycle, evaluate, dedupe, silences, reconcile}.rs`; the three handlers | As planned, plus: detect's threshold state follows the highest matching level while active, so severity falls as 7.5.2 says (T28 only rose; a detect test added); the store gets an upsert row mode so an incident and its event commit together without the cascade a REPLACE would fire; Incidents reads warning and critical events from the `events` table after the last row it saw (Ingest can't call Incidents); an unresolved event incident takes every matching event (the store allows one unresolved incident per key) and a resolved one reopens for a matching event within 24 hours of its last event, while condition incidents reopen within 30 minutes (owner to confirm); a rule that fired under a silence opens its incident once the silence ends; a failed job's incident goes to a person until T57 and T78 route it | Design 7.5.2 and the schema's unique index | plan | - |
 | D47 | 2026-11-20 | T33 | `notify/{discord, smtp, grouping, retry}.rs`; a `wiremock` Discord endpoint and `tests/support/smtp_sink.rs` | As planned, plus: a hub-wide `http` module (one HTTP/1.1 request over rustls with the webpki roots, plain HTTP to loopback only) because hub systems may not use Web's OIDC client; the SMTP client is written here (STARTTLS or implicit TLS, AUTH PLAIN) rather than pulling in a mail library; the Discord test endpoint is a local axum server (no new dependency) and the SMTP sink lives in `notify/smtp_sink.rs` under `cfg(test)`; Notify follows `incident_events` (the callout flag Incidents writes) instead of the bus; Notify is the Executor's runner for `notify` steps; notifiers from `config/notifiers.toml` and the Vault are built in T41 (carried in); a 9th test | Dependency rules (7.2); fewer dependencies | plan | - |
 | D48 | 2026-11-20 | T25, T32, T33, new T32b | The steps as planned | A review after T33 found four gaps the tests didn't cover, each now with a test seen failing first: compaction marked every point dirty, so only late points do now; open condition incidents now resolve after a restart; SMTP headers stay on one line; and forecasts, baselines, machine silence and counted rules were wired by no step, so step T32b is added before T41. Notify's and Ingest's in-memory state across restarts and the probe's events and connections are carried into T41 and T67 | Found in review | plan | - |
+| D49 | 2026-11-20 | T32b | `incidents/{forecasts, baselines, machine_silence, counted}.rs` | As planned, plus `incidents/conditions.rs` (one tracker for every non-threshold rule: open, severity change, and resolve after the rule's own count); Ingest keeps per-machine counters for down services, container restarts and pending security updates, the last report time, and reads stored series by tier; baselines are kept in memory and written to `baseline_buckets` through Ingest each hour, and on start the learning time is taken from the hour-of-day buckets' counts (one update a day each) since it isn't stored; any reported service not active counts until the hub knows which services are watched (T41's probe config); the check-failing rule and certificate expiry wait for checks (T46) and maintenance windows for silence for T59 (carried in) | The tests and the data the rules need | plan | - |
 
 ## Follow-ups (out of scope)
 

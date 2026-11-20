@@ -216,6 +216,7 @@ impl Ingest {
                 }
                 if stream == Stream::Live {
                     keep_latest(m, &p.report, p.offset_ms);
+                    count(m, &p.report, p.offset_ms, received_at_ms);
                 }
             }
             m.window.prune(received_at_ms - WINDOW_MS);
@@ -263,6 +264,39 @@ fn add_to_window(m: &mut Machine, machine: &str, r: &Report, offset_ms: i64, rec
     }
     m.unknown_labels_reported_ms = received_at_ms;
     Some(Event::machine(machine, "probe.unknown_labels", Severity::Info, serde_json::json!({ "dropped": unknown })))
+}
+
+/// Restart times kept per container: the counted rule looks back 10 minutes.
+const RESTARTS_KEPT_MS: i64 = 30 * 60_000;
+
+/// Updates the counted-rule inputs from a live report (7.6.1).
+fn count(m: &mut Machine, r: &Report, offset_ms: i64, received_at_ms: i64) {
+    m.last_seen_ms = Some(m.last_seen_ms.map_or(received_at_ms, |l| l.max(received_at_ms)));
+    let c = &mut m.counted;
+    let down: std::collections::BTreeSet<&str> = r
+        .services
+        .iter()
+        .filter(|s| s.status != rackhand_proto::probe::ServiceStatus::Active as i32)
+        .map(|s| s.name.as_str())
+        .collect();
+    c.services_down.retain(|name, _| down.contains(name.as_str()));
+    for name in down {
+        *c.services_down.entry(name.to_string()).or_insert(0) += 1;
+    }
+    for container in &r.containers {
+        let entry = c.restarts.entry(container.name.clone()).or_insert((container.restart_count, Vec::new()));
+        let new = container.restart_count.saturating_sub(entry.0);
+        entry.1.extend(std::iter::repeat_n(received_at_ms, new as usize));
+        entry.1.retain(|t| received_at_ms - t <= RESTARTS_KEPT_MS);
+        entry.0 = container.restart_count;
+    }
+    if let Some(u) = &r.updates {
+        if u.security > 0 {
+            c.security_since.get_or_insert(r.sampled_at_ms + offset_ms);
+        } else {
+            c.security_since = None;
+        }
+    }
 }
 
 /// The newest live report's services and containers, and the last update summary sent.
