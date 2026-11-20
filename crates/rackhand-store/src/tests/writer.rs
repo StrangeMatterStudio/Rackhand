@@ -64,8 +64,8 @@ async fn multi_table_command_is_one_transaction() {
     let conn = rusqlite::Connection::open(&path).unwrap();
     let sites: i64 = conn.query_row("SELECT count(*) FROM sites", [], |r| r.get(0)).unwrap();
     assert_eq!(sites, 0, "the first table is unchanged after the second failed");
-    let unimplemented = writer.send(WriteCmd::CompactStaged).await.unwrap_err();
-    assert!(matches!(unimplemented, StoreError::Unimplemented("CompactStaged")), "{unimplemented:?}");
+    let unimplemented = writer.send(WriteCmd::PutConnRecords(Vec::new())).await.unwrap_err();
+    assert!(matches!(unimplemented, StoreError::Unimplemented("PutConnRecords")), "{unimplemented:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

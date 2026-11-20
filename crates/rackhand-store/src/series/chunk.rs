@@ -128,3 +128,58 @@ fn write(conn: &Connection, key: &SeriesKey, tier: Tier, open: &Open, closed: bo
     )?;
     Ok(())
 }
+
+/// The time of the series' newest point in a tier (its open row's last point), if it has any.
+pub fn last_point(conn: &Connection, key: &SeriesKey, tier: Tier) -> Result<Option<i64>, SeriesError> {
+    Ok(conn
+        .query_row(
+            "SELECT max(end_ms) FROM series_chunks WHERE machine_id = ?1 AND metric_key_id = ?2 AND tier = ?3",
+            params![key.machine_id, key.metric_key_id, tier as i64],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten())
+}
+
+/// Writes points older than the series' newest point (replayed data) as closed rows by the chunk rule. A row that
+/// already starts at a group's first point takes the group's points, which replace its own at the same times.
+pub fn backfill(
+    conn: &Connection,
+    key: &SeriesKey,
+    tier: Tier,
+    step: Option<Step>,
+    points: &[(i64, f64)],
+) -> Result<(), SeriesError> {
+    let mut start = 0;
+    for i in 1..=points.len() {
+        if i < points.len() && !closes_before(tier, points[start].0, i - start, points[i].0) {
+            continue;
+        }
+        let group = &points[start..i];
+        start = i;
+        let existing: Option<(Vec<u8>, i64)> = conn
+            .query_row(
+                "SELECT data, closed FROM series_chunks WHERE machine_id = ?1 AND metric_key_id = ?2 AND tier = ?3
+                 AND start_ms = ?4",
+                params![key.machine_id, key.metric_key_id, tier as i64, group[0].0],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let mut merged: std::collections::BTreeMap<i64, f64> = std::collections::BTreeMap::new();
+        let mut closed = true;
+        if let Some((data, was_closed)) = existing {
+            let chunk = decode(&data)?;
+            if chunk.cols.len() != 1 {
+                return Err(SeriesError::Shape);
+            }
+            merged.extend(chunk.ts.iter().copied().zip(chunk.cols[0].to_f64()));
+            closed = was_closed == 1;
+        }
+        merged.extend(group.iter().copied());
+        let ts: Vec<i64> = merged.keys().copied().collect();
+        let values: Vec<f64> = merged.values().copied().collect();
+        let open = Open { start_ms: group[0].0, chunk: Chunk { ts, cols: vec![Column::from_values(step, &values)] } };
+        write(conn, key, tier, &open, closed)?;
+    }
+    Ok(())
+}

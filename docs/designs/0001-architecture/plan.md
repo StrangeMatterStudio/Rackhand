@@ -230,7 +230,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T22 | Probe Linux collectors | T16, T06, T11 | collector (fixtures) | done |
 | T23 | Probe buffer, epochs and label table | T16 | unit | done |
 | T24 | Bus | T18 | unit | done |
-| T25 | Ingest: staging, acks, compaction, recent window, clock | T18, T19, T24 | unit | todo |
+| T25 | Ingest: staging, acks, compaction, recent window, clock | T18, T19, T24 | unit | done |
 | T26 | Probe contract `rackhand/probe/1` | T17, T23, T25 | contract | todo |
 | T27 | Rollups and retention | T19, T25, T05 | unit | todo |
 | T28 | Detect: threshold rules | T01 | unit | done |
@@ -1287,6 +1287,7 @@ Only additions to that list are written out below.
   | `ingest::backfill_into_rolled_up_range_marks_dirty` | a dirty range is recorded | 7.3.2 |
   | `ingest::replayed_sample_older_than_10_min_flagged_history_only` | the sample carries the no-threshold flag | E1, AC2 |
   | `ingest::disk_below_2_percent_stops_replay_and_new_jobs` | at an injected 1.9% free, stream 2 stops, live ingest continues and a critical event is raised | E32 |
+  | `ingest::latest_report_facts_kept` | the newest live report's services and containers, and the last update summary sent, are kept; a replayed report changes nothing | 7.3.6, 7.3.2 |
 
   Carried in from T74:
   | Test | Asserts | Covers |
@@ -1296,13 +1297,18 @@ Only additions to that list are written out below.
 - **Verification:**
   ```bash
   cargo nextest run -p rackhand-hub -E 'test(ingest::)'
+  cargo nextest run -p rackhand-hub --test mcp_contract -E 'test(mcp::)'
   ```
-  Expected: 11 passed, 0 failed.
+  Expected: 12 passed, 0 failed; 1 passed, 0 failed.
 - **Manual verification:** None.
 - **Risk / rollback:** revert.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-20 | cargo nextest run -p rackhand-hub -E 'test(ingest::)' (before) | compile errors: `Ingest`, `Receipt`, `Stream`, `ReplayLimits`, `SeriesId`, `Tier` not found |
+  | 2026-11-20 | same (after) | 12 passed (the clock test's first version expected the window's last sample at receive time, but the one report with a wrong clock is rightly placed 15 minutes on; the test now finds each report's sample by value) |
+  | 2026-11-20 | cargo nextest run -p rackhand-hub --test mcp_contract -E 'test(mcp::)' | before `LatestFacts::{services,containers,updates}_json`: compile errors; after: 1 passed (`get_machine` shows the services, containers and updates of the machine's latest report through `Observations`) |
+  | 2026-11-20 | cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0; fast 265 passed; no violations |
 
 ### T26: Probe contract `rackhand/probe/1`
 - **Design refs:** 7.3.2 (all bullets), FR-3, D83, D94, E3, E5, E52, E53, AC48, AC62
@@ -1844,6 +1850,11 @@ Only additions to that list are written out below.
   | Test | Asserts | Covers |
   | --- | --- | --- |
   | `hub_cmd::dashboard_decision_publishes_approval_decided` (carried in from T58) | approving or rejecting in the dashboard publishes `ApprovalDecided` on the Bus | 7.3.8 |
+  Carried in from T25:
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `actions::new_job_refused_while_disk_low` (carried in from T25) | with Ingest's `accepting_jobs()` false, `Actions::run` refuses a new job and records why; live ingest is unaffected | E32 |
+  | `hub::observations_wired_from_ingest` (carried in from T25) | the composition's `Observations` gives MCP and the dashboard the latest facts from Ingest and series from the store | 7.3.6 |
 - **Fails first:** compile errors; then the container tests fail because there is no unit file.
 - **Verification:**
   ```bash
@@ -4479,6 +4490,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D40 | 2026-11-19 | T76 | `assist/{offers, tokens, transcripts, cap, resume}.rs`; `tests/operator_contract.rs` | Tokens are issued and rebound to the next operator through `mcp::keys` (no `assist/tokens.rs`); the fake operator is in the test file. Assist ends a job nobody took with `no_operator` or `declined` and publishes `JobFinished`; moving the incident to `human` and the callout are Incidents' and Notify's (carried into T78). An operator's 5-minute grace and `hub_unreachable` are the operator's side (carried into T77); the hub waits for it. A job token from another endpoint now gets `out_of_scope` at the auth line (it was `unauthorized`). The daily cap counts assistant jobs since 00:00 UTC (20 by default; the setting is wired in T79). A job whose operator never reports stops being usable when its token expires at the deadline; a hub-side end for it is carried into T78 | Incidents and the operator binary come later | plan | - |
 | D41 | 2026-11-20 | T05 | Record 24 h from the WSL machine and from one lab VM the owner names | Recorded the WSL host only; added integer, quantized and tick-stamped encodings and retention options to the measurement | No lab VM was named and the real lab isn't connected yet; an idle local lab VM wouldn't represent a server. The extra encodings show what it takes to meet the budget after plain Gorilla missed it | plan | - |
 | D42 | 2026-11-20 | T05, T19 | T05 deletes the spike code and data; T19 tests `gorilla::` with the 120-point and hour rules | T05 kept a 4-hour sample of its recording as T19's fixture; T19's tests follow D109 (codec, step and chunk tests for the new encoding and the tier 0-only hour rule, plus a refused out-of-order append: 11 instead of 6) | T19's spike-figure test needs recorded data, and the owner's S8 decision changed the encoding and the chunk rule | plan | - |
+| D43 | 2026-11-20 | T25 | `ingest/{staging, compact, window, clock, replay_limits, events}.rs`; `CompactStaged` as in 7.3.8 (no payload); 11 tests | As planned, plus: `CompactStaged` carries the machine's decoded points (`series::compact::Compaction`), because the store can't decode probe frames (it depends on nothing of ours) and Ingest owns the decoding; store schema adds `report_staging.offset_ms` and `rollup_dirty` (design change log, owner to confirm); points older than a series' newest are written as closed backfill rows; the staging limit counts the frames' received bytes and is recounted from the table after each compaction; the window is rebuilt from tier 0 after the start-up compaction (which has moved staging into tier 0); low disk raises `hub.disk_low` (critical) and turns off `accepting_jobs()`, which Actions checks from T41 (carried in); a 12th test for the latest facts; the writer test that used `CompactStaged` as an unimplemented command now uses `PutConnRecords` | Store dependency rule (7.2); restart placement and dirty ranges need somewhere to live; Actions and the composition come in T41 | plan | - |
 
 ## Follow-ups (out of scope)
 

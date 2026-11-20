@@ -127,6 +127,7 @@ CREATE TABLE report_staging (
   epoch INTEGER NOT NULL,
   seq INTEGER NOT NULL,
   received_at_ms INTEGER NOT NULL,
+  offset_ms INTEGER NOT NULL DEFAULT 0,
   frame BLOB NOT NULL,
   PRIMARY KEY (machine_id, epoch, seq)
 ) WITHOUT ROWID;
@@ -152,6 +153,15 @@ CREATE TABLE series_chunks (
   PRIMARY KEY (machine_id, metric_key_id, tier, start_ms)
 ) WITHOUT ROWID;
 CREATE INDEX series_chunks_tier_end ON series_chunks(tier, end_ms);
+
+CREATE TABLE rollup_dirty (
+  machine_id TEXT NOT NULL,
+  metric_key_id INTEGER NOT NULL,
+  tier INTEGER NOT NULL CHECK (tier IN (1, 2)),
+  from_ms INTEGER NOT NULL,
+  to_ms INTEGER NOT NULL,
+  PRIMARY KEY (machine_id, metric_key_id, tier, from_ms)
+) WITHOUT ROWID;
 
 CREATE TABLE events (
   id TEXT PRIMARY KEY,

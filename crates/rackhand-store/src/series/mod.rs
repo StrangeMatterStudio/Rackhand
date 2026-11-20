@@ -3,6 +3,7 @@
 mod bits;
 pub mod chunk;
 pub mod codec;
+pub mod compact;
 pub mod query;
 pub mod step;
 

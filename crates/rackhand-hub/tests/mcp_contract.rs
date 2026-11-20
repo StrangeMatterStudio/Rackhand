@@ -120,6 +120,10 @@ const AUTO_FIX: &str = "+++\nname = \"auto-fix\"\nincident_kinds = [\"service.do
 const PLAYBOOK: &str = "+++\nname = \"service-down\"\nincident_kinds = [\"service.down\"]\nautonomy = 1\nrisk = \"normal\"\ntools = [\"get_incident\", \"get_machine\"]\nhosts = \"incident\"\nmax_runtime = \"30m\"\n+++\n## When\nA service is down.\n## Read first\n## Do\n## Done when\n## Stop and ask if\n";
 
 async fn env(name: &str) -> Env {
+    env_with(name, Arc::new(Fixed)).await
+}
+
+async fn env_with(name: &str, observations: Arc<dyn Observations>) -> Env {
     let dir = std::env::temp_dir().join(format!("rackhand-mcp-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -308,7 +312,7 @@ async fn env(name: &str) -> Env {
     let runner = Arc::new(Runner::default());
     let actions =
         Actions::new(db.clone(), audit.clone(), Bus::new(), runner.clone()).with_lock_wait(Duration::from_millis(500));
-    let mcp = Mcp::new(db.clone(), audit, Arc::new(Fixed)).with_actions(actions).with_library(library.clone());
+    let mcp = Mcp::new(db.clone(), audit, observations).with_actions(actions).with_library(library.clone());
     let router = rackhand_net::router::Router::new(server.clone(), registry).route(alpn::MCP, mcp.handler());
     tokio::spawn(router.serve());
     let mut addr = server.addr();
@@ -1021,4 +1025,90 @@ async fn exec_on_busy_machine_waits_then_machine_busy() {
     let state: String =
         env.db.readers().with(|c| c.query_row("SELECT state FROM jobs WHERE id = ?1", [J1], |r| r.get(0))).unwrap();
     assert_eq!(state, "succeeded");
+}
+
+mod mcp {
+    use rackhand_hub::ingest::{DiskSpace, Ingest, Stream};
+    use rackhand_proto::probe::{ContainerState, Report, ServiceState, ServiceStatus, UpdateSummary};
+
+    use super::*;
+
+    #[derive(Debug)]
+    struct Roomy;
+
+    impl DiskSpace for Roomy {
+        fn free_fraction(&self) -> f64 {
+            0.5
+        }
+    }
+
+    /// What the composition wires in: a machine's facts from Ingest's latest report.
+    #[derive(Debug)]
+    struct FromIngest(Ingest);
+
+    impl Observations for FromIngest {
+        fn series(&self, _q: &SeriesQuery) -> Vec<(i64, f64)> {
+            Vec::new()
+        }
+        fn facts(&self, machine_id: &str) -> Facts {
+            self.0
+                .latest(machine_id)
+                .map(|l| Facts {
+                    services: l.services_json(),
+                    containers: l.containers_json(),
+                    updates: l.updates_json(),
+                })
+                .unwrap_or_default()
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_machine_facts_from_latest_report() {
+        let dir = std::env::temp_dir().join(format!("rackhand-mcp-ingest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ingest = Ingest::new(Arc::new(Db::open(&dir.join("hub.db")).unwrap()), Bus::new(), Arc::new(Roomy));
+        ingest.hello("m1", 1, &[]).await.unwrap();
+        let report = Report {
+            epoch: 1,
+            seq: 1,
+            sampled_at_ms: now_ms(),
+            services: vec![ServiceState {
+                name: "nginx".into(),
+                status: ServiceStatus::Failed as i32,
+                enabled: true,
+                since_ms: 5,
+            }],
+            containers: vec![ContainerState {
+                name: "web".into(),
+                image: "nginx:1.27".into(),
+                state: "running".into(),
+                ..Default::default()
+            }],
+            updates: Some(UpdateSummary {
+                pending: 2,
+                security: 1,
+                reboot_required: true,
+                packages: vec!["openssl".into(), "curl".into()],
+            }),
+            ..Default::default()
+        };
+        ingest.receive("m1", Stream::Live, vec![report], 100, now_ms()).await.unwrap();
+        let env = env_with("ingest-facts", Arc::new(FromIngest(ingest))).await;
+        let token = key(&env, "u-bob", "d-bob", Scope::Read, now_ms() + 3_600_000).await;
+        let mut s = Session::with_token(&env, &env.bob, &token).await;
+        let machine = s.call("get_machine", json!({ "machine": "home/web" })).await.unwrap();
+        assert_eq!(
+            machine["services"],
+            json!([{ "name": "nginx", "state": "failed", "enabled": true, "since_ms": 5 }])
+        );
+        assert_eq!(machine["containers"][0]["image"], "nginx:1.27");
+        assert_eq!(
+            machine["updates"],
+            json!([{ "pending": 2, "security": 1, "reboot_required": true, "packages": ["openssl", "curl"] }])
+        );
+        // a machine without a report has no facts yet
+        let other = s.call("get_machine", json!({ "machine": "home/db" })).await.unwrap();
+        assert_eq!((other["services"].clone(), other["updates"].clone()), (json!([]), json!([])));
+    }
 }

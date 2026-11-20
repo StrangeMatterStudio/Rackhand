@@ -977,9 +977,10 @@ ULIDs for ids, Unix milliseconds (UTC) for times. SQLite in WAL mode at `/var/li
 | `policies` | id, name, patch (`auto`, `approve-only`, `hold`), security_window, full_window, window_length_min (default 180), auto_reboot, auto_rollback (default false), snapshot (`required`, `optional`), quarantine (`approval`, `never`), expected_offline, connections (`full`, `summary`, `off`; default `summary` for role `desktop`, else `full`), transfer_roots, watch_internal, peer_requests (`approval`, `auto`), tunnel_ports, required_mounts (JSON), thresholds (JSON overrides) |
 | `windows` | id, machine_id or tag, kind (`maintenance`), rrule (daily or weekly, start time, duration), timezone |
 | `metric_keys` | id, name, unit, label_set (JSON) |
-| `report_staging` | machine_id, epoch, seq, received_at_ms, frame (zstd protobuf) |
+| `report_staging` | machine_id, epoch, seq, received_at_ms, offset_ms (the clock offset the report is placed with), frame (zstd protobuf) |
 | `probe_labels` | machine_id, epoch, labels_id, metric_key_id (the probe's label table, 7.3.2) |
 | `series_chunks` | machine_id, metric_key_id, tier (0, 1, 2), start_ms, end_ms, count, data (encoded as in Chunk encoding below; tiers 1 and 2 hold min, max, avg) |
+| `rollup_dirty` | machine_id, metric_key_id, tier (1 or 2), from_ms, to_ms (a range that backfilled data reached after it was rolled up, 7.3.2) |
 | `events` | id, machine_id, at_ms, kind, severity, subject, data (JSON), job_id (if during a job) |
 | `conn_records` | machine_id, bucket_ms (5-minute buckets), container (empty for host processes), exe, dest_ip, dest_port, proto, dest_asn, dest_country, verdict, bytes_out, count |
 | `conn_baseline` | machine_id, container, exe, dest_asn, dest_country, dest_port, proto, first_seen_ms, last_seen_ms, count |
@@ -1013,7 +1014,8 @@ runs hourly and deletes in batches of 10 000 rows until nothing older is left, p
 
 Every table that grows has a rule; the rest are these. `check_results`: 30 d (check latency and state are also kept as
 series). `incident_events`: with their incident. `notifications`: 90 d. `peer_summaries`: the latest summary per peer
-only. `probe_labels`: with their epoch (48 h after a newer epoch starts). `conn_baseline`: entries not seen for 180 d.
+only. `probe_labels`: with their epoch (48 h after a newer epoch starts). `rollup_dirty`: deleted once the range is rolled
+up again. `conn_baseline`: entries not seen for 180 d.
 `join_tokens` and `job_tokens`: 30 d after they expire. `sessions`: deleted when they expire. `known_devices`: 1 y after
 they were last seen.
 
@@ -2308,3 +2310,4 @@ None.
 | 2026-11-20 | D110: relays have one operator-set rate and no per-key rates or daily quotas (7.3.10) | Owner decision on S2 | Owen |
 | 2026-11-20 | D111: the eBPF program is its own crate licensed GPL-2.0 OR MIT (5.3) | Owner decision on S1 | Owen |
 | 2026-11-20 | D112: quarantine flushes a Proxmox guest's conntrack entries through the hypervisor's managed enrollment; `conntrack_not_flushed` otherwise (7.5.6, 7.8.6) | Owner decision on S4 | Owen |
+| 2026-11-20 | 7.4.1: `report_staging.offset_ms` (so reports staged before a restart are placed with the offset they arrived with) and `rollup_dirty` (where 7.3.2's dirty ranges are kept); gaps filled in T25, owner to confirm | Implementation (T25) | Implementation run |

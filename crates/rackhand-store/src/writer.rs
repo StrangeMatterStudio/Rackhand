@@ -77,7 +77,8 @@ pub struct RegistryChange {
 pub enum WriteCmd {
     // Ingest
     StageReport(Row),
-    CompactStaged,
+    /// One machine's staged reports into chunk rows (7.3.2); Ingest decodes the frames and places the points.
+    CompactStaged(crate::series::compact::Compaction),
     PutProbeLabels(Vec<Row>),
     PutEvents(Vec<Row>),
     PutConnRecords(Vec<Row>),
@@ -212,6 +213,8 @@ pub enum StoreError {
     #[error("conflict: {0}")]
     Conflict(&'static str),
     #[error(transparent)]
+    Series(#[from] crate::series::SeriesError),
+    #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
 }
 
@@ -331,6 +334,25 @@ fn update_row(tx: &rusqlite::Transaction<'_>, u: &RowUpdate) -> Result<usize, St
 
 /// Inserts the row, or updates the given columns of the existing one (never a delete and re-insert, which would break
 /// rows that reference it).
+/// Inserts rows, skipping any whose key is already present, in one transaction.
+fn insert_or_ignore(conn: &mut Connection, table: &'static str, rows: &[Row]) -> Result<usize, StoreError> {
+    check_ident(table)?;
+    let tx = conn.transaction()?;
+    let mut n = 0;
+    for row in rows {
+        let cols: Vec<&str> = row.keys().copied().collect();
+        for c in &cols {
+            check_ident(c)?;
+        }
+        let quoted: Vec<String> = cols.iter().map(|c| format!("\"{c}\"")).collect();
+        let placeholders: Vec<String> = (1..=cols.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!("INSERT OR IGNORE INTO {table} ({}) VALUES ({})", quoted.join(", "), placeholders.join(", "));
+        n += tx.execute(&sql, rusqlite::params_from_iter(row.values()))?;
+    }
+    tx.commit()?;
+    Ok(n)
+}
+
 fn upsert_one(conn: &mut Connection, table: &'static str, key: &'static str, row: Row) -> Result<usize, StoreError> {
     check_ident(table)?;
     check_ident(key)?;
@@ -641,6 +663,24 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
         WriteCmd::AppendTranscript(row) => {
             let tx = conn.transaction()?;
             let n = write_row(&tx, &RowWrite::insert("assistant_transcripts", row))?;
+            tx.commit()?;
+            Ok(n)
+        }
+        // A report seen again (resent before its ack arrived) is already staged.
+        WriteCmd::StageReport(row) => insert_or_ignore(conn, "report_staging", &[row]),
+        WriteCmd::PutProbeLabels(rows) => insert_or_ignore(conn, "probe_labels", &rows),
+        WriteCmd::PutEvents(rows) => {
+            let tx = conn.transaction()?;
+            let mut n = 0;
+            for row in rows {
+                n += write_row(&tx, &RowWrite::insert("events", row))?;
+            }
+            tx.commit()?;
+            Ok(n)
+        }
+        WriteCmd::CompactStaged(c) => {
+            let tx = conn.transaction()?;
+            let n = crate::series::compact::compact(&tx, &c)?;
             tx.commit()?;
             Ok(n)
         }
