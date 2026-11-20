@@ -370,3 +370,17 @@ async fn stale_samples_do_not_open_threshold_incidents() {
     env.run(M2, CPU, T0, 16, 99.0).await;
     assert_eq!(env.incidents().len(), 1);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn condition_resolves_after_restart() {
+    let mut env = Env::new("restart-clear").await;
+    env.run(M1, CPU, T0, 16, 95.0).await;
+    assert_eq!(env.incidents()[0].1, "open");
+    env.ingest.compact().await.unwrap();
+    // the hub restarts with the incident open; two samples under the clear line then resolve it
+    let Env { db, path, seq, .. } = env;
+    let mut env = Env::start(db, path, seq).await;
+    env.ingest.start(T0 + 16 * MIN).await.unwrap();
+    env.run(M1, CPU, T0 + 16 * MIN, 1, 50.0).await;
+    assert_eq!(env.incidents()[0].1, "resolved");
+}

@@ -2248,7 +2248,7 @@ the owner and the document is updated before the work that depends on it starts.
 | D109 | Time-series encoding and tier 2 retention | Integer columns at a per-metric step with tick timestamps, the cheapest of three coders per chunk, f64 Gorilla for metrics without a step; tier 1 and 2 chunks of 120 points; tier 2 kept 1 year | Spike S8: Gorilla as designed projects 5.66 GB per 50 machines, this 1.81 GB | Owen | 2026-11-20 |
 | D110 | Relay limits | One rate per relay set by the operator (default 1 Mbit/s public, none private); no per-key rates or daily quotas | Spike S2: iroh-relay has no per-endpoint rate or byte counter | Owen | 2026-11-20 |
 | D111 | eBPF program licence | Its own crate, GPL-2.0 OR MIT | Spike S1: the kernel helpers it needs are GPL-only | Owen | 2026-11-20 |
-| D112 | Existing connections of a quarantined Proxmox guest | `conntrack -D` on the host through the hypervisor's managed enrollment | Spike S4: the Proxmox API can't flush conntrack | Owen | 2026-11-20 |
+| D112 | Existing connections of a quarantined Proxmox guest | `conntrack -D` on the host through the hypervisor's managed enrollment (Owen); when the hypervisor isn't managed, the quarantine still applies and records `conntrack_not_flushed` (filled in by the implementation run, owner to confirm) | Spike S4: the Proxmox API can't flush conntrack | Owen | 2026-11-20 |
 
 ## 19. Deferred decisions
 

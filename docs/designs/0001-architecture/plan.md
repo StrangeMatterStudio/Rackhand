@@ -239,6 +239,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T31 | Detect: baselines and counted rules | T28 | unit | done |
 | T32 | Incidents: lifecycle and evaluation | T25, T24, T28 to T31 | unit | done |
 | T33 | Notify: Discord, SMTP, grouping, retries | T32 | unit (HTTP and SMTP fakes) | done |
+| T32b | Incidents: forecasts, baselines, machine silence and counted rules | T32, T27, T29 to T31 | unit | todo |
 | T34 | Scheduler and windows | T24 | unit | done |
 | T35 | Join contract and Registry | T17, T18, T21 | contract | done |
 | T36 | Web foundation and first run | T18, T20, T21 | unit (HTTP) | done |
@@ -246,7 +247,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T38 | Passkeys, OIDC and account settings | T37 | unit (HTTP, fake provider) | done |
 | T39 | Dashboard pages for monitoring | T32, T36 | unit (HTTP) | todo |
 | T40 | `/metrics` endpoint | T25, T36 | unit (HTTP) | todo |
-| T41 | Hub composition and `rackhand hub` commands | T24 to T40 | integration | todo |
+| T41 | Hub composition and `rackhand hub` commands | T24 to T40, T32b | integration | todo |
 | T42 | Probe daemon | T22 to T26, T41 | integration | todo |
 | T43 | Helper basics and package-list refresh | T42 | integration (containers) | todo |
 | T44 | Linux and Alpine installer and enrollment | T35, T43 | integration (containers) | todo |
@@ -1288,6 +1289,7 @@ Only additions to that list are written out below.
   | `ingest::replayed_sample_older_than_10_min_flagged_history_only` | the sample carries the no-threshold flag | E1, AC2 |
   | `ingest::disk_below_2_percent_stops_replay_and_new_jobs` | at an injected 1.9% free, stream 2 stops, live ingest continues and a critical event is raised | E32 |
   | `ingest::latest_report_facts_kept` | the newest live report's services and containers, and the last update summary sent, are kept; a replayed report changes nothing | 7.3.6, 7.3.2 |
+  | `ingest::steady_state_compaction_marks_nothing_dirty` (added after review) | live data compacted after its minute rollup marks nothing dirty, and rows follow the chunk rule | 7.3.2, D109 |
 
   Carried in from T74:
   | Test | Asserts | Covers |
@@ -1309,6 +1311,7 @@ Only additions to that list are written out below.
   | 2026-11-20 | same (after) | 12 passed (the clock test's first version expected the window's last sample at receive time, but the one report with a wrong clock is rightly placed 15 minutes on; the test now finds each report's sample by value) |
   | 2026-11-20 | cargo nextest run -p rackhand-hub --test mcp_contract -E 'test(mcp::)' | before `LatestFacts::{services,containers,updates}_json`: compile errors; after: 1 passed (`get_machine` shows the services, containers and updates of the machine's latest report through `Observations`) |
   | 2026-11-20 | cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0; fast 265 passed; no violations |
+  | 2026-11-20 (review) | cargo nextest run -p rackhand-hub -E 'test(steady_state)' | a review found compaction marked every point dirty once minute rollups had run (they run ahead of the 5-minute compaction), which would recompute and add rows every hour against the D109 budget; the new test failed with the old marking (2 dirty ranges), and compaction now marks only points that arrived after their minute ended: passes |
 
 ### T26: Probe contract `rackhand/probe/1`
 - **Design refs:** 7.3.2 (all bullets), FR-3, D83, D94, E3, E5, E52, E53, AC48, AC62
@@ -1541,6 +1544,7 @@ Only additions to that list are written out below.
   | `incidents::rule_mid_duration_survives_restart` | 20 minutes into a 30-minute rule, a restart, and the incident still opens at 30 | AC66, D100 |
   | `incidents::reconcile_advances_incident_whose_job_finished` | with no `JobFinished` event, the minute task advances it | 7.3.8 |
   | `incidents::stale_samples_do_not_open_threshold_incidents` | samples flagged as older than 10 minutes feed history only | E1, AC2 |
+  | `incidents::condition_resolves_after_restart` (added after review) | an incident open across a restart resolves when its condition clears | 7.5.2, E44 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
@@ -1556,6 +1560,7 @@ Only additions to that list are written out below.
   | 2026-11-20 | cargo nextest run -p rackhand-hub -E 'test(incidents::)' (before) | compile errors: `Incidents`, `Silence`, `SilenceTarget`, `State`, `IncidentsError` not found |
   | 2026-11-20 | same (after) | first run 7 passed, 3 failed: two timing tests assumed a rule fires only after its full duration on a fresh series, but 7.6.1 matches at 80% of the expected samples, so they now start with normal readings; and a second unresolved incident per dedupe key broke the store's unique index (one unresolved incident per key), so event incidents merge while unresolved (below). Then 10 passed |
   | 2026-11-20 | cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0 (after factoring one tuple into a struct); fast 298 passed; no violations |
+  | 2026-11-20 (review) | cargo nextest run -p rackhand-hub -E 'test(condition_resolves_after_restart)' | failed first (rule states start empty after a restart, so an open incident never saw its condition clear); open condition incidents now seed their rule states when Incidents starts: passes. The review also found that forecasts, baselines, machine silence and the counted rules were wired by no step: added as T32b |
 
 ### T33: Notify: Discord, SMTP, grouping, retries
 - **Design refs:** FR-11, 7.3.9, 7.6.7, E31, AC5 (callout timing), AC52
@@ -1579,6 +1584,7 @@ Only additions to that list are written out below.
   | `notify::retries_1_5_15_then_failed_raises_notifier_failed` | `notifier_failed` is also sent through the other notifier | E31 |
   | `notify::callouts_carry_no_secrets_or_command_output` | a callout built from an incident with job output contains none of it | 7.3.9 |
   | `notify::notify_step_sends_through_every_notifier` | `Notify::send_text` (the runbook step's message) goes through every notifier | 7.8.7 |
+  | `notify::smtp_header_injection_stripped` (added after review) | CR and LF in a title (a machine-reported subject) can't start another mail header | 7.3.9, 10 |
 
   Carried in from T55 (the Executor passes these step kinds to the system that owns them; until then they fail `<kind>_unavailable`):
   | Test | Asserts | Covers |
@@ -1600,6 +1606,45 @@ Only additions to that list are written out below.
   | 2026-11-20 | same (after) | first run 7 passed, 1 failed, 1 hung: the ack helper upserted a partial incident row (NOT NULL), now an UPDATE as `acknowledge` does; and the warning group loop held the state lock across its sends (a deadlock the grouping test caught), now taken out first. Then 9 passed |
   | 2026-11-20 | cargo nextest run -p rackhand-it -E 'test(notify_step)' | carried from T55: before, the step failed `notify_unavailable` and the test didn't compile (no `notify` types); after, 1 passed (a `notify` step succeeds through Notify; a failed send fails it) |
   | 2026-11-20 | cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0 (a test helper's arguments grouped for clippy); fast 307 passed; no violations |
+  | 2026-11-20 (review) | cargo nextest run -p rackhand-hub -E 'test(smtp_header_injection)' | failed first (a subject with CR LF added a `Bcc:` header); header values are now kept on one line: passes |
+  | 2026-11-20 | cargo deny check; cargo audit; cargo xtask ci it | advisories, bans, licenses, sources ok; 2 allowed warnings; it 22 passed (the new notify step test among them) |
+
+### T32b: Incidents: forecasts, baselines, machine silence and counted rules
+- **Design refs:** 7.6.1 (counted rows), 7.6.2 (forecasts), 7.6.3 (silence), 7.6.4 (baselines), 7.5.2 (clearing counts:
+  2 recomputations for a forecast or baseline, the first report for silence, the rule's own count for counted rules),
+  AC6, AC7, AC8, E38
+- **Goal:** Incidents evaluates every rule of 7.6, not only thresholds: disk-fill and memory-growth forecasts from tiers
+  1 and 2, baselines from `baseline_buckets` (updated hourly from tier 2), machine silence, and the counted rules
+  (watched services, container restarts, security updates). Added after review: no other step wired these.
+- **Depends on:** T32, T27, T29 to T31
+- **Changes:** `crates/rackhand-hub/src/incidents/{forecasts.rs, baselines.rs, machine_silence.rs, counted.rs}`; Ingest
+  keeps per-service and per-container report counts; the `UpdateBaselines` handler.
+- **Tests to write first:**
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `incidents::disk_fill_forecast_warns_with_eta` | tier 1 and tier 2 data filling a disk open a warning naming the ETA | 7.6.2, AC6 |
+  | `incidents::forecast_clears_after_2_recomputations` | one recomputation under the line isn't enough; two resolve it | 7.5.2 |
+  | `incidents::baseline_deviation_opens_and_clears` | a value far outside the learned band opens a warning; 2 samples back inside clear it | 7.6.4, AC7 |
+  | `incidents::silent_machine_warns_after_60s_and_clears_on_report` | no report for 60 s (at most 4 intervals) opens `machine.silent`; the first report resolves it | 7.6.3, AC8 |
+  | `incidents::expected_offline_is_info_only` | a machine marked expected offline gets no warning | E38 |
+  | `incidents::watched_service_not_active_2_and_4_reports` | warning after 2 reports, critical after 4, resolved when active again | 7.6.1 |
+  | `incidents::container_restarts_over_3_in_10_min` | 4 restarts in 10 minutes warn; 11 are critical | 7.6.1 |
+  | `incidents::security_updates_older_than_7_days` | pending security updates first seen 8 days ago warn; 15 days, critical | 7.6.1 |
+- **Fails first:** compile errors.
+- **Verification:**
+  ```bash
+  cargo nextest run -p rackhand-hub -E 'test(incidents::)'
+  ```
+  Expected: 19 passed, 0 failed.
+- **Regression:** `cargo xtask ci fast`: exit 0.
+- **Manual verification:** None.
+- **Done when:**
+  - [ ] New tests seen failing first
+  - [ ] New tests and regression suite pass
+- **Risk / rollback:** revert.
+- **Evidence:**
+  | When | Command | Result |
+  | --- | --- | --- |
 
 ### T34: Scheduler and windows
 - **Design refs:** 7.2 (Scheduler), 7.5.3 step 1, the `windows` table, E46, AC20 (maintenance window part)
@@ -1887,6 +1932,11 @@ Only additions to that list are written out below.
   | Test | Asserts | Covers |
   | --- | --- | --- |
   | `hub::notifiers_built_from_config` (carried in from T33) | `config/notifiers.toml` with `secret:` references builds the Discord and SMTP notifiers (secrets from the Vault), Notify ticks every 15 s, and the Executor's other step kinds reach Notify | 7.3.9, 7.4.3 |
+  Carried in from the review after T33:
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `hub::notify_state_survives_restart` (carried in from the review) | after a restart, incidents called out before it still get their resolution and their 6-hour re-send (rebuilt from `notifications`) | 7.6.7 |
+  | `hub::received_ranges_survive_restart` (carried in from the review) | after a restart, `Welcome.received` still lists the committed ranges, so a rolled-back probe starts a new epoch | 7.3.2, AC48 |
 - **Fails first:** compile errors; then the container tests fail because there is no unit file.
 - **Verification:**
   ```bash
@@ -2958,6 +3008,10 @@ Only additions to that list are written out below.
   | `capability::no_ebpf_reports_sampling` | a kernel without BTF gives `sampling` in `Hello.capabilities` | E36 |
   | `it::sampling::connection_open_across_poll_attributed_to_container` | two containers running the same `curl`; the record names the right container | AC71, D103 |
   | `it::sampling::exec_from_tmp_and_new_port_reported` | both events reach the hub | FR-5 |
+  Carried in from the review after T33:
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `ingest::probe_events_stored_before_compaction` (carried in from the review) | a report's `events` become `events` rows (through `raise_event`) and its `connections` reach connection storage before compaction deletes the frame | 7.3.2, 7.6.5 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
@@ -4533,6 +4587,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D45 | 2026-11-20 | T27 | `rackhand-store/src/{rollup.rs, retention.rs}`; the `Rollup`, `RetentionBatch` and `MarkRollupDirty` handlers; 6 tests | As planned, plus: minute rollups come from Ingest's recent window (7.4.1 says so; tier 0 lags compaction by up to 5 minutes), handed to the store by a new `PutRollups` command, with `ingest/series.rs` making them and reading series for MCP and the dashboard (tier chosen by the range); `Rollup` recomputes the dirty ranges after rolling up; `RetentionBatch` carries the rule, cutoff and batch size; `backfill` takes several columns; the age rules this step runs are the three series tiers and `events`, and every other rule of 7.4.1 is listed and built in T98; tables 7.4.1 gives no rule (`jobs`, `silences`, `library_revisions` among them) are listed as fixed size; 2 more tests, and the carried `get_vitals` test | The design's own rollup source; the scheduler wiring comes in T41 | plan | - |
 | D46 | 2026-11-20 | T32 | `incidents/{lifecycle, evaluate, dedupe, silences, reconcile}.rs`; the three handlers | As planned, plus: detect's threshold state follows the highest matching level while active, so severity falls as 7.5.2 says (T28 only rose; a detect test added); the store gets an upsert row mode so an incident and its event commit together without the cascade a REPLACE would fire; Incidents reads warning and critical events from the `events` table after the last row it saw (Ingest can't call Incidents); an unresolved event incident takes every matching event (the store allows one unresolved incident per key) and a resolved one reopens for a matching event within 24 hours of its last event, while condition incidents reopen within 30 minutes (owner to confirm); a rule that fired under a silence opens its incident once the silence ends; a failed job's incident goes to a person until T57 and T78 route it | Design 7.5.2 and the schema's unique index | plan | - |
 | D47 | 2026-11-20 | T33 | `notify/{discord, smtp, grouping, retry}.rs`; a `wiremock` Discord endpoint and `tests/support/smtp_sink.rs` | As planned, plus: a hub-wide `http` module (one HTTP/1.1 request over rustls with the webpki roots, plain HTTP to loopback only) because hub systems may not use Web's OIDC client; the SMTP client is written here (STARTTLS or implicit TLS, AUTH PLAIN) rather than pulling in a mail library; the Discord test endpoint is a local axum server (no new dependency) and the SMTP sink lives in `notify/smtp_sink.rs` under `cfg(test)`; Notify follows `incident_events` (the callout flag Incidents writes) instead of the bus; Notify is the Executor's runner for `notify` steps; notifiers from `config/notifiers.toml` and the Vault are built in T41 (carried in); a 9th test | Dependency rules (7.2); fewer dependencies | plan | - |
+| D48 | 2026-11-20 | T25, T32, T33, new T32b | The steps as planned | A review after T33 found four gaps the tests didn't cover, each now with a test seen failing first: compaction marked every point dirty, so only late points do now; open condition incidents now resolve after a restart; SMTP headers stay on one line; and forecasts, baselines, machine silence and counted rules were wired by no step, so step T32b is added before T41. Notify's and Ingest's in-memory state across restarts and the probe's events and connections are carried into T41 and T67 | Found in review | plan | - |
 
 ## Follow-ups (out of scope)
 

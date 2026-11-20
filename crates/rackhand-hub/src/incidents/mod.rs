@@ -73,21 +73,37 @@ impl Incidents {
             .readers()
             .with(|c| c.query_row("SELECT coalesce(max(rowid), 0) FROM events", [], |r| r.get(0)))
             .unwrap_or(0);
-        let eval = Eval { last_event, ..Eval::default() };
-        Incidents {
-            inner: Arc::new(Inner {
-                db,
-                ingest,
-                bus,
-                rules: rackhand_detect::rules::default_rules(),
-                eval: Mutex::new(eval),
-            }),
-        }
+        let rules = rackhand_detect::rules::default_rules();
+        let eval = Eval { last_event, rules: open_rule_states(&db, &rules), ..Eval::default() };
+        Incidents { inner: Arc::new(Inner { db, ingest, bus, rules, eval: Mutex::new(eval) }) }
     }
 
     fn eval(&self) -> MutexGuard<'_, Eval> {
         self.inner.eval.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+/// The rule states of condition incidents still open when the hub starts, so their condition can clear them (a rule's
+/// state is in memory; without this an incident open across a restart would never resolve).
+fn open_rule_states(db: &Db, rules: &[Rule]) -> HashMap<SeriesRule, RuleState> {
+    let open: Vec<(String, String, String)> = db
+        .readers()
+        .with(|c| {
+            let mut s = c.prepare(
+                "SELECT dedupe_key, rule_id, severity FROM incidents WHERE state != 'resolved' AND rule_id IS NOT NULL",
+            )?;
+            s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect()
+        })
+        .unwrap_or_default();
+    let mut states = HashMap::new();
+    for (key, rule_id, severity) in open {
+        let Some(rule) = rules.iter().find(|r| r.id == rule_id) else { continue };
+        let Some((machine, rest)) = key.split_once(':') else { continue };
+        let Some(labels) = rest.strip_prefix(&format!("{rule_id}:")) else { continue };
+        let state = RuleState { active: Some(lifecycle::parse_severity(&severity)), last_sample_ms: None };
+        states.insert(SeriesRule { machine: machine.to_string(), rule: rule.id, labels: labels.to_string() }, state);
+    }
+    states
 }
 
 #[cfg(test)]

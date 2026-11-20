@@ -18,9 +18,13 @@ pub struct CompactStats {
     pub points: usize,
 }
 
+/// A series by metric name, unit and canonical label set.
+type SeriesName = (&'static str, &'static str, String);
+
 struct Staged {
     epoch: i64,
     seq: i64,
+    received_at_ms: i64,
     offset_ms: i64,
     frame: Vec<u8>,
 }
@@ -31,12 +35,19 @@ impl Ingest {
         let _one = self.inner.compacting.lock().await;
         let staged = self.inner.db.readers().with(|c| {
             let mut stmt = c.prepare(
-                "SELECT machine_id, epoch, seq, offset_ms, frame FROM report_staging ORDER BY machine_id, epoch, seq",
+                "SELECT machine_id, epoch, seq, received_at_ms, offset_ms, frame FROM report_staging
+                 ORDER BY machine_id, epoch, seq",
             )?;
             let rows = stmt.query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
-                    Staged { epoch: r.get(1)?, seq: r.get(2)?, offset_ms: r.get(3)?, frame: r.get(4)? },
+                    Staged {
+                        epoch: r.get(1)?,
+                        seq: r.get(2)?,
+                        received_at_ms: r.get(3)?,
+                        offset_ms: r.get(4)?,
+                        frame: r.get(5)?,
+                    },
                 ))
             })?;
             let mut by_machine: BTreeMap<String, Vec<Staged>> = BTreeMap::new();
@@ -78,7 +89,8 @@ impl Ingest {
         })?;
         let interval = self.state().machines.get(machine).map_or(DEFAULT_INTERVAL_MS, |m| m.interval_ms);
         let mut new_labels = Vec::new();
-        let mut series: BTreeMap<(&'static str, &'static str, String), BTreeMap<i64, f64>> = BTreeMap::new();
+        // each point with whether it arrived after its minute ended (a rollup may have run without it)
+        let mut series: BTreeMap<SeriesName, BTreeMap<i64, (f64, bool)>> = BTreeMap::new();
         for s in reports {
             let bytes =
                 rackhand_proto::zstd::decompress_bounded(&s.frame).map_err(|e| IngestError::Frame(format!("{e:?}")))?;
@@ -89,13 +101,17 @@ impl Ingest {
                 labels.insert((s.epoch, e.id), set);
             }
             let at = tick(report.sampled_at_ms + s.offset_ms, interval);
+            let late = s.received_at_ms >= at - at.rem_euclid(60_000) + 60_000;
             for sample in &report.vitals {
                 let (Some(metric), Some(set)) =
                     (rackhand_proto::catalogue::by_id(sample.metric), labels.get(&(s.epoch, sample.labels_id)))
                 else {
                     continue;
                 };
-                series.entry((metric.name, metric.unit, labels_json(set))).or_default().insert(at, sample.value);
+                series
+                    .entry((metric.name, metric.unit, labels_json(set)))
+                    .or_default()
+                    .insert(at, (sample.value, late));
             }
         }
         Ok(Compaction {
@@ -108,7 +124,8 @@ impl Ingest {
                     name: name.into(),
                     unit: unit.into(),
                     label_set,
-                    points: points.into_iter().collect(),
+                    late: points.iter().filter(|(_, (_, late))| *late).map(|(t, _)| *t).collect(),
+                    points: points.into_iter().map(|(t, (v, _))| (t, v)).collect(),
                 })
                 .collect(),
         })

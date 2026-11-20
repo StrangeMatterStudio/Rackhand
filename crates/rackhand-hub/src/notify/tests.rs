@@ -415,3 +415,24 @@ async fn notify_step_sends_through_every_notifier() {
     assert_eq!(sent.len(), 1);
     assert_eq!((sent[0].kind, sent[0].incidents[0].title.as_str()), (MessageKind::Text, "Backup of web finished"));
 }
+
+#[test]
+fn smtp_header_injection_stripped() {
+    let config = smtp::SmtpConfig {
+        host: "localhost".into(),
+        port: 25,
+        security: smtp::Security::StartTls,
+        username: None,
+        password: None,
+        from: "hub@example.net".into(),
+        to: vec!["ops@example.net".into()],
+        extra_roots: Vec::new(),
+    };
+    // an event incident's title carries a subject the machine reported
+    let msg =
+        message(MessageKind::Callout, "warning", vec![callout("auth.root_login: x\r\nBcc: evil@example.net", "d")]);
+    let mail = smtp::mime_for_test(&config, &msg);
+    let headers = mail.split("\r\n\r\n").next().unwrap();
+    assert!(!headers.lines().any(|l| l.starts_with("Bcc:")), "{headers}");
+    assert!(headers.contains("Subject: [Rackhand] WARNING home/web: auth.root_login: x Bcc: evil@example.net"));
+}

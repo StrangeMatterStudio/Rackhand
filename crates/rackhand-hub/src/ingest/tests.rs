@@ -412,3 +412,31 @@ async fn minute_rollup_from_window() {
     let month = ingest.series(M1, "cpu.busy_pct", &labels, T0 - 10 * 86_400_000, T0 + MIN).unwrap();
     assert_eq!(month, vec![(T0, 4.0)], "tier 1's avg");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn steady_state_compaction_marks_nothing_dirty() {
+    let env = Env::new("steady");
+    let ingest = env.ingest();
+    hello(&ingest, M1, 13).await;
+    // 70 minutes of live reports, with the hub's own schedule: minute rollups each minute, compaction every 5
+    // minutes, the hourly rollup on the hour
+    let mut seq = 0;
+    for minute in 0..70i64 {
+        for k in 0..4 {
+            seq += 1;
+            let t = T0 + minute * MIN + k * 15_000;
+            live(&ingest, M1, report(13, seq, t, (seq % 7) as f64), t + 300).await;
+        }
+        ingest.rollup_minute(T0 + minute * MIN).await.unwrap();
+        if minute % 5 == 4 {
+            ingest.compact().await.unwrap();
+        }
+        if minute == 59 {
+            ingest.rollup_hour(T0).await.unwrap();
+        }
+    }
+    ingest.compact().await.unwrap();
+    assert_eq!(env.count("SELECT count(*) FROM rollup_dirty"), 0, "on-time data is never dirty");
+    let rows = |tier: i64| env.count(&format!("SELECT count(*) FROM series_chunks WHERE tier = {tier}"));
+    assert_eq!((rows(0), rows(1), rows(2)), (3, 1, 1), "rows by the chunk rule: 280 points, 70 minutes, 1 hour");
+}

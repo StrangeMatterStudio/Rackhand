@@ -15,6 +15,9 @@ pub struct SeriesPoints {
     pub label_set: String,
     /// In time order, one point per timestamp.
     pub points: Vec<(i64, f64)>,
+    /// The times of points that arrived after their minute ended, so a rollup may already have run without them.
+    /// Only these can make a rolled-up range dirty.
+    pub late: Vec<i64>,
 }
 
 /// A label table entry of a probe epoch (`probe_labels`).
@@ -64,7 +67,7 @@ pub fn compact(conn: &Connection, c: &Compaction) -> Result<usize, SeriesError> 
         let ts: Vec<i64> = newer.iter().map(|p| p.0).collect();
         let values: Vec<f64> = newer.iter().map(|p| p.1).collect();
         append(conn, &key, Tier::Raw, step, &ts, &[values])?;
-        mark_dirty(conn, &key, &s.points)?;
+        mark_dirty(conn, &key, &s.late)?;
         written += s.points.len();
     }
     for (epoch, seq) in &c.staged {
@@ -90,7 +93,7 @@ pub(crate) fn metric_key(conn: &Connection, name: &str, unit: &str, label_set: &
 }
 
 /// Records the minutes and hours of `points` that were already rolled up (7.3.2), to be rolled up again.
-fn mark_dirty(conn: &Connection, key: &SeriesKey, points: &[(i64, f64)]) -> Result<(), SeriesError> {
+fn mark_dirty(conn: &Connection, key: &SeriesKey, late: &[i64]) -> Result<(), SeriesError> {
     for (tier, width) in [(Tier::Minute, MINUTE_MS), (Tier::Hour, HOUR_MS)] {
         let rolled: Option<i64> = conn
             .query_row(
@@ -101,7 +104,7 @@ fn mark_dirty(conn: &Connection, key: &SeriesKey, points: &[(i64, f64)]) -> Resu
             .optional()?
             .flatten();
         let Some(rolled) = rolled else { continue };
-        let starts: Vec<i64> = points.iter().map(|p| p.0 - p.0.rem_euclid(width)).filter(|s| *s <= rolled).collect();
+        let starts: Vec<i64> = late.iter().map(|t| t - t.rem_euclid(width)).filter(|s| *s <= rolled).collect();
         let (Some(&from), Some(&last)) = (starts.iter().min(), starts.iter().max()) else { continue };
         conn.execute(
             "INSERT INTO rollup_dirty (machine_id, metric_key_id, tier, from_ms, to_ms) VALUES (?1, ?2, ?3, ?4, ?5)

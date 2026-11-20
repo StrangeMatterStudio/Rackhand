@@ -46,8 +46,13 @@ fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
+/// A header value on one line: CR and LF (which could start another header) become a single space.
+fn one_line(s: &str) -> String {
+    s.split(['\r', '\n']).filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" ")
+}
+
 pub fn subject(msg: &Message) -> String {
-    format!("[Rackhand] {}", headline(msg))
+    one_line(&format!("[Rackhand] {}", headline(msg)))
 }
 
 /// The plain text part.
@@ -84,8 +89,8 @@ fn mime(config: &SmtpConfig, msg: &Message) -> String {
         .unwrap_or_default();
     let domain = config.from.rsplit('@').next().unwrap_or("localhost");
     let mut out = String::new();
-    out.push_str(&format!("From: {}\r\n", config.from));
-    out.push_str(&format!("To: {}\r\n", config.to.join(", ")));
+    out.push_str(&format!("From: {}\r\n", one_line(&config.from)));
+    out.push_str(&format!("To: {}\r\n", one_line(&config.to.join(", "))));
     out.push_str(&format!("Subject: {}\r\n", subject(msg)));
     out.push_str(&format!("Date: {date}\r\n"));
     out.push_str(&format!("Message-ID: <{}@{domain}>\r\n", rackhand_store::ids::new_id()));
@@ -184,4 +189,9 @@ impl Transport for Smtp {
             }
         })
     }
+}
+
+#[cfg(test)]
+pub fn mime_for_test(config: &SmtpConfig, msg: &Message) -> String {
+    mime(config, msg)
 }
