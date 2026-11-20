@@ -224,7 +224,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T16 | Wire format: framing, limits, close codes, messages | T15 | unit, golden | done |
 | T17 | Net: endpoint, node key, registry, contract harness | T16, T08, T09 | contract | done |
 | T18 | Store: schema, writer task, read pool | T16 | unit | done |
-| T19 | Time-series encoding and chunks | T18, T05 | unit, property | todo |
+| T19 | Time-series encoding and chunks | T18, T05 | unit, property | done |
 | T20 | Audit log with hash chain and checkpoints | T18 | unit | done |
 | T21 | Vault | T18 | unit | done |
 | T22 | Probe Linux collectors | T16, T06, T11 | collector (fixtures) | done |
@@ -1082,22 +1082,26 @@ Only additions to that list are written out below.
   | `chunk::tier0_chunk_closes_at_hour_boundary` | a tier 0 point in the next hour opens a new row, even at 30 points | 7.4.1 |
   | `chunk::tier1_chunk_spans_the_hour` | tier 1 points across an hour boundary stay in one open row until 120 | 7.4.1, D109 |
   | `chunk::append_to_open_chunk_preserves_points` | appending in two batches equals one batch | 7.4.1 |
+  | `chunk::append_older_than_open_chunk_is_refused` | a point at or before the open row's last point is refused with `OutOfOrder` (backfill is T25's) | 7.4.1 |
   | `query::range_query_returns_points_in_order_across_chunks` | a range spanning three chunks returns sorted, deduplicated points | 7.4.1 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
   cargo nextest run -p rackhand-store -E 'test(codec::) | test(step::) | test(chunk::) | test(query::)'
   ```
-  Expected: 10 passed, 0 failed.
+  Expected: 11 passed, 0 failed.
 - **Regression:** `cargo xtask ci fast`: exit 0.
 - **Manual verification:** None.
 - **Done when:**
-  - [ ] New tests seen failing first
-  - [ ] New tests and regression suite pass
+  - [x] New tests seen failing first
+  - [x] New tests and regression suite pass
 - **Risk / rollback:** revert.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-20 | cargo nextest run -p rackhand-store -E 'test(codec::) \| test(step::) \| test(chunk::) \| test(query::)' (before) | compile errors: `crate::series::{chunk, codec, query, step}` and `SeriesError` don't exist |
+  | 2026-11-20 | same (after) | 11 passed; the T05 sample measures 1.013 (tier 0) and 0.951 (tier 1) bytes per value against the spike's 1.04 and 0.96 |
+  | 2026-11-20 | cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0; fast 252 passed; no violations |
 
 ### T20: Audit log with hash chain and checkpoints
 - **Design refs:** FR-26, 7.4.1 (`audit_log`, checkpoints), 12 (`rackhand hub audit verify`), AC39
@@ -4474,7 +4478,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D39 | 2026-11-19 | T58 | `web/pages/{approvals, jobs, library, patching}.rs` | As planned, plus `policy/store.rs`: Policy owns `policies` and `windows`, so it writes them and renders `config/policies.toml` (policies and windows) as a new revision on every change. The patching page shows policies (holds are `patch = hold`), windows and the latest `patch-*` jobs; pending updates per machine need the reports' facts (carried into T59). A decision in the dashboard doesn't publish `ApprovalDecided` yet: the Web has no Bus handle until the composition (T41) | Ownership per 7.2; facts and the Bus arrive later | plan | - |
 | D40 | 2026-11-19 | T76 | `assist/{offers, tokens, transcripts, cap, resume}.rs`; `tests/operator_contract.rs` | Tokens are issued and rebound to the next operator through `mcp::keys` (no `assist/tokens.rs`); the fake operator is in the test file. Assist ends a job nobody took with `no_operator` or `declined` and publishes `JobFinished`; moving the incident to `human` and the callout are Incidents' and Notify's (carried into T78). An operator's 5-minute grace and `hub_unreachable` are the operator's side (carried into T77); the hub waits for it. A job token from another endpoint now gets `out_of_scope` at the auth line (it was `unauthorized`). The daily cap counts assistant jobs since 00:00 UTC (20 by default; the setting is wired in T79). A job whose operator never reports stops being usable when its token expires at the deadline; a hub-side end for it is carried into T78 | Incidents and the operator binary come later | plan | - |
 | D41 | 2026-11-20 | T05 | Record 24 h from the WSL machine and from one lab VM the owner names | Recorded the WSL host only; added integer, quantized and tick-stamped encodings and retention options to the measurement | No lab VM was named and the real lab isn't connected yet; an idle local lab VM wouldn't represent a server. The extra encodings show what it takes to meet the budget after plain Gorilla missed it | plan | - |
-| D42 | 2026-11-20 | T05, T19 | T05 deletes the spike code and data; T19 tests `gorilla::` with the 120-point and hour rules | T05 kept a 4-hour sample of its recording as T19's fixture; T19's tests follow D109 (codec, step and chunk tests for the new encoding and the tier 0-only hour rule, 10 instead of 6) | T19's spike-figure test needs recorded data, and the owner's S8 decision changed the encoding and the chunk rule | plan | - |
+| D42 | 2026-11-20 | T05, T19 | T05 deletes the spike code and data; T19 tests `gorilla::` with the 120-point and hour rules | T05 kept a 4-hour sample of its recording as T19's fixture; T19's tests follow D109 (codec, step and chunk tests for the new encoding and the tier 0-only hour rule, plus a refused out-of-order append: 11 instead of 6) | T19's spike-figure test needs recorded data, and the owner's S8 decision changed the encoding and the chunk rule | plan | - |
 
 ## Follow-ups (out of scope)
 

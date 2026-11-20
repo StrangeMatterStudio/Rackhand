@@ -4,6 +4,7 @@ pub mod audit;
 pub mod db;
 pub mod ids;
 pub mod reader;
+pub mod series;
 pub mod writer;
 
 pub use db::{Db, OpenError, SCHEMA_VERSION};
@@ -15,5 +16,11 @@ pub use writer::{
 mod tests {
     pub mod db;
     mod reader;
+    mod series {
+        pub mod chunk;
+        pub mod codec;
+        mod query;
+        mod step;
+    }
     mod writer;
 }
