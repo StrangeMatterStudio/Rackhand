@@ -2082,6 +2082,13 @@ the owner and the document is updated before the work that depends on it starts.
   SSH with an Ed25519 deploy key held in memory, refuses a non-fast-forward update with `NotFastForward`, and builds
   as a static musl binary; it adds about 5.8 MB to the hub. `gix` 0.90 has no push. Report: `spikes/s7.md`.
 - **S8** Time-series encoding: real bytes per value on recorded data.
+  **Finding (2026-11-20):** on 24 hours of the 7.4.2 set from one host, plain Gorilla needs 5.3, 3.3 and 4.5 bytes
+  per value (tiers 0, 1, 2), and SQLite adds 103 bytes per chunk row plus 31.5% of the blob (measured on the
+  `series_chunks` schema; 7.4.1 counted no row cost), so 50 machines project to 5.66 GB. Storing whole multiples of a
+  per-metric step, stamping samples with their tick and picking the cheapest integer coder per chunk, all at the hub,
+  bring values to about 1 byte (2.40 GB with the 7.4.1 chunk rule); meeting 2 GB also needs larger tier 1 chunks, a
+  shorter retention or a larger budget. The trade-off is the owner's before T19 (owner decision pending). The rule's
+  "or its hour ends" would give tier 2 one point per chunk; to be settled with the same decision.
 - **S9** TrueNAS API: which API (REST or JSON-RPC over WebSocket) the current releases support for pool, disk and alert
   reads.
 - **S10** Threat list and GeoIP terms for default use in an open-source product, and whether the default lists still
@@ -2268,3 +2275,4 @@ None.
 | 2026-11-19 | S1 finding: aya capture works on 5.10, 6.1 and 7.0 with LXC attribution from the host; an MIT-only program is refused (GPL-only helper), so the eBPF program's licence is the owner's decision before T68 (section 17) | Spike S1 finding | Implementation run |
 | 2026-11-19 | S11 finding: journal-only authentication events read with `journalctl -o json`; `mem.available_*` counts the ZFS ARC above `c_min` (7.4.2, section 17) | Spike S11 finding | Implementation run |
 | 2026-11-19 | S4 finding: the 7.8.6 role confirmed on PVE 8 and 9; guest rules need the datacenter firewall and the device flag; conntrack can't be flushed through the API (owner decision pending before T72); Proxmox hosts take a full upgrade (7.8.6, section 17) | Spike S4 finding | Implementation run |
+| 2026-11-20 | S8 finding: Gorilla and the 7.4.1 estimate miss the 2 GB budget (5.66 GB projected); hub-side integer coding with tick timestamps reaches about 1 byte per value; chunk size, retention or budget to be decided by the owner before T19 (section 17) | Spike S8 finding | Implementation run |

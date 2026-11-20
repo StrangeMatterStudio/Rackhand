@@ -652,6 +652,7 @@ Every spike step follows the same rules:
   | --- | --- | --- |
   | 2026-11-20 | cargo run --release --manifest-path spikes/s8/Cargo.toml -- --data spikes/s8/data --report docs/designs/0001-architecture/spikes/s8.md --check | exit 1: projected 4.23 GB over the 2 GB budget (5.21, 3.20 and 4.48 bytes per value for tiers 0, 1 and 2; 66 series over 24.0 h on the WSL host) |
   | 2026-11-20 | same with `--quantize`, `--int`, `--grid` and their combinations, and `--tier1-days` / `--tier2-days` | best encoding (integer values at a per-metric step, samples stamped with their 15 s tick) 1.65, 1.60 and 2.66 bytes per value, 2.52 GB with G1 retention; 1.88 GB with tier 1 kept 14 days. Report `spikes/s8.md`. Blocked: the trade-off is the owner's (7.4.1) |
+  | 2026-11-20 (review) | the same runs after review, with an adaptive integer coder (delta-of-delta, delta or XOR per chunk, buckets to 64 bits), `--kib`, the 7.4.1 chunk rule (`--t1-chunk`, `--t2-chunk`) and the SQLite row cost measured on the `series_chunks` schema (103 bytes a row plus 31.5% of the blob, not the assumed 80) | Gorilla 5.66 GB; integer + grid + KiB 1.00, 0.98 and 1.62 bytes per value, 2.40 GB with the chunk rule, 1.82 GB with day-long tier 1 chunks, 1.81 GB with 120-point tier 1 chunks and tier 2 kept 1 year. Report rewritten; design 17 finding and change-log row added (owner decision pending). Still blocked |
 
 ### T06: Spike S6: probe footprint
 - **Design refs:** 5.2 (probe footprint), 11, D52, S6
