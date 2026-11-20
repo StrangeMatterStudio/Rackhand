@@ -44,11 +44,9 @@ pub fn evaluate(rule: &Rule, samples: &[Sample], interval_s: u32, now_ms: i64, p
         .find(|sev| rule.level(*sev).is_some_and(|t| window_matches(t, samples, interval_s, now_ms)));
     let active = match prev.active {
         Some(current) => {
-            if cleared(rule, samples, now_ms) {
-                None
-            } else {
-                Some(matching.map_or(current, |m| m.max(current)))
-            }
+            // severity follows the highest level whose window matches, so it rises and falls (7.5.2); with none
+            // matching and the rule not cleared, it stays where it is
+            if cleared(rule, samples, now_ms) { None } else { Some(matching.unwrap_or(current)) }
         }
         None => matching,
     };

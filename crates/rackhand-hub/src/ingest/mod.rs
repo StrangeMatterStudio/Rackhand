@@ -193,6 +193,30 @@ impl Ingest {
         self.state().machines.entry(machine.to_string()).or_default().interval_ms = interval_ms.max(1);
     }
 
+    /// The machines Ingest has heard from.
+    pub fn machines(&self) -> Vec<String> {
+        self.state().machines.keys().cloned().collect()
+    }
+
+    /// The machine's sample interval.
+    pub fn interval_ms(&self, machine: &str) -> i64 {
+        self.state().machines.get(machine).map_or(DEFAULT_INTERVAL_MS, |m| m.interval_ms)
+    }
+
+    /// Every series of one metric in a machine's recent window (one per label set), oldest sample first.
+    pub fn window_series(&self, machine: &str, metric: &str) -> Vec<(SeriesId, Vec<WindowSample>)> {
+        let s = self.state();
+        let Some(m) = s.machines.get(machine) else { return Vec::new() };
+        let mut out: Vec<(SeriesId, Vec<WindowSample>)> = m
+            .window
+            .all()
+            .filter(|(id, _)| id.name == metric)
+            .map(|(id, q)| (id.clone(), q.iter().copied().collect()))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
     /// The recent window of one series, oldest first.
     pub fn window(&self, machine: &str, series: &SeriesId) -> Vec<WindowSample> {
         self.state().machines.get(machine).map(|m| m.window.samples(series)).unwrap_or_default()

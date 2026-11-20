@@ -3681,6 +3681,7 @@ dependencies = [
  "iroh-relay",
  "jiff",
  "prost",
+ "rackhand-detect",
  "rackhand-net",
  "rackhand-probe",
  "rackhand-proto",

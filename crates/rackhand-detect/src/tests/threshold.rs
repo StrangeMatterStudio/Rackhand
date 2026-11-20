@@ -154,3 +154,19 @@ fn every_default_rule_in_table_present() {
         assert_eq!(r.margin, margin, "{metric} margin");
     }
 }
+
+#[test]
+fn severity_falls_when_only_the_lower_level_matches() {
+    // critical (over 95% for 5 minutes), then 90% for 10 minutes: still over the warning line, so it falls to warning
+    // without clearing; then 70% clears it
+    let mut values = vec![80.0];
+    values.extend([96.0; 24]);
+    values.extend([90.0; 40]);
+    values.extend([70.0, 70.0]);
+    let states = run(&disk(), &values, 15);
+    let crit = first_time(&states, Severity::Critical).unwrap();
+    let fall = states.iter().find(|(t, s)| *t > crit && s.active == Some(Severity::Warning)).map(|(t, _)| *t);
+    assert_eq!(fall, Some(25 * 15_000), "warning from the first 90% sample");
+    assert_eq!(states[states.len() - 3].1.active, Some(Severity::Warning));
+    assert_eq!(states.last().unwrap().1.active, None);
+}

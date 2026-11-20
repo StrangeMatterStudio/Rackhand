@@ -17,6 +17,8 @@ pub enum WriteMode {
     Replace,
     /// Insert only if the table has no rows yet; otherwise the whole command fails with `Conflict` (the first admin).
     InsertIfTableEmpty,
+    /// Insert, or update the row with the same value in this key column (never deletes, so no cascade fires).
+    Upsert(&'static str),
 }
 
 /// One row written to one table.
@@ -34,6 +36,10 @@ impl RowWrite {
 
     pub fn replace(table: &'static str, row: Row) -> RowWrite {
         RowWrite { table, row, mode: WriteMode::Replace }
+    }
+
+    pub fn upsert(table: &'static str, key: &'static str, row: Row) -> RowWrite {
+        RowWrite { table, row, mode: WriteMode::Upsert(key) }
     }
 }
 
@@ -281,7 +287,25 @@ fn write_row(tx: &rusqlite::Transaction<'_>, w: &RowWrite) -> Result<usize, Stor
     for c in &cols {
         check_ident(c)?;
     }
+    if let WriteMode::Upsert(key) = w.mode {
+        check_ident(key)?;
+        let quoted: Vec<String> = cols.iter().map(|c| format!("\"{c}\"")).collect();
+        let placeholders: Vec<String> = (1..=cols.len()).map(|i| format!("?{i}")).collect();
+        let updates: Vec<String> =
+            cols.iter().filter(|c| **c != key).map(|c| format!("\"{c}\" = excluded.\"{c}\"")).collect();
+        let action =
+            if updates.is_empty() { "NOTHING".to_string() } else { format!("UPDATE SET {}", updates.join(", ")) };
+        let sql = format!(
+            "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT(\"{key}\") DO {action}",
+            w.table,
+            quoted.join(", "),
+            placeholders.join(", ")
+        );
+        let values: Vec<&Value> = w.row.values().collect();
+        return Ok(tx.execute(&sql, rusqlite::params_from_iter(values))?);
+    }
     let verb = match w.mode {
+        WriteMode::Upsert(_) => unreachable!("handled above"),
         WriteMode::Insert => "INSERT",
         WriteMode::Replace => "INSERT OR REPLACE",
         WriteMode::InsertIfTableEmpty => {
@@ -717,6 +741,8 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
             tx.commit()?;
             Ok(n)
         }
+        WriteCmd::UpsertIncident(row) => upsert_one(conn, "incidents", "id", row),
+        WriteCmd::PutSilence(row) => upsert_one(conn, "silences", "id", row),
         WriteCmd::PutPolicy(row) => upsert_one(conn, "policies", "id", row),
         WriteCmd::PutQuarantineRule(row) => upsert_one(conn, "quarantine_rules", "id", row),
         WriteCmd::PutScheduleState(row) => replace_one(conn, "schedule_state", row),
