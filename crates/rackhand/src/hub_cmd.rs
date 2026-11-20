@@ -198,8 +198,18 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     });
     let notify = rackhand_hub::notify::Notify::new(db.clone(), ingest.clone(), transports);
     let registry = rackhand_hub::registry::Registry::load(db.clone()).map_err(|e| e.to_string())?;
-    let (library, _changes) = rackhand_hub::library::items::Library::new(db.clone(), audit.clone());
-    let (host_keys, _alerts) = rackhand_hub::ssh::hostkeys::HostKeys::new(db.clone());
+    let (library, changes) = rackhand_hub::library::items::Library::new(db.clone(), audit.clone());
+    let (host_keys, host_alerts) = rackhand_hub::ssh::hostkeys::HostKeys::new(db.clone());
+    let mirror = rackhand_hub::library::mirror::Mirror {
+        db: db.clone(),
+        vault: vault.clone(),
+        audit: audit.clone(),
+        workdir: config.data_dir.join("mirror"),
+        target: rackhand_hub::library::mirror::target_from_settings(db.clone()),
+        debounce_ms: 30_000,
+        clock: Arc::new(now_ms),
+    };
+    let mirror_alerts = mirror.spawn(changes);
     let executor =
         rackhand_hub::executor::Executor::new(vault.clone(), host_keys.clone()).with_other(Arc::new(notify.clone()));
     let actions = rackhand_hub::actions::Actions::new(db.clone(), audit.clone(), bus.clone(), Arc::new(executor))
@@ -212,14 +222,27 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let web = rackhand_hub::web::Web::new(db.clone(), vault.clone(), audit.clone(), recovery, web_config)
         .with_registry(registry.clone())
         .with_library(library.clone())
-        .with_host_keys(host_keys)
+        .with_host_keys(host_keys.clone())
         .with_ingest(ingest.clone())
         .with_notify(notify.clone())
         .with_bus(bus.clone());
     // the mesh: probes and MCP clients
     let node_key = rackhand_net::key::load_or_create(&config.node_key)
         .map_err(|e| format!("{}: {e}", config.node_key.display()))?;
-    let alpns = vec![rackhand_proto::alpn::PROBE.to_vec(), rackhand_proto::alpn::MCP.to_vec()];
+    let setup = Arc::new(joins::HubSetup {
+        db: db.clone(),
+        automation: ssh_public(&vault, rackhand_hub::ssh::keys::Identity::Automation).await?,
+        assistant: ssh_public(&vault, rackhand_hub::ssh::keys::Identity::Assistant).await?,
+        signing: ed25519_dalek::SigningKey::from_bytes(&node_key.to_bytes()),
+    });
+    let (joined_tx, joined) = tokio::sync::mpsc::unbounded_channel();
+    joins::spawn_events(ingest.clone(), host_keys, joined, host_alerts, mirror_alerts);
+    let join = joins::LazyJoin::new(db.clone(), registry.clone(), setup, hub_addrs(config), joined_tx);
+    let alpns = vec![
+        rackhand_proto::alpn::PROBE.to_vec(),
+        rackhand_proto::alpn::MCP.to_vec(),
+        rackhand_proto::alpn::JOIN.to_vec(),
+    ];
     let endpoint_config =
         rackhand_net::endpoint::EndpointConfig { relays: Default::default(), alpns, bind: Some(config.quic) };
     let endpoint = rackhand_net::endpoint::bind(node_key, &endpoint_config).await.map_err(|e| e.to_string())?;
@@ -231,7 +254,8 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         .with_library(library);
     let router = rackhand_net::router::Router::new(endpoint.clone(), registry.clone())
         .route(rackhand_proto::alpn::PROBE, probe_server.handler())
-        .route(rackhand_proto::alpn::MCP, mcp.handler());
+        .route(rackhand_proto::alpn::MCP, mcp.handler())
+        .route(rackhand_proto::alpn::JOIN, join.handler());
     tokio::spawn(router.serve());
     spawn_loops(ingest.clone(), incidents, notify, db.clone());
     // the dashboard over TLS
@@ -248,6 +272,24 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     ingest.compact().await.map_err(|e| e.to_string())?;
     endpoint.close().await;
     Ok(())
+}
+
+/// The public half of one of the hub's SSH identities, as an `authorized_keys` key (made the first time).
+async fn ssh_public(vault: &Vault, id: rackhand_hub::ssh::keys::Identity) -> Result<String, String> {
+    let key = rackhand_hub::ssh::keys::load_or_create(vault, id).await.map_err(|e| e.to_string())?;
+    key.public_key().to_openssh().map_err(|e| e.to_string())
+}
+
+/// The addresses a joining machine is told to reach the hub at: the QUIC address when it is a specific one, and each
+/// certificate name that is an IP address, on the QUIC port.
+fn hub_addrs(config: &HubConfig) -> Vec<String> {
+    let port = config.quic.port();
+    let named =
+        config.names.iter().filter_map(|n| n.parse::<std::net::IpAddr>().ok()).map(|ip| SocketAddr::new(ip, port));
+    let bound = Some(config.quic).filter(|a| !a.ip().is_unspecified());
+    let mut addrs: Vec<String> = bound.into_iter().chain(named).map(|a| a.to_string()).collect();
+    addrs.dedup();
+    addrs
 }
 
 /// The hub's periodic work: evaluation and callouts every 15 s, compaction every 5 minutes, rollups every minute
@@ -333,6 +375,8 @@ pub fn detect_replay(db_path: &Path, machine: &str, from_ms: i64, to_ms: i64) ->
     let db = Db::open(db_path).map_err(|e| format!("{}: {e}", db_path.display()))?;
     rackhand_hub::incidents::replay::replay(&db, machine, from_ms, to_ms, 15)
 }
+
+pub mod joins;
 
 #[cfg(test)]
 mod tests;

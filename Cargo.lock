@@ -3641,8 +3641,10 @@ name = "rackhand"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
  "iroh",
+ "prost",
  "rackhand-hub",
  "rackhand-net",
  "rackhand-probe",
@@ -3652,6 +3654,7 @@ dependencies = [
  "rusqlite",
  "rustix",
  "serde",
+ "serde_json",
  "sha2 0.10.9",
  "tokio",
  "toml 0.8.23",

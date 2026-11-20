@@ -21,6 +21,10 @@ sha2 = { workspace = true }
 getrandom = { workspace = true }
 ulid = { workspace = true }
 tracing = { workspace = true }
+prost = { workspace = true }
+ed25519-dalek = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", default-features = false, features = ["std", "fs"] }

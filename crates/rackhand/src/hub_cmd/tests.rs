@@ -92,3 +92,133 @@ async fn detect_replay_prints_what_would_have_fired() {
     let written: i64 = db.readers().with(|c| c.query_row("SELECT count(*) FROM incidents", [], |r| r.get(0))).unwrap();
     assert_eq!(written, 0, "nothing written");
 }
+
+async fn machine_row(db: &Db, id: &str) {
+    use rackhand_store::{Row, RowWrite, WriteCmd};
+    use rusqlite::types::Value;
+    let site = Row::from([
+        ("id", Value::Text("s".into())),
+        ("name", Value::Text("home".into())),
+        ("timezone", Value::Text("UTC".into())),
+    ]);
+    let machine = Row::from([
+        ("id", Value::Text(id.into())),
+        ("site_id", Value::Text("s".into())),
+        ("name", Value::Text("web".into())),
+        ("kind", Value::Text("linux".into())),
+    ]);
+    db.writer()
+        .send(WriteCmd::Batch(vec![RowWrite::insert("sites", site), RowWrite::insert("machines", machine)]))
+        .await
+        .unwrap();
+}
+
+fn events(db: &Db) -> Vec<(String, String, String)> {
+    db.readers()
+        .with(|c| {
+            let mut s = c.prepare("SELECT kind, severity, coalesce(machine_id, '') FROM events ORDER BY kind")?;
+            s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect()
+        })
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn join_and_host_key_events_wired() {
+    use rackhand_hub::library::mirror::MirrorAlert;
+    use rackhand_hub::registry::join_server::Joined;
+    use rackhand_hub::registry::tokens::TokenKind;
+    use rackhand_hub::ssh::hostkeys::{HostKeyAlert, HostKeys};
+    const M: &str = "01JD0000000000000000000001";
+    let dir = temp("joins");
+    let db = Arc::new(Db::open(&dir.join("hub.db")).unwrap());
+    machine_row(&db, M).await;
+    let ingest = Ingest::new(db.clone(), rackhand_hub::bus::Bus::new(), Arc::new(Statvfs(dir.clone())));
+    let (host_keys, _) = HostKeys::new(db.clone());
+    let (joined, joined_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (host_alerts, host_alerts_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (mirror_alerts, mirror_alerts_rx) = tokio::sync::mpsc::unbounded_channel();
+    joins::spawn_events(ingest, host_keys.clone(), joined_rx, host_alerts_rx, mirror_alerts_rx);
+
+    let (_, key) = rackhand_hub::ssh::keys::generate_ed25519("host").unwrap();
+    let openssh = key.to_openssh().unwrap();
+    let mut parts = openssh.split(' ');
+    let (algorithm, public_key) = (parts.next().unwrap().to_string(), parts.next().unwrap().to_string());
+    let endpoint_id = iroh::SecretKey::from_bytes(&[7; 32]).public();
+    let keys = vec![rackhand_proto::common::SshHostKey { algorithm, public_key }];
+    joined.send(Joined { kind: TokenKind::Machine, id: M.into(), endpoint_id, ssh_host_keys: keys }).unwrap();
+    host_alerts
+        .send(HostKeyAlert::Changed {
+            machine_id: M.into(),
+            key_type: "ssh-ed25519".into(),
+            offered: "SHA256:x".into(),
+        })
+        .unwrap();
+    mirror_alerts.send(MirrorAlert::Failed { error: "unreachable".into(), retry_at_ms: 1 }).unwrap();
+    mirror_alerts.send(MirrorAlert::Pushed { commit: "abc".into() }).unwrap();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while (host_keys.check(M, &key).is_err() || events(&db).len() < 2) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(host_keys.check(M, &key), Ok(()), "the joined machine's host key is pinned in SSH");
+    assert_eq!(
+        events(&db),
+        vec![
+            ("git_mirror_failed".to_string(), "warning".to_string(), String::new()),
+            ("ssh.host_key_changed".to_string(), "critical".to_string(), M.to_string()),
+        ],
+        "host key and mirror alerts become events; a push that went through raises none"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn managed_setup_has_keys_sudoers_and_signed_commands() {
+    use rackhand_hub::registry::join_server::ManagedSetupSource;
+    let dir = temp("setup");
+    let db = Arc::new(Db::open(&dir.join("hub.db")).unwrap());
+    let signing = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    let setup = joins::HubSetup {
+        db,
+        automation: "ssh-ed25519 AAAA automation".into(),
+        assistant: "ssh-ed25519 BBBB assistant".into(),
+        signing: signing.clone(),
+    };
+    let managed = setup.managed_setup(ulid::Ulid::new(), true);
+    assert_eq!(managed.automation_pubkey, "ssh-ed25519 AAAA automation");
+    assert_eq!(managed.assistant_pubkey.as_deref(), Some("ssh-ed25519 BBBB assistant"));
+    assert_eq!(managed.sudoers, "rackhand ALL=(root) NOPASSWD: /usr/local/lib/rackhand/run\n");
+    let commands = managed.commands.expect("the first command list comes with the join");
+    let env = rackhand_proto::signed::verify(&commands, &signing.verifying_key(), "commands", 0, now_ms())
+        .expect("signed with the hub's node key");
+    let body: serde_json::Value = serde_json::from_slice(&env.body).unwrap();
+    let listed = body["commands"].as_array().cloned().unwrap_or_default();
+    let diagnostics = serde_json::to_value(rackhand_runbook::diagnostics::templates()).unwrap();
+    let diagnostics = diagnostics.as_array().unwrap();
+    assert!(
+        !diagnostics.is_empty() && diagnostics.iter().all(|t| listed.contains(t)),
+        "the diagnostics' root commands"
+    );
+    let hub_role = setup.managed_setup(ulid::Ulid::new(), false);
+    assert_eq!(hub_role.assistant_pubkey, None, "no assistant account on a machine with role hub");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn join_server_waits_for_first_run_site() {
+    let dir = temp("lazyjoin");
+    let db = Arc::new(Db::open(&dir.join("hub.db")).unwrap());
+    let registry = rackhand_hub::registry::Registry::load(db.clone()).unwrap();
+    let setup = Arc::new(joins::HubSetup {
+        db: db.clone(),
+        automation: String::new(),
+        assistant: String::new(),
+        signing: ed25519_dalek::SigningKey::from_bytes(&[9; 32]),
+    });
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let join = joins::LazyJoin::new(db.clone(), registry, setup, vec!["192.0.2.10:7443".into()], tx);
+    assert!(join.server().is_none(), "no join server before first run names the site");
+    let site = rackhand_hub::registry::peers::local_site_row("home", "UTC");
+    db.writer().send(rackhand_store::WriteCmd::Batch(vec![site])).await.unwrap();
+    let server = join.server().expect("built once the site exists");
+    assert!(Arc::ptr_eq(&server, &join.server().unwrap()), "built once");
+    assert!(format!("{server:?}").contains("home"), "{server:?}");
+}
