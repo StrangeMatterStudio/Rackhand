@@ -5,6 +5,7 @@
 //! from 7.3.
 
 pub mod endpoint;
+pub mod frames;
 pub mod key;
 pub mod registry;
 pub mod relays;

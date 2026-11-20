@@ -49,6 +49,7 @@ webpki-roots = { workspace = true }
 tower = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 rackhand-net = { path = "../rackhand-net", features = ["testing"] }
+rackhand-probe = { path = "../rackhand-probe" }
 iroh-relay = { workspace = true }
 
 [lints]

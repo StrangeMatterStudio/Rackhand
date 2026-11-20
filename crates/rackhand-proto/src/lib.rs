@@ -13,6 +13,14 @@ pub mod mcp;
 pub mod signed;
 pub mod zstd;
 
+/// The first byte of each unidirectional stream of `rackhand/probe/1` (7.3.2): which stream it is.
+pub mod streams {
+    /// Stream 1: live reports, one `Report` per frame.
+    pub const LIVE: u8 = 1;
+    /// Stream 2: replay batches, one `ReplayBatch` per frame.
+    pub const REPLAY: u8 = 2;
+}
+
 #[allow(clippy::all, missing_debug_implementations)]
 pub mod common {
     include!(concat!(env!("OUT_DIR"), "/rackhand.common.rs"));

@@ -231,7 +231,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T23 | Probe buffer, epochs and label table | T16 | unit | done |
 | T24 | Bus | T18 | unit | done |
 | T25 | Ingest: staging, acks, compaction, recent window, clock | T18, T19, T24 | unit | done |
-| T26 | Probe contract `rackhand/probe/1` | T17, T23, T25 | contract | todo |
+| T26 | Probe contract `rackhand/probe/1` | T17, T23, T25 | contract | done |
 | T27 | Rollups and retention | T19, T25, T05 | unit | todo |
 | T28 | Detect: threshold rules | T01 | unit | done |
 | T29 | Detect: forecasts | T28 | unit | done |
@@ -1344,6 +1344,9 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-20 | cargo nextest run -p rackhand-hub --test probe_contract (before) | compile errors: `rackhand_probe::link` and `rackhand_hub::ingest::probe_server` don't exist |
+  | 2026-11-20 | same (after) | first run 11 passed, 2 failed: the first `probe.unknown_labels` check overflowed (`i64::MIN` as "never reported"), a bug the ingest unit tests didn't reach; fixed with a saturating subtraction; then 13 passed |
+  | 2026-11-20 | cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0; fast 278 passed; no violations |
 
 ### T27: Rollups and retention
 - **Design refs:** FR-7, 7.4.1 (rollups, retention), AC4, AC69 (series tables), S8 finding
@@ -1855,6 +1858,10 @@ Only additions to that list are written out below.
   | --- | --- | --- |
   | `actions::new_job_refused_while_disk_low` (carried in from T25) | with Ingest's `accepting_jobs()` false, `Actions::run` refuses a new job and records why; live ingest is unaffected | E32 |
   | `hub::observations_wired_from_ingest` (carried in from T25) | the composition's `Observations` gives MCP and the dashboard the latest facts from Ingest and series from the store | 7.3.6 |
+  Carried in from T26:
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `hub::probe_directory_from_registry` (carried in from T26) | the probe server's `ProbeDirectory` is the Registry's machines (`probe_endpoint_id`), and an enrolled probe's reports reach Ingest | 7.3.2 |
 - **Fails first:** compile errors; then the container tests fail because there is no unit file.
 - **Verification:**
   ```bash
@@ -1891,6 +1898,12 @@ Only additions to that list are written out below.
   | `it::executor::wait_report_step_waits_for_fresh_report` | a `wait_report` step succeeds once the probe's next report arrives after the step started, and fails `timeout` if none does | 7.8.7 |
   | `it::executor::probe_check_step_runs_check_on_probe` | a `probe_check` step asks the probe to run the check and fails when it fails | 7.8.7 |
   | `collect::rate_interval_is_monotonic` (carried in from T38's run: `collect::once_json_prints_one_sample_set` failed once under load and passed in 4 reruns; the interval between snapshots comes from the wall clock, so a clock step back skips the rate series) | rates use a monotonic interval; a wall-clock step back between two snapshots still gives `net.rx_bps` | 7.4.2 |
+  Carried in from T26:
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `probe::revoked_daemon_exits_3` (carried in from T26) | the probe process exits with code 3 after `0x13` (`Stop::exit_code`) | 7.3.2 |
+  | `probe::unsupported_version_retries_hourly` (carried in from T26) | after `0x12` the daemon keeps collecting into its buffer and reconnects after `Stop::retry_after` (injected clock) | 7.3.2 |
+  | `probe::new_epoch_defines_every_label_set_again` (carried in from T26) | after a Welcome that starts a new epoch, the next live report's `label_sets` holds every label set it uses | 7.3.2, AC48 |
 - **Fails first:** compile errors; then the container tests fail (no daemon).
 - **Verification:**
   ```bash
@@ -4491,6 +4504,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D41 | 2026-11-20 | T05 | Record 24 h from the WSL machine and from one lab VM the owner names | Recorded the WSL host only; added integer, quantized and tick-stamped encodings and retention options to the measurement | No lab VM was named and the real lab isn't connected yet; an idle local lab VM wouldn't represent a server. The extra encodings show what it takes to meet the budget after plain Gorilla missed it | plan | - |
 | D42 | 2026-11-20 | T05, T19 | T05 deletes the spike code and data; T19 tests `gorilla::` with the 120-point and hour rules | T05 kept a 4-hour sample of its recording as T19's fixture; T19's tests follow D109 (codec, step and chunk tests for the new encoding and the tier 0-only hour rule, plus a refused out-of-order append: 11 instead of 6) | T19's spike-figure test needs recorded data, and the owner's S8 decision changed the encoding and the chunk rule | plan | - |
 | D43 | 2026-11-20 | T25 | `ingest/{staging, compact, window, clock, replay_limits, events}.rs`; `CompactStaged` as in 7.3.8 (no payload); 11 tests | As planned, plus: `CompactStaged` carries the machine's decoded points (`series::compact::Compaction`), because the store can't decode probe frames (it depends on nothing of ours) and Ingest owns the decoding; store schema adds `report_staging.offset_ms` and `rollup_dirty` (design change log, owner to confirm); points older than a series' newest are written as closed backfill rows; the staging limit counts the frames' received bytes and is recounted from the table after each compaction; the window is rebuilt from tier 0 after the start-up compaction (which has moved staging into tier 0); low disk raises `hub.disk_low` (critical) and turns off `accepting_jobs()`, which Actions checks from T41 (carried in); a 12th test for the latest facts; the writer test that used `CompactStaged` as an unimplemented command now uses `PutConnRecords` | Store dependency rule (7.2); restart placement and dirty ranges need somewhere to live; Actions and the composition come in T41 | plan | - |
+| D44 | 2026-11-20 | T26 | `crates/rackhand-probe/src/link/` (client); `ingest/probe_server.rs`; `tests/probe_contract.rs` | As planned, plus: each unidirectional stream starts with a one-byte tag (`rackhand_proto::streams`, 1 live, 2 replay), since 7.3.2 numbers the streams but QUIC doesn't; async frame helpers in `rackhand-net::frames`; the server learns which machine an endpoint is through a `ProbeDirectory` trait (the Registry wires it in T41) and which probe versions it takes through a predicate (T95 sets the rule); a resend of committed reports is acked again so the probe can delete them; the probe gains `rackhand-net`, `iroh` and `tokio`. The process-level checks (exit code 3, hourly retry, label sets after a new epoch) are the daemon's and go to T42; the contract asserts `Stop::exit_code` and `Stop::retry_after` | QUIC streams carry no names; the Registry and the daemon come later | plan | - |
 
 ## Follow-ups (out of scope)
 

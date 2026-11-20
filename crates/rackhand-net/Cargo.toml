@@ -12,6 +12,7 @@ testing = ["dep:iroh-relay"]
 
 [dependencies]
 rackhand-proto = { path = "../rackhand-proto" }
+prost = { workspace = true }
 iroh = { workspace = true }
 iroh-relay = { workspace = true, optional = true }
 tokio = { workspace = true }

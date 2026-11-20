@@ -17,6 +17,9 @@ path = "src/main.rs"
 
 [dependencies]
 rackhand-proto = { path = "../rackhand-proto" }
+rackhand-net = { path = "../rackhand-net" }
+iroh = { workspace = true }
+tokio = { workspace = true }
 getrandom = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

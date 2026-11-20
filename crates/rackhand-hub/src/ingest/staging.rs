@@ -258,7 +258,7 @@ fn add_to_window(m: &mut Machine, machine: &str, r: &Report, offset_ms: i64, rec
         };
         m.window.add(SeriesId::new(metric.name, labels), WindowSample { at_ms, value: sample.value, history_only });
     }
-    if unknown == 0 || received_at_ms - m.unknown_labels_reported_ms < UNKNOWN_LABELS_EVERY_MS {
+    if unknown == 0 || received_at_ms.saturating_sub(m.unknown_labels_reported_ms) < UNKNOWN_LABELS_EVERY_MS {
         return None;
     }
     m.unknown_labels_reported_ms = received_at_ms;

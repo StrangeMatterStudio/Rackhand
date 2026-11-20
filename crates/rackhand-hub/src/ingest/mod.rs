@@ -7,6 +7,7 @@
 mod clock;
 mod compact;
 mod events;
+pub mod probe_server;
 mod replay_limits;
 mod staging;
 mod window;
