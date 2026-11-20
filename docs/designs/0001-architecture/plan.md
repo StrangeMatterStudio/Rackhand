@@ -210,7 +210,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T03 | CI workflows and the guard test | T02 | unit (xtask), lint | done |
 | T04 | Runner profiles for Rackhand | T03 | scripted (CI run), owner setup | unverified (MV1) |
 | L1 | Local lab harness | T02 | unit (xtask) + live (local lab) | done |
-| T05 | Spike S8: time-series encoding | T02 | scripted measurement | todo |
+| T05 | Spike S8: time-series encoding | T02 | scripted measurement | blocked (owner decision: S8 misses the 2 GB budget) |
 | T06 | Spike S6: probe footprint | T02 | scripted measurement | done |
 | T07 | Spike S7: git mirror library | T02 | scripted measurement | done |
 | T08 | Spike S2: iroh relay admission and limits | T02 | scripted measurement (network VM) | done (owner decision pending for T82) |
@@ -650,6 +650,8 @@ Every spike step follows the same rules:
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-20 | cargo run --release --manifest-path spikes/s8/Cargo.toml -- --data spikes/s8/data --report docs/designs/0001-architecture/spikes/s8.md --check | exit 1: projected 4.23 GB over the 2 GB budget (5.21, 3.20 and 4.48 bytes per value for tiers 0, 1 and 2; 66 series over 24.0 h on the WSL host) |
+  | 2026-11-20 | same with `--quantize`, `--int`, `--grid` and their combinations, and `--tier1-days` / `--tier2-days` | best encoding (integer values at a per-metric step, samples stamped with their 15 s tick) 1.65, 1.60 and 2.66 bytes per value, 2.52 GB with G1 retention; 1.88 GB with tier 1 kept 14 days. Report `spikes/s8.md`. Blocked: the trade-off is the owner's (7.4.1) |
 
 ### T06: Spike S6: probe footprint
 - **Design refs:** 5.2 (probe footprint), 11, D52, S6
@@ -4459,6 +4461,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D38 | 2026-11-19 | T75 | `mcp/{tools_act.rs, gate.rs}`; the three tools | As planned, plus: `add_incident_note` writes through `incidents::notes` (Incidents owns `incident_events`; the `AppendIncidentEvent` handler is added); `finish_job` takes `resolved`, `unresolved` or `handed_over` and ends the job through Actions (only `resolved` succeeds); an approval asked for over MCP lasts an hour; the hash covers the call's arguments but not its `reason`; `run_runbook` answers when the job has ended (a long runbook holds the call); `exec` runs for at most 10 minutes; runbooks other than `quarantine-release` are refused on a quarantined machine (any state but `none`); the caller is checked on every request; `quarantine` and `quarantine-release` are judged as quarantine; a runbook runs at the lower of the job's level and its own `autonomy` | The design gives the rules, not these limits | plan | - |
 | D39 | 2026-11-19 | T58 | `web/pages/{approvals, jobs, library, patching}.rs` | As planned, plus `policy/store.rs`: Policy owns `policies` and `windows`, so it writes them and renders `config/policies.toml` (policies and windows) as a new revision on every change. The patching page shows policies (holds are `patch = hold`), windows and the latest `patch-*` jobs; pending updates per machine need the reports' facts (carried into T59). A decision in the dashboard doesn't publish `ApprovalDecided` yet: the Web has no Bus handle until the composition (T41) | Ownership per 7.2; facts and the Bus arrive later | plan | - |
 | D40 | 2026-11-19 | T76 | `assist/{offers, tokens, transcripts, cap, resume}.rs`; `tests/operator_contract.rs` | Tokens are issued and rebound to the next operator through `mcp::keys` (no `assist/tokens.rs`); the fake operator is in the test file. Assist ends a job nobody took with `no_operator` or `declined` and publishes `JobFinished`; moving the incident to `human` and the callout are Incidents' and Notify's (carried into T78). An operator's 5-minute grace and `hub_unreachable` are the operator's side (carried into T77); the hub waits for it. A job token from another endpoint now gets `out_of_scope` at the auth line (it was `unauthorized`). The daily cap counts assistant jobs since 00:00 UTC (20 by default; the setting is wired in T79). A job whose operator never reports stops being usable when its token expires at the deadline; a hub-side end for it is carried into T78 | Incidents and the operator binary come later | plan | - |
+| D41 | 2026-11-20 | T05 | Record 24 h from the WSL machine and from one lab VM the owner names | Recorded the WSL host only; added integer, quantized and tick-stamped encodings and retention options to the measurement | No lab VM was named and the real lab isn't connected yet; an idle local lab VM wouldn't represent a server. The extra encodings show what it takes to meet the budget after plain Gorilla missed it | plan | - |
 
 ## Follow-ups (out of scope)
 
