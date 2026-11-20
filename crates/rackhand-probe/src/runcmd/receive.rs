@@ -35,6 +35,19 @@ pub fn check_destination(dest: &str, roots: &[String]) -> Result<PathBuf, Receiv
     if plain && inside { Ok(path.to_path_buf()) } else { Err(ReceiveError::OutsideRoots) }
 }
 
+/// Whether a directory is owned by root and not writable by its group or others.
+#[cfg(unix)]
+fn root_only(dir: &Path) -> Result<bool, ReceiveError> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::symlink_metadata(dir).map_err(io)?;
+    Ok(m.is_dir() && m.uid() == 0 && m.mode() & 0o022 == 0)
+}
+
+#[cfg(not(unix))]
+fn root_only(_dir: &Path) -> Result<bool, ReceiveError> {
+    Ok(true)
+}
+
 fn io(e: std::io::Error) -> ReceiveError {
     ReceiveError::Io(e.to_string())
 }
@@ -51,9 +64,21 @@ pub fn receive(
     std::fs::create_dir_all(parent).map_err(io)?;
     // No symlink may lead out of the roots.
     let real_parent = parent.canonicalize().map_err(io)?;
-    let inside = roots.iter().filter_map(|r| Path::new(r).canonicalize().ok()).any(|r| real_parent.starts_with(r));
-    if !inside {
+    let Some(root) = roots.iter().filter_map(|r| Path::new(r).canonicalize().ok()).find(|r| real_parent.starts_with(r))
+    else {
         return Err(ReceiveError::OutsideRoots);
+    };
+    // Every directory from the root down is root's and writable by no one else, so no other user can swap one for a
+    // link while root writes (7.3.11).
+    let mut dir = real_parent.as_path();
+    loop {
+        if !root_only(dir)? {
+            return Err(ReceiveError::OutsideRoots);
+        }
+        if dir == root {
+            break;
+        }
+        dir = dir.parent().ok_or(ReceiveError::OutsideRoots)?;
     }
     let partial = PathBuf::from(format!("{}.rackhand-partial", path.display()));
     if std::fs::symlink_metadata(&partial).is_ok_and(|m| m.file_type().is_symlink()) {

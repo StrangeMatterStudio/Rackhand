@@ -114,7 +114,39 @@ pub fn scan_files(files: &BTreeMap<String, String>, vault_values: &[Vec<u8>]) ->
     files.iter().flat_map(|(path, text)| scan(text, vault_values).into_iter().map(move |f| (path.clone(), f))).collect()
 }
 
-/// Writes the files into the work tree, commits and pushes. Returns the commit id and the server's host key.
+/// The mirror's target from the hub settings (`config/hub.toml`), read each time.
+pub fn target_from_settings(db: Arc<Db>) -> Arc<dyn Fn() -> Option<Target> + Send + Sync> {
+    Arc::new(move || {
+        let m = crate::library::config::hub(&db).ok()?.git_mirror?;
+        Some(Target { url: m.url, branch: m.branch, host_fingerprint: m.host_fingerprint })
+    })
+}
+
+type Seen = std::sync::Arc<std::sync::Mutex<Option<String>>>;
+
+/// SSH credentials from the deploy key, and the host key check: the pinned fingerprint, or any (recorded in `seen`).
+fn callbacks(key: String, expected: Option<String>, seen: Seen) -> git2::RemoteCallbacks<'static> {
+    let mut callbacks = git2::RemoteCallbacks::new();
+    callbacks.credentials(move |_url, user, _allowed| {
+        git2::Cred::ssh_key_from_memory(user.unwrap_or("git"), None, &key, None)
+    });
+    callbacks.certificate_check(move |cert, _host| {
+        let Some(hostkey) = cert.as_hostkey() else { return Err(git2::Error::from_str("not an SSH host key")) };
+        let Some(sha) = hostkey.hash_sha256() else { return Err(git2::Error::from_str("no SHA-256 host key hash")) };
+        let fp = sha.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        if let Ok(mut s) = seen.lock() {
+            *s = Some(fp.clone());
+        }
+        match &expected {
+            Some(e) if *e != fp => Err(git2::Error::from_str("host key changed")),
+            _ => Ok(git2::CertificateCheckStatus::CertificateOk),
+        }
+    });
+    callbacks
+}
+
+/// Writes the files into the work tree, commits and pushes. Returns the commit id and the server's host key. A work
+/// tree with no commits yet (new, or lost) first fetches the remote branch, so the commit builds on it.
 pub fn commit_and_push(
     workdir: &Path,
     files: &BTreeMap<String, String>,
@@ -149,8 +181,27 @@ pub fn commit_and_push(
     index.write()?;
     let tree = repo.find_tree(index.write_tree()?)?;
     let sig = git2::Signature::now("Rackhand", "rackhand@hub.invalid")?;
-    let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
     let refname = format!("refs/heads/{}", target.branch);
+    let seen: Seen = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    let mut parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+    if parent.is_none() {
+        let tracking = format!("refs/remotes/mirror/{}", target.branch);
+        let mut fetch = git2::FetchOptions::new();
+        fetch.remote_callbacks(callbacks(deploy_key_pem.to_string(), target.host_fingerprint.clone(), seen.clone()));
+        let mut remote = repo.remote_anonymous(&target.url)?;
+        // a remote without the branch yet is the first push; anything else is an error worth stopping for
+        match remote.fetch(&[format!("+{refname}:{tracking}")], Some(&mut fetch), None) {
+            Ok(()) => parent = repo.find_reference(&tracking).ok().and_then(|r| r.peel_to_commit().ok()),
+            Err(e) if e.message().contains("couldn't find remote ref") => {}
+            Err(e) => {
+                let seen = seen.lock().ok().and_then(|s| s.clone());
+                if target.host_fingerprint.is_some() && seen.as_ref() != target.host_fingerprint.as_ref() {
+                    return Err(MirrorError::HostKeyChanged);
+                }
+                return Err(e.into());
+            }
+        }
+    }
     let unchanged = parent.as_ref().is_some_and(|p| p.tree_id() == tree.id());
     let commit = if unchanged {
         parent.as_ref().map(|p| p.id()).ok_or_else(|| MirrorError::Git("no commit".into()))?
@@ -159,28 +210,8 @@ pub fn commit_and_push(
         repo.commit(Some(&refname), &sig, &sig, message, &tree, &parents)?
     };
     repo.set_head(&refname)?;
-    let seen = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
-    let mut callbacks = git2::RemoteCallbacks::new();
-    let key = deploy_key_pem.to_string();
-    callbacks.credentials(move |_url, user, _allowed| {
-        git2::Cred::ssh_key_from_memory(user.unwrap_or("git"), None, &key, None)
-    });
-    let expected = target.host_fingerprint.clone();
-    let seen_cb = seen.clone();
-    callbacks.certificate_check(move |cert, _host| {
-        let Some(hostkey) = cert.as_hostkey() else { return Err(git2::Error::from_str("not an SSH host key")) };
-        let Some(sha) = hostkey.hash_sha256() else { return Err(git2::Error::from_str("no SHA-256 host key hash")) };
-        let fp = sha.iter().map(|b| format!("{b:02x}")).collect::<String>();
-        if let Ok(mut s) = seen_cb.lock() {
-            *s = Some(fp.clone());
-        }
-        match &expected {
-            Some(e) if *e != fp => Err(git2::Error::from_str("host key changed")),
-            _ => Ok(git2::CertificateCheckStatus::CertificateOk),
-        }
-    });
     let mut options = git2::PushOptions::new();
-    options.remote_callbacks(callbacks);
+    options.remote_callbacks(callbacks(deploy_key_pem.to_string(), target.host_fingerprint.clone(), seen.clone()));
     let mut remote = repo.remote_anonymous(&target.url)?;
     let pushed = remote.push(&[format!("{refname}:{refname}")], Some(&mut options));
     let seen = seen.lock().ok().and_then(|s| s.clone());
@@ -325,9 +356,29 @@ impl Mirror {
         let (workdir, message, t) = (self.workdir.clone(), message.to_string(), target.clone());
         let pushed = tokio::task::spawn_blocking(move || commit_and_push(&workdir, &files, &message, &pem, &t)).await;
         match pushed {
-            Ok(Ok((commit, _))) => MirrorAlert::Pushed { commit },
+            Ok(Ok((commit, seen))) => {
+                if target.host_fingerprint.is_none() {
+                    if let Some(fp) = seen {
+                        self.pin(&fp, now).await;
+                    }
+                }
+                MirrorAlert::Pushed { commit }
+            }
             Ok(Err(e)) => MirrorAlert::Failed { error: e.to_string(), retry_at_ms: now + RETRY_MS },
             Err(e) => MirrorAlert::Failed { error: e.to_string(), retry_at_ms: now + RETRY_MS },
+        }
+    }
+
+    /// Stores the host key learned on the first push in the settings, so later pushes require it (7.3.13). It is
+    /// written as a config revision without a library change, so it doesn't start another push by itself.
+    async fn pin(&self, fingerprint: &str, now: i64) {
+        let Ok(mut settings) = crate::library::config::hub(&self.db) else { return };
+        let Some(m) = settings.git_mirror.as_mut().filter(|m| m.host_fingerprint.is_none()) else { return };
+        m.host_fingerprint = Some(fingerprint.to_string());
+        let text = settings.to_toml();
+        if crate::library::config::put(&self.db, crate::library::config::HUB, &text, "rackhand", now).await.is_ok() {
+            let data = serde_json::json!({ "fingerprint": fingerprint }).to_string();
+            let _ = self.audit.append("rackhand", "git_mirror.host_key_pinned", None, &data).await;
         }
     }
 

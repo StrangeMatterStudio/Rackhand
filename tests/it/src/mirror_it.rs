@@ -115,4 +115,67 @@ cmd = ["/usr/bin/true"]
         let MirrorAlert::Failed { retry_at_ms, .. } = alert else { panic!() };
         assert!((before + RETRY_MS..=now_ms() + RETRY_MS).contains(&retry_at_ms), "retried an hour later");
     }
+
+    /// A git server with the mirror's deploy key authorized; its SSH URL.
+    async fn server_for(vault: &Vault) -> (Container, String) {
+        let server = Container::start("gitd");
+        let (ip, _) = server.ip_and_gateway();
+        let (private, public) = generate_ed25519("rackhand-mirror").unwrap();
+        let pem = private.to_openssh(russh::keys::ssh_key::LineEnding::LF).unwrap();
+        vault.put(DEPLOY_KEY, &Secret::from(pem.as_str())).await.unwrap();
+        let line = public.to_openssh().unwrap();
+        let w = server.exec(
+            None,
+            &["sh", "-c", "cat > /home/git/.ssh/authorized_keys && chown git:git /home/git/.ssh/authorized_keys"],
+            Some(line.as_bytes()),
+        );
+        assert!(w.status.success());
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        (server, format!("ssh://git@{ip}/srv/git/rackhand.git"))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn push_after_lost_work_tree_builds_on_remote() {
+        let (db, vault) = store("lost-tree");
+        let (server, url) = server_for(&vault).await;
+        let (lib, _changes) = Library::new(db.clone(), Audit::new(db.writer()));
+        let m = mirror(&db, &vault, url, "lost-tree");
+        lib.save(Kind::Runbook, "compose-restart", RUNBOOK, "admin", now_ms()).await.unwrap();
+        assert!(matches!(m.sync("admin: add runbook/compose-restart").await, MirrorAlert::Pushed { .. }));
+        // the hub loses its work tree (a restore onto a new disk); the next change still pushes
+        std::fs::remove_dir_all(&m.workdir).unwrap();
+        let edited = RUNBOOK.replace("Restart one", "Restart a");
+        lib.save(Kind::Runbook, "compose-restart", &edited, "alice", now_ms()).await.unwrap();
+        let alert = m.sync("alice: edit runbook/compose-restart").await;
+        assert!(matches!(alert, MirrorAlert::Pushed { .. }), "{alert:?}");
+        assert_eq!(git(&server, "rev-list --count main"), "2", "on top of the remote branch");
+        assert!(git(&server, "show main:runbooks/compose-restart.toml").contains("Restart a"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn learned_host_key_is_pinned() {
+        use rackhand_hub::library::config::{self, GitMirror, HubConfig};
+        let (db, vault) = store("pin");
+        let (_server, url) = server_for(&vault).await;
+        let settings = HubConfig {
+            git_mirror: Some(GitMirror { url: url.clone(), branch: "main".into(), host_fingerprint: None }),
+            ..HubConfig::default()
+        };
+        config::put(&db, config::HUB, &settings.to_toml(), "admin", now_ms()).await.unwrap();
+        let (lib, _changes) = Library::new(db.clone(), Audit::new(db.writer()));
+        let m = Mirror {
+            target: rackhand_hub::library::mirror::target_from_settings(db.clone()),
+            ..mirror(&db, &vault, url, "pin")
+        };
+        lib.save(Kind::Runbook, "compose-restart", RUNBOOK, "admin", now_ms()).await.unwrap();
+        assert!(matches!(m.sync("admin: add runbook/compose-restart").await, MirrorAlert::Pushed { .. }));
+        let pinned = config::hub(&db).unwrap().git_mirror.unwrap().host_fingerprint;
+        assert!(pinned.as_ref().is_some_and(|f| f.len() == 64), "the first push's host key is stored: {pinned:?}");
+        // a server with another key (here: the pin changed under it) fails the push
+        let mut wrong = config::hub(&db).unwrap();
+        wrong.git_mirror.as_mut().unwrap().host_fingerprint = Some("00".repeat(32));
+        config::put(&db, config::HUB, &wrong.to_toml(), "admin", now_ms()).await.unwrap();
+        let alert = m.sync("admin: retry").await;
+        assert!(matches!(&alert, MirrorAlert::Failed { error, .. } if error.contains("host key")), "{alert:?}");
+    }
 }

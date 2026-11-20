@@ -54,7 +54,11 @@ pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
     html(StatusCode::OK, Page { csrf: &ctx.csrf, policies, windows, runs, can_edit }.render())
 }
 
-fn answer(result: Result<String, PolicyError>) -> Response<Body> {
+/// The outcome of a policy or window change; a stored change also goes to the git mirror (7.3.13).
+fn answer(web: &Web, ctx: &Ctx, result: Result<String, PolicyError>) -> Response<Body> {
+    if let (Ok(_), Some(library), Some(user)) = (&result, &web.0.library, &ctx.user) {
+        library.changed(&user.name, "edit config/policies");
+    }
     match result {
         Ok(_) => redirect("/patching"),
         Err(PolicyError::Invalid(why)) => status(StatusCode::BAD_REQUEST, &why),
@@ -91,7 +95,7 @@ pub(super) async fn save_policy(web: &Web, ctx: &Ctx) -> Response<Body> {
     if result.is_ok() {
         audit(web, ctx, "policy.saved", serde_json::to_value(&p).unwrap_or_default()).await;
     }
-    answer(result)
+    answer(web, ctx, result)
 }
 
 pub(super) async fn save_window(web: &Web, ctx: &Ctx) -> Response<Body> {
@@ -105,5 +109,5 @@ pub(super) async fn save_window(web: &Web, ctx: &Ctx) -> Response<Body> {
         let data = serde_json::json!({ "machine": machine, "tag": tag, "rrule": rule, "timezone": tz });
         audit(web, ctx, "window.saved", data).await;
     }
-    answer(result)
+    answer(web, ctx, result)
 }

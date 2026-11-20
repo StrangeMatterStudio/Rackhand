@@ -148,6 +148,11 @@ impl Library {
         Ok(rev)
     }
 
+    /// A change stored outside `save` (settings and policies, written as config revisions), for the git mirror.
+    pub fn changed(&self, user: &str, summary: &str) {
+        let _ = self.changes.send(Change { user: user.into(), summary: summary.into() });
+    }
+
     pub fn current(&self, kind: Kind, name: &str) -> Result<Option<(i64, String)>, SaveError> {
         Library::current_in(&self.db, kind, name)
     }

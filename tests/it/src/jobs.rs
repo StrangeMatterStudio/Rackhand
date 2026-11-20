@@ -191,4 +191,40 @@ mod receive {
         assert_eq!(String::from_utf8_lossy(&stat.stdout).trim(), "root 640 300000");
         assert!(!c.root(&format!("test -e {dest}.rackhand-partial")).status.success());
     }
+
+    #[test]
+    fn root_not_owned_by_root_refused() {
+        let c = with_wrapper(Container::start("runcmd"), false);
+        let dest = "/var/lib/rackhand-run/incoming/drop/file.bin";
+        let data = b"payload";
+        let send = || {
+            c.exec(
+                Some("rackhand"),
+                &["sudo", "-n", "/usr/local/lib/rackhand/run", "receive", dest, &blake3_hex(data), "0"],
+                Some(data),
+            )
+        };
+        // a directory on the way that another user can write: they could swap it for a link while root writes
+        assert!(
+            c.root(
+                "mkdir -p /var/lib/rackhand-run/incoming/drop && chown rackhand /var/lib/rackhand-run/incoming/drop"
+            )
+            .status
+            .success()
+        );
+        let out = send();
+        assert_eq!(out.status.code(), Some(126), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(!c.root(&format!("test -e {dest}")).status.success(), "nothing written");
+        // the transfer root itself world-writable: refused too
+        assert!(
+            c.root("chown root /var/lib/rackhand-run/incoming/drop && chmod 0777 /var/lib/rackhand-run/incoming")
+                .status
+                .success()
+        );
+        assert_eq!(send().status.code(), Some(126));
+        // owned by root and not writable by others: accepted
+        assert!(c.root("chmod 0755 /var/lib/rackhand-run/incoming").status.success());
+        let ok = send();
+        assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+    }
 }

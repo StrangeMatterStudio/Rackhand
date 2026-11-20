@@ -90,6 +90,9 @@ async fn change(
     if let Err(e) = web.0.audit.append(&user.name, action, Some("config/hub"), &data.to_string()).await {
         tracing::error!(error = %e, "audit");
     }
+    if let Some(library) = &web.0.library {
+        library.changed(&user.name, "edit config/hub");
+    }
     redirect("/settings")
 }
 

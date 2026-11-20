@@ -444,6 +444,29 @@ async fn configuration_changes_are_audited() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn settings_changes_reach_the_mirror() {
+    // the composition gives Web the Library; its change channel feeds the git mirror (7.3.13)
+    let slot: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::library::items::Change>>>> =
+        Arc::default();
+    let keep = slot.clone();
+    let app = app_with("settings-mirror", move |web| {
+        let (library, changes) = crate::library::items::Library::new(web.0.db.clone(), web.0.audit.clone());
+        *keep.lock().unwrap() = Some(changes);
+        web.with_library(library)
+    })
+    .await;
+    let mut changes = slot.lock().unwrap().take().unwrap();
+    complete_first_run(&app, SETUP_CODE).await;
+    let admin = session_for(&app.db, Role::Admin).await;
+    let csrf = csrf_of(&app, &admin).await;
+    let resp =
+        send(&app.router, post("/settings/sources", &admin, &[("csrf", csrf.as_str()), ("source_dbip", "on")])).await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let change = changes.try_recv().expect("a settings change reaches the mirror");
+    assert!(change.user.starts_with("admin-") && change.summary.contains("config/hub"), "{change:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn serves_https_with_generated_certificate() {
     let (cert_pem, key_pem) = super::tls::generate(&["localhost".to_string()]).unwrap();
     let config = super::tls::server_config(&cert_pem, &key_pem).unwrap();
