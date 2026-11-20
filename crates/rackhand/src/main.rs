@@ -1,9 +1,17 @@
 //! Composition root for the hub, the relay and the operator (design 7.2).
 
+mod hub_cmd;
+mod observations;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: rackhand hub audit verify [--db <path>]\n       rackhand hub runbook check <file>\n       rackhand hub restore-library <checkout> [--db <path>]";
+const USAGE: &str = "usage: rackhand hub init [--config-dir <dir>] [--data-dir <dir>]
+       rackhand hub run [--config <hub.toml>]
+       rackhand hub detect replay --machine <id> --from <ms> --to <ms> [--db <path>]
+       rackhand hub audit verify [--db <path>]
+       rackhand hub runbook check <file>
+       rackhand hub restore-library <checkout> [--db <path>]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -13,6 +21,9 @@ fn main() -> ExitCode {
             println!("rackhand {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
+        ["hub", "init", rest @ ..] => hub_init(rest),
+        ["hub", "run", rest @ ..] => hub_run(rest),
+        ["hub", "detect", "replay", rest @ ..] => detect_replay(rest),
         ["hub", "audit", "verify", rest @ ..] => audit_verify(rest),
         ["hub", "runbook", "check", file] => runbook_check(file),
         ["hub", "restore-library", checkout, rest @ ..] => restore_library(checkout, rest),
@@ -117,4 +128,102 @@ fn restore_library(checkout: &str, rest: &[&str]) -> ExitCode {
         eprintln!("refused {file}: {why}");
     }
     if report.refused.is_empty() { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+}
+
+/// `--name value` pairs; `None` on anything else.
+fn options<'a>(rest: &[&'a str], allowed: &[&str]) -> Option<std::collections::HashMap<String, &'a str>> {
+    let mut out = std::collections::HashMap::new();
+    let mut it = rest.iter();
+    while let Some(flag) = it.next() {
+        let name = flag.strip_prefix("--").filter(|n| allowed.contains(n))?;
+        out.insert(name.to_string(), *it.next()?);
+    }
+    Some(out)
+}
+
+fn runtime() -> Result<tokio::runtime::Runtime, ExitCode> {
+    tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| {
+        eprintln!("error: {e}");
+        ExitCode::FAILURE
+    })
+}
+
+fn hub_init(rest: &[&str]) -> ExitCode {
+    let Some(o) = options(rest, &["config-dir", "data-dir"]) else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    let etc = PathBuf::from(o.get("config-dir").copied().unwrap_or("/etc/rackhand"));
+    let data = PathBuf::from(o.get("data-dir").copied().unwrap_or("/var/lib/rackhand"));
+    let rt = match runtime() {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    match rt.block_on(hub_cmd::init(&etc, &data)) {
+        Ok(made) => {
+            println!("Wrote {}.", made.config.display());
+            println!("Setup code (for the dashboard's first run, once): {}", made.setup_code);
+            println!("Recovery code (keep it safe; it restores the master key): {}", made.recovery_code);
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn hub_run(rest: &[&str]) -> ExitCode {
+    let Some(o) = options(rest, &["config"]) else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    let path = PathBuf::from(o.get("config").copied().unwrap_or("/etc/rackhand/hub.toml"));
+    let config = match hub_cmd::HubConfig::load(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let rt = match runtime() {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    match rt.block_on(hub_cmd::run(&config)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn detect_replay(rest: &[&str]) -> ExitCode {
+    let Some(o) = options(rest, &["machine", "from", "to", "db"]) else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    let (Some(machine), Some(Ok(from)), Some(Ok(to))) =
+        (o.get("machine"), o.get("from").map(|v| v.parse::<i64>()), o.get("to").map(|v| v.parse::<i64>()))
+    else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    let db = PathBuf::from(o.get("db").copied().unwrap_or("/var/lib/rackhand/hub.db"));
+    match hub_cmd::detect_replay(&db, machine, from, to) {
+        Ok(lines) => {
+            for l in &lines {
+                println!("{l}");
+            }
+            if lines.is_empty() {
+                println!("nothing would have fired");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }

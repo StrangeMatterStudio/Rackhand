@@ -1,0 +1,306 @@
+//! `rackhand hub init`, `hub run` and `hub detect replay` (7.7.3): the hub's composition root (7.2).
+
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use rackhand_hub::audit::Audit;
+use rackhand_hub::bus::Bus;
+use rackhand_hub::ingest::probe_server::{ProbeDirectory, ProbeServer, ServerSettings};
+use rackhand_hub::ingest::{DiskSpace, Ingest};
+use rackhand_hub::vault::master_key::{MasterKey, recovery_code};
+use rackhand_hub::vault::{Secret, Vault};
+use rackhand_store::Db;
+use rackhand_store::ids::now_ms;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+/// `/etc/rackhand/hub.toml` (7.8): listen addresses, data directory, key paths, trusted proxies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HubConfig {
+    pub web: SocketAddr,
+    pub quic: SocketAddr,
+    pub data_dir: PathBuf,
+    pub master_key: PathBuf,
+    pub node_key: PathBuf,
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
+    /// Names the dashboard's certificate is issued for.
+    #[serde(default)]
+    pub names: Vec<String>,
+}
+
+impl HubConfig {
+    pub fn defaults(config_dir: &Path, data_dir: &Path) -> HubConfig {
+        HubConfig {
+            web: SocketAddr::from(([0, 0, 0, 0], 8443)),
+            quic: SocketAddr::from(([0, 0, 0, 0], 7443)),
+            data_dir: data_dir.to_path_buf(),
+            master_key: config_dir.join("master.key"),
+            node_key: config_dir.join("node.key"),
+            trusted_proxies: Vec::new(),
+            names: vec!["localhost".into()],
+        }
+    }
+
+    pub fn load(path: &Path) -> Result<HubConfig, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    pub fn db_path(&self) -> PathBuf {
+        self.data_dir.join("hub.db")
+    }
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_mode(_path: &Path, _mode: u32) -> Result<(), String> {
+    Ok(())
+}
+
+/// What `hub init` made, to print once.
+#[derive(Debug)]
+pub struct Initialized {
+    pub setup_code: String,
+    pub recovery_code: String,
+    pub config: PathBuf,
+}
+
+const SETUP_ALPHABET: &[u8] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+
+fn setup_code() -> Result<String, String> {
+    let mut raw = [0u8; 12];
+    getrandom::fill(&mut raw).map_err(|e| e.to_string())?;
+    let chars: String = raw.iter().map(|b| SETUP_ALPHABET[(*b as usize) % SETUP_ALPHABET.len()] as char).collect();
+    Ok(format!("SETUP-{}-{}-{}", &chars[..4], &chars[4..8], &chars[8..]))
+}
+
+/// `rackhand hub init`: the master key (0600), the node key (0600), `hub.toml` (0640), the database with the
+/// automation and assistant keys, the dashboard's CSRF key and the hash of a one-time setup code (7.7.4). It refuses
+/// to replace an existing master key.
+pub async fn init(config_dir: &Path, data_dir: &Path) -> Result<Initialized, String> {
+    std::fs::create_dir_all(config_dir).map_err(|e| format!("{}: {e}", config_dir.display()))?;
+    std::fs::create_dir_all(data_dir).map_err(|e| format!("{}: {e}", data_dir.display()))?;
+    let config = HubConfig::defaults(config_dir, data_dir);
+    if config.master_key.exists() {
+        return Err(format!("{} already exists; the hub is already initialized", config.master_key.display()));
+    }
+    let key = MasterKey::generate();
+    key.save(&config.master_key).map_err(|e| format!("{}: {e}", config.master_key.display()))?;
+    rackhand_net::key::load_or_create(&config.node_key).map_err(|e| format!("{}: {e}", config.node_key.display()))?;
+    set_mode(&config.node_key, 0o600)?;
+    let toml_path = config_dir.join("hub.toml");
+    let text = toml::to_string(&config).map_err(|e| e.to_string())?;
+    std::fs::write(&toml_path, text).map_err(|e| format!("{}: {e}", toml_path.display()))?;
+    set_mode(&toml_path, 0o640)?;
+    let recovery = recovery_code(&key);
+    let db = Arc::new(Db::open(&config.db_path()).map_err(|e| e.to_string())?);
+    let vault = Vault::new(key, db.clone());
+    for id in [rackhand_hub::ssh::keys::Identity::Automation, rackhand_hub::ssh::keys::Identity::Assistant] {
+        rackhand_hub::ssh::keys::load_or_create(&vault, id).await.map_err(|e| e.to_string())?;
+    }
+    let code = setup_code()?;
+    let hash: [u8; 32] = Sha256::digest(code.as_bytes()).into();
+    vault.put("setup_code_hash", &Secret::new(hash.to_vec())).await.map_err(|e| e.to_string())?;
+    let mut csrf = [0u8; 32];
+    getrandom::fill(&mut csrf).map_err(|e| e.to_string())?;
+    vault.put("csrf_key", &Secret::new(csrf.to_vec())).await.map_err(|e| e.to_string())?;
+    let mut metrics = [0u8; 24];
+    getrandom::fill(&mut metrics).map_err(|e| e.to_string())?;
+    let token: String = metrics.iter().map(|b| format!("{b:02x}")).collect();
+    vault.put("metrics_token", &Secret::from(token.as_str())).await.map_err(|e| e.to_string())?;
+    Ok(Initialized { setup_code: code, recovery_code: recovery, config: toml_path })
+}
+
+/// Free space on the database's filesystem.
+#[derive(Debug)]
+struct Statvfs(PathBuf);
+
+impl DiskSpace for Statvfs {
+    #[cfg(unix)]
+    fn free_fraction(&self) -> f64 {
+        match rustix::fs::statvfs(&self.0) {
+            Ok(s) if s.f_blocks > 0 => s.f_bavail as f64 / s.f_blocks as f64,
+            _ => 1.0,
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn free_fraction(&self) -> f64 {
+        1.0
+    }
+}
+
+/// The probe server's directory: the Registry's machines and their probe endpoints (7.3.2).
+#[derive(Debug)]
+pub struct MachinesDirectory(pub Arc<Db>);
+
+impl ProbeDirectory for MachinesDirectory {
+    fn machine_of(&self, endpoint: &iroh::EndpointId) -> Option<[u8; 16]> {
+        let id: Option<String> = self
+            .0
+            .readers()
+            .with(|c| {
+                c.query_row(
+                    "SELECT id FROM machines WHERE probe_endpoint_id = ?1 AND state = 'enrolled'",
+                    [endpoint.to_string()],
+                    |r| r.get(0),
+                )
+            })
+            .ok();
+        id.and_then(|s| s.parse::<ulid::Ulid>().ok()).map(|u| u.to_bytes())
+    }
+}
+
+/// `addr` or `addr/prefix`, as `trusted_proxies` lists them.
+fn cidr(text: &str) -> Option<(std::net::IpAddr, u8)> {
+    let (addr, prefix) = text.split_once('/').unwrap_or((text, ""));
+    let ip: std::net::IpAddr = addr.trim().parse().ok()?;
+    let full = if ip.is_ipv4() { 32 } else { 128 };
+    let prefix = if prefix.is_empty() { full } else { prefix.trim().parse().ok().filter(|p| *p <= full)? };
+    Some((ip, prefix))
+}
+
+fn secret(vault: &Vault, name: &str) -> Result<Vec<u8>, String> {
+    vault
+        .get(name)
+        .map(|s| s.expose().to_vec())
+        .map_err(|_| format!("the Vault has no {name}; run `rackhand hub init`"))
+}
+
+/// `rackhand hub run`: opens everything the config names and serves until stopped.
+pub async fn run(config: &HubConfig) -> Result<(), String> {
+    let key = MasterKey::load(Some(&config.master_key))
+        .map_err(|_| format!("the master key {} can't be read (or isn't 32 bytes)", config.master_key.display()))?;
+    let recovery = recovery_code(&key);
+    let db = Arc::new(Db::open(&config.db_path()).map_err(|e| format!("{}: {e}", config.db_path().display()))?);
+    let vault = Arc::new(Vault::new(key, db.clone()));
+    let setup_hash: [u8; 32] =
+        secret(&vault, "setup_code_hash")?.try_into().map_err(|_| "setup_code_hash is malformed")?;
+    let csrf_key: [u8; 32] = secret(&vault, "csrf_key")?.try_into().map_err(|_| "csrf_key is malformed")?;
+    let audit = Audit::new(db.writer());
+    let bus = Bus::new();
+    let ingest = Ingest::new(db.clone(), bus.clone(), Arc::new(Statvfs(config.data_dir.clone())));
+    ingest.start(now_ms()).await.map_err(|e| e.to_string())?;
+    let incidents = rackhand_hub::incidents::Incidents::new(db.clone(), ingest.clone(), bus.clone());
+    let notify = rackhand_hub::notify::Notify::new(db.clone(), ingest.clone(), Vec::new());
+    let registry = rackhand_hub::registry::Registry::load(db.clone()).map_err(|e| e.to_string())?;
+    let (library, _changes) = rackhand_hub::library::items::Library::new(db.clone(), audit.clone());
+    let (host_keys, _alerts) = rackhand_hub::ssh::hostkeys::HostKeys::new(db.clone());
+    let executor =
+        rackhand_hub::executor::Executor::new(vault.clone(), host_keys.clone()).with_other(Arc::new(notify.clone()));
+    let actions = rackhand_hub::actions::Actions::new(db.clone(), audit.clone(), bus.clone(), Arc::new(executor));
+    let web_config = rackhand_hub::web::WebConfig {
+        setup_code_hash: setup_hash,
+        csrf_key,
+        trusted_proxies: config.trusted_proxies.iter().filter_map(|p| cidr(p)).collect(),
+    };
+    let web = rackhand_hub::web::Web::new(db.clone(), vault.clone(), audit.clone(), recovery, web_config)
+        .with_registry(registry.clone())
+        .with_library(library.clone())
+        .with_host_keys(host_keys)
+        .with_ingest(ingest.clone())
+        .with_notify(notify.clone());
+    // the mesh: probes and MCP clients
+    let node_key = rackhand_net::key::load_or_create(&config.node_key)
+        .map_err(|e| format!("{}: {e}", config.node_key.display()))?;
+    let alpns = vec![rackhand_proto::alpn::PROBE.to_vec(), rackhand_proto::alpn::MCP.to_vec()];
+    let endpoint_config =
+        rackhand_net::endpoint::EndpointConfig { relays: Default::default(), alpns, bind: Some(config.quic) };
+    let endpoint = rackhand_net::endpoint::bind(node_key, &endpoint_config).await.map_err(|e| e.to_string())?;
+    let probe_server =
+        ProbeServer::new(ingest.clone(), Arc::new(MachinesDirectory(db.clone())), ServerSettings::default());
+    let observations = Arc::new(crate::observations::FromIngest(ingest.clone()));
+    let mcp = rackhand_hub::mcp::Mcp::new(db.clone(), audit.clone(), observations)
+        .with_actions(actions)
+        .with_library(library);
+    let router = rackhand_net::router::Router::new(endpoint.clone(), registry.clone())
+        .route(rackhand_proto::alpn::PROBE, probe_server.handler())
+        .route(rackhand_proto::alpn::MCP, mcp.handler());
+    tokio::spawn(router.serve());
+    spawn_loops(ingest.clone(), incidents, notify, db.clone());
+    // the dashboard over TLS
+    let (cert, key_pem) =
+        rackhand_hub::web::tls::load_or_create(&vault, &config.names).await.map_err(|e| e.to_string())?;
+    let tls = rackhand_hub::web::tls::server_config(&cert, &key_pem).map_err(|e| e.to_string())?;
+    let listener = tokio::net::TcpListener::bind(config.web).await.map_err(|e| format!("{}: {e}", config.web))?;
+    tracing::info!(web = %config.web, quic = %config.quic, "hub running");
+    tokio::select! {
+        () = rackhand_hub::web::tls::serve(listener, web.router(), tls) => {}
+        _ = tokio::signal::ctrl_c() => {}
+    }
+    // on shutdown, staged reports go into chunk rows (7.3.2)
+    ingest.compact().await.map_err(|e| e.to_string())?;
+    endpoint.close().await;
+    Ok(())
+}
+
+/// The hub's periodic work: evaluation and callouts every 15 s, compaction every 5 minutes, rollups every minute
+/// and hour, retention hourly.
+fn spawn_loops(
+    ingest: Ingest,
+    incidents: rackhand_hub::incidents::Incidents,
+    notify: rackhand_hub::notify::Notify,
+    db: Arc<Db>,
+) {
+    let (i, n, g) = (incidents.clone(), notify, ingest.clone());
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(15));
+        loop {
+            tick.tick().await;
+            let now = now_ms();
+            let _ = g.check_disk().await;
+            if let Err(e) = i.evaluate(now).await {
+                tracing::warn!(error = %e, "evaluating rules");
+            }
+            if let Err(e) = n.tick(now).await {
+                tracing::warn!(error = %e, "notifying");
+            }
+        }
+    });
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(60));
+        let mut minutes = 0u64;
+        loop {
+            tick.tick().await;
+            minutes += 1;
+            let now = now_ms();
+            let _ = ingest.rollup_minute(now - 60_000).await;
+            let _ = incidents.reconcile(now).await;
+            if minutes % 5 == 0 {
+                let _ = ingest.compact().await;
+            }
+            if now.rem_euclid(3_600_000) < 60_000 {
+                let hour = now - 3_600_000;
+                let _ = ingest.rollup_hour(hour).await;
+                let _ = incidents.baseline_hourly(hour, now).await;
+                let settings = rackhand_store::retention::RetentionSettings::default();
+                let _ = rackhand_store::retention::run(
+                    &db.writer(),
+                    &settings,
+                    now,
+                    &rackhand_store::retention::TokioSleeper,
+                )
+                .await;
+            }
+        }
+    });
+}
+
+/// `rackhand hub detect replay`: what the rules would have opened over stored data; writes nothing.
+pub fn detect_replay(db_path: &Path, machine: &str, from_ms: i64, to_ms: i64) -> Result<Vec<String>, String> {
+    let db = Db::open(db_path).map_err(|e| format!("{}: {e}", db_path.display()))?;
+    rackhand_hub::incidents::replay::replay(&db, machine, from_ms, to_ms, 15)
+}
+
+#[cfg(test)]
+mod tests;

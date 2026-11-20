@@ -77,6 +77,18 @@ impl MasterKey {
     pub(crate) fn bytes(&self) -> &[u8; 32] {
         &self.0
     }
+
+    /// Writes the key to a new file readable by its owner only (0600); an existing file is never overwritten.
+    pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(path)?;
+        file.write_all(self.0.as_slice())?;
+        file.sync_all()
+    }
 }
 
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ"; // Crockford base32

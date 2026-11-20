@@ -11,6 +11,7 @@ mod lifecycle;
 mod machine_silence;
 pub mod notes;
 mod reconcile;
+pub mod replay;
 mod silences;
 
 use std::collections::{HashMap, HashSet};

@@ -1,0 +1,33 @@
+# The Rackhand hub (design 7.1): unprivileged, with the master key passed in as a credential, so the hub's user can't
+# read /etc/rackhand/master.key by path.
+[Unit]
+Description=Rackhand hub
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=rackhand-hub
+Group=rackhand-hub
+ExecStart=/usr/local/bin/rackhand hub run --config /etc/rackhand/hub.toml
+LoadCredential=master.key:/etc/rackhand/master.key
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/rackhand
+StateDirectory=rackhand
+StateDirectoryMode=0750
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
