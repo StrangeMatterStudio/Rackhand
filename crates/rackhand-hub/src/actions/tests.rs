@@ -345,3 +345,32 @@ async fn busy_machine_doesnt_spend_the_approval() {
     runner.release.notify_one();
     assert_eq!(actions.run(j).await.unwrap().outcome, JobOutcome::Succeeded);
 }
+
+/// Says whether new jobs may start, as Ingest does from the hub's free disk (E32).
+#[derive(Debug)]
+struct Gate(std::sync::atomic::AtomicBool);
+
+impl super::JobGate for Gate {
+    fn accepting_jobs(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn new_job_refused_while_disk_low() {
+    let runner = Arc::new(Fake::default());
+    let (db, actions, _bus) = setup("disk-low", "managed", runner.clone()).await;
+    let gate = Arc::new(Gate(std::sync::atomic::AtomicBool::new(false)));
+    let actions = actions.with_gate(gate.clone());
+    let refused = actions.run(job("admin")).await.unwrap();
+    assert_eq!((refused.outcome, refused.reason.as_deref()), (JobOutcome::Failed, Some("disk_low")));
+    assert_eq!(runner.calls.load(Ordering::SeqCst), 0, "nothing ran");
+    let outcome: String = db
+        .readers()
+        .with(|c| c.query_row("SELECT outcome FROM jobs WHERE id = ?1", [&refused.job_id], |r| r.get(0)))
+        .unwrap();
+    assert_eq!(outcome, "disk_low", "the job's row says why");
+    gate.0.store(true, Ordering::SeqCst);
+    let ran = actions.run(job("admin")).await.unwrap();
+    assert_eq!(ran.outcome, JobOutcome::Succeeded, "jobs start again once there is space");
+}

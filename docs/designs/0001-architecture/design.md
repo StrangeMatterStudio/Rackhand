@@ -981,6 +981,7 @@ ULIDs for ids, Unix milliseconds (UTC) for times. SQLite in WAL mode at `/var/li
 | `probe_labels` | machine_id, epoch, labels_id, metric_key_id (the probe's label table, 7.3.2) |
 | `series_chunks` | machine_id, metric_key_id, tier (0, 1, 2), start_ms, end_ms, count, data (encoded as in Chunk encoding below; tiers 1 and 2 hold min, max, avg) |
 | `rollup_dirty` | machine_id, metric_key_id, tier (1 or 2), from_ms, to_ms (a range that backfilled data reached after it was rolled up, 7.3.2) |
+| `probe_ranges` | machine_id, epoch, ranges (JSON), updated_ms (the committed seq ranges of 7.3.2, kept at each compaction so a restart still knows them; forgotten 48 h after the epoch's last report) |
 | `events` | id, machine_id, at_ms, kind, severity, subject, data (JSON), job_id (if during a job) |
 | `conn_records` | machine_id, bucket_ms (5-minute buckets), container (empty for host processes), exe, dest_ip, dest_port, proto, dest_asn, dest_country, verdict, bytes_out, count |
 | `conn_baseline` | machine_id, container, exe, dest_asn, dest_country, dest_port, proto, first_seen_ms, last_seen_ms, count |
@@ -2311,3 +2312,4 @@ None.
 | 2026-11-20 | D111: the eBPF program is its own crate licensed GPL-2.0 OR MIT (5.3) | Owner decision on S1 | Owen |
 | 2026-11-20 | D112: quarantine flushes a Proxmox guest's conntrack entries through the hypervisor's managed enrollment; `conntrack_not_flushed` otherwise (7.5.6, 7.8.6) | Owner decision on S4 | Owen |
 | 2026-11-20 | 7.4.1: `report_staging.offset_ms` (so reports staged before a restart are placed with the offset they arrived with) and `rollup_dirty` (where 7.3.2's dirty ranges are kept); gaps filled in T25, owner to confirm | Implementation (T25) | Implementation run |
+| 2026-11-20 | 7.4.1: `probe_ranges` (received ranges across restarts) and the `config/notifiers.toml` format (`[[discord]] name, webhook`; `[[smtp]] name, host, port, security, username, password, from, to`; secrets as `secret:<name>`); gaps filled in T41, owner to confirm | Implementation (T41) | Implementation run |

@@ -247,7 +247,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T38 | Passkeys, OIDC and account settings | T37 | unit (HTTP, fake provider) | done |
 | T39 | Dashboard pages for monitoring | T32, T36 | unit (HTTP) | done |
 | T40 | `/metrics` endpoint | T25, T36 | unit (HTTP) | done |
-| T41 | Hub composition and `rackhand hub` commands | T24 to T40, T32b | integration | todo |
+| T41 | Hub composition and `rackhand hub` commands | T24 to T40, T32b | integration | in progress (T41a done; carried-in wiring part done) |
 | T42 | Probe daemon | T22 to T26, T41 | integration | todo |
 | T43 | Helper basics and package-list refresh | T42 | integration (containers) | todo |
 | T44 | Linux and Alpine installer and enrollment | T35, T43 | integration (containers) | todo |
@@ -1958,6 +1958,11 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-20 | cargo nextest run -p rackhand -E 'test(hub_cmd::)' | T41a: 3 passed (`init` writes the keys and `hub.toml` with their modes and the Vault's secrets, and refuses to run twice; `run` names the unreadable master key; `detect replay` prints what would have fired and writes nothing). The tests were written with the code, so each was seen failing with its behaviour removed (hub.toml's mode, the path in the message, the replayed lines), then passing |
+  | 2026-11-20 | cargo nextest run --profile it -p rackhand-it -E 'test(hub_start::)' | 2 failed: in a Docker container, systemd 252 leaves the unit's `LoadCredential` directory `root:700`, so the hub's user can't read its master key (tmpfs ACLs do work there; a oneshot unit with only `User=` and `LoadCredential=` shows the same) |
+  | 2026-11-20 | the same checks by hand on the local lab's `hub` VM (Debian 12, systemd 252), `packaging/systemd/rackhand-hub.service` and the static build | `/healthz` ok, first run 200, the hub at uid 999, `sudo -u rackhand-hub cat /etc/rackhand/master.key` refused. The two container tests move to the live tier as `m1::hub_service_runs_unprivileged_and_healthz_ok` and `m1::hub_user_cannot_open_master_key_by_path`, run in L2 once the deploy exists (D52) |
+  | 2026-11-20 | cargo nextest run -p rackhand-hub -p rackhand -E 'test(new_job_refused_while_disk_low) \| test(hub::)' | carried in: `actions::new_job_refused_while_disk_low` (Actions has a job gate; Ingest is the hub's), `hub::observations_wired_from_ingest`, `hub::notifiers_built_from_config` (`config/notifiers.toml` with `secret:` references), `hub::notify_state_survives_restart` (rebuilt from `notifications`), `hub::received_ranges_survive_restart` (a new `probe_ranges` table written by compaction and loaded with the staged seqs on start): 6 passed; each seen failing with its behaviour removed |
+  | 2026-11-20 | cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0; fast 337 passed; no violations |
 
 ### T42: Probe daemon
 - **Design refs:** FR-1, FR-3, 7.3.2 (reconnect, state file), 7.3.3 (probe privileges), G1, AC1, AC2, AC3, AC8
@@ -2136,6 +2141,11 @@ Only additions to that list are written out below.
   | `live::m1::cut_link_backfills_without_stale_incidents` | `lab cut target` for 10 minutes (AC2's 2 hours shortened for the lab), then `heal`: the gap backfills, data is live within 30 s, no stale incident remains | AC2 |
   | `live::m1::hub_reboot_keeps_history_and_rules` | rebooting `hub` keeps history, rules and open incidents; `target` reconnects | AC66 |
   | `live::m1::backup_restores_on_a_fresh_hub` | a backup, `lab reset hub`, deploy and restore: history is back and `target` reconnects | AC47 |
+  Carried in from T41:
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `m1::hub_service_runs_unprivileged_and_healthz_ok` (carried in from T41) | on the lab's hub, the shipped unit runs the hub as a non-root user, `/healthz` is ok and first run answers | 5.2 security, AC67, AC32 |
+  | `m1::hub_user_cannot_open_master_key_by_path` (carried in from T41) | `sudo -u rackhand-hub cat /etc/rackhand/master.key` fails; the key is `600 root` | AC67 |
 - **Fails first:** `lab::release_build_with_test_keys_fails` fails (no guard yet); `cargo xtask ci live --target
   local --milestone m1 --no-deploy` (no hub on `hub` yet) fails every `live::m1::` test with "hub not reachable".
 - **Verification:**
@@ -4609,6 +4619,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D49 | 2026-11-20 | T32b | `incidents/{forecasts, baselines, machine_silence, counted}.rs` | As planned, plus `incidents/conditions.rs` (one tracker for every non-threshold rule: open, severity change, and resolve after the rule's own count); Ingest keeps per-machine counters for down services, container restarts and pending security updates, the last report time, and reads stored series by tier; baselines are kept in memory and written to `baseline_buckets` through Ingest each hour, and on start the learning time is taken from the hour-of-day buckets' counts (one update a day each) since it isn't stored; any reported service not active counts until the hub knows which services are watched (T41's probe config); the check-failing rule and certificate expiry wait for checks (T46) and maintenance windows for silence for T59 (carried in) | The tests and the data the rules need | plan | - |
 | D50 | 2026-11-20 | T39 | `web/pages/{overview, site, machine, incidents, audit, settings_notifiers}.rs`; `query/vitals.rs` | Pages in `web/pages/{monitoring, audit, overview}.rs`; `query/vitals.rs` merges through `Ingest::series` (the merge of the recent window and chunk rows was built there in T27) and cuts to 2000 points; the probe's `Hello` capabilities are kept by Ingest for the machine page's capture method; the overview's empty state already existed (T36), so its test also asserts the new incident summary; the vitals partial shows the last hour as an SVG line with now, min and max; Send test is audited | Reuse of T27's merge | plan | - |
 | D51 | 2026-11-20 | T40 | `web/metrics.rs`; counters in Ingest, Actions, Notify, Peers and Assist; a Prometheus text parser in the test | `/metrics` is answered before the session gate (it has its own bearer token); the only in-memory counter is Ingest's reports; jobs running, notifier failures, staging rows, the database size and peer and operator state are read from their tables, so Actions, Notify, Peers and Assist need no counters; the latest values come from the recent window; the Prometheus check is a strict line grammar in the test rather than a new dependency | Fewer moving parts | plan | - |
+| D52 | 2026-11-20 | T41 | One step; the two `hub_start` tests in the integration tier (systemd containers) | Done in parts, each committed: T41a (`hub init`, `hub run` as the composition root, `hub detect replay`, the unit file), then the carried-in wiring; the `hub_start` checks run in the live tier on the lab's Debian 12 hub (`m1::`, L2) because systemd in Docker can't hand a service's user its credential, and were run by hand there now; `hub_cmd` tests and the carried-in tests were written with their code and seen failing with the behaviour removed; `config/notifiers.toml`'s format (`[[discord]]`, `[[smtp]]`, `secret:` references) and a `probe_ranges` table (the committed seq ranges outliving staging) fill design gaps, owner to confirm | Size of the step; the container can't host the check | plan | - |
 
 ## Follow-ups (out of scope)
 

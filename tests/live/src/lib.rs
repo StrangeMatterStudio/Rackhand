@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 
 #[cfg(test)]
 mod lab;
+#[cfg(test)]
+mod m1;
 
 /// Runs `cargo xtask <args>` through the xtask binary that started this test run.
 pub fn xtask(args: &[&str]) -> Output {

@@ -138,7 +138,8 @@ impl Actions {
         }
         let job_id = new_id().to_string();
         let params = serde_json::to_string(&start.params).unwrap_or_else(|_| "{}".into());
-        let guard = self.inner.locks.acquire(&machine.id, self.lock_wait).await;
+        let refused_for_disk = self.gate.as_ref().is_some_and(|g| !g.accepting_jobs());
+        let guard = if refused_for_disk { None } else { self.inner.locks.acquire(&machine.id, self.lock_wait).await };
         let row = |state| NewJob {
             id: &job_id,
             kind: JobKind::Runbook.as_str(),
@@ -154,7 +155,8 @@ impl Actions {
         };
         let Some(guard) = guard else {
             jobs::create(&self.inner.db, &row("queued")).await?;
-            let reason = Some("machine_busy".to_string());
+            // the hub's disk is nearly full (E32), or another job held the machine for the whole wait
+            let reason = Some(if refused_for_disk { "disk_low" } else { "machine_busy" }.to_string());
             self.finish(&job_id, &start.requested_by, JobOutcome::Failed, reason.as_deref()).await?;
             return Ok(JobResult { job_id, outcome: JobOutcome::Failed, reason });
         };

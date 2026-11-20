@@ -114,7 +114,23 @@ impl Ingest {
                     .insert(at, (sample.value, late));
             }
         }
+        let ranges = {
+            let s = self.state();
+            s.machines
+                .get(machine)
+                .map(|m| {
+                    m.received
+                        .iter()
+                        .map(|(epoch, r)| {
+                            (*epoch as i64, serde_json::to_string(&r.list()).unwrap_or_else(|_| "[]".into()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
         Ok(Compaction {
+            ranges,
+            now_ms: rackhand_store::ids::now_ms(),
             machine_id: machine.to_string(),
             staged: reports.iter().map(|s| (s.epoch, s.seq)).collect(),
             labels: new_labels,

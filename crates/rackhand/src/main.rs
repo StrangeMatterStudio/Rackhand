@@ -3,6 +3,10 @@
 mod hub_cmd;
 mod observations;
 
+#[cfg(test)]
+#[path = "hub_tests.rs"]
+mod hub;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 

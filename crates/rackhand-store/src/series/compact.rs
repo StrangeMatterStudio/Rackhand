@@ -36,6 +36,9 @@ pub struct Compaction {
     pub staged: Vec<(i64, i64)>,
     pub labels: Vec<LabelRow>,
     pub series: Vec<SeriesPoints>,
+    /// The committed seq ranges per epoch (JSON), kept so they outlive the staged rows (7.3.2).
+    pub ranges: Vec<(i64, String)>,
+    pub now_ms: i64,
 }
 
 const MINUTE_MS: i64 = 60_000;
@@ -69,6 +72,13 @@ pub fn compact(conn: &Connection, c: &Compaction) -> Result<usize, SeriesError> 
         append(conn, &key, Tier::Raw, step, &ts, &[values])?;
         mark_dirty(conn, &key, &s.late)?;
         written += s.points.len();
+    }
+    for (epoch, ranges) in &c.ranges {
+        conn.execute(
+            "INSERT INTO probe_ranges (machine_id, epoch, ranges, updated_ms) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (machine_id, epoch) DO UPDATE SET ranges = excluded.ranges, updated_ms = excluded.updated_ms",
+            params![c.machine_id, epoch, ranges, c.now_ms],
+        )?;
     }
     for (epoch, seq) in &c.staged {
         conn.execute(

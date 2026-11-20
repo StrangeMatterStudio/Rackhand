@@ -154,6 +154,14 @@ CREATE TABLE series_chunks (
 ) WITHOUT ROWID;
 CREATE INDEX series_chunks_tier_end ON series_chunks(tier, end_ms);
 
+CREATE TABLE probe_ranges (
+  machine_id TEXT NOT NULL,
+  epoch INTEGER NOT NULL,
+  ranges TEXT NOT NULL,
+  updated_ms INTEGER NOT NULL,
+  PRIMARY KEY (machine_id, epoch)
+) WITHOUT ROWID;
+
 CREATE TABLE rollup_dirty (
   machine_id TEXT NOT NULL,
   metric_key_id INTEGER NOT NULL,

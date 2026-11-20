@@ -23,6 +23,7 @@ pub const DESIGN_TABLES: &[&str] = &[
     "probe_labels",
     "series_chunks",
     "rollup_dirty",
+    "probe_ranges",
     "events",
     "conn_records",
     "conn_baseline",

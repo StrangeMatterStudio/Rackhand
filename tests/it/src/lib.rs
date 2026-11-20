@@ -3,8 +3,6 @@
 #[cfg(test)]
 mod executor_it;
 #[cfg(test)]
-mod hub_start_it;
-#[cfg(test)]
 mod jobs;
 #[cfg(test)]
 mod mirror_it;

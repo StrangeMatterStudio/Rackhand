@@ -101,6 +101,17 @@ impl From<rusqlite::Error> for ActionsError {
     }
 }
 
+/// Whether new jobs may start (E32: not while the hub's disk is nearly full).
+pub trait JobGate: Send + Sync + std::fmt::Debug {
+    fn accepting_jobs(&self) -> bool;
+}
+
+impl JobGate for crate::ingest::Ingest {
+    fn accepting_jobs(&self) -> bool {
+        crate::ingest::Ingest::accepting_jobs(self)
+    }
+}
+
 struct Inner {
     db: Arc<Db>,
     audit: Audit,
@@ -113,6 +124,7 @@ struct Inner {
 pub struct Actions {
     inner: Arc<Inner>,
     lock_wait: Duration,
+    gate: Option<Arc<dyn JobGate>>,
 }
 
 impl std::fmt::Debug for Actions {
@@ -126,12 +138,19 @@ impl Actions {
         Actions {
             inner: Arc::new(Inner { db, audit, bus, runner, locks: locks::MachineLocks::default() }),
             lock_wait: DEFAULT_LOCK_WAIT,
+            gate: None,
         }
     }
 
     /// The same Actions with another wait for a busy machine (tests).
     pub fn with_lock_wait(mut self, wait: Duration) -> Actions {
         self.lock_wait = wait;
+        self
+    }
+
+    /// What says whether new jobs may start (Ingest, from the hub's free disk).
+    pub fn with_gate(mut self, gate: Arc<dyn JobGate>) -> Actions {
+        self.gate = Some(gate);
         self
     }
 }

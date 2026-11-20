@@ -82,6 +82,7 @@ pub fn rules(s: &RetentionSettings) -> Vec<Rule> {
         rule("events", "events", Age { keep_ms: s.events_ms }),
         rule("report_staging", "report_staging", Owner("compaction")),
         rule("rollup_dirty", "rollup_dirty", Owner("rollups")),
+        rule("probe_ranges", "probe_ranges", Later("T98")),
         rule("conn_records", "conn_records", Later("T98")),
         rule("job_steps", "job_steps", Later("T98")),
         rule("assistant_transcripts", "assistant_transcripts", Later("T98")),

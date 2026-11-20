@@ -27,6 +27,11 @@ pub use replay_limits::ReplayLimits;
 pub use staging::{Receipt, Stream};
 pub use window::{SeriesId, WindowSample};
 
+/// A `probe_ranges` row: machine, epoch, ranges as JSON.
+type KeptRanges = (String, i64, String);
+/// A staged report: machine, epoch, seq.
+type StagedSeq = (String, i64, i64);
+
 /// The recent window's length (D100: the longest rule window is 30 minutes).
 pub const WINDOW_MS: i64 = 35 * 60_000;
 /// Samples older than this when they arrive feed history and baselines but not threshold rules (7.3.2, E1).
@@ -206,8 +211,41 @@ impl Ingest {
     /// On start (E44): compacts what a stopped hub left staged, then rebuilds the recent window from tier 0, before
     /// any rule runs.
     pub async fn start(&self, now_ms: i64) -> Result<(), IngestError> {
+        self.load_ranges()?;
         self.compact().await?;
         self.rebuild_window(now_ms)
+    }
+
+    /// The committed seq ranges of a stopped hub: those kept at its last compaction, and every report still staged
+    /// (7.3.2), so `Welcome.received` is complete after a restart.
+    fn load_ranges(&self) -> Result<(), IngestError> {
+        let (kept, staged): (Vec<KeptRanges>, Vec<StagedSeq>) = self.inner.db.readers().with(|c| {
+            let mut k = c.prepare("SELECT machine_id, epoch, ranges FROM probe_ranges")?;
+            let kept =
+                k.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut s = c.prepare("SELECT machine_id, epoch, seq FROM report_staging")?;
+            let staged =
+                s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok((kept, staged))
+        })?;
+        let mut s = self.state();
+        for (machine, epoch, ranges) in kept {
+            let list: Vec<(u64, u64)> = serde_json::from_str(&ranges).unwrap_or_default();
+            let r = s.machines.entry(machine).or_default().received.entry(epoch as u64).or_default();
+            for (a, b) in list {
+                r.add(a, b);
+            }
+        }
+        for (machine, epoch, seq) in staged {
+            s.machines
+                .entry(machine)
+                .or_default()
+                .received
+                .entry(epoch as u64)
+                .or_default()
+                .add(seq as u64, seq as u64);
+        }
+        Ok(())
     }
 
     /// The machine's sample interval, for placing samples on their tick (default 15 s).

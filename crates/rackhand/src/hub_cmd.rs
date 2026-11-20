@@ -192,13 +192,18 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let ingest = Ingest::new(db.clone(), bus.clone(), Arc::new(Statvfs(config.data_dir.clone())));
     ingest.start(now_ms()).await.map_err(|e| e.to_string())?;
     let incidents = rackhand_hub::incidents::Incidents::new(db.clone(), ingest.clone(), bus.clone());
-    let notify = rackhand_hub::notify::Notify::new(db.clone(), ingest.clone(), Vec::new());
+    let transports = notifiers(&db, &vault, None).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "notifiers not started");
+        Vec::new()
+    });
+    let notify = rackhand_hub::notify::Notify::new(db.clone(), ingest.clone(), transports);
     let registry = rackhand_hub::registry::Registry::load(db.clone()).map_err(|e| e.to_string())?;
     let (library, _changes) = rackhand_hub::library::items::Library::new(db.clone(), audit.clone());
     let (host_keys, _alerts) = rackhand_hub::ssh::hostkeys::HostKeys::new(db.clone());
     let executor =
         rackhand_hub::executor::Executor::new(vault.clone(), host_keys.clone()).with_other(Arc::new(notify.clone()));
-    let actions = rackhand_hub::actions::Actions::new(db.clone(), audit.clone(), bus.clone(), Arc::new(executor));
+    let actions = rackhand_hub::actions::Actions::new(db.clone(), audit.clone(), bus.clone(), Arc::new(executor))
+        .with_gate(Arc::new(ingest.clone()));
     let web_config = rackhand_hub::web::WebConfig {
         setup_code_hash: setup_hash,
         csrf_key,
@@ -294,6 +299,22 @@ fn spawn_loops(
             }
         }
     });
+}
+
+/// The notifiers of `config/notifiers.toml`, their secrets from the Vault (none when the file doesn't exist yet).
+pub fn notifiers(
+    db: &Db,
+    vault: &Vault,
+    dashboard_url: Option<&str>,
+) -> Result<Vec<Arc<dyn rackhand_hub::notify::Transport>>, String> {
+    use rackhand_hub::library::items::{Kind, Library};
+    use rackhand_hub::notify::config;
+    let Some((_, text)) = Library::current_in(db, Kind::Config, "notifiers").map_err(|e| e.to_string())? else {
+        return Ok(Vec::new());
+    };
+    let file = config::parse(&text).map_err(|e| e.to_string())?;
+    let secret = |name: &str| vault.get(name).ok().map(|s| String::from_utf8_lossy(s.expose()).into_owned());
+    config::build(&file, &secret, dashboard_url).map_err(|e| e.to_string())
 }
 
 /// `rackhand hub detect replay`: what the rules would have opened over stored data; writes nothing.

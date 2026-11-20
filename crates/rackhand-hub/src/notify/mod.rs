@@ -3,6 +3,7 @@
 //! retries at 1, 5 and 15 minutes after which a failing notifier raises `notifier_failed`. Callouts are built from the
 //! incident only: no secrets, no command output and no links that act without signing in.
 
+pub mod config;
 pub mod discord;
 mod grouping;
 mod retry;
@@ -80,6 +81,25 @@ pub enum NotifyError {
     Sqlite(#[from] rusqlite::Error),
 }
 
+/// After a restart: the unresolved incidents a callout went out for, when it last did, or `None` once acknowledged
+/// (7.6.7: their re-sends and resolutions still go out).
+fn called_out(db: &Db) -> HashMap<String, Option<i64>> {
+    db.readers()
+        .with(|c| {
+            let mut s = c.prepare(
+                "SELECT n.incident_id, max(n.at_ms), i.acked_at IS NOT NULL FROM notifications n
+                 JOIN incidents i ON i.id = n.incident_id
+                 WHERE n.state = 'sent' AND i.state != 'resolved' GROUP BY n.incident_id",
+            )?;
+            s.query_map([], |r| {
+                let acked: bool = r.get(2)?;
+                Ok((r.get::<_, String>(0)?, if acked { None } else { Some(r.get::<_, i64>(1)?) }))
+            })?
+            .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[derive(Debug, Clone)]
 pub struct Notify {
     inner: Arc<Inner>,
@@ -109,7 +129,7 @@ impl Notify {
             .readers()
             .with(|c| c.query_row("SELECT coalesce(max(rowid), 0) FROM incident_events", [], |r| r.get(0)))
             .unwrap_or(0);
-        let state = State { last_event, ..State::default() };
+        let state = State { last_event, called_out: called_out(&db), ..State::default() };
         Notify { inner: Arc::new(Inner { db, ingest, transports, dashboard_url: None, state: Mutex::new(state) }) }
     }
 
