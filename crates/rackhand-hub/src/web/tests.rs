@@ -23,6 +23,13 @@ struct App {
     db: Arc<Db>,
     router: Router,
     recovery: String,
+    path: std::path::PathBuf,
+}
+
+impl App {
+    fn db_path(&self) -> &std::path::Path {
+        &self.path
+    }
 }
 
 async fn app(name: &str) -> App {
@@ -34,7 +41,8 @@ async fn app_with(name: &str, adjust: impl FnOnce(Web) -> Web) -> App {
     let dir = std::env::temp_dir().join(format!("rackhand-web-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let db = Arc::new(Db::open(&dir.join("hub.db")).unwrap());
+    let path = dir.join("hub.db");
+    let db = Arc::new(Db::open(&path).unwrap());
     let key = MasterKey::from_bytes([3u8; 32]);
     let recovery = recovery_code(&key);
     let vault = Arc::new(Vault::new(key, db.clone()));
@@ -44,7 +52,7 @@ async fn app_with(name: &str, adjust: impl FnOnce(Web) -> Web) -> App {
         trusted_proxies: vec![],
     };
     let web = adjust(Web::new(db.clone(), vault, Audit::new(db.writer()), recovery.clone(), config));
-    App { db, router: web.router(), recovery }
+    App { db, router: web.router(), recovery, path }
 }
 
 async fn send(router: &Router, req: Request<Body>) -> Response<Body> {
@@ -1054,5 +1062,174 @@ mod pages {
         let mut theirs = policy.to_vec();
         theirs[0] = ("csrf", csrf.as_str());
         assert_eq!(send(&app.router, post("/policies", &responder, &theirs)).await.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[derive(Debug)]
+    struct Roomy;
+
+    impl crate::ingest::DiskSpace for Roomy {
+        fn free_fraction(&self) -> f64 {
+            0.5
+        }
+    }
+
+    /// An app whose `Web` reads vitals and facts from an `Ingest` on its own database.
+    async fn monitored(name: &str) -> (App, crate::ingest::Ingest) {
+        let slot: Arc<std::sync::Mutex<Option<crate::ingest::Ingest>>> = Arc::default();
+        let keep = slot.clone();
+        let app = app_with(name, move |web| {
+            let ingest = crate::ingest::Ingest::new(web.0.db.clone(), crate::bus::Bus::new(), Arc::new(Roomy));
+            *keep.lock().unwrap() = Some(ingest.clone());
+            web.with_ingest(ingest)
+        })
+        .await;
+        let ingest = slot.lock().unwrap().take().unwrap();
+        (app, ingest)
+    }
+
+    async fn monitor_machine(app: &App, id: &str, access: &str) {
+        app.db
+            .writer()
+            .send(WriteCmd::Batch(vec![RowWrite::insert(
+                "machines",
+                Row::from([
+                    ("id", Value::Text(id.into())),
+                    ("site_id", Value::Text(site_id(&app.db))),
+                    ("name", Value::Text("web".into())),
+                    ("kind", Value::Text("linux".into())),
+                    ("os", Value::Text("Debian 12".into())),
+                    ("access", Value::Text(access.into())),
+                    ("state", Value::Text("enrolled".into())),
+                ]),
+            )]))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn overview_empty_state_offers_add_machine() {
+        let (app, _ingest) = monitored("overview-empty").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let viewer = session_for(&app.db, Role::Viewer).await;
+        let html = text(send(&app.router, get("/", &viewer)).await).await;
+        assert!(html.contains("No machines yet"), "{html}");
+        assert!(html.contains("href=\"/add\""));
+        assert!(html.contains("No open incidents"), "the incident summary has an empty state too");
+    }
+
+    const M: &str = "01JD0000000000000000000001";
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn machine_page_shows_capture_method_and_access_level() {
+        let (app, ingest) = monitored("machine-page").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        monitor_machine(&app, M, "monitor").await;
+        ingest.set_capabilities(M, &[rackhand_proto::probe::Capability::Ebpf as i32]);
+        let viewer = session_for(&app.db, Role::Viewer).await;
+        let resp = send(&app.router, get(&format!("/machines/{M}"), &viewer)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let html = text(resp).await;
+        assert!(html.contains("Capture: eBPF"), "{html}");
+        assert!(html.contains("Access: monitor"));
+        assert!(html.contains("Debian 12"));
+        assert!(html.contains(&format!("hx-get=\"/machines/{M}/vitals\"")), "the chart refreshes with htmx");
+        // the htmx partial draws a line for each metric with data
+        for i in 0..5u64 {
+            let at = now_ms() - (5 - i as i64) * 15_000;
+            let r = rackhand_proto::probe::Report {
+                epoch: 1,
+                seq: i + 1,
+                sampled_at_ms: at,
+                vitals: vec![rackhand_proto::probe::Sample { metric: 1, labels_id: 0, value: i as f64 }],
+                ..Default::default()
+            };
+            ingest.hello(M, 1, &[rackhand_proto::common::LabelEntry::default()]).await.unwrap();
+            ingest.receive(M, crate::ingest::Stream::Live, vec![r], 100, at).await.unwrap();
+        }
+        let partial = text(send(&app.router, get(&format!("/machines/{M}/vitals"), &viewer)).await).await;
+        assert!(partial.contains("cpu.busy_pct") && partial.contains("<polyline"), "{partial}");
+        let missing = send(&app.router, get("/machines/01JD00000000000000000000ZZ", &viewer)).await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn silent_machine_shows_since() {
+        let (app, _ingest) = monitored("silent-page").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        monitor_machine(&app, M, "managed").await;
+        let opened = 1_795_068_000_000i64;
+        let incident = Row::from([
+            ("id", Value::Text("01JD00000000000000000000I1".into())),
+            ("machine_id", Value::Text(M.into())),
+            ("rule_id", Value::Text("machine.silent".into())),
+            ("dedupe_key", Value::Text(format!("{M}:machine.silent:{{}}"))),
+            ("kind", Value::Text("machine.silent".into())),
+            ("severity", Value::Text("warning".into())),
+            ("state", Value::Text("open".into())),
+            ("title", Value::Text("No report from the machine".into())),
+            ("opened_at", Value::Integer(opened)),
+        ]);
+        app.db.writer().send(WriteCmd::Batch(vec![RowWrite::insert("incidents", incident)])).await.unwrap();
+        let viewer = session_for(&app.db, Role::Viewer).await;
+        let html = text(send(&app.router, get(&format!("/machines/{M}"), &viewer)).await).await;
+        assert!(html.contains("Probe silent since 2026-11-19T06:00:00Z"), "{html}");
+        let overview = text(send(&app.router, get("/", &viewer)).await).await;
+        assert!(overview.contains("silent"), "the overview shows it too");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn audit_page_shows_broken_chain_banner() {
+        let (app, _ingest) = monitored("audit-page").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let html = text(send(&app.router, get("/audit", &admin)).await).await;
+        assert!(html.contains("The chain verifies"), "{html}");
+        assert!(!html.contains("class=\"banner critical\""));
+        let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+        conn.execute(
+            "UPDATE audit_log SET data = '{\"changed\":true}' WHERE seq = (SELECT min(seq) FROM audit_log)",
+            [],
+        )
+        .unwrap();
+        let html = text(send(&app.router, get("/audit", &admin)).await).await;
+        assert!(html.contains("class=\"banner critical\""), "{html}");
+        assert!(html.contains("changed"), "names the broken row");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn notifier_send_test_sends_one_message() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        let hook = axum::Router::new().route(
+            "/hook",
+            axum::routing::post(move |body: String| {
+                let counter = counter.clone();
+                async move {
+                    assert!(body.contains("Test message from Rackhand"), "{body}");
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    axum::http::StatusCode::NO_CONTENT
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/hook", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, hook).await.unwrap() });
+        let app = app_with("notifier-test", move |web| {
+            let ingest = crate::ingest::Ingest::new(web.0.db.clone(), crate::bus::Bus::new(), Arc::new(Roomy));
+            let discord: Arc<dyn crate::notify::Transport> =
+                Arc::new(crate::notify::discord::Discord::new("discord", &url));
+            let notify = crate::notify::Notify::new(web.0.db.clone(), ingest.clone(), vec![discord]);
+            web.with_ingest(ingest).with_notify(notify)
+        })
+        .await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let html = text(send(&app.router, get("/settings/notifiers", &admin)).await).await;
+        assert!(html.contains("discord") && html.contains("Send test"), "{html}");
+        let csrf = csrf_of(&app, &admin).await;
+        let resp = send(&app.router, post("/settings/notifiers/test", &admin, &[("csrf", csrf.as_str())])).await;
+        assert!(resp.status().is_success() || resp.status() == StatusCode::SEE_OTHER, "{}", resp.status());
+        assert_eq!(hits.load(Ordering::Relaxed), 1, "one message");
     }
 }

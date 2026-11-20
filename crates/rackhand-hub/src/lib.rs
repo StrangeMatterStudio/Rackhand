@@ -15,6 +15,7 @@ pub mod mcp;
 pub mod notify;
 pub mod peers;
 pub mod policy;
+pub mod query;
 pub mod registry;
 pub mod scheduler;
 pub mod ssh;

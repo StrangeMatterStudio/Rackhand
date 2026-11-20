@@ -66,6 +66,8 @@ struct Inner {
     passkeys: Option<auth::passkey::Passkeys>,
     oidc_flows: Mutex<HashMap<String, auth::oidc::Flow>>,
     library: Option<crate::library::items::Library>,
+    ingest: Option<crate::ingest::Ingest>,
+    notify: Option<crate::notify::Notify>,
 }
 
 #[derive(Clone)]
@@ -109,7 +111,25 @@ impl Web {
             passkeys: None,
             oidc_flows: Mutex::new(HashMap::new()),
             library: None,
+            ingest: None,
+            notify: None,
         }))
+    }
+
+    /// Ingest, for vitals (the recent window and chunk rows) and what probes last reported; before the router is built.
+    pub fn with_ingest(mut self, ingest: crate::ingest::Ingest) -> Web {
+        if let Some(inner) = Arc::get_mut(&mut self.0) {
+            inner.ingest = Some(ingest);
+        }
+        self
+    }
+
+    /// The notifiers, for Settings: Notifiers and its Send test; before the router is built.
+    pub fn with_notify(mut self, notify: crate::notify::Notify) -> Web {
+        if let Some(inner) = Arc::get_mut(&mut self.0) {
+            inner.notify = Some(notify);
+        }
+        self
     }
 
     /// The SSH system's host keys, for accepting a changed one; before the router is built.

@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Notifiers: Rackhand{% endblock %}
+{% block nav %}<nav><a href="/">Overview</a> <a href="/settings">Settings</a></nav>{% endblock %}
+{% block content %}
+<h1>Notifiers</h1>
+{% if names.is_empty() %}<p>No notifiers yet. Add them in <code>config/notifiers.toml</code>.</p>{% else %}
+<ul>{% for n in names %}<li>{{ n }}</li>{% endfor %}</ul>
+<form method="post" action="/settings/notifiers/test"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Send test</button></form>
+{% endif %}
+{% endblock %}

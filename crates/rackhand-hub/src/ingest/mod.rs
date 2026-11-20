@@ -145,6 +145,8 @@ struct Machine {
     counted: Counted,
     /// When the newest live report arrived.
     last_seen_ms: Option<i64>,
+    /// What the probe said it can do in its last `Hello`.
+    capabilities: Vec<i32>,
 }
 
 /// What the counted rules (7.6.1) need from a machine's live reports.
@@ -171,6 +173,7 @@ impl Default for Machine {
             unknown_labels_reported_ms: i64::MIN,
             counted: Counted::default(),
             last_seen_ms: None,
+            capabilities: Vec::new(),
         }
     }
 }
@@ -207,6 +210,15 @@ impl Ingest {
     /// The machine's sample interval, for placing samples on their tick (default 15 s).
     pub fn set_interval(&self, machine: &str, interval_ms: i64) {
         self.state().machines.entry(machine.to_string()).or_default().interval_ms = interval_ms.max(1);
+    }
+
+    /// The capabilities from the probe's last `Hello` (7.3.2).
+    pub fn set_capabilities(&self, machine: &str, capabilities: &[i32]) {
+        self.state().machines.entry(machine.to_string()).or_default().capabilities = capabilities.to_vec();
+    }
+
+    pub fn capabilities(&self, machine: &str) -> Vec<i32> {
+        self.state().machines.get(machine).map(|m| m.capabilities.clone()).unwrap_or_default()
     }
 
     /// The counted-rule inputs of a machine's live reports.

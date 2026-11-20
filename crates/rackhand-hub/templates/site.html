@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}{{ name }}: Rackhand{% endblock %}
+{% block nav %}<nav><a href="/">Overview</a> <a href="/incidents">Incidents</a> <a href="/approvals">Approvals</a> <a href="/jobs">Jobs</a> <a href="/library">Library</a> <a href="/patching">Patching</a> <a href="/audit">Audit</a></nav>{% endblock %}
+{% block content %}
+<h1>{{ name }}</h1>
+{% if machines.is_empty() %}<p>No machines at this site yet: <a href="/add">Add machine</a></p>{% else %}
+<table><tr><th>Machine</th><th>State</th></tr>
+{% for m in machines %}<tr><td><a href="/machines/{{ m.0 }}">{{ m.1 }}</a></td><td>{{ m.2 }}</td></tr>
+{% endfor %}</table>{% endif %}
+{% endblock %}

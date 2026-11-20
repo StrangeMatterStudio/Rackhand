@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}{{ name }}: Rackhand{% endblock %}
+{% block nav %}<nav><a href="/">Overview</a> <a href="/incidents">Incidents</a> <a href="/approvals">Approvals</a> <a href="/jobs">Jobs</a> <a href="/library">Library</a> <a href="/patching">Patching</a> <a href="/audit">Audit</a></nav>{% endblock %}
+{% block content %}
+<h1>{{ name }}</h1>
+<p>Site: <a href="/sites/{{ site }}">{{ site }}</a>. Kind: {{ kind }}. OS: {{ os }}. State: {{ state }}.</p>
+<p>Access: {{ access }}. Capture: {{ capture }}.</p>
+{% if let Some(since) = silent_since %}<p class="banner warning">Probe silent since {{ since }}</p>{% endif %}
+<h2>Vitals</h2>
+<div hx-get="/machines/{{ id }}/vitals" hx-trigger="load, every 15s">Loading vitals</div>
+<h2>Open incidents</h2>
+{% if incidents.is_empty() %}<p>No open incidents.</p>{% else %}
+<table><tr><th>Incident</th><th>Severity</th><th>State</th><th>Opened</th></tr>
+{% for i in incidents %}<tr><td><a href="/incidents/{{ i.id }}">{{ i.title }}</a></td><td>{{ i.severity }}</td><td>{{ i.state }}</td><td>{{ i.opened }}</td></tr>
+{% endfor %}</table>{% endif %}
+<h2>Services</h2>
+{% if services.is_empty() %}<p>No services reported.</p>{% else %}
+<table><tr><th>Service</th><th>State</th></tr>{% for s in services %}<tr><td>{{ s.0 }}</td><td>{{ s.1 }}</td></tr>{% endfor %}</table>{% endif %}
+<h2>Containers</h2>
+{% if containers.is_empty() %}<p>No containers reported.</p>{% else %}
+<table><tr><th>Container</th><th>State</th></tr>{% for c in containers %}<tr><td>{{ c.0 }}</td><td>{{ c.1 }}</td></tr>{% endfor %}</table>{% endif %}
+{% endblock %}

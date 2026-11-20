@@ -1,0 +1,4 @@
+{% if rows.is_empty() %}<p>No vitals in the last hour.</p>{% else %}
+<table><tr><th>Metric</th><th>Last hour</th><th>Now</th><th>Min</th><th>Max</th></tr>
+{% for r in rows %}<tr><td>{{ r.metric }}</td><td><svg class="spark" viewBox="0 0 300 40" width="300" height="40" role="img" aria-label="{{ r.metric }} over the last hour"><polyline fill="none" stroke="currentColor" stroke-width="1.5" points="{{ r.line }}"/></svg></td><td>{{ r.last }}</td><td>{{ r.min }}</td><td>{{ r.max }}</td></tr>
+{% endfor %}</table>{% endif %}

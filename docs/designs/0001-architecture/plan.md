@@ -245,7 +245,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T36 | Web foundation and first run | T18, T20, T21 | unit (HTTP) | done |
 | T37 | Sign-in, second factor, step-up and limits | T36 | unit (HTTP) | done |
 | T38 | Passkeys, OIDC and account settings | T37 | unit (HTTP, fake provider) | done |
-| T39 | Dashboard pages for monitoring | T32, T36 | unit (HTTP) | todo |
+| T39 | Dashboard pages for monitoring | T32, T36 | unit (HTTP) | done |
 | T40 | `/metrics` endpoint | T25, T36 | unit (HTTP) | todo |
 | T41 | Hub composition and `rackhand hub` commands | T24 to T40, T32b | integration | todo |
 | T42 | Probe daemon | T22 to T26, T41 | integration | todo |
@@ -1857,6 +1857,9 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-20 | cargo nextest run -p rackhand-hub -E 'test(pages::) \| test(query::)' (before) | compile errors: `Web::with_ingest`, `Ingest::set_capabilities`, `query::vitals::{vitals, MAX_POINTS}` not found |
+  | 2026-11-20 | same (after) | first run 14 of 15 (the long-range vitals test never compacted its later samples, so only the 35-minute window held them; the test now compacts), then 15 passed with the overview's health and incident summary, the machine page (capture, access, silent since, services, containers, an htmx vitals partial drawing an SVG line per metric), incidents, site, audit (critical banner naming the broken row) and Settings: Notifiers with Send test |
+  | 2026-11-20 | cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0; fast 325 passed (the permission matrix covers the 8 new routes); no violations |
 
 ### T40: `/metrics` endpoint
 - **Design refs:** FR-7, 7.3.14, 12 (hub internals), AC49
@@ -4601,6 +4604,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D47 | 2026-11-20 | T33 | `notify/{discord, smtp, grouping, retry}.rs`; a `wiremock` Discord endpoint and `tests/support/smtp_sink.rs` | As planned, plus: a hub-wide `http` module (one HTTP/1.1 request over rustls with the webpki roots, plain HTTP to loopback only) because hub systems may not use Web's OIDC client; the SMTP client is written here (STARTTLS or implicit TLS, AUTH PLAIN) rather than pulling in a mail library; the Discord test endpoint is a local axum server (no new dependency) and the SMTP sink lives in `notify/smtp_sink.rs` under `cfg(test)`; Notify follows `incident_events` (the callout flag Incidents writes) instead of the bus; Notify is the Executor's runner for `notify` steps; notifiers from `config/notifiers.toml` and the Vault are built in T41 (carried in); a 9th test | Dependency rules (7.2); fewer dependencies | plan | - |
 | D48 | 2026-11-20 | T25, T32, T33, new T32b | The steps as planned | A review after T33 found four gaps the tests didn't cover, each now with a test seen failing first: compaction marked every point dirty, so only late points do now; open condition incidents now resolve after a restart; SMTP headers stay on one line; and forecasts, baselines, machine silence and counted rules were wired by no step, so step T32b is added before T41. Notify's and Ingest's in-memory state across restarts and the probe's events and connections are carried into T41 and T67 | Found in review | plan | - |
 | D49 | 2026-11-20 | T32b | `incidents/{forecasts, baselines, machine_silence, counted}.rs` | As planned, plus `incidents/conditions.rs` (one tracker for every non-threshold rule: open, severity change, and resolve after the rule's own count); Ingest keeps per-machine counters for down services, container restarts and pending security updates, the last report time, and reads stored series by tier; baselines are kept in memory and written to `baseline_buckets` through Ingest each hour, and on start the learning time is taken from the hour-of-day buckets' counts (one update a day each) since it isn't stored; any reported service not active counts until the hub knows which services are watched (T41's probe config); the check-failing rule and certificate expiry wait for checks (T46) and maintenance windows for silence for T59 (carried in) | The tests and the data the rules need | plan | - |
+| D50 | 2026-11-20 | T39 | `web/pages/{overview, site, machine, incidents, audit, settings_notifiers}.rs`; `query/vitals.rs` | Pages in `web/pages/{monitoring, audit, overview}.rs`; `query/vitals.rs` merges through `Ingest::series` (the merge of the recent window and chunk rows was built there in T27) and cuts to 2000 points; the probe's `Hello` capabilities are kept by Ingest for the machine page's capture method; the overview's empty state already existed (T36), so its test also asserts the new incident summary; the vitals partial shows the last hour as an SVG line with now, min and max; Send test is audited | Reuse of T27's merge | plan | - |
 
 ## Follow-ups (out of scope)
 

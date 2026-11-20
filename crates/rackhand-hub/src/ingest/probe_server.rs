@@ -127,6 +127,7 @@ impl ProbeServer {
         if self.ingest.hello(&machine, hello.epoch, &hello.label_table).await.is_err() {
             return End::Gone;
         }
+        self.ingest.set_capabilities(&machine, &hello.capabilities);
         let received = self.ingest.received(&machine, hello.epoch);
         let welcome = Welcome {
             hub_version: Some(SemVer { version: self.settings.hub_version.clone() }),

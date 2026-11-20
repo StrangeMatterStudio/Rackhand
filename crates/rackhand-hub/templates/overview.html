@@ -1,16 +1,17 @@
 {% extends "base.html" %}
-{% block nav %}<nav><a href="/">Overview</a> <a href="/settings">Settings</a> <span class="user">{{ user }}</span>
+{% block nav %}<nav><a href="/">Overview</a> <a href="/incidents">Incidents</a> <a href="/approvals">Approvals</a> <a href="/jobs">Jobs</a> <a href="/library">Library</a> <a href="/patching">Patching</a> <a href="/audit">Audit</a> <a href="/settings">Settings</a> <span class="user">{{ user }}</span>
 <form class="inline" method="post" action="/sign-out"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Sign out</button></form></nav>{% endblock %}
 {% block content %}
 <h1>Overview</h1>
-{% for site in sites %}<h2>{{ site }}</h2>{% endfor %}
+{% if open_incidents == 0 %}<p>No open incidents.</p>{% else %}<p><a href="/incidents">{{ open_incidents }} open incidents</a></p>{% endif %}
+{% for site in sites %}<h2><a href="/sites/{{ site }}">{{ site }}</a></h2>{% endfor %}
 {% if machines.is_empty() %}
 <p>No machines yet: <a href="/add">Add machine</a></p>
 {% else %}
 <table>
-<thead><tr><th>Site</th><th>Machine</th><th>Kind</th><th>State</th></tr></thead>
+<thead><tr><th>Site</th><th>Machine</th><th>Kind</th><th>State</th><th>Health</th></tr></thead>
 <tbody>
-{% for m in machines %}<tr><td>{{ m.site }}</td><td>{{ m.name }}</td><td>{{ m.kind }}</td><td>{{ m.state }}</td></tr>
+{% for m in machines %}<tr><td>{{ m.site }}</td><td><a href="/machines/{{ m.id }}">{{ m.name }}</a></td><td>{{ m.kind }}</td><td>{{ m.state }}</td><td class="health {{ m.health }}">{{ m.health }}</td></tr>
 {% endfor %}
 </tbody>
 </table>

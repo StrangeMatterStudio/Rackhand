@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Audit: Rackhand{% endblock %}
+{% block nav %}<nav><a href="/">Overview</a> <a href="/incidents">Incidents</a> <a href="/approvals">Approvals</a> <a href="/jobs">Jobs</a> <a href="/library">Library</a> <a href="/patching">Patching</a> <a href="/audit">Audit</a></nav>{% endblock %}
+{% block content %}
+<h1>Audit</h1>
+{% if let Some(error) = broken %}<p class="banner critical">The audit log's chain is broken: {{ error }}</p>
+{% else %}<p>The chain verifies ({{ rows }} entries).</p>{% endif %}
+<table><tr><th>#</th><th>When</th><th>Actor</th><th>Action</th><th>Target</th></tr>
+{% for e in entries %}<tr><td>{{ e.seq }}</td><td>{{ e.at }}</td><td>{{ e.actor }}</td><td>{{ e.action }}</td><td>{{ e.target }}</td></tr>
+{% endfor %}</table>
+{% endblock %}

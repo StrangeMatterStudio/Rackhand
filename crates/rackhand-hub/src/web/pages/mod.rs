@@ -2,10 +2,12 @@
 
 mod account;
 mod approvals;
+mod audit;
 mod first_run;
 mod jobs;
 mod library;
 mod machines;
+mod monitoring;
 mod overview;
 mod patching;
 mod settings;
@@ -64,6 +66,14 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
         Page::Patching => patching::page(web, ctx),
         Page::PolicySave => patching::save_policy(web, ctx).await,
         Page::WindowSave => patching::save_window(web, ctx).await,
+        Page::Site => monitoring::site(web, ctx),
+        Page::Machine => monitoring::machine(web, ctx),
+        Page::MachineVitals => monitoring::vitals(web, ctx),
+        Page::Incidents => monitoring::incidents(web, ctx),
+        Page::Incident => monitoring::incident(web, ctx),
+        Page::Audit => audit::page(web, ctx),
+        Page::SettingsNotifiers => monitoring::notifiers(web, ctx),
+        Page::NotifierTest => monitoring::notifier_test(web, ctx).await,
     }
 }
 

@@ -119,6 +119,11 @@ impl Notify {
         Notify { inner: Arc::new(Inner { dashboard_url: Some(url.trim_end_matches('/').to_string()), ..inner }) }
     }
 
+    /// The notifiers' names, for the settings page.
+    pub fn names(&self) -> Vec<String> {
+        self.inner.transports.iter().map(|t| t.name().to_string()).collect()
+    }
+
     pub fn dashboard_url(&self) -> Option<&str> {
         self.inner.dashboard_url.as_deref()
     }
