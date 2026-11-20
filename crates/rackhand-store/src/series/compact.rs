@@ -51,12 +51,16 @@ pub fn compact(conn: &Connection, c: &Compaction) -> Result<usize, SeriesError> 
         if s.points.is_empty() {
             continue;
         }
-        let key = SeriesKey { machine_id: c.machine_id.clone(), metric_key_id: metric_key(conn, s)? };
+        let key = SeriesKey {
+            machine_id: c.machine_id.clone(),
+            metric_key_id: metric_key(conn, &s.name, &s.unit, &s.label_set)?,
+        };
         let step = Step::for_metric(&s.name, &s.unit);
         let last = last_point(conn, &key, Tier::Raw)?;
         let split = s.points.partition_point(|p| last.is_some_and(|l| p.0 <= l));
         let (older, newer) = s.points.split_at(split);
-        backfill(conn, &key, Tier::Raw, step, older)?;
+        let old_ts: Vec<i64> = older.iter().map(|p| p.0).collect();
+        backfill(conn, &key, Tier::Raw, step, &old_ts, &[older.iter().map(|p| p.1).collect()])?;
         let ts: Vec<i64> = newer.iter().map(|p| p.0).collect();
         let values: Vec<f64> = newer.iter().map(|p| p.1).collect();
         append(conn, &key, Tier::Raw, step, &ts, &[values])?;
@@ -73,14 +77,14 @@ pub fn compact(conn: &Connection, c: &Compaction) -> Result<usize, SeriesError> 
 }
 
 /// The id of a series' metric key, added if new.
-fn metric_key(conn: &Connection, s: &SeriesPoints) -> Result<i64, SeriesError> {
+pub(crate) fn metric_key(conn: &Connection, name: &str, unit: &str, label_set: &str) -> Result<i64, SeriesError> {
     conn.execute(
         "INSERT OR IGNORE INTO metric_keys (name, unit, label_set) VALUES (?1, ?2, ?3)",
-        params![s.name, s.unit, s.label_set],
+        params![name, unit, label_set],
     )?;
     Ok(conn.query_row(
         "SELECT id FROM metric_keys WHERE name = ?1 AND label_set = ?2",
-        params![s.name, s.label_set],
+        params![name, label_set],
         |r| r.get(0),
     )?)
 }

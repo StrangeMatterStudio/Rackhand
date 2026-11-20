@@ -125,11 +125,17 @@ pub enum WriteCmd {
     AppendAuditCheckpoint(Row),
     PutScheduleState(Row),
     // Store maintenance
-    RetentionBatch(String),
+    RetentionBatch(crate::retention::Batch),
+    /// Rolls a tier up from chunk rows over `[from_ms, to_ms)`, then recomputes the dirty ranges.
     Rollup {
         tier: u8,
         from_ms: i64,
         to_ms: i64,
+    },
+    /// Minute rollups made from Ingest's recent window.
+    PutRollups {
+        tier: u8,
+        series: Vec<crate::rollup::RollupSeries>,
     },
     /// Rows for several tables in one transaction (the building block owning systems use).
     Batch(Vec<RowWrite>),
@@ -183,6 +189,7 @@ impl WriteCmd {
             PutScheduleState,
             RetentionBatch,
             Rollup,
+            PutRollups,
             Batch
         )
     }
@@ -678,6 +685,32 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
             tx.commit()?;
             Ok(n)
         }
+        WriteCmd::MarkRollupDirty(row) => insert_or_ignore(conn, "rollup_dirty", &[row]),
+        WriteCmd::Rollup { tier, from_ms, to_ms } => {
+            let tier = tier_from(tier)?;
+            let tx = conn.transaction()?;
+            let n = crate::rollup::rollup(&tx, tier, from_ms, to_ms)?;
+            crate::rollup::recompute_dirty(&tx)?;
+            tx.commit()?;
+            Ok(n)
+        }
+        WriteCmd::PutRollups { tier, series } => {
+            let tier = tier_from(tier)?;
+            let tx = conn.transaction()?;
+            let n = crate::rollup::put_rollups(&tx, tier, &series)?;
+            tx.commit()?;
+            Ok(n)
+        }
+        WriteCmd::RetentionBatch(b) => {
+            let sql = crate::retention::delete_sql(&b.rule).ok_or(StoreError::Conflict("no such retention rule"))?;
+            let tier = crate::retention::tier_of(&b.rule);
+            let limit = b.limit as i64;
+            Ok(if tier >= 0 {
+                conn.execute(sql, rusqlite::params![b.cutoff_ms, limit, tier])?
+            } else {
+                conn.execute(sql, rusqlite::params![b.cutoff_ms, limit])?
+            })
+        }
         WriteCmd::CompactStaged(c) => {
             let tx = conn.transaction()?;
             let n = crate::series::compact::compact(&tx, &c)?;
@@ -689,6 +722,15 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
         WriteCmd::PutScheduleState(row) => replace_one(conn, "schedule_state", row),
         WriteCmd::PutWindow(row) => replace_one(conn, "windows", row),
         other => Err(StoreError::Unimplemented(other.name())),
+    }
+}
+
+fn tier_from(tier: u8) -> Result<crate::series::chunk::Tier, StoreError> {
+    use crate::series::chunk::Tier;
+    match tier {
+        1 => Ok(Tier::Minute),
+        2 => Ok(Tier::Hour),
+        _ => Err(StoreError::Conflict("rollups are tier 1 or 2")),
     }
 }
 

@@ -1047,8 +1047,8 @@ mod mcp {
     struct FromIngest(Ingest);
 
     impl Observations for FromIngest {
-        fn series(&self, _q: &SeriesQuery) -> Vec<(i64, f64)> {
-            Vec::new()
+        fn series(&self, q: &SeriesQuery) -> Vec<(i64, f64)> {
+            self.0.series(&q.machine_id, &q.metric, &q.labels, q.from_ms, q.to_ms).unwrap_or_default()
         }
         fn facts(&self, machine_id: &str) -> Facts {
             self.0
@@ -1110,5 +1110,60 @@ mod mcp {
         // a machine without a report has no facts yet
         let other = s.call("get_machine", json!({ "machine": "home/db" })).await.unwrap();
         assert_eq!((other["services"].clone(), other["updates"].clone()), (json!([]), json!([])));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_vitals_reads_the_series_store() {
+        let dir = std::env::temp_dir().join(format!("rackhand-mcp-vitals-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Arc::new(Db::open(&dir.join("hub.db")).unwrap());
+        let ingest = Ingest::new(db.clone(), Bus::new(), Arc::new(Roomy));
+        ingest.hello("m1", 1, &[rackhand_proto::common::LabelEntry::default()]).await.unwrap();
+        let now = now_ms();
+        let now = now - now.rem_euclid(15_000);
+        // the last 30 minutes at 15 s, compacted into tier 0
+        for i in 0..120u64 {
+            let t = now - (119 - i as i64) * 15_000;
+            let r = Report {
+                epoch: 1,
+                seq: i + 1,
+                sampled_at_ms: t,
+                vitals: vec![rackhand_proto::probe::Sample { metric: 1, labels_id: 0, value: i as f64 }],
+                ..Default::default()
+            };
+            ingest.receive("m1", Stream::Live, vec![r], 100, t).await.unwrap();
+        }
+        ingest.compact().await.unwrap();
+        // 50 days of tier 1 (avg 50) and tier 2 (avg 70), written as the rollups would
+        let minute = |t: i64| t - t.rem_euclid(60_000);
+        let tier = |tier: u8, every: i64, n: i64, avg: f64| WriteCmd::PutRollups {
+            tier,
+            series: vec![rackhand_store::rollup::RollupSeries {
+                machine_id: "m1".into(),
+                name: "cpu.busy_pct".into(),
+                unit: "%".into(),
+                label_set: "{}".into(),
+                points: (0..n).map(|k| (minute(now) - 3_600_000 - (n - k) * every, [avg, avg, avg])).collect(),
+            }],
+        };
+        db.writer().send(tier(1, 60_000, 15_000, 50.0)).await.unwrap();
+        db.writer().send(tier(2, 3_600_000, 1_200, 70.0)).await.unwrap();
+        let env = env_with("ingest-vitals", Arc::new(FromIngest(ingest))).await;
+        let token = key(&env, "u-bob", "d-bob", Scope::Read, now_ms() + 3_600_000).await;
+        let mut s = Session::with_token(&env, &env.bob, &token).await;
+        let vitals = |from: i64| json!({ "machine": "home/web", "metric": "cpu.busy_pct", "from": from, "to": now });
+        let recent = s.call("get_vitals", vitals(now - 1_800_000)).await.unwrap();
+        let points = recent["points"].as_array().unwrap();
+        assert_eq!(points.len(), 120, "tier 0 for half an hour");
+        assert_eq!(points[119], json!([now, 119.0]));
+        let ten_days = s.call("get_vitals", vitals(now - 10 * 86_400_000)).await.unwrap();
+        let points = ten_days["points"].as_array().unwrap();
+        assert!(points.len() <= 2000 && points.len() > 100, "{} points", points.len());
+        assert!(points.iter().all(|p| p[1] == 50.0), "tier 1 for ten days");
+        let fifty_days = s.call("get_vitals", vitals(now - 50 * 86_400_000)).await.unwrap();
+        let points = fifty_days["points"].as_array().unwrap();
+        assert!(!points.is_empty() && points.len() <= 2000);
+        assert!(points.iter().all(|p| p[1] == 70.0), "tier 2 for fifty days");
     }
 }

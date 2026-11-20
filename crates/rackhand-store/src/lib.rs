@@ -4,6 +4,8 @@ pub mod audit;
 pub mod db;
 pub mod ids;
 pub mod reader;
+pub mod retention;
+pub mod rollup;
 pub mod series;
 pub mod writer;
 
@@ -16,6 +18,8 @@ pub use writer::{
 mod tests {
     pub mod db;
     mod reader;
+    mod retention;
+    mod rollup;
     mod series {
         pub mod chunk;
         pub mod codec;

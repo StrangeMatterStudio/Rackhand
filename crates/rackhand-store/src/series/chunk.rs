@@ -141,44 +141,56 @@ pub fn last_point(conn: &Connection, key: &SeriesKey, tier: Tier) -> Result<Opti
         .flatten())
 }
 
-/// Writes points older than the series' newest point (replayed data) as closed rows by the chunk rule. A row that
-/// already starts at a group's first point takes the group's points, which replace its own at the same times.
+/// Writes points older than the series' newest point (replayed data, recomputed rollups) as closed rows by the chunk
+/// rule. A row that already starts at a group's first point takes the group's points, which replace its own at the
+/// same times. `ts` is strictly increasing, with one `cols` entry per stored field.
 pub fn backfill(
     conn: &Connection,
     key: &SeriesKey,
     tier: Tier,
     step: Option<Step>,
-    points: &[(i64, f64)],
+    ts: &[i64],
+    cols: &[Vec<f64>],
 ) -> Result<(), SeriesError> {
+    if cols.is_empty() || cols.iter().any(|c| c.len() != ts.len()) || ts.windows(2).any(|w| w[0] >= w[1]) {
+        return Err(SeriesError::Shape);
+    }
     let mut start = 0;
-    for i in 1..=points.len() {
-        if i < points.len() && !closes_before(tier, points[start].0, i - start, points[i].0) {
+    for i in 1..=ts.len() {
+        if i < ts.len() && !closes_before(tier, ts[start], i - start, ts[i]) {
             continue;
         }
-        let group = &points[start..i];
+        let (from, to) = (start, i);
         start = i;
         let existing: Option<(Vec<u8>, i64)> = conn
             .query_row(
                 "SELECT data, closed FROM series_chunks WHERE machine_id = ?1 AND metric_key_id = ?2 AND tier = ?3
                  AND start_ms = ?4",
-                params![key.machine_id, key.metric_key_id, tier as i64, group[0].0],
+                params![key.machine_id, key.metric_key_id, tier as i64, ts[from]],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
-        let mut merged: std::collections::BTreeMap<i64, f64> = std::collections::BTreeMap::new();
+        let mut merged: std::collections::BTreeMap<i64, Vec<f64>> = std::collections::BTreeMap::new();
         let mut closed = true;
         if let Some((data, was_closed)) = existing {
             let chunk = decode(&data)?;
-            if chunk.cols.len() != 1 {
+            if chunk.cols.len() != cols.len() {
                 return Err(SeriesError::Shape);
             }
-            merged.extend(chunk.ts.iter().copied().zip(chunk.cols[0].to_f64()));
+            let old: Vec<Vec<f64>> = chunk.cols.iter().map(|c| c.to_f64()).collect();
+            for (j, &t) in chunk.ts.iter().enumerate() {
+                merged.insert(t, old.iter().map(|c| c[j]).collect());
+            }
             closed = was_closed == 1;
         }
-        merged.extend(group.iter().copied());
-        let ts: Vec<i64> = merged.keys().copied().collect();
-        let values: Vec<f64> = merged.values().copied().collect();
-        let open = Open { start_ms: group[0].0, chunk: Chunk { ts, cols: vec![Column::from_values(step, &values)] } };
+        for j in from..to {
+            merged.insert(ts[j], cols.iter().map(|c| c[j]).collect());
+        }
+        let new_ts: Vec<i64> = merged.keys().copied().collect();
+        let new_cols: Vec<Column> = (0..cols.len())
+            .map(|c| Column::from_values(step, &merged.values().map(|v| v[c]).collect::<Vec<_>>()))
+            .collect();
+        let open = Open { start_ms: ts[from], chunk: Chunk { ts: new_ts, cols: new_cols } };
         write(conn, key, tier, &open, closed)?;
     }
     Ok(())

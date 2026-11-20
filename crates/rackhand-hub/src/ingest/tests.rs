@@ -382,3 +382,33 @@ async fn latest_report_facts_kept() {
     ingest.receive(M1, Stream::Replay, vec![old], 100, T0 + 16_000).await.unwrap();
     assert!(ingest.latest(M1).unwrap().services.is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn minute_rollup_from_window() {
+    let env = Env::new("rollup");
+    let ingest = env.ingest();
+    hello(&ingest, M1, 12).await;
+    for (i, v) in [2.0, 4.0, 9.0, 1.0, 7.0].into_iter().enumerate() {
+        let t = T0 + i as i64 * 15_000;
+        live(&ingest, M1, report(12, i as u64 + 1, t, v), t).await;
+    }
+    // the minute T0 holds 2, 4, 9 and 1; 7 is in the next minute
+    assert_eq!(ingest.rollup_minute(T0 + 5_000).await.unwrap(), 1);
+    let id = env.count("SELECT id FROM metric_keys WHERE name = 'cpu.busy_pct'");
+    let key = rackhand_store::series::chunk::SeriesKey { machine_id: M1.into(), metric_key_id: id };
+    let got = env
+        .db
+        .readers()
+        .with(|c| {
+            Ok(rackhand_store::series::query::range(c, &key, Tier::Minute, T0, T0 + MIN)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e))))
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(got, vec![(T0, vec![1.0, 9.0, 4.0])]);
+    // reads pick the tier for the range
+    let labels = BTreeMap::new();
+    assert_eq!(ingest.series(M1, "cpu.busy_pct", &labels, T0, T0 + 3_600_000).unwrap().len(), 5, "window and tier 0");
+    let month = ingest.series(M1, "cpu.busy_pct", &labels, T0 - 10 * 86_400_000, T0 + MIN).unwrap();
+    assert_eq!(month, vec![(T0, 4.0)], "tier 1's avg");
+}

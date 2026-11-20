@@ -50,6 +50,10 @@ impl Window {
         });
     }
 
+    pub fn all(&self) -> impl Iterator<Item = (&SeriesId, &VecDeque<WindowSample>)> {
+        self.series.iter()
+    }
+
     pub fn samples(&self, id: &SeriesId) -> Vec<WindowSample> {
         self.series.get(id).map(|q| q.iter().copied().collect()).unwrap_or_default()
     }
