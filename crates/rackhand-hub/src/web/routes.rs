@@ -68,6 +68,7 @@ pub enum Page {
     Audit,
     SettingsNotifiers,
     NotifierTest,
+    Metrics,
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +85,8 @@ const fn r(method: Method, path: &'static str, access: Access, page: Page) -> Ro
 
 pub static ROUTES: &[RouteSpec] = &[
     r(Method::GET, "/healthz", Access::Public, Page::Healthz),
+    // behind its own bearer token (7.3.14), not a session
+    r(Method::GET, "/metrics", Access::Public, Page::Metrics),
     r(Method::GET, "/static/vendor/{file}", Access::Public, Page::Vendor),
     r(Method::GET, "/static/app.css", Access::Public, Page::AppCss),
     r(Method::GET, "/static/passkey.js", Access::Public, Page::PasskeyJs),

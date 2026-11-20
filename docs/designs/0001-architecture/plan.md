@@ -246,7 +246,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T37 | Sign-in, second factor, step-up and limits | T36 | unit (HTTP) | done |
 | T38 | Passkeys, OIDC and account settings | T37 | unit (HTTP, fake provider) | done |
 | T39 | Dashboard pages for monitoring | T32, T36 | unit (HTTP) | done |
-| T40 | `/metrics` endpoint | T25, T36 | unit (HTTP) | todo |
+| T40 | `/metrics` endpoint | T25, T36 | unit (HTTP) | done |
 | T41 | Hub composition and `rackhand hub` commands | T24 to T40, T32b | integration | todo |
 | T42 | Probe daemon | T22 to T26, T41 | integration | todo |
 | T43 | Helper basics and package-list refresh | T42 | integration (containers) | todo |
@@ -1886,6 +1886,9 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-20 | cargo nextest run -p rackhand-hub -E 'test(metrics::)' (before) | 4 failed: no `/metrics` route (404) |
+  | 2026-11-20 | same (after) | 4 passed: 401 without or with a wrong token; 30 series lines with `site`, `machine` and the metric's labels; every hub internal of section 12; the output passes a strict Prometheus text check (which itself rejects malformed text) |
+  | 2026-11-20 | cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0; fast 329 passed; no violations |
 
 ### T41: Hub composition and `rackhand hub` commands
 - **Design refs:** 7.1 (process users, hardened units), 7.2 (composition root), 7.7.3 (`hub init`, `hub run`), 7.8
@@ -4605,6 +4608,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D48 | 2026-11-20 | T25, T32, T33, new T32b | The steps as planned | A review after T33 found four gaps the tests didn't cover, each now with a test seen failing first: compaction marked every point dirty, so only late points do now; open condition incidents now resolve after a restart; SMTP headers stay on one line; and forecasts, baselines, machine silence and counted rules were wired by no step, so step T32b is added before T41. Notify's and Ingest's in-memory state across restarts and the probe's events and connections are carried into T41 and T67 | Found in review | plan | - |
 | D49 | 2026-11-20 | T32b | `incidents/{forecasts, baselines, machine_silence, counted}.rs` | As planned, plus `incidents/conditions.rs` (one tracker for every non-threshold rule: open, severity change, and resolve after the rule's own count); Ingest keeps per-machine counters for down services, container restarts and pending security updates, the last report time, and reads stored series by tier; baselines are kept in memory and written to `baseline_buckets` through Ingest each hour, and on start the learning time is taken from the hour-of-day buckets' counts (one update a day each) since it isn't stored; any reported service not active counts until the hub knows which services are watched (T41's probe config); the check-failing rule and certificate expiry wait for checks (T46) and maintenance windows for silence for T59 (carried in) | The tests and the data the rules need | plan | - |
 | D50 | 2026-11-20 | T39 | `web/pages/{overview, site, machine, incidents, audit, settings_notifiers}.rs`; `query/vitals.rs` | Pages in `web/pages/{monitoring, audit, overview}.rs`; `query/vitals.rs` merges through `Ingest::series` (the merge of the recent window and chunk rows was built there in T27) and cuts to 2000 points; the probe's `Hello` capabilities are kept by Ingest for the machine page's capture method; the overview's empty state already existed (T36), so its test also asserts the new incident summary; the vitals partial shows the last hour as an SVG line with now, min and max; Send test is audited | Reuse of T27's merge | plan | - |
+| D51 | 2026-11-20 | T40 | `web/metrics.rs`; counters in Ingest, Actions, Notify, Peers and Assist; a Prometheus text parser in the test | `/metrics` is answered before the session gate (it has its own bearer token); the only in-memory counter is Ingest's reports; jobs running, notifier failures, staging rows, the database size and peer and operator state are read from their tables, so Actions, Notify, Peers and Assist need no counters; the latest values come from the recent window; the Prometheus check is a strict line grammar in the test rather than a new dependency | Fewer moving parts | plan | - |
 
 ## Follow-ups (out of scope)
 

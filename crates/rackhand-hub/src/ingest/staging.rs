@@ -199,6 +199,7 @@ impl Ingest {
         for c in commits {
             c.await.map_err(|_| rackhand_store::StoreError::WriterStopped)??;
         }
+        self.inner.reports_total.fetch_add(prepared.len() as u64, std::sync::atomic::Ordering::Relaxed);
         let ranges = {
             let mut s = self.state();
             let m = s.machines.entry(machine.to_string()).or_default();

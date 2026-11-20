@@ -1233,3 +1233,159 @@ mod pages {
         assert_eq!(hits.load(Ordering::Relaxed), 1, "one message");
     }
 }
+
+mod metrics {
+    use super::*;
+
+    #[derive(Debug)]
+    struct Roomy;
+
+    impl crate::ingest::DiskSpace for Roomy {
+        fn free_fraction(&self) -> f64 {
+            0.5
+        }
+    }
+
+    const TOKEN: &str = "metrics-token-for-tests";
+
+    /// What the app's builder hands back to the test.
+    type Slot = Arc<std::sync::Mutex<Option<(crate::ingest::Ingest, Arc<Vault>)>>>;
+
+    /// 3 machines with 10 series each (cpu, memory, load and a disk), reported a moment ago.
+    async fn app_with_series(name: &str) -> App {
+        let slot: Slot = Arc::default();
+        let keep = slot.clone();
+        let app = app_with(name, move |web| {
+            let ingest = crate::ingest::Ingest::new(web.0.db.clone(), crate::bus::Bus::new(), Arc::new(Roomy));
+            *keep.lock().unwrap() = Some((ingest.clone(), web.0.vault.clone()));
+            web.with_ingest(ingest)
+        })
+        .await;
+        let (ingest, vault) = slot.lock().unwrap().take().unwrap();
+        vault.put("metrics_token", &crate::vault::Secret::from(TOKEN)).await.unwrap();
+        complete_first_run(&app, SETUP_CODE).await;
+        let site: String =
+            app.db.readers().with(|c| c.query_row("SELECT id FROM sites LIMIT 1", [], |r| r.get(0))).unwrap();
+        let now = now_ms();
+        for (i, machine) in ["01JD0000000000000000000001", "01JD0000000000000000000002", "01JD0000000000000000000003"]
+            .iter()
+            .enumerate()
+        {
+            let row = Row::from([
+                ("id", Value::Text((*machine).into())),
+                ("site_id", Value::Text(site.clone())),
+                ("name", Value::Text(format!("m{i}"))),
+                ("kind", Value::Text("linux".into())),
+                ("state", Value::Text("enrolled".into())),
+            ]);
+            app.db.writer().send(WriteCmd::Batch(vec![RowWrite::insert("machines", row)])).await.unwrap();
+            let table = vec![
+                rackhand_proto::common::LabelEntry::default(),
+                rackhand_proto::common::LabelEntry { id: 1, labels: [("mount".to_string(), "/".to_string())].into() },
+            ];
+            ingest.hello(machine, 1, &table).await.unwrap();
+            // 8 unlabelled metrics and 2 disk metrics labelled by mount
+            let mut vitals: Vec<rackhand_proto::probe::Sample> = [1u32, 2, 3, 5, 6, 7, 10, 12]
+                .iter()
+                .map(|m| rackhand_proto::probe::Sample { metric: *m, labels_id: 0, value: 1.5 })
+                .collect();
+            vitals.push(rackhand_proto::probe::Sample { metric: 18, labels_id: 1, value: 40.0 });
+            vitals.push(rackhand_proto::probe::Sample { metric: 16, labels_id: 1, value: 4096.0 });
+            let r =
+                rackhand_proto::probe::Report { epoch: 1, seq: 1, sampled_at_ms: now, vitals, ..Default::default() };
+            ingest.receive(machine, crate::ingest::Stream::Live, vec![r], 100, now).await.unwrap();
+        }
+        app
+    }
+
+    fn bearer(token: &str) -> Request<Body> {
+        Request::builder()
+            .uri("/metrics")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn without_token_401() {
+        let app = app_with_series("metrics-401").await;
+        let none = send(&app.router, Request::builder().uri("/metrics").body(Body::empty()).unwrap()).await;
+        assert_eq!(none.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(send(&app.router, bearer("wrong")).await.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(send(&app.router, bearer(TOKEN)).await.status(), StatusCode::OK);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn with_token_every_series_latest_value() {
+        let app = app_with_series("metrics-series").await;
+        let body = text(send(&app.router, bearer(TOKEN)).await).await;
+        let series: Vec<&str> =
+            body.lines().filter(|l| !l.starts_with('#') && !l.starts_with("rackhand_hub_")).collect();
+        assert_eq!(series.len(), 30, "{body}");
+        assert!(series.iter().all(|l| l.contains("site=\"") && l.contains("machine=\"m")), "{body}");
+        assert!(body.contains("rackhand_disk_used_pct{site=\"home\",machine=\"m0\",mount=\"/\"} 40"), "{body}");
+        assert!(body.contains("rackhand_cpu_busy_pct{site=\"home\",machine=\"m2\"} 1.5"), "{body}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hub_internals_present() {
+        let app = app_with_series("metrics-internals").await;
+        let body = text(send(&app.router, bearer(TOKEN)).await).await;
+        for name in [
+            "rackhand_hub_ingest_reports_total",
+            "rackhand_hub_ingest_lag_seconds",
+            "rackhand_hub_staging_rows",
+            "rackhand_hub_jobs_running",
+            "rackhand_hub_db_size_bytes",
+            "rackhand_hub_notifier_failures_total",
+            "rackhand_hub_peer_up",
+            "rackhand_hub_operator_up",
+        ] {
+            assert!(body.contains(&format!("# TYPE {name} ")), "{name} missing:\n{body}");
+        }
+        assert!(body.contains("rackhand_hub_ingest_reports_total 3\n"), "{body}");
+        assert!(body.contains("rackhand_hub_staging_rows 3\n"), "{body}");
+    }
+
+    /// The Prometheus text format (0.0.4), strictly: TYPE before its samples and once per name, then
+    /// `name{label="value",...} number` lines.
+    fn parse(body: &str) -> Result<usize, String> {
+        let name_re = regex::Regex::new(r"^[a-zA-Z_:][a-zA-Z0-9_:]*$").unwrap();
+        let sample_re = regex::Regex::new(
+            r#"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{([a-zA-Z_][a-zA-Z0-9_]*="(\\.|[^"\\\n])*")(,[a-zA-Z_][a-zA-Z0-9_]*="(\\.|[^"\\\n])*")*\})? (-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?|NaN|\+Inf|-Inf)$"#,
+        )
+        .unwrap();
+        let mut typed = std::collections::HashSet::new();
+        let mut samples = 0;
+        for line in body.lines() {
+            if let Some(rest) = line.strip_prefix("# TYPE ") {
+                let mut parts = rest.split(' ');
+                let (Some(name), Some(kind)) = (parts.next(), parts.next()) else { return Err(line.into()) };
+                if !name_re.is_match(name) || !["gauge", "counter"].contains(&kind) || !typed.insert(name.to_string()) {
+                    return Err(format!("bad TYPE: {line}"));
+                }
+            } else if line.starts_with("# HELP ") || line.is_empty() {
+            } else if let Some(c) = sample_re.captures(line) {
+                if !typed.contains(&c[1]) {
+                    return Err(format!("sample before its TYPE: {line}"));
+                }
+                samples += 1;
+            } else {
+                return Err(format!("not a sample: {line}"));
+            }
+        }
+        Ok(samples)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn output_parses_as_prometheus_text() {
+        let app = app_with_series("metrics-parse").await;
+        let body = text(send(&app.router, bearer(TOKEN)).await).await;
+        let n = parse(&body).unwrap_or_else(|e| panic!("{e}\n{body}"));
+        assert!(n >= 36, "{n} samples: 30 series and the hub's own");
+        assert!(
+            parse("cpu{a=\"b\"} 1").is_err() && parse("# TYPE x gauge\nx{a=\"b} 1").is_err(),
+            "the checker rejects bad text"
+        );
+    }
+}

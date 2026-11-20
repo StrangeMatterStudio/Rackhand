@@ -4,6 +4,7 @@
 pub mod auth;
 pub mod csp;
 pub mod csrf;
+mod metrics;
 pub(crate) mod pages;
 pub mod perms;
 pub mod routes;
@@ -209,6 +210,10 @@ impl Web {
 
     async fn handle(&self, spec: &'static RouteSpec, req: Request<Body>) -> Response<Body> {
         let now = (self.0.clock)();
+        if matches!(spec.page, routes::Page::Metrics) {
+            let auth = req.headers().get(header::AUTHORIZATION).and_then(|v| v.to_str().ok());
+            return metrics::render(self, auth, now);
+        }
         let admin = self.admin_exists();
         match spec.access {
             Access::FirstRun if admin => return pages::redirect("/sign-in"),

@@ -120,6 +120,8 @@ struct Inner {
     state: Mutex<State>,
     /// One compaction at a time.
     compacting: tokio::sync::Mutex<()>,
+    /// Reports staged since the hub started (`rackhand_hub_ingest_reports_total`).
+    reports_total: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Debug, Default)]
@@ -190,6 +192,7 @@ impl Ingest {
                 limits: ReplayLimits::default(),
                 state: Mutex::default(),
                 compacting: tokio::sync::Mutex::new(()),
+                reports_total: std::sync::atomic::AtomicU64::new(0),
             }),
         }
     }
@@ -210,6 +213,25 @@ impl Ingest {
     /// The machine's sample interval, for placing samples on their tick (default 15 s).
     pub fn set_interval(&self, machine: &str, interval_ms: i64) {
         self.state().machines.entry(machine.to_string()).or_default().interval_ms = interval_ms.max(1);
+    }
+
+    pub fn reports_total(&self) -> u64 {
+        self.inner.reports_total.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The newest sample of every series in the recent window: (machine, series, time, value).
+    pub fn latest_values(&self) -> Vec<(String, SeriesId, i64, f64)> {
+        let s = self.state();
+        let mut out = Vec::new();
+        for (machine, m) in &s.machines {
+            for (id, q) in m.window.all() {
+                if let Some(last) = q.back() {
+                    out.push((machine.clone(), id.clone(), last.at_ms, last.value));
+                }
+            }
+        }
+        out.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+        out
     }
 
     /// The capabilities from the probe's last `Hello` (7.3.2).

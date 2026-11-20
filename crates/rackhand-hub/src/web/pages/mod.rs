@@ -74,6 +74,8 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
         Page::Audit => audit::page(web, ctx),
         Page::SettingsNotifiers => monitoring::notifiers(web, ctx),
         Page::NotifierTest => monitoring::notifier_test(web, ctx).await,
+        // answered before the gate (bearer token, no session)
+        Page::Metrics => status(StatusCode::NOT_FOUND, "Not here"),
     }
 }
 
