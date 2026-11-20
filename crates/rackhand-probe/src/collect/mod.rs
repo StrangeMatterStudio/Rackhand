@@ -252,14 +252,19 @@ pub fn collect(host: &dyn Host, prev: Option<&Snapshot>, now_ms: i64, cfg: &Conf
     out.push("conn.outbound_count", None, outbound as f64);
 
     let mut series = out.series;
-    // Host-wide series first, then labelled ones in order, so the cap keeps the machine-level picture.
+    // Host-wide series first, then the root mount, network and disk I/O, then the other mounts, so the cap keeps
+    // the machine-level picture and drops extra mounts first (7.4.2).
+    let rank = |s: &Series| -> u8 {
+        match s.labels.get("mount").map(String::as_str) {
+            None if s.labels.is_empty() => 0,
+            Some("/") => 1,
+            None => 2,
+            Some(_) => 3,
+        }
+    };
     series.sort_by(|a, b| {
         let key = |s: &Series| {
-            (
-                !s.labels.is_empty(),
-                s.labels.values().next().cloned().unwrap_or_default(),
-                catalogue::by_name(s.metric).map(|m| m.id),
-            )
+            (rank(s), s.labels.values().next().cloned().unwrap_or_default(), catalogue::by_name(s.metric).map(|m| m.id))
         };
         key(a).cmp(&key(b))
     });

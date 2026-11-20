@@ -3645,6 +3645,7 @@ dependencies = [
  "iroh",
  "rackhand-hub",
  "rackhand-net",
+ "rackhand-probe",
  "rackhand-proto",
  "rackhand-runbook",
  "rackhand-store",

@@ -60,8 +60,16 @@ fn valid_user_name(name: &str) -> bool {
 
 pub(super) async fn submit(web: &Web, ctx: &Ctx) -> Response<Body> {
     let f = |k: &str| ctx.form.get(k).map(String::as_str).unwrap_or("").trim();
+    // guesses at the setup code count against the source like sign-in attempts (7.7.2)
+    let attempt = crate::web::auth::limits::Attempt { source: &ctx.source, account: None, known_device: None };
+    if !web.0.limits.lock().map(|mut l| l.try_attempt(&attempt, ctx.now_ms)).unwrap_or(false) {
+        return status(StatusCode::TOO_MANY_REQUESTS, "Too many attempts from here; try again in a minute");
+    }
     let setup: [u8; 32] = Sha256::digest(f("setup_code").as_bytes()).into();
     if !same(&setup, &web.0.config.setup_code_hash) {
+        if let Ok(mut l) = web.0.limits.lock() {
+            l.fail(&attempt, ctx.now_ms);
+        }
         return status(StatusCode::FORBIDDEN, "That isn't the setup code the installer printed");
     }
     let (name, password, site, tz) =

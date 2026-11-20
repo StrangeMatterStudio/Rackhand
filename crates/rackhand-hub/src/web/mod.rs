@@ -69,6 +69,7 @@ struct Inner {
     library: Option<crate::library::items::Library>,
     ingest: Option<crate::ingest::Ingest>,
     notify: Option<crate::notify::Notify>,
+    bus: Option<crate::bus::Bus>,
 }
 
 #[derive(Clone)]
@@ -114,7 +115,16 @@ impl Web {
             library: None,
             ingest: None,
             notify: None,
+            bus: None,
         }))
+    }
+
+    /// The Bus, for the state changes the dashboard makes (a decided approval); before the router is built.
+    pub fn with_bus(mut self, bus: crate::bus::Bus) -> Web {
+        if let Some(inner) = Arc::get_mut(&mut self.0) {
+            inner.bus = Some(bus);
+        }
+        self
     }
 
     /// Ingest, for vitals (the recent window and chunk rows) and what probes last reported; before the router is built.

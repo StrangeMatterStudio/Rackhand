@@ -112,8 +112,18 @@ async fn complete_first_run(app: &App, setup_code: &str) -> Response<Body> {
 }
 
 async fn submit_first_run(app: &App, opened: (String, String, String, String), setup_code: &str) -> Response<Body> {
+    submit_first_run_at(app, opened, setup_code, now_ms()).await
+}
+
+/// The same, with the authenticator code for the hub's clock at `at_ms`.
+async fn submit_first_run_at(
+    app: &App,
+    opened: (String, String, String, String),
+    setup_code: &str,
+    at_ms: i64,
+) -> Response<Body> {
     let (cookie, csrf, secret, sig) = opened;
-    let code = totp::code(&totp::decode_base32(&secret).unwrap(), now_ms() / 1000);
+    let code = totp::code(&totp::decode_base32(&secret).unwrap(), at_ms / 1000);
     let req = post(
         "/first-run",
         &cookie,
@@ -185,6 +195,34 @@ async fn first_run_shown_until_admin_exists() {
     assert_eq!(location(&after).as_deref(), Some("/sign-in"), "never again after an admin exists");
     let home = send(&app.router, get("/", "")).await;
     assert_eq!(location(&home).as_deref(), Some("/sign-in"), "signed out now, not first run");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn first_run_setup_code_guessing_limited() {
+    // the hub's clock, moved by the test
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(now_ms()));
+    let c = clock.clone();
+    let app = app_with("first-run-limit", move |web| {
+        web.with_clock(Arc::new(move || c.load(std::sync::atomic::Ordering::SeqCst)))
+    })
+    .await;
+    // 5 wrong codes, each refused for being wrong
+    for _ in 0..5 {
+        let opened = open_first_run(&app).await;
+        assert_eq!(submit_first_run(&app, opened, "SETUP-WRONG-0000").await.status(), StatusCode::FORBIDDEN);
+    }
+    // then one attempt a minute from this source: the next goes ahead, the one after it waits
+    let opened = open_first_run(&app).await;
+    assert_eq!(submit_first_run(&app, opened, "SETUP-WRONG-0001").await.status(), StatusCode::FORBIDDEN);
+    let opened = open_first_run(&app).await;
+    let limited = submit_first_run(&app, opened, SETUP_CODE).await;
+    assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS, "even the right code waits");
+    assert_eq!(user_count(&app.db).await, 0);
+    let later = clock.fetch_add(60_000, std::sync::atomic::Ordering::SeqCst) + 60_000;
+    let opened = open_first_run(&app).await;
+    let done = submit_first_run_at(&app, opened, SETUP_CODE, later).await;
+    assert!(done.status().is_success() || done.status() == StatusCode::SEE_OTHER, "{}", done.status());
+    assert_eq!(user_count(&app.db).await, 1, "a minute later it goes through");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -789,6 +827,25 @@ mod pages {
             assert!(html.contains(shown), "{shown} not on the page");
         }
         assert!(html.contains(&format!("action=\"/approvals/{id}/approve\"")) && html.contains("/reject\""));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dashboard_decision_publishes_approval_decided() {
+        let bus = crate::bus::Bus::new();
+        let mut events = bus.subscribe("test");
+        let b = bus.clone();
+        let app = app_with("approval-bus", move |web| web.with_bus(b)).await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let id = approval(&app, Risk::Normal).await;
+        let responder = session_for(&app.db, Role::Responder).await;
+        assert_eq!(decide(&app, &responder, &id, "reject").await.status(), StatusCode::SEE_OTHER);
+        let want = ulid::Ulid::from_string(&id).unwrap().to_bytes();
+        match tokio::time::timeout(std::time::Duration::from_secs(2), events.recv()).await.unwrap() {
+            Some(crate::bus::Delivery::Event(crate::bus::BusEvent::ApprovalDecided { id, approved })) => {
+                assert_eq!((id, approved), (want, false));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

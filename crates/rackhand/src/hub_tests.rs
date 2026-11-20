@@ -208,3 +208,120 @@ async fn received_ranges_survive_restart() {
     let again = ingest.receive(M, Stream::Live, vec![report(2)], 100, now_ms()).await.unwrap();
     assert_eq!(again, rackhand_hub::ingest::Receipt::Duplicate, "a resend is still a duplicate");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn probe_directory_from_registry() {
+    use rackhand_hub::ingest::probe_server::{ProbeDirectory, ProbeServer, ServerSettings};
+    use rackhand_store::{Row, RowWrite, WriteCmd};
+    use rusqlite::types::Value;
+    let db = db("probe-directory");
+    let (relay, relay_url) = rackhand_net::testing::local_relay().await;
+    let probe_endpoint = rackhand_net::testing::endpoint(&relay_url, &[]).await;
+    let t = |s: &str| Value::Text(s.into());
+    let machine_id = ulid::Ulid::new();
+    let rows = vec![
+        RowWrite::insert("sites", Row::from([("id", t("s1")), ("name", t("home")), ("timezone", t("UTC"))])),
+        RowWrite::insert(
+            "machines",
+            Row::from([
+                ("id", t(&machine_id.to_string())),
+                ("site_id", t("s1")),
+                ("name", t("web")),
+                ("kind", t("linux")),
+                ("state", t("enrolled")),
+                ("probe_endpoint_id", t(&probe_endpoint.id().to_string())),
+            ]),
+        ),
+    ];
+    db.writer().send(WriteCmd::Batch(rows)).await.unwrap();
+    // the directory is the machines table
+    let directory = Arc::new(crate::hub_cmd::MachinesDirectory(db.clone()));
+    assert_eq!(directory.machine_of(&probe_endpoint.id()), Some(machine_id.to_bytes()));
+    let stranger = rackhand_net::testing::endpoint(&relay_url, &[]).await;
+    assert_eq!(directory.machine_of(&stranger.id()), None);
+    // and with the Registry's admission, an enrolled probe's report reaches Ingest
+    let registry = rackhand_hub::registry::Registry::load(db.clone()).unwrap();
+    let ingest = Ingest::new(db.clone(), Bus::new(), Arc::new(Roomy));
+    let hub = rackhand_net::testing::endpoint(&relay_url, &[rackhand_proto::alpn::PROBE]).await;
+    let server = ProbeServer::new(ingest.clone(), directory, ServerSettings::default());
+    let router =
+        rackhand_net::router::Router::new(hub.clone(), registry).route(rackhand_proto::alpn::PROBE, server.handler());
+    tokio::spawn(router.serve());
+    let mut addr = hub.addr();
+    addr.addrs.insert(iroh::TransportAddr::Relay(relay_url.clone()));
+    let dir = std::env::temp_dir().join(format!("rackhand-composition-probe-buffer-{}", std::process::id()));
+    let buffer = rackhand_probe::buffer::segments::Buffer::open(&dir, Default::default(), now_ms()).unwrap();
+    let cfg = rackhand_probe::link::LinkConfig::new(addr, machine_id.to_bytes(), "0.1.0");
+    let mut link = rackhand_probe::link::Link::new(
+        probe_endpoint,
+        cfg,
+        buffer,
+        rackhand_probe::buffer::epoch::EpochState::start(None),
+    );
+    let mut session = link.connect(&[rackhand_proto::common::LabelEntry::default()], now_ms()).await.unwrap();
+    let report = rackhand_proto::probe::Report {
+        epoch: link.epoch(),
+        seq: link.next_seq(),
+        sampled_at_ms: now_ms(),
+        ..Default::default()
+    };
+    link.send_live(&mut session, report, now_ms()).await.unwrap();
+    link.read_acks(&mut session, |b| b.is_empty(), std::time::Duration::from_secs(10)).await.unwrap();
+    assert_eq!(ingest.reports_total(), 1, "the report reached Ingest");
+    drop(relay);
+}
+
+/// A sleeper that doesn't wait (retention's pauses between batches).
+struct NoWait;
+
+impl rackhand_store::retention::Sleeper for NoWait {
+    fn sleep(&self, _d: std::time::Duration) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(async {})
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rollup_and_retention_ticks_run() {
+    let db = db("ticks");
+    let ingest = Ingest::new(db.clone(), Bus::new(), Arc::new(Roomy));
+    let incidents = rackhand_hub::incidents::Incidents::new(db.clone(), ingest.clone(), Bus::new());
+    ingest.hello(M, 1, &[rackhand_proto::common::LabelEntry::default()]).await.unwrap();
+    let t0 = 1_795_068_000_000i64; // the top of an hour
+    let count = |sql: &str| -> i64 { db.readers().with(|c| c.query_row(sql, [], |r| r.get(0))).unwrap() };
+    // a tier 0 row 3 days old, for retention to remove
+    {
+        let path =
+            std::env::temp_dir().join(format!("rackhand-composition-ticks-{}", std::process::id())).join("hub.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute(
+            "INSERT INTO series_chunks (machine_id, metric_key_id, tier, start_ms, end_ms, count, closed, data)
+             VALUES ('old', 99, 0, ?1, ?1, 1, 1, x'00')",
+            [t0 - 3 * 86_400_000],
+        )
+        .unwrap();
+    }
+    let mut seq = 0u64;
+    for minute in 0..60i64 {
+        for k in 0..4 {
+            seq += 1;
+            let at = t0 + minute * 60_000 + k * 15_000;
+            let r = rackhand_proto::probe::Report {
+                epoch: 1,
+                seq,
+                sampled_at_ms: at,
+                vitals: vec![rackhand_proto::probe::Sample { metric: 1, labels_id: 0, value: 30.0 }],
+                ..Default::default()
+            };
+            ingest.receive(M, Stream::Live, vec![r], 100, at).await.unwrap();
+        }
+        // the scheduler's minute tick, just after the minute ends
+        crate::hub_cmd::every_minute(&ingest, &incidents, &db, t0 + (minute + 1) * 60_000 + 1_000, &NoWait).await;
+        if minute == 4 {
+            assert_eq!(count("SELECT sum(count) FROM series_chunks WHERE tier = 1"), 5, "a tier 1 point a minute");
+        }
+    }
+    assert_eq!(count("SELECT count(*) FROM series_chunks WHERE tier = 2"), 1, "the hour rolled up on the hour");
+    assert!(count("SELECT count(*) FROM baseline_buckets") >= 2, "the baselines learned the hour");
+    assert_eq!(count("SELECT count(*) FROM series_chunks WHERE machine_id = 'old'"), 0, "retention ran");
+    assert_eq!(count("SELECT count(*) FROM report_staging"), 0, "compaction ran every 5 minutes");
+}

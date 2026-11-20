@@ -101,6 +101,10 @@ pub(super) async fn decide(web: &Web, ctx: &Ctx, approve: bool) -> Response<Body
             if let Err(e) = web.0.audit.append(&user.name, action, Some(id), "{}").await {
                 tracing::error!(error = %e, "audit");
             }
+            // the decision is committed; tell the systems waiting on it (7.3.8)
+            if let (Some(bus), Ok(ulid)) = (web.0.bus.as_ref(), ulid::Ulid::from_string(id)) {
+                bus.publish(crate::bus::BusEvent::ApprovalDecided { id: ulid.to_bytes(), approved: approve }).await;
+            }
             redirect("/approvals")
         }
         Err(ApprovalError::StepUpRequired) => redirect("/step-up"),

@@ -133,6 +133,19 @@ fn series_cap_drops_extra_and_raises_event() {
     assert!(under.events.iter().all(|e| e.kind != "series_cap_reached"));
 }
 
+#[test]
+fn series_cap_keeps_net_and_diskio_before_extra_mounts() {
+    let c = two("mounts-300", &Config::default());
+    assert_eq!(c.series.len(), 200);
+    // network and disk I/O are machine-wide pictures; the extra mounts are what the cap drops
+    for (metric, label) in
+        [("net.rx_bps", "eth0"), ("net.tx_bps", "vmbr0"), ("diskio.read_bps", "sda"), ("diskio.busy_pct", "sda")]
+    {
+        assert!(value(&c, metric, Some(label)).is_some(), "{metric} {label} kept");
+    }
+    assert!(value(&c, "disk.used_pct", Some("/")).is_some(), "the root mount is kept too");
+}
+
 fn kib(text: &str, key: &str) -> f64 {
     text.lines()
         .find(|l| l.starts_with(&format!("{key}:")))

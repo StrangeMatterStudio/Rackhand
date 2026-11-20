@@ -214,7 +214,8 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         .with_library(library.clone())
         .with_host_keys(host_keys)
         .with_ingest(ingest.clone())
-        .with_notify(notify.clone());
+        .with_notify(notify.clone())
+        .with_bus(bus.clone());
     // the mesh: probes and MCP clients
     let node_key = rackhand_net::key::load_or_create(&config.node_key)
         .map_err(|e| format!("{}: {e}", config.node_key.display()))?;
@@ -274,31 +275,41 @@ fn spawn_loops(
     });
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(60));
-        let mut minutes = 0u64;
         loop {
             tick.tick().await;
-            minutes += 1;
-            let now = now_ms();
-            let _ = ingest.rollup_minute(now - 60_000).await;
-            let _ = incidents.reconcile(now).await;
-            if minutes % 5 == 0 {
-                let _ = ingest.compact().await;
-            }
-            if now.rem_euclid(3_600_000) < 60_000 {
-                let hour = now - 3_600_000;
-                let _ = ingest.rollup_hour(hour).await;
-                let _ = incidents.baseline_hourly(hour, now).await;
-                let settings = rackhand_store::retention::RetentionSettings::default();
-                let _ = rackhand_store::retention::run(
-                    &db.writer(),
-                    &settings,
-                    now,
-                    &rackhand_store::retention::TokioSleeper,
-                )
-                .await;
-            }
+            every_minute(&ingest, &incidents, &db, now_ms(), &rackhand_store::retention::TokioSleeper).await;
         }
     });
+}
+
+/// The minute's work (7.4.1, 7.3.8): the last completed minute rolled up, reconciliation, compaction every 5 minutes,
+/// and in the first minute of an hour the last hour rolled up, the baselines updated and retention run.
+pub async fn every_minute(
+    ingest: &Ingest,
+    incidents: &rackhand_hub::incidents::Incidents,
+    db: &Db,
+    now: i64,
+    sleeper: &dyn rackhand_store::retention::Sleeper,
+) {
+    let minute = now - now.rem_euclid(60_000) - 60_000;
+    if let Err(e) = ingest.rollup_minute(minute).await {
+        tracing::warn!(error = %e, "minute rollup");
+    }
+    let _ = incidents.reconcile(now).await;
+    if (now / 60_000) % 5 == 0 {
+        let _ = ingest.compact().await;
+    }
+    if now.rem_euclid(3_600_000) < 60_000 {
+        let hour = now - now.rem_euclid(3_600_000) - 3_600_000;
+        if let Err(e) = ingest.rollup_hour(hour).await {
+            tracing::warn!(error = %e, "hour rollup");
+        }
+        let _ = incidents.baseline_hourly(hour, now).await;
+        let settings = rackhand_store::retention::RetentionSettings::default();
+        if let Err(e) = rackhand_store::retention::run(&db.writer(), &settings, now, sleeper).await {
+            tracing::warn!(error = %e, "retention");
+        }
+    }
 }
 
 /// The notifiers of `config/notifiers.toml`, their secrets from the Vault (none when the file doesn't exist yet).
