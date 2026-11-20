@@ -210,14 +210,14 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T03 | CI workflows and the guard test | T02 | unit (xtask), lint | done |
 | T04 | Runner profiles for Rackhand | T03 | scripted (CI run), owner setup | unverified (MV1) |
 | L1 | Local lab harness | T02 | unit (xtask) + live (local lab) | done |
-| T05 | Spike S8: time-series encoding | T02 | scripted measurement | blocked (owner decision: S8 misses the 2 GB budget) |
+| T05 | Spike S8: time-series encoding | T02 | scripted measurement | done |
 | T06 | Spike S6: probe footprint | T02 | scripted measurement | done |
 | T07 | Spike S7: git mirror library | T02 | scripted measurement | done |
-| T08 | Spike S2: iroh relay admission and limits | T02 | scripted measurement (network VM) | done (owner decision pending for T82) |
+| T08 | Spike S2: iroh relay admission and limits | T02 | scripted measurement (network VM) | done |
 | T09 | Spike S3: iroh path detection | T02 | scripted measurement (network VM) | done |
-| T10 | Spike S1: aya eBPF | T02, L1 | scripted measurement (eBPF VMs, local Proxmox) | done (owner decision pending for T68) |
+| T10 | Spike S1: aya eBPF | T02, L1 | scripted measurement (eBPF VMs, local Proxmox) | done |
 | T11 | Spike S11: collectors on current distributions | T02, L1 | scripted measurement (containers, local Proxmox) | done |
-| T12 | Spike S4: Proxmox privileges, firewall, upgrade command | T02, L1 | scripted measurement (local Proxmox) | done (owner decision pending for T72) |
+| T12 | Spike S4: Proxmox privileges, firewall, upgrade command | T02, L1 | scripted measurement (local Proxmox) | done |
 | T13 | Spike S5: Claude Code headless | T02 | scripted measurement (owner's login) | todo |
 | T14 | Spike S9: TrueNAS API | T02 | lab measurement | todo |
 | T15 | Spike S10: threat list and GeoIP terms | T02 | scripted measurement + reading | done (owner decision pending for T69) |
@@ -643,9 +643,9 @@ Every spike step follows the same rules:
 - **Regression:** `cargo xtask ci fast`: exit 0.
 - **Manual verification:** None (the owner names the lab VM; the run records from it over SSH with an existing key).
 - **Done when:**
-  - [ ] Report committed; finding appended to design 17 with a change-log row
-  - [ ] Projection at most 2 GB, or the owner has decided the trade-off and the design is updated (7.4.1 says so)
-  - [ ] Spike code deleted
+  - [x] Report committed; finding appended to design 17 with a change-log row
+  - [x] Projection at most 2 GB, or the owner has decided the trade-off and the design is updated (7.4.1 says so)
+  - [x] Spike code deleted
 - **Risk / rollback:** a miss changes retention or the budget; that is the owner's call before T19.
 - **Evidence:**
   | When | Command | Result |
@@ -653,6 +653,7 @@ Every spike step follows the same rules:
   | 2026-11-20 | cargo run --release --manifest-path spikes/s8/Cargo.toml -- --data spikes/s8/data --report docs/designs/0001-architecture/spikes/s8.md --check | exit 1: projected 4.23 GB over the 2 GB budget (5.21, 3.20 and 4.48 bytes per value for tiers 0, 1 and 2; 66 series over 24.0 h on the WSL host) |
   | 2026-11-20 | same with `--quantize`, `--int`, `--grid` and their combinations, and `--tier1-days` / `--tier2-days` | best encoding (integer values at a per-metric step, samples stamped with their 15 s tick) 1.65, 1.60 and 2.66 bytes per value, 2.52 GB with G1 retention; 1.88 GB with tier 1 kept 14 days. Report `spikes/s8.md`. Blocked: the trade-off is the owner's (7.4.1) |
   | 2026-11-20 (review) | the same runs after review, with an adaptive integer coder (delta-of-delta, delta or XOR per chunk, buckets to 64 bits), `--kib`, the 7.4.1 chunk rule (`--t1-chunk`, `--t2-chunk`) and the SQLite row cost measured on the `series_chunks` schema (103 bytes a row plus 31.5% of the blob, not the assumed 80) | Gorilla 5.66 GB; integer + grid + KiB 1.00, 0.98 and 1.62 bytes per value, 2.40 GB with the chunk rule, 1.82 GB with day-long tier 1 chunks, 1.81 GB with 120-point tier 1 chunks and tier 2 kept 1 year. Report rewritten; design 17 finding and change-log row added (owner decision pending). Still blocked |
+  | 2026-11-20 (decision) | owner's answer; design updated | owner chose integer columns at a step with tick timestamps, tier 1 and 2 chunks of 120 points and tier 2 kept 1 year (1.81 GB): D109 in design 18, 7.4.1 (chunk encoding, chunk rule, retention, storage estimate), G1, FR-7 and the settings range; change log. A 4-hour sample of the recording kept as `crates/rackhand-store/tests/fixtures/s8-sample.csv.zst` for T19 (the spike measures 1.04 and 0.96 bytes per value for tiers 0 and 1 on it); spike code and the rest of the data deleted. Regression `cargo xtask ci fast`: 241 passed |
 
 ### T06: Spike S6: probe footprint
 - **Design refs:** 5.2 (probe footprint), 11, D52, S6
@@ -1062,27 +1063,37 @@ Only additions to that list are written out below.
   | 2026-11-19 | cargo xtask ci fast | exit 0; 39 passed |
 
 ### T19: Time-series encoding and chunks
-- **Design refs:** 7.4.1 (`series_chunks`, open chunks of 120 points or one hour), D43, S8 finding
-- **Goal:** points encode and decode losslessly with the encoding chosen in T05. Chunk rows are opened, appended to and
-  closed by the 120-point and hour rules.
+- **Design refs:** 7.4.1 (`series_chunks`, chunk rule, chunk encoding), D43, D109, S8 finding
+- **Goal:** chunks encode and decode the D109 encoding without loss (integer columns at a metric's step, tick
+  timestamps, the cheapest of three coders, f64 Gorilla for metrics without a step). Chunk rows are opened, appended to
+  and closed by the 120-point rule and, for tier 0, the hour rule.
 - **Depends on:** T18, T05
-- **Changes:** `crates/rackhand-store/src/series/{gorilla.rs, chunk.rs, query.rs}`.
+- **Changes:** `crates/rackhand-store/src/series/{mod.rs, codec.rs, step.rs, chunk.rs, query.rs}`;
+  `crates/rackhand-store/tests/fixtures/s8-sample.csv.zst` (from T05).
 - **Tests to write first:**
   | Test | Asserts | Covers |
   | --- | --- | --- |
-  | `gorilla::round_trip_is_lossless` (property, 10 000 cases) | random timestamps and f64 values, including NaN, infinities and repeats, decode exactly | D43 |
-  | `gorilla::bytes_per_value_on_recorded_data_within_spike_result` | the T05 sample encodes within 10% of the spike's figure | S8, 5.2 |
-  | `chunk::chunk_closes_at_120_points` | the 121st point opens a new row | 7.4.1 |
-  | `chunk::chunk_closes_at_hour_boundary` | a point in the next hour opens a new row, even at 30 points | 7.4.1 |
+  | `codec::round_trip_is_lossless` (property, 10 000 cases) | random timestamps with integer columns, and with f64 columns including NaN, infinities and repeats, decode exactly | D43, D109 |
+  | `codec::cheapest_coder_is_chosen_per_column` | a constant column, a random walk and a noisy counter each pick a different coder, and each chunk is no larger than its column coded any other way | D109 |
+  | `codec::bytes_per_value_on_recorded_data_within_spike_result` | the T05 sample at 15 s ticks encodes within 10% of the spike's figures: tier 0 1.04 and tier 1 (120-point min, max, avg) 0.96 bytes per value | S8, 5.2 |
+  | `step::values_round_to_their_unit_step` | % and ratio to 0.01, Celsius to 0.1, `mem.*`/`swap.*`/`disk.*` bytes to whole KiB, other units to 1; a metric with no step stays f64 | D109 |
+  | `step::tier0_timestamps_snap_to_tick_later_sample_wins` | samples 14.2 s and 15.4 s apart land on their ticks; two on one tick keep the later | D109 |
+  | `chunk::chunk_closes_at_120_points` | the 121st point opens a new row, in every tier | 7.4.1 |
+  | `chunk::tier0_chunk_closes_at_hour_boundary` | a tier 0 point in the next hour opens a new row, even at 30 points | 7.4.1 |
+  | `chunk::tier1_chunk_spans_the_hour` | tier 1 points across an hour boundary stay in one open row until 120 | 7.4.1, D109 |
   | `chunk::append_to_open_chunk_preserves_points` | appending in two batches equals one batch | 7.4.1 |
   | `query::range_query_returns_points_in_order_across_chunks` | a range spanning three chunks returns sorted, deduplicated points | 7.4.1 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
-  cargo nextest run -p rackhand-store -E 'test(gorilla::) | test(chunk::) | test(query::)'
+  cargo nextest run -p rackhand-store -E 'test(codec::) | test(step::) | test(chunk::) | test(query::)'
   ```
-  Expected: 6 passed, 0 failed.
+  Expected: 10 passed, 0 failed.
+- **Regression:** `cargo xtask ci fast`: exit 0.
 - **Manual verification:** None.
+- **Done when:**
+  - [ ] New tests seen failing first
+  - [ ] New tests and regression suite pass
 - **Risk / rollback:** revert.
 - **Evidence:**
   | When | Command | Result |
@@ -4463,6 +4474,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D39 | 2026-11-19 | T58 | `web/pages/{approvals, jobs, library, patching}.rs` | As planned, plus `policy/store.rs`: Policy owns `policies` and `windows`, so it writes them and renders `config/policies.toml` (policies and windows) as a new revision on every change. The patching page shows policies (holds are `patch = hold`), windows and the latest `patch-*` jobs; pending updates per machine need the reports' facts (carried into T59). A decision in the dashboard doesn't publish `ApprovalDecided` yet: the Web has no Bus handle until the composition (T41) | Ownership per 7.2; facts and the Bus arrive later | plan | - |
 | D40 | 2026-11-19 | T76 | `assist/{offers, tokens, transcripts, cap, resume}.rs`; `tests/operator_contract.rs` | Tokens are issued and rebound to the next operator through `mcp::keys` (no `assist/tokens.rs`); the fake operator is in the test file. Assist ends a job nobody took with `no_operator` or `declined` and publishes `JobFinished`; moving the incident to `human` and the callout are Incidents' and Notify's (carried into T78). An operator's 5-minute grace and `hub_unreachable` are the operator's side (carried into T77); the hub waits for it. A job token from another endpoint now gets `out_of_scope` at the auth line (it was `unauthorized`). The daily cap counts assistant jobs since 00:00 UTC (20 by default; the setting is wired in T79). A job whose operator never reports stops being usable when its token expires at the deadline; a hub-side end for it is carried into T78 | Incidents and the operator binary come later | plan | - |
 | D41 | 2026-11-20 | T05 | Record 24 h from the WSL machine and from one lab VM the owner names | Recorded the WSL host only; added integer, quantized and tick-stamped encodings and retention options to the measurement | No lab VM was named and the real lab isn't connected yet; an idle local lab VM wouldn't represent a server. The extra encodings show what it takes to meet the budget after plain Gorilla missed it | plan | - |
+| D42 | 2026-11-20 | T05, T19 | T05 deletes the spike code and data; T19 tests `gorilla::` with the 120-point and hour rules | T05 kept a 4-hour sample of its recording as T19's fixture; T19's tests follow D109 (codec, step and chunk tests for the new encoding and the tier 0-only hour rule, 10 instead of 6) | T19's spike-figure test needs recorded data, and the owner's S8 decision changed the encoding and the chunk rule | plan | - |
 
 ## Follow-ups (out of scope)
 

@@ -45,7 +45,7 @@ unnoticed.
 ## 3. Goals
 
 - **G1 Vitals.** Every enrolled machine's CPU, memory, swap, load, disk, network, services, containers and pending
-  updates are visible on its hub within 30 seconds, with history (48 hours at 15 seconds, 30 days at 1 minute, 2 years
+  updates are visible on its hub within 30 seconds, with history (48 hours at 15 seconds, 30 days at 1 minute, 1 year
   at 1 hour).
 - **G2 Early warning.** Rackhand calls out before or when something goes wrong: thresholds with durations, forecasts
   (disk full, memory growth, certificate expiry), learned baselines, and silence (a machine or a peer site that stops
@@ -112,7 +112,7 @@ unnoticed.
   contents.
 
 **Hub, detection and incidents**
-- **FR-7** The hub shall store vitals in three tiers (15 s raw for 48 h, 1 min for 30 d, 1 h for 2 y) and events for 90
+- **FR-7** The hub shall store vitals in three tiers (15 s raw for 48 h, 1 min for 30 d, 1 h for 1 y) and events for 90
   days, and expose a Prometheus `/metrics` endpoint.
 - **FR-8** The hub shall evaluate threshold, forecast, baseline and silence rules (section 7.6) every 15 seconds, turn
   warning and critical events into incidents, and open, update and resolve incidents.
@@ -194,7 +194,8 @@ unnoticed.
 - Claude Code (native binary) is the first assistant runner. It runs only on operator hosts, never on a hub.
 - CI runs on the maintainers' self-hosted runners. GitHub-hosted copies of every workflow exist and are off by default.
   Self-hosted jobs never run for pull requests from forks.
-- License MIT OR Apache-2.0; dependencies license-compatible (`cargo deny`).
+- License MIT OR Apache-2.0; dependencies license-compatible (`cargo deny`). The probe's eBPF program is its own crate
+  licensed GPL-2.0 OR MIT, because the kernel helpers it needs are GPL-only (S1, D111).
 - Rackhand is standalone: it integrates with no other product of its maintainers.
 
 ## 6. Current state
@@ -837,14 +838,14 @@ Because a crash can lose queued messages, Incidents also reconciles on start and
 - `rackhand relay` embeds the iroh relay server. HTTPS on 443 (ACME via Let's Encrypt or a provided certificate) and
   iroh's QUIC address discovery port (confirmed in spike S2).
 - **Modes.** `private`: only endpoints that present a valid relay key are admitted. `public`: anyone is admitted; keyed
-  endpoints get their key's limits and priority.
-- **Keys.** `rackhand relay key create --name <n> --priority <normal|high> --rate <bits/s> --daily <bytes>
-  --max-endpoints <n> --expires <date>` prints a token signed by the relay's key. A hub presents it when it registers;
+  endpoints get their key's priority.
+- **Keys.** `rackhand relay key create --name <n> --priority <normal|high> --max-endpoints <n>
+  --expires <date>` prints a token signed by the relay's key. A hub presents it when it registers;
   the relay binds it to the first `max-endpoints` endpoint ids that use it (default 1).
-- **Unkeyed defaults on a public relay:** 1 Mbit/s, 2 GB per day, 500 concurrent endpoints. At capacity, high-priority
-  keyed endpoints are admitted first, then normal keyed, then unkeyed. How keys reach the admission hook and how limits
-  are enforced is spike S2; if priority admission is impossible with iroh's relay, the relay ships with modes and keys
-  only and the maintainer is told before release.
+- **Limits.** One rate applies to every connection the relay serves, set by the operator with `rackhand relay run
+  --rate <bits/s>`: 1 Mbit/s by default in `public` mode and none in `private` mode. A relay serves at most 500
+  concurrent endpoints. At capacity, high-priority keyed endpoints are admitted first, then normal keyed, then unkeyed.
+  iroh-relay has no per-endpoint rate or byte counter, so there are no per-key rates and no daily quotas (S2, D110).
 - **Relay lists.** A hub may subscribe to URLs returning TOML `[[relay]] url, name, region, operator`. Fetched daily
   over HTTPS, at most 100 entries, invalid entries skipped, status shown on the dashboard. Listed relays are used after
   the hub's own relays, always as public, and never get keys.
@@ -978,7 +979,7 @@ ULIDs for ids, Unix milliseconds (UTC) for times. SQLite in WAL mode at `/var/li
 | `metric_keys` | id, name, unit, label_set (JSON) |
 | `report_staging` | machine_id, epoch, seq, received_at_ms, frame (zstd protobuf) |
 | `probe_labels` | machine_id, epoch, labels_id, metric_key_id (the probe's label table, 7.3.2) |
-| `series_chunks` | machine_id, metric_key_id, tier (0, 1, 2), start_ms, end_ms, count, data (Gorilla-encoded; tiers 1 and 2 hold min, max, avg) |
+| `series_chunks` | machine_id, metric_key_id, tier (0, 1, 2), start_ms, end_ms, count, data (encoded as in Chunk encoding below; tiers 1 and 2 hold min, max, avg) |
 | `events` | id, machine_id, at_ms, kind, severity, subject, data (JSON), job_id (if during a job) |
 | `conn_records` | machine_id, bucket_ms (5-minute buckets), container (empty for host processes), exe, dest_ip, dest_port, proto, dest_asn, dest_country, verdict, bytes_out, count |
 | `conn_baseline` | machine_id, container, exe, dest_asn, dest_country, dest_port, proto, first_seen_ms, last_seen_ms, count |
@@ -1005,7 +1006,7 @@ ULIDs for ids, Unix milliseconds (UTC) for times. SQLite in WAL mode at `/var/li
 | `schedule_state` | kind, key, last_run_ms, next_run_ms |
 | `audit_log` | seq, at_ms, actor, action, target, data, prev_hash, hash (SHA-256 over prev_hash and the row); checkpoint rows hold the hash of the last row removed by retention |
 
-**Retention.** Tier 0: 48 h. Tier 1: 30 d. Tier 2: 2 y. `report_staging`: deleted after compaction. `events`: 90 d.
+**Retention.** Tier 0: 48 h. Tier 1: 30 d. Tier 2: 1 y (S8, D109). `report_staging`: deleted after compaction. `events`: 90 d.
 `conn_records`: 30 d. `job_steps` output and transcripts: 90 d (metadata kept). Incidents and approvals: 1 y.
 `audit_log`: 1 y, with a checkpoint row written before each deletion so the chain stays verifiable. The retention task
 runs hourly and deletes in batches of 10 000 rows until nothing older is left, pausing 50 ms between batches.
@@ -1034,18 +1035,37 @@ doesn't reset a rule's duration. At 100 machines with 100 series each this is ab
 
 **Rollups.** Every minute the rollup task turns the last completed minute of the recent window into tier-1 min, max and
 avg; every hour it does the same from tier 1 into tier 2. Then it recomputes any ranges marked dirty by backfilled data
-(7.3.2) from the chunk rows. A chunk row is open (appended to by compaction) until it holds 120 points or its hour
-ends, then it is closed.
+(7.3.2) from the chunk rows. A chunk row is open (appended to by compaction or the rollup task) until it holds 120
+points, then it is closed: 30 minutes for tier 0 at 15 s, 2 hours for tier 1 and 5 days for tier 2. A tier 0 chunk also
+closes when its hour ends, so a series sampled less often doesn't keep a row open for long.
 
-**Storage estimate for 50 machines with 100 series each (the cardinality cap's typical case):** tier 0 is 50 x 100 x
-11 520 points = 57.6 M points at about 1.4 bytes each (Gorilla) = about 81 MB. Tier 1 is 50 x 100 x 43 200 x 3 values
-at about 1.4 bytes = about 0.9 GB. Tier 2 is 50 x 100 x 17 520 x 3 at about 2 bytes = about 0.53 GB. Connection records
-at about 2 000 rows per machine per day x 30 d x 80 bytes = about 0.24 GB (the per-day cap bounds a busy machine at ten
-times that). Job output and transcripts at most 0.1 GB (their budget). Events, check results and the rest about 0.1 GB.
-Total about 1.95 GB, inside the 2 GB budget. The budget assumes an average of 100 series per machine; machines near
-the 200-series cap use proportionally more, and the dashboard shows the projected database size. Spike S8 measures
-the real bytes per value; if the budget can't be met with the retention in G1, the maintainer decides the trade-off and
-this document is updated before the code changes.
+**Chunk encoding (S8, D109).** A chunk holds a timestamp column and one value column per stored field (one for tier 0;
+min, max and avg for tiers 1 and 2).
+- **Timestamps** are delta-of-delta encoded. Tier 0 stores each sample's scheduled tick: compaction rounds the
+  timestamp to the machine's sample interval, and when two samples land on one tick the later one is kept. Tiers 1
+  and 2 store their window starts.
+- **Values** of a metric whose 7.4.2 unit has a step are stored as whole multiples of the step: % and ratio 0.01,
+  Celsius 0.1, `mem.*`, `swap.*` and `disk.*` bytes 1 KiB (their sources count kB, so nothing is lost), and every
+  other unit 1. Each column of each chunk is coded with whichever of delta-of-delta, delta (both with buckets up to 64
+  bits) and Gorilla XOR is smallest, behind a 2-bit tag. A metric without a step, such as a driver metric of unknown
+  unit, is stored as f64 with Gorilla XOR, without loss.
+- **The recent window** keeps values and timestamps as received. Only chunk rows are rounded.
+
+**Storage estimate for 50 machines with 100 series each (the cardinality cap's typical case), measured in spike S8:**
+- **Tier 0:** 50 x 100 x 11 520 points = 57.6 M values at about 1.0 byte each = about 58 MB.
+- **Tier 1:** 50 x 100 x 43 200 x 3 = 648 M values at about 0.9 bytes = about 0.57 GB.
+- **Tier 2:** 50 x 100 x 8 760 x 3 = 131 M values at about 1.6 bytes = about 0.21 GB.
+- **SQLite rows:** about 103 bytes for each of the 2.65 M chunk rows, plus 31.5% of the chunk data, for page space left
+  partly empty by the key order (measured on the `series_chunks` schema) = about 0.54 GB.
+- **Connection records:** about 2 000 rows per machine per day x 30 d x 80 bytes = about 0.24 GB. The per-day cap
+  bounds a busy machine at ten times that.
+- **Job output and transcripts:** at most 0.1 GB (their budget).
+- **Events, check results and the rest:** about 0.1 GB.
+
+The total is about 1.81 GB, inside the 2 GB budget. The budget assumes an average of 100 series per machine. Machines
+near the 200-series cap use proportionally more, and the dashboard shows the projected database size. Plain Gorilla on
+the recorded values would have needed 5.66 GB with the 2-year tier 2 first designed. That is why tier 2 keeps 1 year
+and values are stored at their step (D109).
 
 **Secrets at rest.** XChaCha20-Poly1305 per secret with a 256-bit master key in `/etc/rackhand/master.key` (0600, root,
 outside the database). The first-run page shows the key once as a recovery code for the admin to store.
@@ -1255,7 +1275,10 @@ Applying:
    job record. It then enables the guest's firewall with input and output policy DROP plus only these rules: DHCP (UDP
    67 and 68), the guest to the hub's QUIC port (the probe's connection), and the hub to the guest's TCP port 22 and
    ICMP echo. Nothing else to or from the hub is allowed, so a compromised guest gets no wider path to the hub than
-   the probe already had. Then it flushes the guest's conntrack entries on the host. Other managed Linux:
+   the probe already had. Then it flushes the guest's conntrack entries on the host: `conntrack -D` for each of the guest's addresses, run
+   through the hypervisor's own managed enrollment as a wrapper command (S4, D112). If the hypervisor isn't enrolled
+   as managed, the quarantine still applies and its job records `conntrack_not_flushed`, so established sessions last
+   until they time out. Other managed Linux:
    `/usr/local/lib/rackhand/quarantine on <hub-addresses>` (in the automation allow-list) loads an nftables table
    `rackhand_quarantine` with the same rules and flushes conntrack. Managed Windows: the shipped script adds Windows
    Firewall rules to the same effect. A monitor machine can be quarantined only as a Proxmox guest, from the
@@ -1582,7 +1605,7 @@ All configuration is edited in the dashboard, stored with revisions, and mirrore
 | Approval expiry | 24 h (patch: end of window) | 1 h to 7 d |
 | Step-up freshness | 5 min | 1 to 15 min |
 | Baseline learning | 7 days | 1 to 30 days |
-| Retention tier 0 / 1 / 2 | 48 h / 30 d / 2 y | 12 h to 7 d / 7 to 365 d / 30 d to 10 y |
+| Retention tier 0 / 1 / 2 | 48 h / 30 d / 1 y | 12 h to 7 d / 7 to 365 d / 30 d to 10 y |
 | Local backups kept | 2 | 1 to 14 |
 | Series cap per machine | 200 | 50 to 2000 |
 
@@ -1657,7 +1680,7 @@ IPs), relay lists (URLs the admin adds), n0's public relays and DNS discovery.
 `VM.Allocate`, `VM.Clone`, `Datastore.Audit`, `Datastore.AllocateSpace`, `Sys.Audit`, `SDN.Use`. Spike S4 confirmed
 the list against PVE 8 and 9: the guest firewall needs `VM.Audit` and `VM.Config.Network` (and `SDN.Use` for the device
 flag), and a rollback of a running container on PVE 9 needs `VM.PowerMgmt`. Guest rules apply only with the datacenter
-firewall on and the device's `firewall=1`. The API can't flush conntrack (owner decision pending before T72).
+firewall on and the device's `firewall=1`. The API can't flush conntrack; the host's own managed enrollment does (7.5.6, D112).
 
 #### 7.8.7 Runbook format
 
@@ -2042,16 +2065,16 @@ the owner and the document is updated before the work that depends on it starts.
   `sched_process_exec` tracepoint capture TCP connects, UDP sends and execs with pid, executable path (resolved in the
   program) and cgroup id on 5.10.274, 6.1.192 and 7.0.14, with 0.5 to 1.1 MB of map memory. On the lab's Proxmox VE 9
   node a container's connection is attributed to `/lxc/<vmid>/` from the host. The kernel refuses the program when it
-  declares `MIT` (`bpf_probe_read_kernel` is GPL-only); `Dual MIT/GPL` loads. The eBPF program's licence is the
-  owner's decision before T68. Report: `spikes/s1.md`.
+  declares `MIT` (`bpf_probe_read_kernel` is GPL-only); `Dual MIT/GPL` loads. **Decided (2026-11-20, D111):** the eBPF
+  program is its own crate licensed GPL-2.0 OR MIT (5.3). Report: `spikes/s1.md`.
 - **S2** iroh relay: admission with keys, per-endpoint rate limits, priority at capacity, ports.
   **Finding (2026-11-19):** iroh-relay 1.5 admits by key (an `AccessControl` hook sees the handshake-verified
   endpoint id and the client's bearer token, sent with `RelayConfig::with_auth_token`), enforces one rate limit for
   every connection (1 MB in 8.4 s at 1 Mbit/s), and supports priority at capacity (a keyed endpoint evicts an unkeyed
   one with `Clients::disconnect`). Per-key rates and daily quotas are not possible: there is no per-endpoint rate
   setting and no per-endpoint byte counter. Ports: TCP 80 (HTTP, captive-portal probe), TCP 443 (HTTPS), UDP 7842
-  (QUIC address discovery). The per-key `--rate` and `--daily` and the unkeyed daily quota in 7.3.10 wait for the
-  owner's decision (options in `spikes/s2.md`); T82 waits for it. Report: `spikes/s2.md`.
+  (QUIC address discovery). **Decided (2026-11-20, D110):** one rate per relay set by the operator; no per-key rates or
+  daily quotas (7.3.10). Report: `spikes/s2.md`.
 - **S3** iroh path detection: direct versus relayed, waiting for a direct path.
   **Finding (2026-11-19):** iroh 1.5 reports paths with `Connection::paths()` (`is_ip`, `is_relay`, `is_selected`)
   and `paths_stream()` for changes; a `wait_direct(timeout)` over the stream works. Without NAT, or with full-cone
@@ -2067,7 +2090,8 @@ the owner and the document is updated before the work that depends on it starts.
   **Finding (2026-11-19):** the 7.8.6 role works for snapshot, rollback, power, guest firewall, the device flag and full
   clone on PVE 8.4 and 9.2; saving and restoring a guest's firewall configuration is exact. Guest rules apply only with
   the datacenter firewall on and the device's `firewall=1` (measured by pings from the hub). The API has no way to
-  flush conntrack, so how a quarantine cuts existing connections is the owner's decision before T72. Proxmox hosts
+  flush conntrack, so a quarantine flushes them with `conntrack -D` through the hypervisor's own managed enrollment
+  (decided 2026-11-20, D112). Proxmox hosts
   take a full upgrade (`apt full-upgrade` or `dist-upgrade`). Report: `spikes/s4.md`.
 - **S5** Claude Code headless: stdio MCP only, `--allowedTools` limited to MCP tools, stream-json events, kill at
   deadline; the flag that limits a run to the given MCP config; any extra flag stream-json needs in a non-interactive
@@ -2087,8 +2111,8 @@ the owner and the document is updated before the work that depends on it starts.
   `series_chunks` schema; 7.4.1 counted no row cost), so 50 machines project to 5.66 GB. Storing whole multiples of a
   per-metric step, stamping samples with their tick and picking the cheapest integer coder per chunk, all at the hub,
   bring values to about 1 byte (2.40 GB with the 7.4.1 chunk rule); meeting 2 GB also needs larger tier 1 chunks, a
-  shorter retention or a larger budget. The trade-off is the owner's before T19 (owner decision pending). The rule's
-  "or its hour ends" would give tier 2 one point per chunk; to be settled with the same decision.
+  shorter retention or a larger budget. **Decided (2026-11-20, D109):** integer columns at a per-metric step with tick timestamps,
+  tier 1 and 2 chunks of 120 points and tier 2 kept 1 year, projected at 1.81 GB (7.4.1). Report: `spikes/s8.md`.
 - **S9** TrueNAS API: which API (REST or JSON-RPC over WebSocket) the current releases support for pool, disk and alert
   reads.
 - **S10** Threat list and GeoIP terms for default use in an open-source product, and whether the default lists still
@@ -2219,6 +2243,10 @@ the owner and the document is updated before the work that depends on it starts.
 | D106 | Versions and pre-releases | The version is `0.1.0` from the start (no 0.0.x pre-releases); the implementation plan builds and verifies artifacts but schedules no release, which stays the maintainer's call | The maintainers' versioning rule starts at 0.1.0; signing is offline (D90) | Owen | 2026-11-18 |
 | D107 | Where the built product is tested live | Local lab first: the implementer deploys each milestone's build to QEMU/KVM machines on the development machine (a hub managing one VM, nested Proxmox, a second site) and runs live tests; a final pass runs them against the owner's real hub VM or LXC and one VM, plus the real-hardware checks | Finds integration problems early without the owner's time; the real lab still proves real hardware | Owen | 2026-11-18 |
 | D108 | CI runners | CI runs on the maintainers' self-hosted runner service; where a tier needs something a runner profile lacks (Docker, `/dev/kvm`, memory, time), the owner adjusts the service | One runner platform, sized to the project | Owen | 2026-11-18 |
+| D109 | Time-series encoding and tier 2 retention | Integer columns at a per-metric step with tick timestamps, the cheapest of three coders per chunk, f64 Gorilla for metrics without a step; tier 1 and 2 chunks of 120 points; tier 2 kept 1 year | Spike S8: Gorilla as designed projects 5.66 GB per 50 machines, this 1.81 GB | Owen | 2026-11-20 |
+| D110 | Relay limits | One rate per relay set by the operator (default 1 Mbit/s public, none private); no per-key rates or daily quotas | Spike S2: iroh-relay has no per-endpoint rate or byte counter | Owen | 2026-11-20 |
+| D111 | eBPF program licence | Its own crate, GPL-2.0 OR MIT | Spike S1: the kernel helpers it needs are GPL-only | Owen | 2026-11-20 |
+| D112 | Existing connections of a quarantined Proxmox guest | `conntrack -D` on the host through the hypervisor's managed enrollment | Spike S4: the Proxmox API can't flush conntrack | Owen | 2026-11-20 |
 
 ## 19. Deferred decisions
 
@@ -2276,3 +2304,7 @@ None.
 | 2026-11-19 | S11 finding: journal-only authentication events read with `journalctl -o json`; `mem.available_*` counts the ZFS ARC above `c_min` (7.4.2, section 17) | Spike S11 finding | Implementation run |
 | 2026-11-19 | S4 finding: the 7.8.6 role confirmed on PVE 8 and 9; guest rules need the datacenter firewall and the device flag; conntrack can't be flushed through the API (owner decision pending before T72); Proxmox hosts take a full upgrade (7.8.6, section 17) | Spike S4 finding | Implementation run |
 | 2026-11-20 | S8 finding: Gorilla and the 7.4.1 estimate miss the 2 GB budget (5.66 GB projected); hub-side integer coding with tick timestamps reaches about 1 byte per value; chunk size, retention or budget to be decided by the owner before T19 (section 17) | Spike S8 finding | Implementation run |
+| 2026-11-20 | D109: chunk encoding (integer columns at a step, tick timestamps, three coders), tier 1 and 2 chunks of 120 points, tier 2 kept 1 year; storage estimate replaced with the S8 measurement (G1, FR-7, 7.4.1, 7.8.1 settings) | Owner decision on S8 | Owen |
+| 2026-11-20 | D110: relays have one operator-set rate and no per-key rates or daily quotas (7.3.10) | Owner decision on S2 | Owen |
+| 2026-11-20 | D111: the eBPF program is its own crate licensed GPL-2.0 OR MIT (5.3) | Owner decision on S1 | Owen |
+| 2026-11-20 | D112: quarantine flushes a Proxmox guest's conntrack entries through the hypervisor's managed enrollment; `conntrack_not_flushed` otherwise (7.5.6, 7.8.6) | Owner decision on S4 | Owen |
