@@ -743,6 +743,7 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
         }
         WriteCmd::UpsertIncident(row) => upsert_one(conn, "incidents", "id", row),
         WriteCmd::PutSilence(row) => upsert_one(conn, "silences", "id", row),
+        WriteCmd::PutNotification(row) => upsert_one(conn, "notifications", "id", row),
         WriteCmd::PutPolicy(row) => upsert_one(conn, "policies", "id", row),
         WriteCmd::PutQuarantineRule(row) => upsert_one(conn, "quarantine_rules", "id", row),
         WriteCmd::PutScheduleState(row) => replace_one(conn, "schedule_state", row),

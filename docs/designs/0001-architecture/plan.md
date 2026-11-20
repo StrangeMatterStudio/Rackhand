@@ -238,7 +238,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T30 | Detect: silence | T28 | unit | done |
 | T31 | Detect: baselines and counted rules | T28 | unit | done |
 | T32 | Incidents: lifecycle and evaluation | T25, T24, T28 to T31 | unit | done |
-| T33 | Notify: Discord, SMTP, grouping, retries | T32 | unit (HTTP and SMTP fakes) | todo |
+| T33 | Notify: Discord, SMTP, grouping, retries | T32 | unit (HTTP and SMTP fakes) | done |
 | T34 | Scheduler and windows | T24 | unit | done |
 | T35 | Join contract and Registry | T17, T18, T21 | contract | done |
 | T36 | Web foundation and first run | T18, T20, T21 | unit (HTTP) | done |
@@ -1578,6 +1578,7 @@ Only additions to that list are written out below.
   | `notify::resolution_sent_for_called_out_incidents_only` | info incidents get none | 7.6.7 |
   | `notify::retries_1_5_15_then_failed_raises_notifier_failed` | `notifier_failed` is also sent through the other notifier | E31 |
   | `notify::callouts_carry_no_secrets_or_command_output` | a callout built from an incident with job output contains none of it | 7.3.9 |
+  | `notify::notify_step_sends_through_every_notifier` | `Notify::send_text` (the runbook step's message) goes through every notifier | 7.8.7 |
 
   Carried in from T55 (the Executor passes these step kinds to the system that owns them; until then they fail `<kind>_unavailable`):
   | Test | Asserts | Covers |
@@ -1587,13 +1588,18 @@ Only additions to that list are written out below.
 - **Verification:**
   ```bash
   cargo nextest run -p rackhand-hub -E 'test(notify::)'
+  cargo nextest run -p rackhand-it -E 'test(notify_step)'
   ```
-  Expected: 8 passed, 0 failed.
+  Expected: 9 passed, 0 failed; 1 passed, 0 failed.
 - **Manual verification:** None.
 - **Risk / rollback:** revert.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-20 | cargo nextest run -p rackhand-hub -E 'test(notify::)' (before) | compile errors: `Notify`, `Transport`, `Message`, `MessageKind`, `SendError`, `discord`, `smtp` not found |
+  | 2026-11-20 | same (after) | first run 7 passed, 1 failed, 1 hung: the ack helper upserted a partial incident row (NOT NULL), now an UPDATE as `acknowledge` does; and the warning group loop held the state lock across its sends (a deadlock the grouping test caught), now taken out first. Then 9 passed |
+  | 2026-11-20 | cargo nextest run -p rackhand-it -E 'test(notify_step)' | carried from T55: before, the step failed `notify_unavailable` and the test didn't compile (no `notify` types); after, 1 passed (a `notify` step succeeds through Notify; a failed send fails it) |
+  | 2026-11-20 | cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0 (a test helper's arguments grouped for clippy); fast 307 passed; no violations |
 
 ### T34: Scheduler and windows
 - **Design refs:** 7.2 (Scheduler), 7.5.3 step 1, the `windows` table, E46, AC20 (maintenance window part)
@@ -1877,6 +1883,10 @@ Only additions to that list are written out below.
   | Test | Asserts | Covers |
   | --- | --- | --- |
   | `hub::rollup_and_retention_ticks_run` (carried in from T27) | the scheduler's `Rollup` tick runs `Ingest::rollup_minute` for the last completed minute and `rollup_hour` on the hour, and the `Retention` tick runs `retention::run` hourly | 7.4.1 |
+  Carried in from T33:
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `hub::notifiers_built_from_config` (carried in from T33) | `config/notifiers.toml` with `secret:` references builds the Discord and SMTP notifiers (secrets from the Vault), Notify ticks every 15 s, and the Executor's other step kinds reach Notify | 7.3.9, 7.4.3 |
 - **Fails first:** compile errors; then the container tests fail because there is no unit file.
 - **Verification:**
   ```bash
@@ -4522,6 +4532,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D44 | 2026-11-20 | T26 | `crates/rackhand-probe/src/link/` (client); `ingest/probe_server.rs`; `tests/probe_contract.rs` | As planned, plus: each unidirectional stream starts with a one-byte tag (`rackhand_proto::streams`, 1 live, 2 replay), since 7.3.2 numbers the streams but QUIC doesn't; async frame helpers in `rackhand-net::frames`; the server learns which machine an endpoint is through a `ProbeDirectory` trait (the Registry wires it in T41) and which probe versions it takes through a predicate (T95 sets the rule); a resend of committed reports is acked again so the probe can delete them; the probe gains `rackhand-net`, `iroh` and `tokio`. The process-level checks (exit code 3, hourly retry, label sets after a new epoch) are the daemon's and go to T42; the contract asserts `Stop::exit_code` and `Stop::retry_after` | QUIC streams carry no names; the Registry and the daemon come later | plan | - |
 | D45 | 2026-11-20 | T27 | `rackhand-store/src/{rollup.rs, retention.rs}`; the `Rollup`, `RetentionBatch` and `MarkRollupDirty` handlers; 6 tests | As planned, plus: minute rollups come from Ingest's recent window (7.4.1 says so; tier 0 lags compaction by up to 5 minutes), handed to the store by a new `PutRollups` command, with `ingest/series.rs` making them and reading series for MCP and the dashboard (tier chosen by the range); `Rollup` recomputes the dirty ranges after rolling up; `RetentionBatch` carries the rule, cutoff and batch size; `backfill` takes several columns; the age rules this step runs are the three series tiers and `events`, and every other rule of 7.4.1 is listed and built in T98; tables 7.4.1 gives no rule (`jobs`, `silences`, `library_revisions` among them) are listed as fixed size; 2 more tests, and the carried `get_vitals` test | The design's own rollup source; the scheduler wiring comes in T41 | plan | - |
 | D46 | 2026-11-20 | T32 | `incidents/{lifecycle, evaluate, dedupe, silences, reconcile}.rs`; the three handlers | As planned, plus: detect's threshold state follows the highest matching level while active, so severity falls as 7.5.2 says (T28 only rose; a detect test added); the store gets an upsert row mode so an incident and its event commit together without the cascade a REPLACE would fire; Incidents reads warning and critical events from the `events` table after the last row it saw (Ingest can't call Incidents); an unresolved event incident takes every matching event (the store allows one unresolved incident per key) and a resolved one reopens for a matching event within 24 hours of its last event, while condition incidents reopen within 30 minutes (owner to confirm); a rule that fired under a silence opens its incident once the silence ends; a failed job's incident goes to a person until T57 and T78 route it | Design 7.5.2 and the schema's unique index | plan | - |
+| D47 | 2026-11-20 | T33 | `notify/{discord, smtp, grouping, retry}.rs`; a `wiremock` Discord endpoint and `tests/support/smtp_sink.rs` | As planned, plus: a hub-wide `http` module (one HTTP/1.1 request over rustls with the webpki roots, plain HTTP to loopback only) because hub systems may not use Web's OIDC client; the SMTP client is written here (STARTTLS or implicit TLS, AUTH PLAIN) rather than pulling in a mail library; the Discord test endpoint is a local axum server (no new dependency) and the SMTP sink lives in `notify/smtp_sink.rs` under `cfg(test)`; Notify follows `incident_events` (the callout flag Incidents writes) instead of the bus; Notify is the Executor's runner for `notify` steps; notifiers from `config/notifiers.toml` and the Vault are built in T41 (carried in); a 9th test | Dependency rules (7.2); fewer dependencies | plan | - |
 
 ## Follow-ups (out of scope)
 

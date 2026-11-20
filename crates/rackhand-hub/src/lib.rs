@@ -6,6 +6,7 @@ pub mod audit;
 pub mod bus;
 pub mod checks;
 pub mod executor;
+pub mod http;
 pub mod incidents;
 pub mod ingest;
 pub mod intel;

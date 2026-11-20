@@ -349,6 +349,85 @@ timeout = "{timeout}"
         let ran = lab.actions.exec(&assistant, "m1", "id -un", Duration::from_secs(30)).await.unwrap();
         assert_eq!(String::from_utf8_lossy(&ran.stdout).trim(), "rackhand-ai");
     }
+
+    /// A notifier that records messages, or fails every send.
+    #[derive(Debug, Default)]
+    struct Recorder {
+        sent: std::sync::Mutex<Vec<String>>,
+        fail: bool,
+    }
+
+    impl rackhand_hub::notify::Transport for Recorder {
+        fn name(&self) -> &str {
+            "recorder"
+        }
+        fn send<'a>(
+            &'a self,
+            msg: &'a rackhand_hub::notify::Message,
+        ) -> rackhand_hub::notify::BoxFuture<'a, Result<(), rackhand_hub::notify::SendError>> {
+            Box::pin(async move {
+                if self.fail {
+                    return Err(rackhand_hub::notify::SendError::Failed("refused".into()));
+                }
+                self.sent.lock().unwrap().push(msg.incidents[0].title.clone());
+                Ok(())
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct Roomy;
+
+    impl rackhand_hub::ingest::DiskSpace for Roomy {
+        fn free_fraction(&self) -> f64 {
+            0.5
+        }
+    }
+
+    const NOTIFY: &str = r#"name = "tell"
+description = "Say something"
+identity = "automation"
+risk = "low"
+autonomy = 1
+[[step]]
+id = "say"
+kind = "notify"
+message = "Backup of web finished"
+"#;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn notify_step_sends_message() {
+        use rackhand_hub::actions::runner::{StepCtx, StepOutcome, StepRunner};
+        let dir = std::env::temp_dir().join(format!("rackhand-it-exec-notify-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Arc::new(Db::open(&dir.join("hub.db")).unwrap());
+        let vault = Arc::new(Vault::new(MasterKey::from_bytes([5u8; 32]), db.clone()));
+        let (host_keys, _alerts) = HostKeys::new(db.clone());
+        let runbook = Runbook::parse(NOTIFY).unwrap();
+        let step = runbook.steps[0].clone();
+        let ctx = StepCtx {
+            job_id: "j".into(),
+            machine_id: "m1".into(),
+            machine_kind: "linux".into(),
+            address: None,
+            identity: rackhand_runbook::runbook::Identity::Automation,
+            timeout: Duration::from_secs(30),
+        };
+        for fail in [false, true] {
+            let recorder = Arc::new(Recorder { fail, ..Recorder::default() });
+            let ingest = rackhand_hub::ingest::Ingest::new(db.clone(), Bus::new(), Arc::new(Roomy));
+            let notify = rackhand_hub::notify::Notify::new(db.clone(), ingest, vec![recorder.clone()]);
+            let executor = Executor::new(vault.clone(), host_keys.clone()).with_other(Arc::new(notify));
+            let result = executor.run(&ctx, &step, None).await;
+            if fail {
+                assert!(matches!(result.outcome, StepOutcome::Failed(_)), "a failed send fails the step");
+            } else {
+                assert_eq!(result.outcome, StepOutcome::Succeeded);
+                assert_eq!(*recorder.sent.lock().unwrap(), ["Backup of web finished"]);
+            }
+        }
+    }
 }
 
 mod diagnostics {
