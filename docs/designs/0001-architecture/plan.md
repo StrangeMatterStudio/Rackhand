@@ -1971,6 +1971,7 @@ Only additions to that list are written out below.
   | 2026-11-20 | cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0; fast 346 passed; no violations |
   | 2026-11-20 | cargo nextest run -p rackhand -E 'test(hub_cmd::)'; cargo nextest run -p rackhand-hub -E 'test(settings_changes_reach_the_mirror) \| test(policy_changes_reach_the_mirror)' | follow-up after review: `hub_cmd::hub_addrs_from_endpoint_and_names` failed first (a default hub bound to 0.0.0.0 advertised no addresses: `left: []`); joins now hand out the endpoint's direct addresses (a real endpoint bound to 0.0.0.0 reported its interfaces), read when the join server is built (D53 updated). `web::policy_changes_reach_the_mirror` added; both mirror notification tests fail with their `library.changed` call removed, then pass. These assert the `Change` reaching the mirror's channel; that a change becomes a pushed commit is covered by `it::mirror::change_pushed_within_60s_and_planted_secret_blocks`. 7 and 2 passed |
   | 2026-11-20 | cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0; fast 348 passed; no violations |
+  | 2026-11-20 | cargo xtask ci it | the whole integration tier with the stricter file-receive check: 25 passed, 0 failed |
 
 ### T42: Probe daemon
 - **Design refs:** FR-1, FR-3, 7.3.2 (reconnect, state file), 7.3.3 (probe privileges), G1, AC1, AC2, AC3, AC8
