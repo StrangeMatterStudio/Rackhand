@@ -66,9 +66,9 @@ fn set_data_usage(root: &Path, pct: u64) {
     std::fs::rename(tmp, root.join("statvfs.txt")).unwrap();
 }
 
-/// Discord messages by their colour (red critical, amber warning, green resolution).
+/// Discord messages: colour (red critical, amber warning, green resolution) and title.
 #[derive(Debug, Default)]
-struct Hook(Mutex<Vec<u32>>);
+struct Hook(Mutex<Vec<(u32, String)>>);
 
 async fn fake_discord() -> (u16, Arc<Hook>) {
     let hook = Arc::new(Hook::default());
@@ -80,7 +80,8 @@ async fn fake_discord() -> (u16, Arc<Hook>) {
             async move {
                 let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
                 let color = v["embeds"][0]["color"].as_u64().unwrap_or(0) as u32;
-                h.0.lock().unwrap().push(color);
+                let title = v["embeds"][0]["title"].as_str().unwrap_or_default().to_string();
+                h.0.lock().unwrap().push((color, title));
                 axum::http::StatusCode::NO_CONTENT
             }
         }),
@@ -111,6 +112,8 @@ async fn disk_rule_callouts_and_resolution() {
     let mut m = std::fs::read_to_string(&mounts).unwrap();
     m.push_str("/dev/sdc1 /data ext4 rw,relatime 0 0\n");
     std::fs::write(&mounts, m).unwrap();
+    // no failed units on this machine: only the disk rule should call out
+    std::fs::write(root.join("units.txt"), "").unwrap();
     set_data_usage(&root, 96);
 
     // the hub's systems
@@ -132,7 +135,7 @@ async fn disk_rule_callouts_and_resolution() {
     let sink = rackhand_hub::notify::smtp_sink::Sink::start().await;
     let (port, hook) = fake_discord().await;
     let smtp = SmtpConfig {
-        host: "127.0.0.1".into(),
+        host: "localhost".into(),
         port: sink.port,
         security: Security::StartTls,
         username: Some("rackhand".into()),
@@ -189,17 +192,35 @@ async fn disk_rule_callouts_and_resolution() {
     tokio::spawn(Daemon::new(link, opts).unwrap().run());
 
     // 96% for 5 minutes: a critical to Discord and by mail within 60 s
-    let count = |c: u32| hook.0.lock().unwrap().iter().filter(|x| **x == c).count();
+    // messages about the disk only (the title names the incident)
+    let count = |c: u32| hook.0.lock().unwrap().iter().filter(|(x, t)| *x == c && t.contains("isk")).count();
     let took = wait(Duration::from_secs(5 * 60 + 90), "a critical on Discord", || count(RED) >= 1).await;
-    eprintln!("critical after {took:?}");
+    eprintln!("critical after {took:?}: {:?}", hook.0.lock().unwrap());
+    assert!(took >= Duration::from_secs(4 * 60), "not before the 5 minutes: {took:?}");
     let mail = sink.received().await;
     assert!(mail.tls && mail.data.to_lowercase().contains("critical"), "the critical by mail: {mail:?}");
-    // 86% for 5 minutes: a warning within 6 minutes
-    set_data_usage(&root, 86);
-    let took = wait(Duration::from_secs(6 * 60 + 30), "a warning on Discord", || count(AMBER) >= 1).await;
-    eprintln!("warning after {took:?}");
     // 70% for two samples: a resolution
     set_data_usage(&root, 70);
     let took = wait(Duration::from_secs(90), "a resolution on Discord", || count(GREEN) >= 1).await;
     eprintln!("resolution after {took:?}");
+    // 86% for 5 minutes: a warning callout within 6 minutes (warnings join their site's 5-minute group). A falling
+    // severity sends nothing (7.6: re-sent only when it rises), so the warning is checked on its own.
+    set_data_usage(&root, 86);
+    let took = wait(Duration::from_secs(11 * 60 + 30), "a warning on Discord", || {
+        hook.0.lock().unwrap().iter().any(|(c, t)| *c == AMBER && (t.contains("isk") || t.contains("warning")))
+    })
+    .await;
+    eprintln!("warning after {took:?}: {:?}", hook.0.lock().unwrap());
+    assert!(took >= Duration::from_secs(4 * 60), "not before the 5 minutes: {took:?}");
+    // within 6 minutes of the warning opening (86% held for 5 minutes; a resolved incident reopens with its id)
+    let opened: i64 = rusqlite::Connection::open(dir.join("hub.db"))
+        .unwrap()
+        .query_row(
+            "SELECT max(e.at_ms) FROM incident_events e JOIN incidents i ON i.id = e.incident_id              WHERE i.kind = 'disk.used' AND e.kind IN ('opened', 'reopened')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let late = now_ms() - opened;
+    assert!(late <= 6 * 60_000, "the warning callout {late} ms after the incident opened");
 }

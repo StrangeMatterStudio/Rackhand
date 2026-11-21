@@ -454,7 +454,8 @@ fn buffer_limit_drops_oldest_with_gap_event() {
     std::thread::sleep(Duration::from_secs(180));
     let buffer = machine.root("du -sb /var/lib/rackhand-probe/buffer | cut -f1");
     let bytes: u64 = String::from_utf8_lossy(&buffer.stdout).trim().parse().unwrap_or(0);
-    assert!((900 * 1024..=1024 * 1024 + 64 * 1024).contains(&bytes), "the buffer filled to its cap: {bytes} bytes");
+    // the cap drops whole segments (a quarter of it each), so a full buffer holds between three quarters and all of it
+    assert!((768 * 1024..=1024 * 1024).contains(&bytes), "the buffer filled to its cap: {bytes} bytes");
     hub.start();
     let mut gaps = Vec::new();
     within(Duration::from_secs(180), "probe.data_gap", || {
