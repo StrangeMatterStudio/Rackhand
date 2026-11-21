@@ -298,7 +298,7 @@ timeout = "{timeout}"
         let busy = lab.actions.run(start("plain", ("mode", "flood"))).await.unwrap();
         assert_eq!((busy.outcome, busy.reason.as_deref()), (JobOutcome::Failed, Some("machine_busy")));
         let s = step_done(&lab.db, &result.job_id, Duration::from_secs(30)).await;
-        assert_eq!((s.state.as_str(), s.exit_code), ("succeeded", Some(0)));
+        assert_eq!((s.state.as_str(), s.exit_code), ("succeeded", Some(0)), "{}", post_mortem(&lab.machine));
         let out = String::from_utf8_lossy(&s.stdout);
         assert!(out.contains("line 8\n") && out.ends_with("done\n"), "{out}");
         // Recorded: the machine is free again, and the job files are cleaned up.
@@ -306,6 +306,15 @@ timeout = "{timeout}"
         assert_eq!(next.outcome, JobOutcome::Failed, "ran (and failed with its exit code)");
         let left = lab.machine.root("ls /var/lib/rackhand-run/jobs/ 2>/dev/null | wc -l");
         assert_eq!(String::from_utf8_lossy(&left.stdout).trim(), "0");
+    }
+
+    /// What the machine says about its detached jobs, for a failure's message: the job files (the start path returns
+    /// before they are cleaned up), each `exit`, whether the command still runs, and the journal's end.
+    fn post_mortem(machine: &Container) -> String {
+        let out = machine.root(
+            "ls -la /var/lib/rackhand-run/jobs/*/* 2>&1 | head -30;              for f in /var/lib/rackhand-run/jobs/*/*/exit; do [ -e \"$f\" ] && echo \"$f: $(cat $f)\"; done;              pgrep -af '[s]low-echo' || echo 'slow-echo not running'; journalctl --no-pager -n 40 2>&1 | tail -40",
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -326,7 +335,15 @@ timeout = "{timeout}"
         tokio::time::sleep(Duration::from_secs(4)).await;
         sh(&lab.machine, "systemctl start ssh");
         let result = job.await.unwrap().unwrap();
-        assert_eq!(result.outcome, JobOutcome::Succeeded, "{:?}", result.reason);
+        if result.outcome != JobOutcome::Succeeded {
+            panic!(
+                "{:?} {:?}
+{}",
+                result.outcome,
+                result.reason,
+                post_mortem(&lab.machine)
+            );
+        }
         let s = step(&lab.db, &result.job_id);
         assert_eq!((s.state.as_str(), s.exit_code), ("succeeded", Some(0)));
         let out = String::from_utf8_lossy(&s.stdout);

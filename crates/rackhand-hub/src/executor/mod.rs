@@ -155,6 +155,13 @@ impl Executor {
         let limit = Duration::from_secs(60);
         match self.ssh(ctx, id, &quote::join(&start), limit).await {
             Ok(out) if out.exit_code == Some(0) => {}
+            // The session ended without the start's exit status (SSH cut as it answered, E54): the unit may well be
+            // running. The machine's job files say whether it started; only if it didn't does the step fail.
+            Ok(out) if out.exit_code.is_none() => {
+                if !self.started(ctx, id, &job_ref, limit).await {
+                    return from_output(command, out);
+                }
+            }
             Ok(out) => {
                 let mut r = from_output(command, out);
                 if r.outcome == StepOutcome::Succeeded {
@@ -182,6 +189,26 @@ impl Executor {
         };
         let _ = self.ssh(ctx, id, &quote::join(&detached::clean_argv(&job_ref)), limit).await;
         detached::result(command, collected, end)
+    }
+}
+
+impl Executor {
+    /// Whether a detached step whose start lost its answer was started: asks `job-status` until the machine answers
+    /// (within `limit`); `unknown` means the start never reached the wrapper.
+    async fn started(&self, ctx: &StepCtx, id: Identity, job_ref: &str, limit: Duration) -> bool {
+        let line = quote::join(&detached::status_argv(job_ref, 0));
+        let deadline = tokio::time::Instant::now() + limit;
+        while tokio::time::Instant::now() < deadline {
+            if let Ok(out) = self.ssh(ctx, id, &line, limit).await {
+                if out.exit_code == Some(0) {
+                    if let Ok(status) = serde_json::from_slice::<detached::Status>(&out.stdout) {
+                        return status.state != "unknown";
+                    }
+                }
+            }
+            tokio::time::sleep(self.poll).await;
+        }
+        false
     }
 }
 

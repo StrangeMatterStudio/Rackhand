@@ -115,3 +115,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-21 | T46b done: the hub runs `config/checks.toml` at each check's interval, stores results and series, and opens check-failing and certificate incidents from what is stored (D71); AC10 passes in the integration tier |
 | 2026-11-21 | T46c done: `verify` and `api` steps run by Checks (D72) |
 | 2026-11-21 | T46d done: `probe_check` steps run on the probe over stream 0 (D73); next the integration tier for T46 as a whole |
+| 2026-11-21 | T46 regression: two tier runs at 46 of 47; a lost `job-start` answer failed a running detached step (D74), reproduced 2 of 16 and fixed (16 of 16); the other failure didn't reproduce and is instrumented |
