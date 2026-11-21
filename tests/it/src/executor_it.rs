@@ -315,8 +315,13 @@ timeout = "{timeout}"
             let a = lab.actions.clone();
             async move { a.run(start("slow", ("n", "8"))).await }
         });
-        // Once the step runs, take SSH away (sessions too) for a few seconds. `[r]` keeps pkill off its own shell.
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Once the step runs on the machine (not after a guess: starting it over SSH takes longer on a loaded host),
+        // take SSH away (sessions too) for a few seconds. `[r]`/`[s]` keep pkill and pgrep off their own shell.
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while !lab.machine.root("pgrep -f '[s]low-echo 8'").status.success() {
+            assert!(std::time::Instant::now() < deadline, "the detached step never started");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
         sh(&lab.machine, "systemctl stop ssh && (pkill -9 -f 'sshd: [r]ackhand' || true)");
         tokio::time::sleep(Duration::from_secs(4)).await;
         sh(&lab.machine, "systemctl start ssh");

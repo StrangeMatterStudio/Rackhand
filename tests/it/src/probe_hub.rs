@@ -545,10 +545,17 @@ fn stopped_probe_opens_silent_warning_at_60s() {
     let grace = Duration::from_secs(185).saturating_sub(hub.started.unwrap().elapsed());
     std::thread::sleep(grace);
     machine.root("systemctl stop rackhand-probe");
-    let stopped = Instant::now();
+    std::thread::sleep(Duration::from_secs(1));
+    // silence counts from the last report, which came up to one interval before the stop
+    let last_report = hub.newest_received_ms().expect("a report before the stop");
     let silent = || hub.open_incidents().iter().any(|(k, s)| k == "machine.silent" && s == "warning");
     within(Duration::from_secs(100), "a machine.silent warning", silent);
-    assert!(stopped.elapsed() >= Duration::from_secs(55), "not before 60 s: {:?}", stopped.elapsed());
+    let opened: i64 = hub
+        .db()
+        .query_row("SELECT max(opened_at) FROM incidents WHERE kind = 'machine.silent'", [], |r| r.get(0))
+        .unwrap();
+    assert!(opened - last_report >= 59_000, "not before 60 s without a report: {} ms", opened - last_report);
+    assert!(opened - last_report <= 80_000, "and within the 15 s evaluation after: {} ms", opened - last_report);
     machine.root("systemctl start rackhand-probe");
     within(Duration::from_secs(60), "the first report resolves it", || !silent());
     // a machine whose policy expects it offline gets one info event instead
