@@ -505,6 +505,25 @@ async fn silent_machine_warns_after_60s_and_clears_on_report() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn silence_stays_open_across_a_restart() {
+    // the rule says nothing in the hub's first 3 minutes (E44); that isn't the machine reporting again
+    let mut env = Env::new("silent-restart").await;
+    env.incidents.set_started(T0 - 10 * MIN);
+    env.sample(M1, CPU, T0, 1.0, Stream::Live, T0).await;
+    env.incidents.evaluate(T0 + 60_000).await.unwrap();
+    assert_eq!(env.incidents()[0].1, "open");
+    let Env { db, path, seq, .. } = env;
+    let mut env = Env::start(db, path, seq).await;
+    env.ingest.start(T0 + 2 * MIN).await.unwrap();
+    env.incidents.set_started(T0 + 2 * MIN);
+    env.incidents.evaluate(T0 + 2 * MIN + 15_000).await.unwrap();
+    assert_eq!(env.incidents()[0].1, "open", "still silent, in the start grace");
+    env.sample(M1, CPU, T0 + 3 * MIN, 1.0, Stream::Live, T0 + 3 * MIN).await;
+    env.incidents.evaluate(T0 + 3 * MIN).await.unwrap();
+    assert_eq!(env.incidents()[0].1, "resolved", "its first report resolves it, grace or not");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn expected_offline_is_info_only() {
     let env = Env::new("asleep").await;
     env.incidents.set_started(T0 - 10 * MIN);

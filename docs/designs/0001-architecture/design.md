@@ -2337,3 +2337,4 @@ None.
 | 2026-11-21 | 7.3.14: `rackhand hub metrics-token` prints the `/metrics` bearer token for the owner; gap filled in L2 (D61), owner to confirm | Implementation (L2) | Implementation run |
 | 2026-11-21 | 13: the logs' filter is `RACKHAND_LOG`; 7.3.1: QUIC runs without segmentation offload, since a NIC without TX checksum offload loses a connection's large sends otherwise; found in L2 (D63, D64), owner to confirm | Implementation (L2) | Implementation run |
 | 2026-11-21 | 7.6.1: a counted incident open across a hub restart keeps its severity while its condition is still there; 9: a root `hub backup` leaves the backups to the hub's user; found in L2 (D65, D66), owner to confirm | Implementation (L2) | Implementation run |
+| 2026-11-21 | 7.6.3, E44: during the hub's start grace a machine silent across the restart stays silent until its first report; found in L2 (D69), owner to confirm | Implementation (L2) | Implementation run |

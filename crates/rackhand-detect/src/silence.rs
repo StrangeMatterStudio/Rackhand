@@ -4,8 +4,8 @@ use crate::rules::Severity;
 
 const SEC_MS: i64 = 1000;
 const MIN_MS: i64 = 60 * SEC_MS;
-/// No silence for this long after the hub starts.
-const HUB_START_GRACE_MS: i64 = 3 * MIN_MS;
+/// No silence in the hub's first 3 minutes (E44).
+pub const HUB_START_GRACE_MS: i64 = 3 * MIN_MS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Subject {

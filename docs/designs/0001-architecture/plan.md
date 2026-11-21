@@ -2254,6 +2254,7 @@ Only additions to that list are written out below.
   | 2026-11-21 | cargo xtask ci live --target local --milestone lab | 7 passed (the lab profile has 7 tests now, not 6) |
   | 2026-11-21 | cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0; fast 396 passed, 1 skipped; no violations |
   | 2026-11-21 | MV12 page walk in the in-app browser | not done: the pane refuses `https://127.0.0.1:32101` (the hub's self-signed certificate, ERR_CERT_AUTHORITY_INVALID) and only the owner can continue past the warning; waits for the owner |
+  | 2026-11-21 | cargo nextest run -p rackhand-hub -p rackhand-detect -E 'test(incidents::) \| test(silence)' | `incidents::silence_stays_open_across_a_restart` failed first (an open `machine.silent` resolved at the first evaluation after a restart, in the 3-minute start grace, while the machine was still silent), then passed: it stays open until the machine's first report; 29 passed |
 
 ### M2: Checks and agentless drivers
 
@@ -4298,6 +4299,7 @@ Only additions to that list are written out below.
   | --- | --- | --- |
   | `hub::saved_notifier_applies_without_a_restart` (carried in from T39b) | a notifier saved from Settings sends the next callout without restarting the hub; one removed stops | 7.3.9, 7.7.1 |
   | `incidents::counted_rules_escalate_on_time_after_a_restart` (carried in from L2) | a service down across a hub restart reaches critical at its 4th report counted from before the restart, and pending security updates reach critical 14 days after they were first seen, not 14 days after the restart (the counts and first-seen times are kept) | 7.6.1, AC66 |
+  | `incidents::container_restarts_incident_kept_across_a_restart` (carried in from L2) | a container-restarts incident open across a hub restart isn't resolved by the empty restart window the hub starts with: the restart times are kept, or the incident waits for 10 minutes of reports | 7.6.1 |
 - **Fails first:** the rule table assertion fails for tables registered as fixed-size placeholders.
 - **Verification:**
   ```bash
@@ -4750,6 +4752,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D66 | 2026-11-21 | L2 | (a bug the lab found) | `rackhand hub backup` run as root left `/var/lib/rackhand/backups` root's with mode 700, so the hub's own 02:00 backup could neither write nor prune there; the command now gives the directory and its files to the data directory's owner | Found in L2 (`backup_restores_on_a_fresh_hub`) | plan | - |
 | D67 | 2026-11-21 | L2 | The live tests as written | Found while running them: `reboot` waits for a new boot id (a transient timer fires up to a minute late by default, so the old system still answered); the pause test waits until the hub has run 3 minutes (no silence in its first 3, E44) and sets `target`'s clock from WSL's after the resume (a paused VM's clock stays behind, which opened `clock_skew`); the live profile prints passing tests' output, kept as evidence; `lab deploy` builds release binaries (the debug probe was 254 MB) | Lab behaviour | plan | - |
 | D68 | 2026-11-21 | L2 | Expected 8 m1 and 6 lab tests; MV12 done by the run | 10 m1 tests (the 8 listed and the 2 carried from T41) and 7 lab tests. The page walk waits for the owner: the in-app browser refuses the hub's self-signed certificate, and continuing past that warning is the owner's choice | Counts grew; a browser trust setting | plan | - |
+| D69 | 2026-11-21 | L2 | (a bug found while checking D65's kind) | An open `machine.silent` resolved at the first evaluation after a hub restart: in the 3-minute start grace the rule gives no severity, which the tracker read as the condition clearing, so every restart while a machine was down sent a false resolution and, 3 minutes later, a new callout. A machine that hasn't reported since the start is now left as it is during the grace. A container-restarts incident has the same exposure (the restart window is in memory): carried into T98 | Found reviewing L2 | plan | - |
 
 ## Follow-ups (out of scope)
 

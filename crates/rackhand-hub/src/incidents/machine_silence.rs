@@ -26,6 +26,11 @@ impl Incidents {
         let ctx = Context { now_ms, hub_started_ms: started, in_maintenance: false, reboot_job_waiting: false };
         for (machine, expected_offline, enrolled_at) in machines {
             let ingest = &self.inner.ingest;
+            // in the start grace the rule says nothing, which for a machine that hasn't reported since the start isn't
+            // the machine being back: an incident open across a restart stays until its first report
+            if ingest.last_seen(&machine).is_none() && now_ms - started < rackhand_detect::silence::HUB_START_GRACE_MS {
+                continue;
+            }
             // never heard from since the hub started: counted from the start (or enrollment, if later)
             let last = ingest.last_seen(&machine).unwrap_or(enrolled_at.unwrap_or(started).max(started));
             let interval_s = (ingest.interval_ms(&machine) / 1000).max(1) as u32;
