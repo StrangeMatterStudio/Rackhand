@@ -2346,3 +2346,4 @@ None.
 | 2026-11-21 | 7.4.2: the Proxmox series' names; 7.3.12: `proxmox_ref.cluster` is the hypervisor machine, its API credentials the Vault's `driver.<id>`; the snapshot and rollback steps' snapshot name; gaps filled in T47 (D76), owner to confirm | Implementation (T47) | Implementation run |
 | 2026-11-21 | 7.4.2: the TrueNAS, Redfish and SNMP series' names and labels; SNMPv3 is SHA with AES-128 (authPriv) only; gaps filled in T48 (D77), owner to confirm | Implementation (T48) | Implementation run |
 | 2026-11-21 | 7.3.12: how a binding is proposed, when a confirmed one is a mismatch, and what an admin can confirm after one; gaps filled in T49a (D78), owner to confirm | Implementation (T49a) | Implementation run |
+| 2026-11-21 | 7.7.1: the invite format, the install command's flags per OS and the offline variant's address and hash check; gaps filled in T49b (D79), owner to confirm | Implementation (T49b) | Implementation run |

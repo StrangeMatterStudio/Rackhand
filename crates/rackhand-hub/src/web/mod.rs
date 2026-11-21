@@ -64,6 +64,10 @@ struct Inner {
     pending: Mutex<HashMap<String, auth::Pending>>,
     host_keys: Option<Arc<crate::ssh::hostkeys::HostKeys>>,
     pub(crate) bindings: Option<Arc<crate::registry::guest_binding::GuestBindings>>,
+    /// The hub as an install command names it (`rackhand1:...`), from the composition (its endpoint and addresses).
+    ticket: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    /// The release files the hub holds (`install.sh`, ...), for the offline install command.
+    release_dir: Option<std::path::PathBuf>,
     registry: Option<Arc<crate::registry::Registry>>,
     passkeys: Option<auth::passkey::Passkeys>,
     oidc_flows: Mutex<HashMap<String, auth::oidc::Flow>>,
@@ -95,6 +99,8 @@ pub(crate) struct Ctx {
     /// The client's source (7.7.2) as the limits count it.
     pub source: String,
     pub cookies: HashMap<String, String>,
+    /// The request's `Host`, as the browser reached the dashboard.
+    pub host: Option<String>,
 }
 
 impl Web {
@@ -111,6 +117,8 @@ impl Web {
             pending: Mutex::new(HashMap::new()),
             host_keys: None,
             bindings: None,
+            ticket: None,
+            release_dir: None,
             registry: None,
             passkeys: None,
             oidc_flows: Mutex::new(HashMap::new()),
@@ -146,6 +154,28 @@ impl Web {
     }
 
     /// The SSH system's host keys, for accepting a changed one; before the router is built.
+    pub fn with_ticket(mut self, ticket: Arc<dyn Fn() -> Option<String> + Send + Sync>) -> Web {
+        if let Some(inner) = Arc::get_mut(&mut self.0) {
+            inner.ticket = Some(ticket);
+        }
+        self
+    }
+
+    pub fn with_release_dir(mut self, dir: std::path::PathBuf) -> Web {
+        if let Some(inner) = Arc::get_mut(&mut self.0) {
+            inner.release_dir = Some(dir);
+        }
+        self
+    }
+
+    pub(crate) fn ticket(&self) -> Option<String> {
+        self.0.ticket.as_ref().and_then(|t| t())
+    }
+
+    pub(crate) fn release_dir(&self) -> Option<&std::path::Path> {
+        self.0.release_dir.as_deref()
+    }
+
     pub fn with_bindings(mut self, bindings: Arc<crate::registry::guest_binding::GuestBindings>) -> Web {
         if let Some(inner) = Arc::get_mut(&mut self.0) {
             inner.bindings = Some(bindings);
@@ -283,6 +313,7 @@ impl Web {
             }
         }
         let path = req.uri().path().to_string();
+        let host = req.headers().get(axum::http::header::HOST).and_then(|h| h.to_str().ok()).map(str::to_string);
         let query: HashMap<String, String> =
             form_urlencoded::parse(req.uri().query().unwrap_or("").as_bytes()).into_owned().collect();
         let mut form = HashMap::new();
@@ -297,7 +328,7 @@ impl Web {
             }
         }
         let csrf = csrf::token(&self.0.config.csrf_key, &binding);
-        let ctx = Ctx { now_ms: now, user, binding, csrf, form, query, path, source, cookies };
+        let ctx = Ctx { now_ms: now, user, binding, csrf, form, query, path, source, cookies, host };
         let mut resp = pages::render(self, spec.page, &ctx).await;
         for c in set_cookies {
             if let Ok(v) = HeaderValue::from_str(&c) {

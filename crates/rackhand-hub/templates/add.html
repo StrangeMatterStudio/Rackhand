@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Add: Rackhand{% endblock %}
+{% block nav %}<nav><a href="/">Overview</a> <a href="/settings">Settings</a></nav>{% endblock %}
+{% block content %}
+<h1>Add</h1>
+<h2>Add a machine</h2>
+<form method="post" action="/add/machine">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label>Name <input name="name" required pattern="[A-Za-z0-9._-]{1,64}"></label>
+<label>System <select name="os"><option value="linux">Linux</option><option value="alpine">Alpine</option><option value="windows">Windows</option></select></label>
+<label>Access <select name="access"><option value="managed">Managed</option><option value="monitor">Monitor only</option></select></label>
+<label>Probe <select name="mode"><option value="local">Local (it dials the hub)</option><option value="remote">Remote</option></select></label>
+<button type="submit">Make the install command</button>
+</form>
+<h2>Invite</h2>
+<form method="post" action="/add/invite"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="operator"><button type="submit">Invite an operator host</button></form>
+<form method="post" action="/add/invite"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="peer"><button type="submit">Invite a peer hub</button></form>
+<form method="post" action="/add/invite"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="device">
+<label>Device of <select name="user">{% for u in users %}<option value="{{ u.0 }}">{{ u.1 }}</option>{% endfor %}</select></label>
+<button type="submit">Invite a device</button></form>
+<h2>A new site</h2>
+<p>On a fresh Debian 12 or later machine, as a user with sudo:</p>
+<pre><code>{{ bootstrap }}</code></pre>
+<p>Or on a Proxmox host, which makes a Debian LXC for the hub:</p>
+<pre><code>{{ lxc }}</code></pre>
+<p>Then invite it as a peer from here.</p>
+{% endblock %}

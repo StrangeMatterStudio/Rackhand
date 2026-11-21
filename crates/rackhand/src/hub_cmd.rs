@@ -226,7 +226,20 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         csrf_key,
         trusted_proxies: config.trusted_proxies.iter().filter_map(|p| cidr(p)).collect(),
     };
+    // the hub's ticket for install commands and invites, once the endpoint is up
+    type Addrs = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
+    let ticket_addrs: Arc<std::sync::OnceLock<(String, Addrs)>> = Arc::default();
+    let slot = ticket_addrs.clone();
+    let ticket = Arc::new(move || {
+        let (id, addrs) = slot.get()?;
+        let addrs = addrs();
+        (!addrs.is_empty()).then(|| format!("rackhand1:{id}@{}", addrs.join(",")))
+    });
+    let bindings = Arc::new(rackhand_hub::registry::guest_binding::GuestBindings::new(db.clone(), ingest.clone()));
     let web = rackhand_hub::web::Web::new(db.clone(), vault.clone(), audit.clone(), recovery, web_config)
+        .with_ticket(ticket)
+        .with_release_dir(config.data_dir.join("release"))
+        .with_bindings(bindings)
         .with_registry(registry.clone())
         .with_library(library.clone())
         .with_host_keys(host_keys.clone())
@@ -254,6 +267,8 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let endpoint = rackhand_net::endpoint::bind(node_key, &endpoint_config).await.map_err(|e| e.to_string())?;
     let (ep, quic) = (endpoint.clone(), config.clone());
     let addrs = Arc::new(move || hub_addrs(&quic, &ep.addr().ip_addrs().copied().collect::<Vec<_>>()));
+    let id_hex: String = endpoint.id().as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+    let _ = ticket_addrs.set((id_hex, addrs.clone()));
     let join = joins::LazyJoin::new(db.clone(), registry.clone(), setup, addrs, joined_tx);
     let observations = Arc::new(crate::observations::FromIngest(ingest.clone()));
     let mcp = rackhand_hub::mcp::Mcp::new(db.clone(), audit.clone(), observations)

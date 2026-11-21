@@ -1771,3 +1771,171 @@ mod binding {
         assert_eq!(resp.status(), StatusCode::CONFLICT);
     }
 }
+
+mod add {
+    use super::*;
+
+    const TICKET: &str = "rackhand1:0000000000000000000000000000000000000000000000000000000000000001@192.0.2.10:7443";
+    const SCRIPT: &[u8] = b"#!/bin/sh\necho the installer\n";
+
+    async fn add_app(name: &str) -> App {
+        let release = std::env::temp_dir().join(format!("rackhand-web-release-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&release).unwrap();
+        std::fs::write(release.join("install.sh"), SCRIPT).unwrap();
+        let app = app_with(name, move |web| {
+            let registry = crate::registry::Registry::load(web.db().clone()).unwrap();
+            web.with_registry(registry).with_ticket(Arc::new(|| Some(TICKET.to_string()))).with_release_dir(release)
+        })
+        .await;
+        complete_first_run(&app, SETUP_CODE).await;
+        app
+    }
+
+    fn unescape(html: &str) -> String {
+        html.replace("&#x2F;", "/")
+            .replace("&#x27;", "'")
+            .replace("&amp;", "&")
+            .replace("&#39;", "'")
+            .replace("&quot;", "\"")
+    }
+
+    fn command_token(page: &str) -> String {
+        let at = page.find("--token ").expect("a --token") + 8;
+        page[at..].chars().take_while(|c| c.is_ascii_alphanumeric()).collect()
+    }
+
+    async fn add(app: &App, admin: &str, fields: &[(&str, &str)]) -> (StatusCode, String) {
+        let csrf = csrf_of(app, admin).await;
+        let mut all = vec![("csrf", csrf.as_str())];
+        all.extend_from_slice(fields);
+        let resp = send(&app.router, post("/add/machine", admin, &all)).await;
+        let code = resp.status();
+        (code, unescape(&text(resp).await))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn machine_command_per_os_mode_and_level() {
+        let app = add_app("add-machine").await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let page = unescape(&text(send(&app.router, get("/add", &admin)).await).await);
+        assert!(
+            page.contains("Add a machine") && page.contains("-- --hub"),
+            "the machine form and the site bootstrap: {page}"
+        );
+        let linux = [("os", "linux"), ("name", "web2"), ("access", "monitor"), ("mode", "remote")];
+        let (code, html) = add(&app, &admin, &linux).await;
+        assert_eq!(code, StatusCode::OK, "{html}");
+        assert!(html.contains(&format!("--ticket {TICKET}")), "{html}");
+        assert!(html.contains("--monitor") && html.contains("--remote"), "{html}");
+        assert!(html.contains("install.sh | sudo sh -s --"), "{html}");
+        let token = command_token(&html);
+        assert_eq!(token.len(), 26, "the one-time token: {token}");
+        // the offline variant: the hub's own install.sh, checked against its SHA-256
+        let sha: String = Sha256::digest(SCRIPT).iter().map(|b| format!("{b:02x}")).collect();
+        assert!(html.contains(&format!("echo '{sha}  /tmp/rackhand-install.sh' | sha256sum -c -")), "{html}");
+        assert!(html.contains(":8443/install.sh"), "{html}");
+        // the token: a machine's, 60 minutes, bound to the level chosen
+        let (kind, bound, life): (String, String, i64) = app
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row("SELECT kind, bound, expires_at FROM join_tokens ORDER BY rowid DESC LIMIT 1", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })
+            })
+            .unwrap();
+        assert_eq!(kind, "machine");
+        assert!(bound.contains("monitor"), "bound to monitor: {bound}");
+        assert!((life - now_ms() - 3_600_000).abs() < 60_000, "60 minutes");
+        let pending: (String, String, String) = app
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row("SELECT kind, access, mode FROM machines WHERE name = 'web2'", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })
+            })
+            .unwrap();
+        assert_eq!(pending, ("linux".into(), "monitor".into(), "remote".into()));
+        // Alpine has no sudo and maybe no curl; Windows is PowerShell; managed and local are the defaults
+        let (_, alpine) =
+            add(&app, &admin, &[("os", "alpine"), ("name", "nas-alpine"), ("access", "managed"), ("mode", "local")])
+                .await;
+        assert!(
+            alpine.contains("wget -qO-") && !alpine.contains("--monitor") && !alpine.contains("--remote"),
+            "{alpine}"
+        );
+        let (_, windows) =
+            add(&app, &admin, &[("os", "windows"), ("name", "desk1"), ("access", "managed"), ("mode", "local")]).await;
+        assert!(windows.contains("install.ps1") && windows.contains("-Ticket"), "{windows}");
+        // a name in use, or an unknown OS, is refused
+        let (code, _) =
+            add(&app, &admin, &[("os", "linux"), ("name", "web2"), ("access", "managed"), ("mode", "local")]).await;
+        assert_eq!(code, StatusCode::CONFLICT);
+        let (code, _) =
+            add(&app, &admin, &[("os", "beos"), ("name", "x"), ("access", "managed"), ("mode", "local")]).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn device_operator_peer_invites_expire_in_24h() {
+        let app = add_app("add-invites").await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let user: String =
+            app.db.readers().with(|c| c.query_row("SELECT id FROM users LIMIT 1", [], |r| r.get(0))).unwrap();
+        for (kind, hint) in
+            [("operator", "rackhand operator join"), ("peer", "Peers"), ("device", "rackhand-cli login")]
+        {
+            let csrf = csrf_of(&app, &admin).await;
+            let fields = [("csrf", csrf.as_str()), ("kind", kind), ("user", user.as_str())];
+            let resp = send(&app.router, post("/add/invite", &admin, &fields)).await;
+            assert_eq!(resp.status(), StatusCode::OK, "{kind}");
+            let page = unescape(&text(resp).await);
+            let marker = format!("{TICKET}#");
+            assert!(page.contains(hint) && page.contains(&marker), "{kind}: {page}");
+            let (k, expires): (String, i64) = app
+                .db
+                .readers()
+                .with(|c| {
+                    c.query_row("SELECT kind, expires_at FROM join_tokens ORDER BY rowid DESC LIMIT 1", [], |r| {
+                        Ok((r.get(0)?, r.get(1)?))
+                    })
+                })
+                .unwrap();
+            assert_eq!(k, kind);
+            assert!((expires - now_ms() - 86_400_000).abs() < 60_000, "{kind}: 24 hours");
+            // single use and bound to its kind
+            let at = page.find(&marker).unwrap() + marker.len();
+            let secret: String = page[at..].chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+            let token = crate::registry::tokens::Token::parse(&secret);
+            let consume = |kind: &str| rackhand_store::RegistryChange {
+                consume: Some(rackhand_store::ConsumeToken {
+                    hash: crate::registry::tokens::hash(&token).to_vec(),
+                    kind: kind.into(),
+                    now_ms: now_ms(),
+                }),
+                writes: vec![],
+                updates: vec![],
+            };
+            let other = if kind == "peer" { "operator" } else { "peer" };
+            assert!(
+                app.db.writer().send(WriteCmd::RegistryChange(consume(other))).await.is_err(),
+                "{kind}: kind-bound"
+            );
+            app.db.writer().send(WriteCmd::RegistryChange(consume(kind))).await.unwrap();
+            assert!(app.db.writer().send(WriteCmd::RegistryChange(consume(kind))).await.is_err(), "{kind}: single use");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn admin_only() {
+        let app = add_app("add-admin").await;
+        let responder = session_for(&app.db, Role::Responder).await;
+        assert_eq!(send(&app.router, get("/add", &responder)).await.status(), StatusCode::FORBIDDEN);
+        let csrf = csrf_of(&app, &responder).await;
+        let machine = [("csrf", csrf.as_str()), ("os", "linux"), ("name", "x")];
+        assert_eq!(send(&app.router, post("/add/machine", &responder, &machine)).await.status(), StatusCode::FORBIDDEN);
+        let invite = [("csrf", csrf.as_str()), ("kind", "peer")];
+        assert_eq!(send(&app.router, post("/add/invite", &responder, &invite)).await.status(), StatusCode::FORBIDDEN);
+    }
+}

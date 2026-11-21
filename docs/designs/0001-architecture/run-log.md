@@ -120,3 +120,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-21 | T47 done: the Proxmox driver against answers recorded from the lab's PVE 8 and 9 nodes, and snapshot and rollback steps through it (D76); a T42 daemon test timed out once under the fast tier's load and passed on 20 more runs |
 | 2026-11-21 | T48 done: TrueNAS (JSON-RPC, REST fallback), Redfish and SNMP v2c and v3 authPriv drivers against their simulators (D77); the form-added integration test moves into T49 |
 | 2026-11-21 | T49a done: guest binding proposed by MAC, confirmed by an admin after a step-up, a mismatch warned once (D78) |
+| 2026-11-21 | T49b done: the Add page's install commands per OS, access and mode with an offline variant, and device, operator and peer invites (D79) |

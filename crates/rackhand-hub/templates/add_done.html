@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}: Rackhand{% endblock %}
+{% block nav %}<nav><a href="/">Overview</a> <a href="/add">Add</a></nav>{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+{% for l in lines %}<h2>{{ l.0 }}</h2>
+<pre><code>{{ l.1 }}</code></pre>
+{% endfor %}
+<p>{{ note }}</p>
+{% endblock %}
