@@ -37,6 +37,8 @@ pub enum Page {
     AddInvite,
     AddAppliance,
     AddApplianceAccept,
+    InstallScript,
+    ReleaseFile,
     BindingConfirm,
     SettingsGitMirror,
     UserCreate,
@@ -95,6 +97,9 @@ pub static ROUTES: &[RouteSpec] = &[
     // behind its own bearer token (7.3.14), not a session
     r(Method::GET, "/metrics", Access::Public, Page::Metrics),
     r(Method::GET, "/static/vendor/{file}", Access::Public, Page::Vendor),
+    // the offline install (7.3.12): the script is checked against the SHA-256 in its command, the rest by signature
+    r(Method::GET, "/install.sh", Access::Public, Page::InstallScript),
+    r(Method::GET, "/release/{file}", Access::Public, Page::ReleaseFile),
     r(Method::GET, "/static/app.css", Access::Public, Page::AppCss),
     r(Method::GET, "/static/passkey.js", Access::Public, Page::PasskeyJs),
     r(Method::GET, "/sign-in", Access::Public, Page::SignIn),

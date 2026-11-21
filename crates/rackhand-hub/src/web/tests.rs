@@ -1877,6 +1877,33 @@ mod add {
         assert_eq!(code, StatusCode::BAD_REQUEST);
     }
 
+    /// The offline variant's files (7.3.12): the hub serves `install.sh` and the release files it holds, to anyone (the
+    /// script is checked against the SHA-256 in the command, the binaries by their signatures), and nothing else.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hub_serves_its_release_files() {
+        let app = add_app("add-release").await;
+        let release = std::env::temp_dir().join(format!("rackhand-web-release-add-release-{}", std::process::id()));
+        std::fs::write(release.join("rackhand-probe-x86_64-unknown-linux-musl"), b"\x7fELF probe").unwrap();
+        let fetch = |path: &str| Request::get(path).body(Body::empty()).unwrap();
+        let resp = send(&app.router, fetch("/install.sh")).await;
+        assert_eq!(resp.status(), StatusCode::OK, "no session needed");
+        assert_eq!(axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap().as_ref(), SCRIPT);
+        let resp = send(&app.router, fetch("/release/rackhand-probe-x86_64-unknown-linux-musl")).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap().as_ref(), b"\x7fELF probe");
+        for missing in ["/release/rackhand-cli", "/release/..%2Fhub.db", "/release/.hidden", "/release/a%2Fb"] {
+            assert_eq!(send(&app.router, fetch(missing)).await.status(), StatusCode::NOT_FOUND, "{missing}");
+        }
+        // the offline command fetches the release files from the hub too
+        let admin = session_for(&app.db, Role::Admin).await;
+        let (_, html) =
+            add(&app, &admin, &[("os", "linux"), ("name", "web3"), ("access", "managed"), ("mode", "local")]).await;
+        assert!(html.contains(":8443/release --self-signed"), "{html}");
+        // a hub that holds no release files serves none
+        let bare = super::app("add-release-none").await;
+        assert_eq!(send(&bare.router, fetch("/install.sh")).await.status(), StatusCode::NOT_FOUND);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn device_operator_peer_invites_expire_in_24h() {
         let app = add_app("add-invites").await;

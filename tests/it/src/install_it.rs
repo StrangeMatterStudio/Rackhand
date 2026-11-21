@@ -9,7 +9,7 @@ use std::time::Duration;
 use ed25519_dalek::SigningKey;
 use rackhand_proto::common::{Access, ProbeMode};
 
-use crate::probe_hub::{Hub, within};
+use crate::probe_hub::{Hub, field, within};
 use crate::support::{Container, musl_binary, musl_binary_with};
 
 const TARGET: &str = "x86_64-unknown-linux-musl";
@@ -195,8 +195,98 @@ fn nothing_installed(c: &Container) {
     assert_eq!(left, "", "nothing installed");
 }
 
+/// HTML text as typed: numeric references (`&#38;`, `&#x27;`) and the named ones a page escapes.
+fn unescape(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at..];
+        let end = tail.find(';').filter(|e| *e <= 10);
+        let decoded = end.and_then(|e| {
+            let name = &tail[1..e];
+            let c = match name {
+                "amp" => Some('&'),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "quot" => Some('"'),
+                "apos" => Some('\''),
+                _ => match name.strip_prefix("#x").or_else(|| name.strip_prefix("#X")) {
+                    Some(hex) => u32::from_str_radix(hex, 16).ok().and_then(char::from_u32),
+                    None => name.strip_prefix('#').and_then(|d| d.parse().ok()).and_then(char::from_u32),
+                },
+            };
+            c.map(|c| (c, e + 1))
+        });
+        match decoded {
+            Some((c, len)) => {
+                out.push(c);
+                rest = &tail[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The Add page's offline command (T49), as the admin copies it from a dashboard reached at `gateway`, with the ticket
+/// naming the hub at that address too.
+fn offline_command(hub: &Hub, gateway: &str, name: &str) -> String {
+    let csrf = field(&hub.curl(&["/add"]), "csrf");
+    let form = format!("csrf={csrf}&os=linux&name={name}&access=managed&mode=local");
+    let host = format!("Host: {gateway}:{}", hub.web);
+    let page = hub.curl(&["-H", &host, "-H", &hub.cookie_header(), "--data", &form, "/add/machine"]);
+    let page = unescape(&page);
+    let at = page.find("Offline, from this hub").unwrap_or_else(|| panic!("an offline command: {page}"));
+    let code = &page[at..];
+    let start = code.find("<code>").unwrap() + 6;
+    let command = code[start..code.find("</code>").unwrap()].to_string();
+    let given = command.split(" --ticket ").nth(1).and_then(|r| r.split(' ').next()).unwrap().to_string();
+    command.replace(&given, &format!("rackhand1:{}@{gateway}:{}", hub.id_hex, hub.quic))
+}
+
 mod install {
     use super::*;
+
+    /// The offline variant (7.3.12): the hub serves `install.sh` and the release files it holds over its own HTTPS;
+    /// the command checks the script against the SHA-256 the page gives before running it.
+    #[test]
+    fn offline_variant_checks_script_hash() {
+        let hub = hub("inst-offline");
+        let release = Release::new("offline", "current", false);
+        release.script(None);
+        let held = hub.data.join("release");
+        std::fs::create_dir_all(&held).unwrap();
+        for f in std::fs::read_dir(&release.dir).unwrap() {
+            let f = f.unwrap();
+            std::fs::copy(f.path(), held.join(f.file_name())).unwrap();
+        }
+        let c = Container::start_systemd_with("debian-install", &[]);
+        let (_, gateway) = c.ip_and_gateway();
+        let command = offline_command(&hub, &gateway, "web1");
+        assert!(command.contains(&format!("https://{gateway}:{}/install.sh", hub.web)), "{command}");
+        // a wrong SHA-256 stops it before the script runs
+        let sha = command.split("echo '").nth(1).and_then(|r| r.split(' ').next()).unwrap().to_string();
+        let bad = command.replace(&sha, &"0".repeat(64));
+        let out = c.root(&bad);
+        assert!(
+            !out.status.success(),
+            "{bad}: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(said.contains("FAILED"), "sha256sum said: {said}");
+        nothing_installed(&c);
+        // the command as given installs from the hub's own files
+        ok(&c.root(&command));
+        assert_eq!(sh(&c, "systemctl is-active rackhand-probe"), "active");
+        reporting(&hub);
+    }
 
     #[test]
     fn debian_managed_enrolls_and_reports() {

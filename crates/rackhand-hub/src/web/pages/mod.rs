@@ -27,6 +27,8 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
     match page {
         Page::Healthz => plain(StatusCode::OK, "ok"),
         Page::Vendor => vendor(ctx.path.strip_prefix("/static/vendor/").unwrap_or("")),
+        Page::InstallScript => add::release_file(web, "install.sh"),
+        Page::ReleaseFile => add::release_file(web, ctx.path.strip_prefix("/release/").unwrap_or("")),
         Page::AppCss => asset("text/css", APP_CSS),
         Page::PasskeyJs => asset("text/javascript", PASSKEY_JS),
         Page::SignIn => auth::flow::password_page(web, ctx),

@@ -26,7 +26,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// The value of `<input name="<name>" value="...">` in a page.
-fn field(html: &str, name: &str) -> String {
+pub(crate) fn field(html: &str, name: &str) -> String {
     let marker = format!("name=\"{name}\"");
     let at = html.find(&marker).unwrap_or_else(|| panic!("no field {name}"));
     let tag_start = html[..at].rfind('<').unwrap();
@@ -189,6 +189,21 @@ impl Hub {
             .output()
             .unwrap();
         String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    /// The admin's cookies as a `Cookie` header, for a request that names another `Host` (curl matches its jar's
+    /// cookies against that name).
+    pub fn cookie_header(&self) -> String {
+        let jar = std::fs::read_to_string(&self.jar).unwrap_or_default();
+        let pairs: Vec<String> = jar
+            .lines()
+            .filter(|l| !l.is_empty() && (!l.starts_with('#') || l.starts_with("#HttpOnly_")))
+            .filter_map(|l| {
+                let f: Vec<&str> = l.split('\t').collect();
+                (f.len() == 7).then(|| format!("{}={}", f[5], f[6]))
+            })
+            .collect();
+        format!("Cookie: {}", pairs.join("; "))
     }
 
     /// First run over HTTPS: the admin and the local site; the cookie jar then holds the admin's session.

@@ -6,6 +6,9 @@
 #
 # It checks rackhand-verify against the SHA-256 below, then has the verifier check every other file against the two
 # pinned release keys, and installs nothing until all of them pass. The release fills in the two values below.
+#
+# The dashboard's offline variant runs it from the hub with `--release-url https://<hub>:8443/release --self-signed`:
+# the hub's HTTPS certificate is its own, so the downloads don't check it; the SHA-256 and signatures above still do.
 set -eu
 
 VERSION="__VERSION__"
@@ -17,7 +20,7 @@ die() {
   exit 1
 }
 
-TICKET="" TOKEN="" ACCESS=managed MODE="" ROLE=""
+TICKET="" TOKEN="" ACCESS=managed MODE="" ROLE="" SELF_SIGNED=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --ticket) TICKET="$2"; shift 2 ;;
@@ -26,6 +29,7 @@ while [ $# -gt 0 ]; do
     --remote) MODE=--remote; shift ;;
     --role) ROLE="$2"; shift 2 ;;
     --release-url) RELEASE_URL="$2"; shift 2 ;;
+    --self-signed) SELF_SIGNED=1; shift ;;
     *) die "unknown option $1" ;;
   esac
 done
@@ -47,7 +51,9 @@ fi
 
 fetch() {
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$1" -o "$2"
+    if [ -n "$SELF_SIGNED" ]; then curl -fsSLk "$1" -o "$2"; else curl -fsSL "$1" -o "$2"; fi
+  elif [ -n "$SELF_SIGNED" ]; then
+    wget -q --no-check-certificate -O "$2" "$1"
   else
     wget -q -O "$2" "$1"
   fi || die "download failed: $1"

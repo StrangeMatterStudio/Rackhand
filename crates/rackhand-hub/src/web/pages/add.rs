@@ -76,6 +76,21 @@ pub(super) fn valid_name(n: &str) -> bool {
     (1..=64).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_')
 }
 
+/// A release file the hub holds, by its plain name (no path, nothing hidden), for the offline install.
+pub(super) fn release_file(web: &Web, name: &str) -> Response<Body> {
+    let plain = (1..=128).contains(&name.len())
+        && !name.starts_with('.')
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-');
+    let found = web.release_dir().filter(|_| plain).and_then(|dir| std::fs::read(dir.join(name)).ok());
+    let Some(bytes) = found else { return status(StatusCode::NOT_FOUND, "Not found") };
+    let kind = if name.ends_with(".sh") { "text/x-shellscript" } else { "application/octet-stream" };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(axum::http::header::CONTENT_TYPE, kind)
+        .body(Body::from(bytes))
+        .unwrap_or_else(|_| status(StatusCode::INTERNAL_SERVER_ERROR, "Not served"))
+}
+
 /// The hub's own `install.sh` and its SHA-256, when the hub holds the release files.
 fn held_script(web: &Web) -> Option<String> {
     let bytes = std::fs::read(web.release_dir()?.join("install.sh")).ok()?;
@@ -155,7 +170,7 @@ pub(super) async fn machine(web: &Web, ctx: &Ctx) -> Response<Body> {
             lines.push((
                 "Offline, from this hub".to_string(),
                 format!(
-                    "curl -fsSLk {hub}/install.sh -o /tmp/rackhand-install.sh && echo '{sha}  /tmp/rackhand-install.sh' | sha256sum -c - && {run} /tmp/rackhand-install.sh {args} --release-url {hub}"
+                    "curl -fsSLk {hub}/install.sh -o /tmp/rackhand-install.sh && echo '{sha}  /tmp/rackhand-install.sh' | sha256sum -c - && {run} /tmp/rackhand-install.sh {args} --release-url {hub}/release --self-signed"
                 ),
             ));
         }
