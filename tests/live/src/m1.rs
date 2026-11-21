@@ -171,6 +171,11 @@ fn paused_target_raises_silence_warning() {
     let token = metrics_token();
     ensure_target(&dash, &token);
     assert!(silent(&dash).is_none(), "target is already silent");
+    // no silence in the hub's first 3 minutes (E44): after the reboot test the hub may have only just started
+    let up = hub::hub_uptime_s();
+    if up < 190 {
+        std::thread::sleep(Duration::from_secs(190 - up));
+    }
     lab(&["pause", "target"]);
     let start = Instant::now();
     let mut seen = None;
@@ -180,13 +185,21 @@ fn paused_target_raises_silence_warning() {
     });
     let took = since(start);
     lab(&["resume", "target"]);
+    // a frozen VM's clock stays behind when it resumes, which a real machine's doesn't; set it from WSL's at once, so
+    // at most one report carries the old time and the hub sees no clock skew
+    let behind = clock_lag("target");
+    hub::set_clock("target");
     assert!(opened, "no silence warning within 150 s of the pause");
     println!("silence warning {took} s after the pause");
     assert!(took >= 40, "the silence warning came after {took} s, before the 60 s the rule waits");
     assert_eq!(seen.map(|i| i.severity).as_deref(), Some("warning"));
     let start = Instant::now();
     assert!(eventually(Duration::from_secs(90), || silent(&dash).is_none()), "the warning didn't clear after resume");
-    println!("cleared {} s after resume; target's clock is {} s behind", since(start), clock_lag("target"));
+    println!("cleared {} s after resume; target's clock was {behind} s behind and was set", since(start));
+    assert!(clock_lag("target").abs() <= 2, "target's clock is set");
+    std::thread::sleep(Duration::from_secs(30));
+    let open = open_incidents(&dash);
+    assert!(!open.iter().any(|i| i.machine == "target"), "nothing left open for target: {open:?}");
 }
 
 #[test]

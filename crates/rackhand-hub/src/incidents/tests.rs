@@ -557,6 +557,57 @@ async fn watched_service_not_active_2_and_4_reports() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn counted_incidents_stay_open_across_a_restart() {
+    // the report counts are in memory: after a restart the first report of a service still down counts 1, which
+    // isn't the condition clearing (found in the lab, plan L2)
+    let mut env = Env::new("counted-restart").await;
+    let down = |r: &mut Report| {
+        r.services =
+            vec![rackhand_proto::probe::ServiceState { name: "nginx".into(), status: 3, enabled: true, since_ms: 0 }];
+        r.updates = Some(rackhand_proto::probe::UpdateSummary {
+            pending: 5,
+            security: 2,
+            reboot_required: false,
+            packages: vec![],
+        });
+    };
+    env.report(M1, T0, down).await;
+    for i in 1..4 {
+        env.report(M1, T0 + 8 * DAY + i * 15_000, down).await;
+    }
+    let open = |env: &Env| {
+        let mut v: Vec<(String, String)> =
+            env.incidents().into_iter().map(|i| (i.3, format!("{} {}", i.1, i.2))).collect();
+        v.sort();
+        v
+    };
+    let service = format!("{M1}:service.not_active:{{\"service\":\"nginx\"}}");
+    let updates = format!("{M1}:updates.security:{{}}");
+    assert_eq!(open(&env), vec![(service.clone(), "open critical".into()), (updates.clone(), "open warning".into())]);
+    let Env { db, path, seq, .. } = env;
+    let mut env = Env::start(db, path, seq).await;
+    env.ingest.start(T0 + 8 * DAY + MIN).await.unwrap();
+    env.report(M1, T0 + 8 * DAY + 2 * MIN, down).await;
+    assert_eq!(
+        open(&env),
+        vec![(service.clone(), "open critical".into()), (updates.clone(), "open warning".into())],
+        "still down and still pending after the restart: both stay open at their severity"
+    );
+    env.report(M1, T0 + 8 * DAY + 3 * MIN, |r| {
+        r.services =
+            vec![rackhand_proto::probe::ServiceState { name: "nginx".into(), status: 1, enabled: true, since_ms: 0 }];
+        r.updates = Some(rackhand_proto::probe::UpdateSummary {
+            pending: 0,
+            security: 0,
+            reboot_required: false,
+            packages: vec![],
+        });
+    })
+    .await;
+    assert_eq!(open(&env), vec![(service, "resolved critical".into()), (updates, "resolved warning".into())]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn container_restarts_over_3_in_10_min() {
     let mut env = Env::new("restarts").await;
     for (i, count) in (0..=11u32).enumerate() {

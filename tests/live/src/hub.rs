@@ -531,6 +531,17 @@ pub fn recover_unit() {
     on("target", &format!("sudo systemctl reset-failed {UNIT}; sudo systemctl start {UNIT}"));
 }
 
+/// How long the hub's service has been running, in seconds.
+pub fn hub_uptime_s() -> u64 {
+    on("hub", "ps -o etimes= -p $(systemctl show -p MainPID --value rackhand-hub)").trim().parse().unwrap_or(0)
+}
+
+/// Sets a lab machine's clock from WSL's.
+pub fn set_clock(machine: &str) {
+    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+    on(machine, &format!("sudo date -u -s @{}.{:03} >/dev/null", now_ms / 1000, now_ms % 1000));
+}
+
 /// Reboots a lab machine and waits until it answers SSH from its next boot (a new boot id, so the old system shutting
 /// down doesn't count).
 pub fn reboot(machine: &str) {
