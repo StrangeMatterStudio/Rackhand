@@ -476,3 +476,30 @@ async fn wait_report_step_waits_for_fresh_report() {
     let done = ingest.run(&step_ctx(Duration::from_millis(800)), &step, None).await;
     assert_eq!(done.outcome, StepOutcome::Failed("timeout".into()));
 }
+
+/// Points from the hub's own polling (drivers, service checks) are in the machine's recent window as they are stored,
+/// so `/metrics` and the dashboard show them without waiting for a restart (7.4.2).
+#[tokio::test(flavor = "multi_thread")]
+async fn polled_points_in_the_recent_window() {
+    let env = Env::new("polled");
+    let ingest = env.ingest();
+    let points = |at: i64, value: f64| rackhand_store::series::compact::SeriesPoints {
+        name: "truenas.pool.healthy".into(),
+        unit: String::new(),
+        label_set: "{\"pool\":\"tank1\"}".into(),
+        points: vec![(at, value)],
+        late: vec![],
+    };
+    ingest.put_points(M1, vec![points(T0, 1.0)], T0).await.unwrap();
+    ingest.put_points(M1, vec![points(T0 + MIN, 0.0)], T0 + MIN).await.unwrap();
+    let pool =
+        SeriesId::new("truenas.pool.healthy", &[("pool".to_string(), "tank1".to_string())].into_iter().collect());
+    let w = ingest.window(M1, &pool);
+    assert_eq!(w.iter().map(|s| (s.at_ms, s.value)).collect::<Vec<_>>(), [(T0, 1.0), (T0 + MIN, 0.0)]);
+    assert!(
+        ingest.latest_values().iter().any(|(m, id, at, v)| m == M1 && *id == pool && *at == T0 + MIN && *v == 0.0),
+        "the latest value: {:?}",
+        ingest.latest_values()
+    );
+    assert_eq!(ingest.last_seen(M1), None, "polled points aren't a probe's report");
+}

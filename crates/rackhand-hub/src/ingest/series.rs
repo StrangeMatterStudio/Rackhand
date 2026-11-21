@@ -7,7 +7,8 @@ use rackhand_store::rollup::RollupSeries;
 use rackhand_store::series::chunk::{SeriesKey, Tier};
 
 use super::window::SeriesId;
-use super::{Ingest, IngestError, labels_json};
+use super::window::WindowSample;
+use super::{Ingest, IngestError, WINDOW_MS, labels_json};
 
 const MINUTE_MS: i64 = 60_000;
 const HOUR_MS: i64 = 3_600_000;
@@ -78,7 +79,8 @@ impl Ingest {
     }
 
     /// Points that come from the hub's own polling (service checks, drivers) rather than a probe's reports, stored as
-    /// tier 0 series of `machine` (7.4.2): Ingest stays the one writer of the series.
+    /// tier 0 series of `machine` (7.4.2): Ingest stays the one writer of the series. They join the machine's recent
+    /// window as they are stored, as a probe's reports do.
     pub async fn put_points(
         &self,
         machine: &str,
@@ -88,13 +90,29 @@ impl Ingest {
         if series.is_empty() {
             return Ok(0);
         }
+        let recent: Vec<(SeriesId, Vec<(i64, f64)>)> = series
+            .iter()
+            .map(|s| {
+                let labels: BTreeMap<String, String> = serde_json::from_str(&s.label_set).unwrap_or_default();
+                (SeriesId { name: s.name.clone(), labels: labels_json(&labels) }, s.points.clone())
+            })
+            .collect();
         let compaction = rackhand_store::series::compact::Compaction {
             machine_id: machine.to_string(),
             series,
             now_ms,
             ..Default::default()
         };
-        Ok(self.inner.writer.send(WriteCmd::CompactStaged(compaction)).await?.rows)
+        let rows = self.inner.writer.send(WriteCmd::CompactStaged(compaction)).await?.rows;
+        let mut s = self.state();
+        let m = s.machines.entry(machine.to_string()).or_default();
+        for (id, points) in recent {
+            for (at_ms, value) in points {
+                m.window.add(id.clone(), WindowSample { at_ms, value, history_only: false });
+            }
+        }
+        m.window.prune(now_ms - WINDOW_MS);
+        Ok(rows)
     }
 
     /// One tier of a stored series (every column) over `[from_ms, to_ms]`.

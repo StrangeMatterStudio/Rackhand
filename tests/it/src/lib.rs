@@ -6,6 +6,8 @@ mod callouts;
 #[path = "checks_it.rs"]
 mod checks;
 #[cfg(test)]
+mod drivers_it;
+#[cfg(test)]
 mod executor_it;
 #[cfg(test)]
 mod helper_it;

@@ -18,6 +18,7 @@ time = "0.3"
 serde_json = { workspace = true }
 blake3 = "1"
 rackhand-hub = { path = "../../crates/rackhand-hub", features = ["testing"] }
+rackhand-drivers = { path = "../../crates/rackhand-drivers", features = ["sim"] }
 rackhand-probe = { path = "../../crates/rackhand-probe" }
 rackhand-release = { path = "../../crates/rackhand-release", features = ["signing"] }
 rackhand-net = { path = "../../crates/rackhand-net", features = ["testing"] }
