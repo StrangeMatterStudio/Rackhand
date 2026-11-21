@@ -112,6 +112,12 @@ impl Buffer {
         payload: &[u8],
         now_ms: i64,
     ) -> Result<(), BufferError> {
+        self.write_record(epoch, seq, sampled_at_ms, payload)?;
+        self.enforce_size()?;
+        self.expire(now_ms)
+    }
+
+    fn write_record(&mut self, epoch: u64, seq: u64, sampled_at_ms: i64, payload: &[u8]) -> Result<(), BufferError> {
         let size = HEADER + payload.len() as u64;
         let need_new = self.segments.last().is_none_or(|s| s.bytes + size > self.limits.segment_bytes && s.bytes > 0);
         if need_new {
@@ -139,8 +145,7 @@ impl Buffer {
             gone: false,
         });
         seg.bytes += size;
-        self.enforce_size()?;
-        self.expire(now_ms)
+        Ok(())
     }
 
     /// Unacked reports, oldest first.
@@ -203,6 +208,28 @@ impl Buffer {
             self.record_dropped(epoch, seq);
         }
         self.remove_empty_segments()
+    }
+
+    /// A new cap on the buffer's size (the hub's `buffer_max_mb`): segments shrink to a quarter of it, so the oldest
+    /// data can go in small steps, and anything over the cap is dropped now.
+    pub fn set_max_bytes(&mut self, max_bytes: u64) -> Result<(), BufferError> {
+        self.limits.max_bytes = max_bytes;
+        self.limits.segment_bytes = self.limits.segment_bytes.min((max_bytes / 4).max(HEADER + 1));
+        if self.segments.iter().any(|s| s.bytes > self.limits.segment_bytes) {
+            // rewrite the pending reports into segments of the new size, then let the old files go
+            let mut pending = Vec::new();
+            for r in self.pending() {
+                pending.push((r.epoch, r.seq, r.sampled_at_ms, self.read(r.epoch, r.seq)?));
+            }
+            let old = std::mem::take(&mut self.segments);
+            for (epoch, seq, sampled_at_ms, payload) in pending {
+                self.write_record(epoch, seq, sampled_at_ms, &payload)?;
+            }
+            for seg in old {
+                std::fs::remove_file(&seg.path)?;
+            }
+        }
+        self.enforce_size()
     }
 
     pub fn total_bytes(&self) -> u64 {

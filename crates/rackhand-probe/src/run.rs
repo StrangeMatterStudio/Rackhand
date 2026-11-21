@@ -254,6 +254,12 @@ impl Daemon {
 
     fn apply(&mut self, cfg: &ProbeConfig) {
         self.settings.send_modify(|s| s.apply(cfg));
+        if cfg.buffer_max_mb > 0 {
+            let max = u64::from(cfg.buffer_max_mb.min(64)) * 1024 * 1024;
+            if let Err(e) = self.link.buffer.set_max_bytes(max) {
+                tracing::warn!(error = %e, "applying the buffer cap");
+            }
+        }
     }
 
     /// Buffers a report while there is no connection.

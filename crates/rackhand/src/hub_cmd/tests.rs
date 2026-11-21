@@ -257,8 +257,20 @@ fn hub_addrs_from_endpoint_and_names() {
     );
 }
 
-#[test]
-fn probe_welcome_has_design_defaults() {
-    let config = probe_server_settings().config;
-    assert_eq!((config.interval_s, config.max_connection_tuples, config.buffer_max_mb), (15, 500, 64));
+#[tokio::test(flavor = "multi_thread")]
+async fn probe_welcome_from_settings() {
+    use rackhand_hub::library::config::{HUB, parse_hub, put};
+    use rackhand_hub::library::items::{Kind, validate};
+    let dir = temp("probe-settings");
+    let db = Arc::new(Db::open(&dir.join("hub.db")).unwrap());
+    let config = probe_server_settings(&db).config;
+    assert_eq!((config.interval_s, config.max_connection_tuples, config.buffer_max_mb), (15, 500, 64), "defaults");
+    put(&db, HUB, "[probe]\ninterval_s = 5\nbuffer_max_mb = 1\n", "admin", now_ms()).await.unwrap();
+    let config = probe_server_settings(&db).config;
+    let got = (config.interval_s, config.max_connection_tuples, config.buffer_max_mb);
+    assert_eq!(got, (5, 500, 1), "from config/hub.toml");
+    for bad in ["[probe]\ninterval_s = 2\n", "[probe]\nconnection_tuples = 99\n", "[probe]\nbuffer_max_mb = 65\n"] {
+        assert!(parse_hub(bad).is_err(), "{bad} is out of range");
+        assert!(validate(Kind::Config, "hub", bad).is_err(), "{bad} is refused on save");
+    }
 }

@@ -1,0 +1,34 @@
+[Unit]
+Description=Rackhand probe
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rackhand-probe
+Group=rackhand-probe
+ExecStart=/usr/local/lib/rackhand/rackhand-probe run
+# exit code 3: the hub removed this machine (7.3.2); restarting would only be refused again
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=3
+# eBPF connection capture (7.3.3); kernels without CAP_BPF sample instead
+AmbientCapabilities=CAP_BPF CAP_PERFMON
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# write access only to the buffer and state directories
+StateDirectory=rackhand-probe
+StateDirectoryMode=0700
+RuntimeDirectory=rackhand-probe
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+
+[Install]
+WantedBy=multi-user.target

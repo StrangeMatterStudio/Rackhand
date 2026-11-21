@@ -7,6 +7,8 @@ mod jobs;
 #[cfg(test)]
 mod mirror_it;
 #[cfg(test)]
+mod probe_hub;
+#[cfg(test)]
 mod smoke;
 #[cfg(test)]
 mod ssh_it;

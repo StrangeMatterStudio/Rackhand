@@ -21,6 +21,27 @@ mod buffer {
     use super::*;
 
     #[test]
+    fn cap_from_hub_drops_oldest_with_ranges() {
+        let d = dir("cap");
+        let mut b = Buffer::open(&d, Limits::default(), NOW).unwrap();
+        let payload = vec![7u8; 10_000];
+        for seq in 1..=200 {
+            b.append(3, seq, NOW + seq as i64, &payload, NOW).unwrap();
+        }
+        assert!(b.take_dropped().is_empty(), "2 MB fits under the default 64 MB");
+        b.set_max_bytes(1024 * 1024).unwrap();
+        assert!(b.total_bytes() <= 1024 * 1024, "{} bytes kept", b.total_bytes());
+        let dropped = b.take_dropped();
+        assert_eq!(dropped.first().map(|d| (d.epoch, d.from_seq)), Some((3, 1)), "the oldest go first: {dropped:?}");
+        let kept_from = b.pending().next().unwrap().seq;
+        assert_eq!(dropped.last().unwrap().to_seq + 1, kept_from, "every dropped report is in a range");
+        for seq in 201..=400 {
+            b.append(3, seq, NOW + seq as i64, &payload, NOW).unwrap();
+        }
+        assert!(b.total_bytes() <= 1024 * 1024, "the cap holds for new reports");
+    }
+
+    #[test]
     fn reports_survive_restart_in_order() {
         let d = dir("restart");
         {

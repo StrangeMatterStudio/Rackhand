@@ -249,7 +249,7 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let addrs = Arc::new(move || hub_addrs(&quic, &ep.addr().ip_addrs().copied().collect::<Vec<_>>()));
     let join = joins::LazyJoin::new(db.clone(), registry.clone(), setup, addrs, joined_tx);
     let probe_server =
-        ProbeServer::new(ingest.clone(), Arc::new(MachinesDirectory(db.clone())), probe_server_settings());
+        ProbeServer::new(ingest.clone(), Arc::new(MachinesDirectory(db.clone())), probe_server_settings(&db));
     let observations = Arc::new(crate::observations::FromIngest(ingest.clone()));
     let mcp = rackhand_hub::mcp::Mcp::new(db.clone(), audit.clone(), observations)
         .with_actions(actions)
@@ -276,9 +276,20 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     Ok(())
 }
 
-/// What the probe server's Welcome tells probes: the default probe settings (7.8.1).
-pub fn probe_server_settings() -> ServerSettings {
-    ServerSettings { config: joins::probe_defaults(), ..ServerSettings::default() }
+/// What the probe server's Welcome tells probes: the probe settings of `config/hub.toml`, or their defaults (7.8.1).
+pub fn probe_server_settings(db: &Db) -> ServerSettings {
+    let mut config = joins::probe_defaults();
+    match rackhand_hub::library::config::hub(db) {
+        Ok(settings) => {
+            if let Some(p) = settings.probe {
+                config.interval_s = p.interval_s;
+                config.max_connection_tuples = p.connection_tuples;
+                config.buffer_max_mb = p.buffer_max_mb;
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "probe settings: using the defaults"),
+    }
+    ServerSettings { config, ..ServerSettings::default() }
 }
 
 /// The public half of one of the hub's SSH identities, as an `authorized_keys` key (made the first time).

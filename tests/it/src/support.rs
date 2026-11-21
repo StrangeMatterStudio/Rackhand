@@ -52,19 +52,23 @@ impl Container {
 
     /// With systemd as PID 1, as the S11 containers ran.
     pub fn start_systemd(image: &str) -> Container {
-        let c = Container::start_with(
-            image,
-            &[
-                "--privileged",
-                "--cgroupns=host",
-                "-v",
-                "/sys/fs/cgroup:/sys/fs/cgroup:rw",
-                "--tmpfs",
-                "/run",
-                "--tmpfs",
-                "/run/lock",
-            ],
-        );
+        Container::start_systemd_with(image, &[])
+    }
+
+    /// The same, with more `docker run` arguments.
+    pub fn start_systemd_with(image: &str, extra: &[&str]) -> Container {
+        let mut args = vec![
+            "--privileged",
+            "--cgroupns=host",
+            "-v",
+            "/sys/fs/cgroup:/sys/fs/cgroup:rw",
+            "--tmpfs",
+            "/run",
+            "--tmpfs",
+            "/run/lock",
+        ];
+        args.extend_from_slice(extra);
+        let c = Container::start_with(image, &args);
         for _ in 0..50 {
             if c.root("systemctl is-system-running 2>/dev/null | grep -qE 'running|degraded'").status.success() {
                 break;

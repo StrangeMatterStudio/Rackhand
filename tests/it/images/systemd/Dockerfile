@@ -1,8 +1,9 @@
-# Detached steps under systemd (plan T52): Debian 12 with systemd as PID 1, sudo and the automation user.
+# Detached steps under systemd (plan T52) and the probe under its unit (T42): Debian 12 with systemd as PID 1, D-Bus
+# (unprivileged systemctl needs the system bus), sudo and the automation user.
 FROM debian:12-slim
 ENV container=docker
 RUN apt-get update \
- && apt-get install -y --no-install-recommends systemd systemd-sysv sudo procps \
+ && apt-get install -y --no-install-recommends systemd systemd-sysv dbus sudo procps \
  && rm -rf /var/lib/apt/lists/* \
  && useradd -m -s /bin/sh rackhand \
  && mkdir -p /usr/local/lib/rackhand /etc/rackhand /etc/rackhand-probe \

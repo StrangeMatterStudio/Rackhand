@@ -103,6 +103,9 @@ pub fn validate(kind: Kind, name: &str, content: &str) -> Result<(), String> {
         Kind::Playbook => Playbook::parse(content).map_err(|e| e.to_string())?.name,
         Kind::Config => {
             toml::from_str::<toml::Table>(content).map_err(|e| e.to_string())?;
+            if name == crate::library::config::HUB {
+                crate::library::config::parse_hub(content).map_err(|e| e.to_string())?;
+            }
             return Ok(());
         }
     };
