@@ -2250,6 +2250,7 @@ the owner and the document is updated before the work that depends on it starts.
 | D110 | Relay limits | One rate per relay set by the operator (default 1 Mbit/s public, none private); no per-key rates or daily quotas | Spike S2: iroh-relay has no per-endpoint rate or byte counter | Owen | 2026-11-20 |
 | D111 | eBPF program licence | Its own crate, GPL-2.0 OR MIT | Spike S1: the kernel helpers it needs are GPL-only | Owen | 2026-11-20 |
 | D112 | Existing connections of a quarantined Proxmox guest | `conntrack -D` on the host through the hypervisor's managed enrollment (Owen); when the hypervisor isn't managed, the quarantine still applies and records `conntrack_not_flushed` (filled in by the implementation run, owner to confirm) | Spike S4: the Proxmox API can't flush conntrack | Owen | 2026-11-20 |
+| D113 | Which certificates notifiers trust | Public CA roots only: no custom CA for SMTP or webhook notifiers. Mail goes through a mail service (Mailgun or another SMTP provider) with a public certificate, and the hub sits behind a reverse proxy with one | Owner decision on a T42 question | Owen | 2026-11-21 |
 
 ## 19. Deferred decisions
 
@@ -2315,3 +2316,4 @@ None.
 | 2026-11-20 | 7.4.1: `probe_ranges` (received ranges across restarts) and the `config/notifiers.toml` format (`[[discord]] name, webhook`; `[[smtp]] name, host, port, security, username, password, from, to`; secrets as `secret:<name>`); gaps filled in T41, owner to confirm | Implementation (T41) | Implementation run |
 | 2026-11-20 | 7.3.1, 7.3.7, 7.3.13: a join's first command list is valid 1 hour and versioned by its signing time in ms; the hub addresses in a join are the QUIC endpoint's direct addresses other than loopback and link-local plus each certificate name that is an IP address, on the QUIC port; the mirror's host key learned on the first push is written into `config/hub.toml` (`git_mirror.host_fingerprint`) and audited as `git_mirror.host_key_pinned`; gaps filled in T41, owner to confirm | Implementation (T41) | Implementation run |
 | 2026-11-20 | 7.3.3, 7.3.2: `probe.toml` holds `[hub] id, addrs, relays` and `[machine] id, access, mode`; `probe.state` is JSON with `state` (`connecting`, `connected`, `disconnected`, `stopped`), `version`, `at_ms`, `reason`, `retry_in_ms`, `epoch` and `buffered`, replaced whole on each change; gaps filled in T42, owner to confirm | Implementation (T42) | Implementation run |
+| 2026-11-21 | D113: notifiers trust public CA roots only (7.3.9) | Owner decision on a T42 question | Owen |
