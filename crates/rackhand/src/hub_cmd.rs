@@ -230,6 +230,9 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     )));
     let actions = rackhand_hub::actions::Actions::new(db.clone(), audit.clone(), bus.clone(), Arc::new(executor))
         .with_gate(Arc::new(ingest.clone()));
+    // incidents start runbooks through StartJob and hear back on the bus (7.5.2)
+    let starter = Arc::new(ActionsStarter(actions.clone()));
+    rackhand_hub::incidents::routing::Routing::new(incidents.clone(), starter).spawn(bus.subscribe("routing"));
     let web_config = rackhand_hub::web::WebConfig {
         setup_code_hash: setup_hash,
         csrf_key,
@@ -309,6 +312,20 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     ingest.compact().await.map_err(|e| e.to_string())?;
     endpoint.close().await;
     Ok(())
+}
+
+/// Incident routing's `StartJob`, run by Actions; the job's end also comes back as `JobFinished`.
+#[derive(Debug)]
+struct ActionsStarter(rackhand_hub::actions::Actions);
+
+impl rackhand_hub::incidents::routing::JobStarter for ActionsStarter {
+    fn start(
+        &self,
+        job: rackhand_hub::actions::StartJob,
+    ) -> rackhand_hub::incidents::routing::BoxFuture<Result<(), String>> {
+        let actions = self.0.clone();
+        Box::pin(async move { actions.run(job).await.map(|_| ()).map_err(|e| e.to_string()) })
+    }
 }
 
 /// What the probe server's Welcome tells probes: the probe settings of `config/hub.toml`, or their defaults (7.8.1).

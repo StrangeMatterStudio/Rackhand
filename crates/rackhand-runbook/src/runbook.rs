@@ -42,6 +42,9 @@ pub enum StepKind {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Targets {
+    /// Machines by name: the most specific routing match (7.5.2).
+    #[serde(default)]
+    pub machines: Vec<String>,
     #[serde(default)]
     pub kinds: Vec<String>,
     #[serde(default)]

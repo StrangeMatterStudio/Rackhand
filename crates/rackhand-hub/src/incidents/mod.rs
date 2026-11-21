@@ -1,5 +1,5 @@
 //! Incidents (7.2, 7.5.2): lifecycle, evaluation, silences, reconciliation and notes. Owns `incidents`,
-//! `incident_events` and `silences`. Routing beyond a person comes with runbooks and playbooks (T57, T78).
+//! `incident_events` and `silences`. Routing to runbooks is `routing` (T57); playbooks come with T78.
 
 mod baselines;
 mod checks;
@@ -13,6 +13,7 @@ mod machine_silence;
 pub mod notes;
 mod reconcile;
 pub mod replay;
+pub mod routing;
 mod silences;
 
 use std::collections::{HashMap, HashSet};

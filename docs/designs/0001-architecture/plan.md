@@ -266,7 +266,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T54 | Policy: decisions and approvals | T18 | unit | done |
 | T55 | Actions and Executor | T52 to T54, T24 | unit + integration | done |
 | T56 | Library and git mirror | T50, T21, T07 | unit + integration | done |
-| T57 | Incident routing to runbooks and attempt limits | T32, T55 | unit | todo |
+| T57 | Incident routing to runbooks and attempt limits | T32, T55 | unit | done |
 | T58 | Dashboard: approvals, jobs, library, patching | T55, T56, T37 | unit (HTTP) | done |
 | T59 | Patching | T55, T34, T47, T12 | unit + integration + live (L4, L9) | todo |
 | T60 | Hypervisor and hub-host patching | T59 | unit + integration + live (L4, L9) | todo |
@@ -2853,6 +2853,10 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-21 | T57: cargo nextest run -p rackhand-runbook -p rackhand-hub -E 'test(targets_name_machines) \| test(routing::) \| test(attempts::) \| test(timed_out_detached_step_opens_incident)' (before) | failed to build: no `targets.machines`, no `incidents::routing` |
+  | 2026-11-21 | T57: same (after) | 10 passed: precedence machine, tag or role, kind, general, ties by name, targets that leave the machine out and non-automatic or other-kind triggers not candidates; level 0 tells a person with the runbook named; level 1 asks for an approval bound to `incident:<id>` and starts with it once approved (a rejection goes to a person); a succeeded job's incident waits 10 minutes, then a person has it ("persists"), one cleared in time stays resolved; a failed job goes to a person; 2 automatic starts per 24 hours across reopens, then "attempt limit reached"; a person's job not counted; a timed-out job opens `job.timed_out` on its machine |
+  | 2026-11-21 | T57: mutation, no attempt limit | caught: `two_automatic_starts_per_24h_then_human` failed |
+  | 2026-11-21 | T57: cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0; fast 465 passed, 1 skipped; no violations (Incidents uses only `actions::StartJob`) |
 
 ### T58: Dashboard: approvals, jobs, library, patching
 - **Design refs:** 7.7.1 (Approvals, Jobs, Library, Patching pages), 7.7.2, FR-14, AC40, E42
@@ -4866,6 +4870,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D85 | 2026-11-21 | T49 | T49h is a test of what T49c and T49d built | It also fixed what it found: `Ingest::put_points` (T46) stored the hub's own readings (drivers, service checks) in tier 0 without adding them to the machine's recent window, so `/metrics` and the dashboard showed none until a restart rebuilt the window. They now join the window as they are stored, as a probe's reports do; the integration test runs the four simulators in its own process and needs `rackhand-drivers` with `sim` | A defect in designed behaviour (7.4.2), fixed with a unit test seen failing first | `ingest/series.rs`, `tests/it` | - |
 | D86 | 2026-11-21 | L3 | The Library page holds runbooks and playbooks (7.7.1) | It also lists and edits the configuration files (`config/checks.toml`, `hub.toml`, `policies.toml`, `notifiers.toml`), each validated as the file it is, admins only (Edit library). Nothing else in the dashboard could add a service check; the git mirror only pushes out | A gap: FR-9's checks had no way in from the dashboard | design 7.7.1 (owner to confirm), `web/pages/library.rs` | - |
 | D87 | 2026-11-21 | L3 | The live pass changes only tests and the lab | Also fixed what it found: a hub with no git mirror raised `git_mirror_failed` at every library change (`MirrorAlert::Off` now, no event, no retry); the Add page's offline command for Alpine uses BusyBox's `wget` (a stock Alpine machine has no `curl`); `lab/provision/<name>.sh` per machine, `snmpd` on `agentless`, no unattended upgrades on `target`. The 10-day certificate is made by the test on `target` at run time rather than at provisioning, so it doesn't age with the base image | Defects in designed behaviour, each with a test seen failing first | `library/mirror.rs`, `web/pages/add.rs`, `xtask/src/lab`, `lab/provision` | - |
+| D88 | 2026-11-21 | T57 | `incidents/{routing.rs, attempts.rs}`; level 1 leaves a job `waiting_approval`; "a runbook bound to the machine" (7.5.2) | One `incidents/routing.rs` (attempts are counted there from the incident's `runbook.started` events, so they hold across reopens and restarts). Runbook `targets` gains `machines` (names): the binding the design names but the format didn't have; a runbook matches by name, then by a tag or role, then by kind, then with no targets at all, and targets that leave the machine out aren't candidates. Level 1 creates the approval (requested by `incident:<id>`, tool `run_runbook`, bound to the runbook revision) and starts the job when `ApprovalDecided` arrives, so no job row exists before; the Actions-owned `jobs` table keeps only jobs that start. An incident nothing matches goes to `human` at once (7.5.2's Open to Human). `StartJob::runbook(..)` builds the command, as Incidents may use nothing else of Actions. The job starter reports a start that made no job, which hands the incident to a person | The design's lifecycle; fewer moving parts | design 7.8.7 (owner to confirm `targets.machines`), `incidents/routing.rs`, `actions::StartJob::runbook` | - |
 
 ## Follow-ups (out of scope)
 

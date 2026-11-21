@@ -84,3 +84,18 @@ fn detached_step_is_resumable() {
     let err = Runbook::parse(&not_ssh).unwrap_err();
     assert!(err.to_string().contains("detached"), "only ssh steps run detached: {err}");
 }
+
+/// `targets.machines` binds a runbook to machines by name, the most specific routing match (7.5.2).
+#[test]
+fn targets_name_machines() {
+    let source = COMPOSE_RESTART.replace(
+        "targets = { kinds = [\"linux\"] }",
+        "targets = { machines = [\"web1\"], tags = [\"web\"], roles = [\"storage\"], kinds = [\"linux\"] }",
+    );
+    let rb = Runbook::parse(&source).unwrap();
+    assert_eq!(rb.targets.machines, ["web1"]);
+    assert_eq!(
+        (rb.targets.tags.as_slice(), rb.targets.roles.as_slice()),
+        (&["web".to_string()][..], &["storage".to_string()][..])
+    );
+}

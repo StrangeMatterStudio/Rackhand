@@ -55,6 +55,22 @@ pub struct StartJob {
     pub approval_id: Option<String>,
 }
 
+impl StartJob {
+    /// A runbook job on a machine at the runbook's current revision, with no parameters.
+    pub fn runbook(name: &str, machine_id: &str, requested_by: &str) -> StartJob {
+        StartJob {
+            kind: JobKind::Runbook,
+            name: name.into(),
+            rev: None,
+            machine_id: machine_id.into(),
+            params: BTreeMap::new(),
+            requested_by: requested_by.into(),
+            incident_id: None,
+            approval_id: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobResult {
     pub job_id: String,
