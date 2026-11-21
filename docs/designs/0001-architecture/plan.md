@@ -2214,10 +2214,10 @@ Only additions to that list are written out below.
   | --- | --- | --- |
   | `incidents::check_failing_2_and_4_runs` (carried in from T32b) | a check failing 2 runs in a row warns and 4 is critical, through `Incidents::condition`; 2 good runs resolve it | 7.6.1 |
   | `incidents::cert_expiry_warns_at_14_days` (carried in from T32b) | a TLS check's certificate with 14 days left warns, 3 days critical | 7.6.2 |
-  Carried in from T42 (`probe_check` has no fields in the runbook model and no message in `rackhand/probe/1`; owner to define):
+  Carried in from T42 (`probe_check` as D115 defines it: `RunCheck` and `CheckResult` on stream 0):
   | Test | Asserts | Covers |
   | --- | --- | --- |
-  | `it::executor::probe_check_step_runs_check_on_probe` (carried in from T42) | a `probe_check` step asks the probe to run the check and fails when it fails; until the message exists the step fails `probe_check_unavailable` | 7.8.7 |
+  | `it::executor::probe_check_step_runs_check_on_probe` (carried in from T42) | a `probe_check` step with `tcp:` and `http:` checks runs them on the probe (`RunCheck`, `CheckResult`) and fails with the first failing check; a check of an address that isn't loopback or the machine's own is refused by the probe | 7.8.7, D115 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
@@ -4208,6 +4208,10 @@ Only additions to that list are written out below.
   | `output_budget::oldest_trimmed_first_metadata_kept` | at 100 MB the oldest output goes; job and step rows stay | AC69 |
   | `retention::peer_summaries_one_row_per_peer` | | AC69 |
   | `settings::every_setting_in_7_8_1_has_default_and_range` | table-driven over every row of 7.8.1: the default applies, the bounds are accepted, one past each bound is refused | 7.8.1 |
+  Carried in from T42:
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `probe::settings_edit_pushes_config_update` (carried in from T42) | saving `config/hub.toml` with a new `[probe] interval_s` sends `ConfigUpdate` to every connected probe, which reports at the new interval without reconnecting | 7.8.1, D114 |
 - **Fails first:** the rule table assertion fails for tables registered as fixed-size placeholders.
 - **Verification:**
   ```bash
