@@ -183,6 +183,26 @@ impl Dash {
         panic!("signing in to the lab hub failed: {said}");
     }
 
+    /// A fresh step-up with the next TOTP code, for the actions that ask for one (7.7.2). A code is accepted once, so
+    /// one already used for the sign-in waits for the next.
+    pub fn step_up(&self) {
+        let secret = cred("totp_secret");
+        for attempt in 0..3 {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_secs((30 - now_s() % 30 + 1) as u64));
+            }
+            let (_, page) = self.get("/step-up");
+            let Some(csrf) = field(&page, "csrf") else { continue };
+            let code = totp(&secret, now_s());
+            let (status, _) = self
+                .curl(&["--data-urlencode", &format!("csrf={csrf}"), "--data", &format!("code={code}")], "/step-up");
+            if status == 303 {
+                return;
+            }
+        }
+        panic!("the step-up on the lab hub failed");
+    }
+
     /// Signs in when the shared session is gone.
     pub fn signed_in(self) -> Dash {
         if self.get("/").0 != 200 {

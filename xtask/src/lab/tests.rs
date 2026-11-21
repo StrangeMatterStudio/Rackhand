@@ -139,7 +139,9 @@ fn machine_script_is_part_of_the_stamp() {
     let script = super::machine_script(agentless).expect("agentless has its own provisioning script");
     let text = std::fs::read_to_string(&script).unwrap();
     assert!(text.contains("snmpd"), "{text}");
-    assert!(super::machine_script(lab.machine("target").unwrap()).is_none(), "target has none");
+    assert!(super::machine_script(lab.machine("alpine").unwrap()).is_none(), "alpine has none");
+    let target = std::fs::read_to_string(super::machine_script(lab.machine("target").unwrap()).unwrap()).unwrap();
+    assert!(target.contains("disable --now apt-daily-upgrade.timer"), "no unattended upgrades on target: {target}");
     let user_data = super::seed::user_data(&lab, agentless).unwrap();
     let without = super::stamp(&agentless.image, &[user_data.as_bytes()]);
     assert_ne!(super::provision_stamp(&lab, agentless).unwrap(), without, "the script counts in the stamp");

@@ -76,7 +76,7 @@ pub fn host_key_event(alert: &HostKeyAlert) -> Event {
     Event::machine(machine_id, alert.kind(), Severity::Critical, data)
 }
 
-/// The event for a mirror alert; a push that went through raises none.
+/// The event for a mirror alert; a push that went through raises none, nor does a hub with no mirror.
 pub fn mirror_event(alert: &MirrorAlert) -> Option<Event> {
     match alert {
         MirrorAlert::Failed { error, retry_at_ms } => Some(Event::hub(
@@ -88,7 +88,7 @@ pub fn mirror_event(alert: &MirrorAlert) -> Option<Event> {
             let files: Vec<&str> = findings.iter().map(|(p, _)| p.as_str()).collect();
             Some(Event::hub(alert.kind(), Severity::Critical, serde_json::json!({ "files": files })))
         }
-        MirrorAlert::Pushed { .. } => None,
+        MirrorAlert::Pushed { .. } | MirrorAlert::Off => None,
     }
 }
 

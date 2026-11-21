@@ -293,6 +293,8 @@ pub enum MirrorAlert {
     Pushed {
         commit: String,
     },
+    /// No mirror is configured (it is optional): nothing pushed, nothing raised.
+    Off,
 }
 
 impl MirrorAlert {
@@ -301,13 +303,14 @@ impl MirrorAlert {
             MirrorAlert::Failed { .. } => "git_mirror_failed",
             MirrorAlert::SecretBlocked { .. } => "git_mirror_secret_blocked",
             MirrorAlert::Pushed { .. } => "git_mirror_pushed",
+            MirrorAlert::Off => "git_mirror_off",
         }
     }
     pub fn severity(&self) -> &'static str {
         match self {
             MirrorAlert::Failed { .. } => "warning",
             MirrorAlert::SecretBlocked { .. } => "critical",
-            MirrorAlert::Pushed { .. } => "info",
+            MirrorAlert::Pushed { .. } | MirrorAlert::Off => "info",
         }
     }
 }
@@ -334,9 +337,7 @@ impl Mirror {
     /// One attempt: render, scan, push.
     pub async fn sync(&self, message: &str) -> MirrorAlert {
         let now = (self.clock)();
-        let Some(target) = (self.target)() else {
-            return MirrorAlert::Failed { error: "no mirror configured".into(), retry_at_ms: now + RETRY_MS };
-        };
+        let Some(target) = (self.target)() else { return MirrorAlert::Off };
         let files = match render(&self.db) {
             Ok(f) => f,
             Err(e) => return MirrorAlert::Failed { error: e.to_string(), retry_at_ms: now + RETRY_MS },

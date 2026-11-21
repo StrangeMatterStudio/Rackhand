@@ -68,3 +68,24 @@ async fn restore_reads_the_layout_back() {
     let report = super::restore(&fresh, &dir, 6).await;
     assert_eq!(report.refused.len(), 1, "{report:?}");
 }
+
+/// The git mirror is optional (7.3.13, Settings): with none configured a change pushes nothing and raises nothing,
+/// where it used to raise `git_mirror_failed` ("no mirror configured") at every change and retry hourly.
+#[tokio::test(flavor = "multi_thread")]
+async fn no_mirror_configured_raises_nothing() {
+    use std::sync::Arc;
+    let (db, lib) = library("unconfigured");
+    lib.save(Kind::Runbook, "compose-restart", RUNBOOK, "admin", 1).await.unwrap();
+    let vault =
+        Arc::new(crate::vault::Vault::new(crate::vault::master_key::MasterKey::from_bytes([1; 32]), db.clone()));
+    let mirror = super::Mirror {
+        db: db.clone(),
+        vault,
+        audit: crate::audit::Audit::new(db.writer()),
+        workdir: std::env::temp_dir().join(format!("rackhand-mirror-unconfigured-{}", std::process::id())),
+        target: Arc::new(|| None),
+        debounce_ms: 0,
+        clock: Arc::new(|| 1_000),
+    };
+    assert_eq!(mirror.sync("admin: compose-restart").await, super::MirrorAlert::Off);
+}

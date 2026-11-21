@@ -381,7 +381,13 @@ fn probe_in_lxc_is_bound_to_its_guest() {
         );
     }
     let token = metrics_token();
-    assert!(eventually(Duration::from_secs(60), || hub::live(&token, "ct-test", 45.0)), "ct-test reports");
+    // ct-test isn't a lab machine: its own uptime comes through pve9
+    let lag = || {
+        let seen = hub::series(&metrics(&token).1, "uptime_s", "ct-test")?;
+        let own: f64 = on("pve9", "sudo pct exec 100 -- cut -d' ' -f1 /proc/uptime").trim().parse().ok()?;
+        Some(own - seen)
+    };
+    assert!(eventually(Duration::from_secs(60), || lag().is_some_and(|l| l <= 45.0)), "ct-test reports: {:?}", lag());
     let id = machine_id(&dash, "ct-test").unwrap();
     let binding = |dash: &Dash| {
         let page = unescape(&dash.get(&format!("/machines/{id}")).1);
@@ -389,16 +395,24 @@ fn probe_in_lxc_is_bound_to_its_guest() {
         (state, page)
     };
     assert!(
-        eventually(Duration::from_secs(150), || binding(&dash).0.as_deref() == Some("proposed")),
+        eventually(Duration::from_secs(150), || {
+            matches!(binding(&dash).0.as_deref(), Some("proposed") | Some("confirmed"))
+        }),
         "ct-test proposed as its guest: {}",
         binding(&dash).1
     );
-    let page = binding(&dash).1;
-    let guest = field(&page, "guest").expect("the proposed guest");
+    // the guest's reference is JSON in an attribute: read it escaped, then unescape it
+    let raw = dash.get(&format!("/machines/{id}")).1;
+    let guest = unescape(&field(&raw, "guest").expect("the proposed guest"));
     assert!(guest.contains("pve9") && guest.contains("100"), "LXC 100 on pve9: {guest}");
-    let (code, _) =
+    if binding(&dash).0.as_deref() == Some("confirmed") {
+        return; // confirmed by an earlier run on this hub
+    }
+    // confirming a binding asks for a fresh step-up
+    dash.step_up();
+    let (code, said) =
         dash.post(&format!("/machines/{id}"), &format!("/machines/{id}/binding/confirm"), &[("guest", &guest)]);
-    assert!(code == 200 || code == 303, "confirmed: {code}");
+    assert_eq!(code, 303, "confirmed: {said}");
     assert_eq!(binding(&dash).0.as_deref(), Some("confirmed"), "{}", binding(&dash).1);
 }
 

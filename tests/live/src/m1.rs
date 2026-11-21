@@ -93,7 +93,8 @@ fn tampered_probe_stops_the_install() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
-    std::thread::sleep(Duration::from_secs(1));
+    let listening = || std::net::TcpStream::connect(("127.0.0.1", 8791)).is_ok();
+    assert!(eventually(Duration::from_secs(15), listening), "the tampered release server listens");
     // the hub machine has no probe; the install there must stop before installing anything
     assert!(ok_on("hub", "test ! -e /usr/local/lib/rackhand/rackhand-probe"), "the hub machine already has a probe");
     let ticket = format!("rackhand1:{}@{}:7443", "0".repeat(64), hub::HUB_ADDR);
@@ -209,6 +210,9 @@ fn cut_link_backfills_without_stale_incidents() {
     let dash = Dash::shared().signed_in();
     let token = metrics_token();
     let id = ensure_target(&dash, &token);
+    // what was open for target before the cut (another milestone's check, say) isn't the cut's doing
+    let before: Vec<String> =
+        open_incidents(&dash).into_iter().filter(|i| i.machine == "target").map(|i| i.title).collect();
     lab(&["cut", "target"]);
     let cut = Instant::now();
     std::thread::sleep(Duration::from_secs(600));
@@ -238,7 +242,9 @@ fn cut_link_backfills_without_stale_incidents() {
     assert!(cut.elapsed() < Duration::from_secs(3600), "the chart's hour still covers the cut");
     // no incident left open for target once it's back: the silence warning resolved, nothing opened from old samples
     assert!(
-        eventually(Duration::from_secs(120), || !open_incidents(&dash).iter().any(|i| i.machine == "target")),
+        eventually(Duration::from_secs(120), || {
+            !open_incidents(&dash).iter().any(|i| i.machine == "target" && !before.contains(&i.title))
+        }),
         "stale incidents for target: {:?}",
         open_incidents(&dash)
     );
