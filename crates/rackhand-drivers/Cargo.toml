@@ -21,6 +21,12 @@ tokio-rustls = { workspace = true }
 url = "2"
 webpki-roots = { workspace = true }
 x509-parser = { version = "0.18", default-features = false }
+ring = { workspace = true }
+rcgen = { workspace = true, optional = true }
+
+[features]
+# the Proxmox API simulator, for other crates' tests
+sim = ["dep:rcgen"]
 
 [dev-dependencies]
 rcgen = { workspace = true }

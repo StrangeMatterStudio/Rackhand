@@ -214,6 +214,7 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         ProbeServer::new(ingest.clone(), Arc::new(MachinesDirectory(db.clone())), probe_server_settings(&db));
     let executor = rackhand_hub::executor::Executor::new(vault.clone(), host_keys.clone()).with_other(Arc::new(steps(
         &db,
+        &vault,
         &notify,
         &ingest,
         &probe_server,
@@ -302,17 +303,22 @@ pub fn probe_server_settings(db: &Db) -> ServerSettings {
 /// The systems that run the step kinds other than `ssh` (7.8.7): `notify` by Notify, `wait_report` by Ingest.
 pub fn steps(
     db: &Arc<Db>,
+    vault: &Arc<Vault>,
     notify: &rackhand_hub::notify::Notify,
     ingest: &Ingest,
     probes: &ProbeServer,
 ) -> rackhand_hub::executor::ByKind {
-    use rackhand_hub::checks::steps::{Api, Verify};
+    use rackhand_hub::checks::steps::{Api, Hypervisor, Verify};
     use rackhand_runbook::runbook::StepKind;
+    let proxmox: Arc<dyn rackhand_drivers::Driver> = Arc::new(rackhand_drivers::Proxmox::new());
+    let hypervisor = Arc::new(Hypervisor::new(db.clone(), vault.clone()).with_driver(proxmox.clone()));
     rackhand_hub::executor::ByKind::default()
         .with(StepKind::Notify, Arc::new(notify.clone()))
         .with(StepKind::WaitReport, Arc::new(ingest.clone()))
         .with(StepKind::Verify, Arc::new(Verify::new(db.clone(), ingest.clone())))
-        .with(StepKind::Api, Arc::new(Api::new(db.clone())))
+        .with(StepKind::Api, Arc::new(Api::new(db.clone()).with_driver(proxmox.clone())))
+        .with(StepKind::Snapshot, hypervisor.clone())
+        .with(StepKind::Rollback, hypervisor)
         .with(StepKind::ProbeCheck, Arc::new(probes.probe_checks()))
 }
 

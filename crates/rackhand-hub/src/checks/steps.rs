@@ -8,6 +8,11 @@
 //!
 //! `api` makes the step's `call` through the machine's driver (its `driver` column) at its address, and records the
 //! driver's answer as the step's output.
+//!
+//! `snapshot` and `rollback` act on a Proxmox guest through its hypervisor (7.5.3): the guest's confirmed binding
+//! (`proxmox_ref`: `cluster`, the hypervisor machine; `node`, `vmid`, `type`) names it, and the hypervisor's driver
+//! credentials are the Vault's `driver.<hypervisor id>` (`{token, fingerprint}`). The snapshot is the job's own,
+//! `rackhand-<job id>`, and the rollback goes back to it. A binding that isn't confirmed blocks both (7.3.12).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -182,6 +187,107 @@ impl StepRunner for Api {
             match driver.call(&target, op).await {
                 Ok(result) => {
                     let mut out = serde_json::to_vec_pretty(&result.output).unwrap_or_default();
+                    out.push(b'\n');
+                    succeeded(out, command)
+                }
+                Err(e) => StepResult { command, ..StepResult::failed(e.to_string()) },
+            }
+        })
+    }
+}
+
+pub struct Hypervisor {
+    db: Arc<Db>,
+    vault: Arc<crate::vault::Vault>,
+    drivers: BTreeMap<&'static str, Arc<dyn Driver>>,
+}
+
+impl std::fmt::Debug for Hypervisor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Hypervisor").field("drivers", &self.drivers.keys().collect::<Vec<_>>()).finish()
+    }
+}
+
+/// What a guest's step needs: the hypervisor's driver kind, address and credentials, and the guest on it.
+struct Bound {
+    driver: String,
+    address: String,
+    settings: serde_json::Value,
+    guest: serde_json::Value,
+}
+
+impl Hypervisor {
+    pub fn new(db: Arc<Db>, vault: Arc<crate::vault::Vault>) -> Hypervisor {
+        Hypervisor { db, vault, drivers: BTreeMap::new() }
+    }
+
+    pub fn with_driver(mut self, driver: Arc<dyn Driver>) -> Hypervisor {
+        self.drivers.insert(driver.kind().name(), driver);
+        self
+    }
+
+    fn bound(&self, guest: &str) -> Result<Bound, String> {
+        let row: Option<(Option<String>, String)> = self
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row("SELECT proxmox_ref, proxmox_ref_state FROM machines WHERE id = ?1", [guest], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .optional()
+            })
+            .map_err(|e| e.to_string())?;
+        let Some((Some(reference), state)) = row else { return Err("not_a_proxmox_guest".into()) };
+        if state != "confirmed" {
+            return Err("guest_binding_unconfirmed".into());
+        }
+        let r: serde_json::Value =
+            serde_json::from_str(&reference).map_err(|_| "guest_binding_unreadable".to_string())?;
+        let host = r["cluster"].as_str().ok_or("guest_binding_unreadable")?.to_string();
+        let found: Option<(Option<String>, Option<String>)> = self
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row("SELECT driver, address FROM machines WHERE id = ?1", [&host], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .optional()
+            })
+            .map_err(|e| e.to_string())?;
+        let Some((Some(driver), Some(address))) = found else { return Err("no_hypervisor".into()) };
+        let creds = self.vault.get(&format!("driver.{host}")).map_err(|_| "no_hypervisor_credentials".to_string())?;
+        let settings: serde_json::Value =
+            serde_json::from_slice(creds.expose()).map_err(|_| "no_hypervisor_credentials".to_string())?;
+        let guest = serde_json::json!({ "node": r["node"], "vmid": r["vmid"], "kind": r["type"] });
+        Ok(Bound { driver, address, settings, guest })
+    }
+}
+
+impl StepRunner for Hypervisor {
+    fn run<'a>(&'a self, ctx: &'a StepCtx, step: &'a Step, _argv: Option<&'a [String]>) -> BoxFuture<'a, StepResult> {
+        Box::pin(async move {
+            let op = match step.kind {
+                StepKind::Snapshot => "snapshot",
+                StepKind::Rollback => "rollback",
+                _ => return StepResult::failed("snapshot_or_rollback_only"),
+            };
+            let b = match self.bound(&ctx.machine_id) {
+                Ok(b) => b,
+                Err(reason) => return StepResult::failed(reason),
+            };
+            let Some(driver) = self.drivers.get(b.driver.as_str()) else {
+                return StepResult::failed(format!("no_driver:{}", b.driver));
+            };
+            let name = format!("rackhand-{}", ctx.job_id.to_ascii_lowercase());
+            let mut args = b.guest.clone();
+            args["name"] = serde_json::json!(name);
+            let command = Some(format!("{} {op} {} {}", b.driver, args["vmid"], name));
+            let target = DriverTarget { target: b.address, settings: b.settings, timeout: ctx.timeout };
+            match driver.call(&target, DriverOp { name: op.into(), args }).await {
+                Ok(r) => {
+                    let mut out =
+                        serde_json::to_vec_pretty(&serde_json::json!({ "snapshot": name, "result": r.output }))
+                            .unwrap_or_default();
                     out.push(b'\n');
                     succeeded(out, command)
                 }

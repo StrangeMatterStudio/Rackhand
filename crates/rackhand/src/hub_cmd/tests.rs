@@ -289,7 +289,8 @@ async fn step_kinds_reach_their_systems() {
     let ingest = Ingest::new(db.clone(), rackhand_hub::bus::Bus::new(), Arc::new(Statvfs(dir.clone())));
     let notify = rackhand_hub::notify::Notify::new(db.clone(), ingest.clone(), Vec::new());
     let server = ProbeServer::new(ingest.clone(), Arc::new(MachinesDirectory(db.clone())), ServerSettings::default());
-    let steps = steps(&db, &notify, &ingest, &server);
+    let vault = Arc::new(Vault::new(MasterKey::from_bytes([6u8; 32]), db.clone()));
+    let steps = steps(&db, &vault, &notify, &ingest, &server);
     let ctx = StepCtx {
         job_id: "j1".into(),
         machine_id: "m1".into(),
@@ -332,6 +333,13 @@ checks = [\"tcp:127.0.0.1:5432\"]
         StepOutcome::Failed("no_call".into()),
         "Checks calls"
     );
+    // snapshot and rollback go to the hypervisor's driver, for a Proxmox guest
+    for kind in ["snapshot", "rollback"] {
+        assert_eq!(
+            outcome(steps.run(&ctx, &step(kind), None).await),
+            StepOutcome::Failed("not_a_proxmox_guest".into())
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

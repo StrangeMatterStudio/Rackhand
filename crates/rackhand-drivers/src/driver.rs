@@ -66,18 +66,34 @@ pub struct DriverReading {
     pub latency_ms: Option<f64>,
     pub detail: String,
     pub metrics: Vec<(String, f64)>,
+    /// Labelled readings of what a host driver watches (7.4.2: Proxmox nodes, datastores and guests, ...).
+    pub points: Vec<Point>,
+}
+
+/// One labelled reading.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Point {
+    pub name: String,
+    pub labels: std::collections::BTreeMap<String, String>,
+    pub value: f64,
+}
+
+impl Point {
+    pub fn new(name: &str, labels: &[(&str, &str)], value: f64) -> Point {
+        Point { name: name.into(), labels: labels.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), value }
+    }
 }
 
 impl DriverReading {
     pub fn up(latency_ms: f64, detail: impl Into<String>, mut metrics: Vec<(String, f64)>) -> DriverReading {
         metrics.insert(0, ("check.up".into(), 1.0));
         metrics.insert(1, ("check.latency_ms".into(), latency_ms));
-        DriverReading { ok: true, latency_ms: Some(latency_ms), detail: detail.into(), metrics }
+        DriverReading { ok: true, latency_ms: Some(latency_ms), detail: detail.into(), metrics, points: Vec::new() }
     }
 
     pub fn down(detail: impl Into<String>, mut metrics: Vec<(String, f64)>) -> DriverReading {
         metrics.insert(0, ("check.up".into(), 0.0));
-        DriverReading { ok: false, latency_ms: None, detail: detail.into(), metrics }
+        DriverReading { ok: false, latency_ms: None, detail: detail.into(), metrics, points: Vec::new() }
     }
 
     /// The same reading, failed for `why` (the check answered, but not as expected).

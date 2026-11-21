@@ -205,3 +205,94 @@ async fn api_step_calls_driver() {
     let missing = none.run(&ctx(Duration::from_secs(2)), &step("kind = \"api\"\ncall = \"snapshot\"\n"), None).await;
     assert_eq!(missing.outcome, StepOutcome::Failed("no_driver:proxmox".into()));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn snapshot_and_rollback_steps_use_proxmox_driver() {
+    use crate::checks::steps::Hypervisor;
+    use crate::vault::master_key::MasterKey;
+    use crate::vault::{Secret, Vault};
+    use rackhand_drivers::proxmox::sim::Sim;
+    let db = db("hypervisor").await;
+    let sim = Sim::start("pve8").await;
+    const GUEST: &str = "01JD0000000000000000000002";
+    let guest = |state: &str| {
+        Row::from([
+            ("id", t(GUEST)),
+            ("site_id", t("s1")),
+            ("name", t("ct-test")),
+            ("kind", t("linux")),
+            ("state", t("enrolled")),
+            ("proxmox_ref", t(&format!("{{\"cluster\":\"{M1}\",\"node\":\"pve8\",\"vmid\":100,\"type\":\"lxc\"}}"))),
+            ("proxmox_ref_state", t(state)),
+        ])
+    };
+    db.writer()
+        .send(WriteCmd::Batch(vec![
+            RowWrite::upsert(
+                "machines",
+                "id",
+                Row::from([
+                    ("id", t(M1)),
+                    ("site_id", t("s1")),
+                    ("name", t("pve")),
+                    ("kind", t("hypervisor")),
+                    ("address", t(&sim.url)),
+                    ("driver", t("proxmox")),
+                    ("state", t("enrolled")),
+                ]),
+            ),
+            RowWrite::insert("machines", guest("proposed")),
+        ]))
+        .await
+        .unwrap();
+    let vault = Arc::new(Vault::new(MasterKey::from_bytes([4u8; 32]), db.clone()));
+    let creds = serde_json::json!({ "token": "rackhand@pve!hub=secret", "fingerprint": sim.fingerprint }).to_string();
+    vault.put(&format!("driver.{M1}"), &Secret::from(creds.as_str())).await.unwrap();
+    let steps = Hypervisor::new(db.clone(), vault.clone()).with_driver(Arc::new(rackhand_drivers::Proxmox::new()));
+    let ctx = StepCtx {
+        machine_id: GUEST.into(),
+        job_id: "01JDJOB0000000000000000001".into(),
+        ..ctx(Duration::from_secs(10))
+    };
+    // a binding only proposed: nothing on the hypervisor (7.3.12)
+    let snap = step(
+        "kind = \"snapshot\"
+",
+    );
+    assert_eq!(steps.run(&ctx, &snap, None).await.outcome, StepOutcome::Failed("guest_binding_unconfirmed".into()));
+    assert!(sim.requests().is_empty());
+    db.writer().send(WriteCmd::Batch(vec![RowWrite::upsert("machines", "id", guest("confirmed"))])).await.unwrap();
+    let made = steps.run(&ctx, &snap, None).await;
+    assert_eq!(made.outcome, StepOutcome::Succeeded, "{}", String::from_utf8_lossy(&made.stderr));
+    assert!(String::from_utf8_lossy(&made.stdout).contains("rackhand-01jdjob0000000000000000001"));
+    let back = steps
+        .run(
+            &ctx,
+            &step(
+                "kind = \"rollback\"
+",
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(back.outcome, StepOutcome::Succeeded);
+    let writes: Vec<(String, String)> =
+        sim.requests().into_iter().filter(|q| q.method == "POST").map(|q| (q.path, q.body)).collect();
+    assert_eq!(
+        writes,
+        vec![
+            (
+                "/api2/json/nodes/pve8/lxc/100/snapshot".to_string(),
+                "snapname=rackhand-01jdjob0000000000000000001".to_string()
+            ),
+            (
+                "/api2/json/nodes/pve8/lxc/100/snapshot/rackhand-01jdjob0000000000000000001/rollback".to_string(),
+                String::new()
+            ),
+        ],
+        "the job's own snapshot, on the guest's node"
+    );
+    // a machine that isn't a Proxmox guest
+    let plain = StepCtx { machine_id: M1.into(), ..ctx.clone() };
+    assert_eq!(steps.run(&plain, &snap, None).await.outcome, StepOutcome::Failed("not_a_proxmox_guest".into()));
+}

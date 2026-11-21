@@ -5,13 +5,15 @@ mod dns;
 mod driver;
 mod http;
 mod icmp;
+pub mod proxmox;
 mod tcp;
 mod tls;
 
 pub use dns::Dns;
-pub use driver::{Driver, DriverError, DriverKind, DriverOp, DriverOpResult, DriverReading, DriverTarget};
+pub use driver::{Driver, DriverError, DriverKind, DriverOp, DriverOpResult, DriverReading, DriverTarget, Point};
 pub use http::Http;
 pub use icmp::Icmp;
+pub use proxmox::Proxmox;
 pub use tcp::Tcp;
 pub use tls::Tls;
 
