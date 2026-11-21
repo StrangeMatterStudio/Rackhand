@@ -9,6 +9,8 @@ publish = false
 
 [dependencies]
 async-trait = "0.1"
+base64 = { workspace = true }
+getrandom = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 http-body-util = "0.1"

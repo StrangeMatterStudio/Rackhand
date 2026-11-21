@@ -1,89 +1,14 @@
-//! The Proxmox VE API client: HTTPS to the node with the certificate pinned by its SHA-256 fingerprint, accepted when
-//! the host was added (7.3.12, like an SSH host key), and an API token (`PVEAPIToken=<user>@<realm>!<id>=<secret>`).
-//! A certificate that isn't the pinned one fails the handshake, before any request is sent.
-
-use std::sync::Arc;
+//! The Proxmox VE API client: HTTPS to the node with its certificate pinned (`crate::pinned`) and an API token
+//! (`PVEAPIToken=<user>@<realm>!<id>=<secret>`).
 
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Bytes;
 use hyper_util::rt::TokioIo;
-use rustls::DigitallySignedStruct;
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use serde_json::Value;
 
 use crate::driver::{DriverError, DriverTarget, settings, text};
 
 const MAX_BODY: usize = 8 << 20;
-
-/// `AA:BB:...` (or without the colons, any case) as 32 bytes.
-fn parse_fingerprint(f: &str) -> Option<[u8; 32]> {
-    let hex: String = f.chars().filter(|c| *c != ':').collect();
-    if hex.len() != 64 {
-        return None;
-    }
-    let mut out = [0u8; 32];
-    for (i, b) in out.iter_mut().enumerate() {
-        *b = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()?;
-    }
-    Some(out)
-}
-
-fn show(fp: &[u8]) -> String {
-    fp.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":")
-}
-
-/// Accepts exactly the pinned certificate, and checks the handshake's signatures with it.
-#[derive(Debug)]
-struct Pinned {
-    fingerprint: [u8; 32],
-    provider: Arc<CryptoProvider>,
-}
-
-impl ServerCertVerifier for Pinned {
-    fn verify_server_cert(
-        &self,
-        end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp: &[u8],
-        _now: UnixTime,
-    ) -> Result<ServerCertVerified, rustls::Error> {
-        let seen = ring::digest::digest(&ring::digest::SHA256, end_entity.as_ref());
-        if seen.as_ref() == self.fingerprint {
-            Ok(ServerCertVerified::assertion())
-        } else {
-            Err(rustls::Error::General(format!(
-                "the certificate's fingerprint {} isn't the pinned {}",
-                show(seen.as_ref()),
-                show(&self.fingerprint)
-            )))
-        }
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        verify_tls12_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        verify_tls13_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        self.provider.signature_verification_algorithms.supported_schemes()
-    }
-}
 
 /// One segment of a path, escaped (a task's UPID has `:` in it).
 pub(crate) fn segment(s: &str) -> String {
@@ -114,10 +39,7 @@ impl Client {
         if !token.contains('!') || !token.contains('=') {
             return Err(DriverError::Invalid("the token is <user>@<realm>!<id>=<secret>".into()));
         }
-        let pin = text(s, "fingerprint")?
-            .ok_or_else(|| DriverError::Invalid("the certificate's fingerprint (`fingerprint`) to pin".into()))?;
-        let fingerprint =
-            parse_fingerprint(pin).ok_or_else(|| DriverError::Invalid("the fingerprint is a SHA-256 in hex".into()))?;
+        let tls = crate::pinned::connector(text(s, "fingerprint")?)?;
         let raw =
             if target.target.contains("://") { target.target.clone() } else { format!("https://{}", target.target) };
         let url = url::Url::parse(&raw).map_err(|e| DriverError::Invalid(format!("the address: {e}")))?;
@@ -126,19 +48,12 @@ impl Client {
         }
         let host = url.host_str().ok_or_else(|| DriverError::Invalid("the address has no host".into()))?.to_string();
         let port = url.port().unwrap_or(8006);
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let config = rustls::ClientConfig::builder_with_provider(provider.clone())
-            .with_safe_default_protocol_versions()
-            .map_err(|e| DriverError::Failed(e.to_string()))?
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(Pinned { fingerprint, provider }))
-            .with_no_client_auth();
         Ok(Client {
             host,
             port,
             token: token.to_string(),
             timeout: target.timeout,
-            tls: tokio_rustls::TlsConnector::from(Arc::new(config)),
+            tls,
             node: text(s, "node")?.map(str::to_string),
         })
     }
@@ -146,11 +61,7 @@ impl Client {
     /// One request; returns the answer's `data`. `form` is the request's form body (or nothing).
     pub async fn call(&self, method: &str, path: &str, form: &[(String, String)]) -> Result<Value, DriverError> {
         let attempt = async {
-            let addr = crate::driver::resolve(&format!("{}:{}", self.host, self.port)).await?;
-            let tcp = tokio::net::TcpStream::connect(addr).await.map_err(|e| format!("{addr}: {e}"))?;
-            let bare = self.host.trim_start_matches('[').trim_end_matches(']').to_string();
-            let name = ServerName::try_from(bare).map_err(|e| e.to_string())?;
-            let tls = self.tls.connect(name, tcp).await.map_err(|e| format!("TLS: {e}"))?;
+            let tls = crate::pinned::connect(&self.tls, &self.host, self.port).await?;
             let (mut sender, conn) = hyper::client::conn::http1::handshake::<_, Full<Bytes>>(TokioIo::new(tls))
                 .await
                 .map_err(|e| e.to_string())?;

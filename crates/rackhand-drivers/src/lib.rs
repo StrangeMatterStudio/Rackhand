@@ -5,9 +5,12 @@ mod dns;
 mod driver;
 mod http;
 mod icmp;
+pub mod pinned;
 pub mod proxmox;
 mod tcp;
 mod tls;
+pub mod truenas;
+mod ws;
 
 pub use dns::Dns;
 pub use driver::{Driver, DriverError, DriverKind, DriverOp, DriverOpResult, DriverReading, DriverTarget, Point};
@@ -16,6 +19,7 @@ pub use icmp::Icmp;
 pub use proxmox::Proxmox;
 pub use tcp::Tcp;
 pub use tls::Tls;
+pub use truenas::TrueNas;
 
 /// The driver for a service check of `kind`, or none for the API drivers.
 pub fn check_driver(kind: DriverKind) -> Option<Box<dyn Driver>> {

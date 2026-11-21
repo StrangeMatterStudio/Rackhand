@@ -65,24 +65,7 @@ impl Sim {
             guests.insert((kind.to_string(), vmid), g);
         }
         let state = Arc::new(Mutex::new(State { dir, node, guests, requests: Vec::new() }));
-        let key = rcgen::KeyPair::generate().expect("a key");
-        let cert = rcgen::CertificateParams::new(vec!["pve.lab.test".to_string()])
-            .expect("params")
-            .self_signed(&key)
-            .expect("a certificate");
-        let der = cert.der().to_vec();
-        let digest = ring::digest::digest(&ring::digest::SHA256, &der);
-        let fingerprint = digest.as_ref().iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":");
-        let config = rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .with_safe_default_protocol_versions()
-            .expect("versions")
-            .with_no_client_auth()
-            .with_single_cert(
-                vec![rustls::pki_types::CertificateDer::from(der)],
-                rustls::pki_types::PrivateKeyDer::try_from(key.serialize_der()).expect("a key"),
-            )
-            .expect("the server config");
-        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let (acceptor, fingerprint) = crate::pinned::test_server();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
         let url = format!("https://{}", listener.local_addr().expect("an address"));
         let shared = state.clone();
