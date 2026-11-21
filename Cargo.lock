@@ -3650,6 +3650,7 @@ dependencies = [
  "rackhand-net",
  "rackhand-probe",
  "rackhand-proto",
+ "rackhand-release",
  "rackhand-runbook",
  "rackhand-store",
  "rusqlite",

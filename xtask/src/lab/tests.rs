@@ -96,3 +96,36 @@ fn extra_disk_is_an_overlay_that_reset_replaces() {
     assert_eq!(super::reset_files(pve), ["disk.qcow2", "extra.qcow2"]);
     assert_eq!(super::reset_files(target), ["disk.qcow2"]);
 }
+
+/// Real builds, so not in the fast tier: `cargo nextest run -p xtask --run-ignored all -E 'test(lab::)'` (plan L2).
+#[test]
+#[ignore = "builds the workspace twice; run with --run-ignored in the live tier"]
+fn release_build_with_test_keys_fails() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let target =
+        std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default().join(".cache/rackhand-target-guard");
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let release = std::process::Command::new(&cargo)
+        .current_dir(&root)
+        .args(["build", "-q", "-p", "rackhand", "--features", "lab-build", "--target-dir"])
+        .arg(&target)
+        .env("RACKHAND_RELEASE", "1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&release.stderr);
+    assert!(!release.status.success(), "a release build with the test keys pinned must fail");
+    assert!(stderr.contains("`test-keys` feature (turned on by `lab-build`)"), "{stderr}");
+    let plain = std::process::Command::new(&cargo)
+        .current_dir(&root)
+        .args(["build", "-q", "-p", "rackhand", "--target-dir"])
+        .arg(&target)
+        .output()
+        .unwrap();
+    assert!(plain.status.success(), "{}", String::from_utf8_lossy(&plain.stderr));
+    let token = std::process::Command::new(target.join("debug/rackhand"))
+        .args(["hub", "lab-token", "--kind", "machine", "--access", "managed"])
+        .output()
+        .unwrap();
+    assert_eq!(token.status.code(), Some(2), "a build without lab-build has no lab-token command");
+    assert!(!String::from_utf8_lossy(&token.stderr).contains("lab-token"), "nor mentions it");
+}

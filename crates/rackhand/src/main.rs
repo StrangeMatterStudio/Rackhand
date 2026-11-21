@@ -35,6 +35,8 @@ fn main() -> ExitCode {
         ["hub", "restore-library", checkout, rest @ ..] => restore_library(checkout, rest),
         ["hub", "backup", rest @ ..] => hub_backup(rest),
         ["hub", "restore", file, rest @ ..] => hub_restore(file, rest),
+        #[cfg(feature = "lab-build")]
+        ["hub", "lab-token", rest @ ..] => hub_lab_token(rest),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -272,6 +274,65 @@ fn hub_restore(file: &str, rest: &[&str]) -> ExitCode {
     match hub_cmd::backups::restore(std::path::Path::new(file), std::path::Path::new(key), &etc, &data) {
         Ok(toml) => {
             println!("Restored. Wrote {}; start the hub with `rackhand hub run`.", toml.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `hub lab-token --kind machine --access managed|monitor [--name <name>] [--role <role>]`: a pending machine and its
+/// one-time token, as the Add page (T49) will issue them. Lab builds only (plan L2): a release build has no such command.
+#[cfg(feature = "lab-build")]
+fn hub_lab_token(rest: &[&str]) -> ExitCode {
+    use rackhand_proto::common::{Access, ProbeMode};
+    let Some(o) = options(rest, &["kind", "access", "name", "role", "config"]) else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    if o.get("kind").copied() != Some("machine") {
+        eprintln!("lab-token: only --kind machine");
+        return ExitCode::from(2);
+    }
+    let access = match o.get("access").copied() {
+        Some("managed") => Access::Managed,
+        Some("monitor") => Access::Monitor,
+        _ => {
+            eprintln!("lab-token: --access managed|monitor");
+            return ExitCode::from(2);
+        }
+    };
+    let path = PathBuf::from(o.get("config").copied().unwrap_or("/etc/rackhand/hub.toml"));
+    let rt = match runtime() {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    let result = rt.block_on(async {
+        let config = hub_cmd::HubConfig::load(&path)?;
+        let db = std::sync::Arc::new(rackhand_store::Db::open(&config.db_path()).map_err(|e| e.to_string())?);
+        let site: String = db
+            .readers()
+            .with(|c| c.query_row("SELECT id FROM sites WHERE is_local = 1", [], |r| r.get(0)))
+            .map_err(|_| "no site yet: complete first run".to_string())?;
+        let registry = rackhand_hub::registry::Registry::load(db).map_err(|e| e.to_string())?;
+        let add = rackhand_hub::registry::machines::AddMachine {
+            site_id: site,
+            name: o.get("name").copied().unwrap_or("target").to_string(),
+            kind: "linux".into(),
+            access,
+            mode: ProbeMode::Local,
+            roles: o.get("role").map(|r| vec![r.to_string()]).unwrap_or_default(),
+        };
+        let (id, token) =
+            registry.add_machine(&add, "lab", rackhand_store::ids::now_ms()).await.map_err(|e| e.to_string())?;
+        Ok::<_, String>((id, token.as_str().to_string()))
+    });
+    match result {
+        Ok((id, token)) => {
+            eprintln!("machine {id}");
+            println!("{token}");
             ExitCode::SUCCESS
         }
         Err(e) => {
