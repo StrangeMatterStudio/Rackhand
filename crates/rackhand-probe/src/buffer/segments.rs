@@ -36,6 +36,27 @@ pub struct Record {
     gone: bool,
 }
 
+/// Where a pending report is stored, so replay can read it beside live sends without holding the buffer. A report
+/// acked or dropped meanwhile may be gone (its segment deleted): reading it then fails, and replay skips it.
+#[derive(Debug, Clone)]
+pub struct Stored {
+    pub epoch: u64,
+    pub seq: u64,
+    path: PathBuf,
+    offset: u64,
+    len: u32,
+}
+
+impl Stored {
+    pub fn read(&self) -> Result<Vec<u8>, BufferError> {
+        let mut f = File::open(&self.path)?;
+        f.seek(SeekFrom::Start(self.offset))?;
+        let mut buf = vec![0u8; self.len as usize];
+        f.read_exact(&mut buf)?;
+        Ok(buf)
+    }
+}
+
 #[derive(Debug)]
 struct Segment {
     path: PathBuf,
@@ -125,6 +146,16 @@ impl Buffer {
     /// Unacked reports, oldest first.
     pub fn pending(&self) -> impl Iterator<Item = &Record> {
         self.segments.iter().flat_map(|s| s.records.iter()).filter(|r| !r.gone)
+    }
+
+    /// The pending reports sampled before `before_ms`, oldest first.
+    pub fn stored_before(&self, before_ms: i64) -> Vec<Stored> {
+        self.segments
+            .iter()
+            .flat_map(|s| s.records.iter().map(move |r| (s, r)))
+            .filter(|(_, r)| !r.gone && r.sampled_at_ms < before_ms)
+            .map(|(s, r)| Stored { epoch: r.epoch, seq: r.seq, path: s.path.clone(), offset: r.offset, len: r.len })
+            .collect()
     }
 
     pub fn is_empty(&self) -> bool {

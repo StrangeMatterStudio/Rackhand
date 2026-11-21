@@ -2,6 +2,8 @@
 
 pub mod buffer;
 pub mod collect;
+pub mod config;
 pub mod helper;
 pub mod link;
+pub mod run;
 pub mod runcmd;

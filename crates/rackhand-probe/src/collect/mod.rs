@@ -88,6 +88,8 @@ pub struct Event {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Snapshot {
     pub at_ms: i64,
+    /// A monotonic clock reading, for the interval rates are computed over.
+    pub mono_ms: i64,
     cpu: Option<CpuTimes>,
     cores: Vec<CpuTimes>,
     disks: BTreeMap<String, DiskCounters>,
@@ -138,7 +140,20 @@ fn per_second(delta: u64, dt_s: f64) -> f64 {
     if dt_s > 0.0 { delta as f64 / dt_s } else { 0.0 }
 }
 
+/// When a collection is taken: the wall clock (`sampled_at_ms`) and a monotonic clock (the interval for rates).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stamp {
+    pub wall_ms: i64,
+    pub mono_ms: i64,
+}
+
+/// A collection at `now_ms`, with the wall clock standing in for the monotonic one.
 pub fn collect(host: &dyn Host, prev: Option<&Snapshot>, now_ms: i64, cfg: &Config, self_use: SelfUse) -> Collection {
+    collect_at(host, prev, Stamp { wall_ms: now_ms, mono_ms: now_ms }, cfg, self_use)
+}
+
+pub fn collect_at(host: &dyn Host, prev: Option<&Snapshot>, at: Stamp, cfg: &Config, self_use: SelfUse) -> Collection {
+    let now_ms = at.wall_ms;
     let mut out = Out { series: Vec::new() };
     let mut events = Vec::new();
     let (cpu, cores) = host.read("proc/stat").map(|t| procfs::stat(&t)).unwrap_or_default();
@@ -158,7 +173,7 @@ pub fn collect(host: &dyn Host, prev: Option<&Snapshot>, now_ms: i64, cfg: &Conf
         .into_iter()
         .filter(|(i, _)| !matches(i, &iface_excludes))
         .collect();
-    let snapshot = Snapshot { at_ms: now_ms, cpu, cores: cores.clone(), disks, nets };
+    let snapshot = Snapshot { at_ms: now_ms, mono_ms: at.mono_ms, cpu, cores: cores.clone(), disks, nets };
     let ncores = cores.len().max(1) as f64;
 
     // CPU, from the change since the last snapshot.
@@ -188,7 +203,7 @@ pub fn collect(host: &dyn Host, prev: Option<&Snapshot>, now_ms: i64, cfg: &Conf
     memory(host, &mut out);
     disk_space(host, cfg, &mut out);
     // Disk I/O and network, as rates.
-    let dt_s = prev.map(|p| (now_ms - p.at_ms) as f64 / 1000.0).unwrap_or(0.0);
+    let dt_s = prev.map(|p| (at.mono_ms - p.mono_ms) as f64 / 1000.0).unwrap_or(0.0);
     if let Some(p) = prev.filter(|_| dt_s > 0.0) {
         for (dev, c) in &snapshot.disks {
             let Some(o) = p.disks.get(dev) else { continue };

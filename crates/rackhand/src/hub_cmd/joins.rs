@@ -123,6 +123,11 @@ pub fn spawn_events(
     });
 }
 
+/// The probe settings a hub hands out until they are edited (7.8.1): 15 s, 500 tuples, a 64 MB buffer.
+pub fn probe_defaults() -> ProbeConfig {
+    ProbeConfig { interval_s: 15, max_connection_tuples: 500, buffer_max_mb: 64, ..Default::default() }
+}
+
 /// This hub's own site, once first run has named it.
 fn local_site(db: &Db) -> Option<String> {
     db.readers()
@@ -176,12 +181,7 @@ impl LazyJoin {
             version: env!("CARGO_PKG_VERSION").into(),
             relays: Vec::new(),
             hub_addrs: (self.hub_addrs)(),
-            probe_config: ProbeConfig {
-                interval_s: 15,
-                max_connection_tuples: 500,
-                buffer_max_mb: 64,
-                ..Default::default()
-            },
+            probe_config: probe_defaults(),
         };
         let (server, mut joins) = JoinServer::new(self.registry.clone(), self.setup.clone(), info);
         let tx = self.joined.clone();

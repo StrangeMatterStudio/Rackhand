@@ -248,7 +248,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T39 | Dashboard pages for monitoring | T32, T36 | unit (HTTP) | done |
 | T40 | `/metrics` endpoint | T25, T36 | unit (HTTP) | done |
 | T41 | Hub composition and `rackhand hub` commands | T24 to T40, T32b | integration | done |
-| T42 | Probe daemon | T22 to T26, T41 | integration | todo |
+| T42 | Probe daemon | T22 to T26, T41 | integration | in progress (T42a done) |
 | T43 | Helper basics and package-list refresh | T42 | integration (containers) | todo |
 | T44 | Linux and Alpine installer and enrollment | T35, T43 | integration (containers) | todo |
 | T45 | Hub self-watch, integrity and backups | T41 | unit + integration | todo |
@@ -2014,6 +2014,9 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-20 | cargo nextest run -p rackhand-probe -E 'test(run::) \| test(collect::)'; cargo nextest run -p rackhand-hub --test probe_daemon | T42a, the daemon (`rackhand-probe run`, `run.rs`, `config.rs`): `collect::rate_interval_is_monotonic` failed first (a wall-clock step back lost `net.rx_bps`: `left: None`), now rates use a monotonic stamp. `run::backoff_from_1s_to_60s_with_jitter` (1, 2, 4 ... 60, 60 s; full jitter takes a quarter off), `run::disconnected_reports_are_buffered`, and against the hub's probe server `probe::revoked_daemon_exits_3`, `probe::unsupported_version_retries_hourly` (an hourly wait while collection fills the buffer, then again after the next `0x12`), `probe::new_epoch_defines_every_label_set_again`, and `probe::live_reports_flow_while_replay_is_held_back` (the hub reads stream 2 at 1 B/s with a 6 MB backlog; live reports still arrive): 11 and 4 passed. Each seen failing with its behaviour removed (no doubling, nothing buffered while away, no exit on `0x13`, nothing buffered during the hour, the Hello's label ids kept after a new epoch, replay inline before live: 1 failed each). The first version of the held-replay test passed with replay inline because its backlog compressed under the 1.25 MB stream window; it now uses values that don't compress (D54) |
+  | 2026-11-20 | cargo nextest run -p rackhand -E 'test(hub_cmd::)' | `hub_cmd::probe_welcome_has_design_defaults`: the probe server's Welcome now carries the default probe settings (15 s, 500 tuples, 64 MB) rather than an empty config; passed |
+  | 2026-11-20 | cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0; fast 356 passed; no violations |
 
 ### T43: Helper basics and package-list refresh
 - **Design refs:** 7.3.3 (socket, ownership table, version skew, package lists), FR-2 (pending updates), D24, D79, D91
@@ -2033,6 +2036,10 @@ Only additions to that list are written out below.
   | `it::helper::socket_refuses_other_users` | a user other than the probe user is rejected by `SO_PEERCRED` | 7.3.3 |
   | `it::helper::layout_matches_ownership_table` | every path in the 7.3.3 table has its owner and mode | D91 |
   | `it::helper::refresh_runs_fixed_commands_at_low_priority` | the fake package manager records `nice 19`, `ionice -c3` and only the fixed commands | D79 |
+  Carried in from T42 (containers come from the helper):
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `it::probe_hub::containers_listed_within_30s` (carried in from T42) | the AC1 container: its two Docker containers are listed on the machine page within 30 s, from the helper's container data | AC1, 7.3.3 |
 - **Fails first:** compile errors; the container tests fail (no helper).
 - **Verification:**
   ```bash
@@ -2207,6 +2214,10 @@ Only additions to that list are written out below.
   | --- | --- | --- |
   | `incidents::check_failing_2_and_4_runs` (carried in from T32b) | a check failing 2 runs in a row warns and 4 is critical, through `Incidents::condition`; 2 good runs resolve it | 7.6.1 |
   | `incidents::cert_expiry_warns_at_14_days` (carried in from T32b) | a TLS check's certificate with 14 days left warns, 3 days critical | 7.6.2 |
+  Carried in from T42 (`probe_check` has no fields in the runbook model and no message in `rackhand/probe/1`; owner to define):
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `it::executor::probe_check_step_runs_check_on_probe` (carried in from T42) | a `probe_check` step asks the probe to run the check and fails when it fails; until the message exists the step fails `probe_check_unavailable` | 7.8.7 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
@@ -4634,6 +4645,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D51 | 2026-11-20 | T40 | `web/metrics.rs`; counters in Ingest, Actions, Notify, Peers and Assist; a Prometheus text parser in the test | `/metrics` is answered before the session gate (it has its own bearer token); the only in-memory counter is Ingest's reports; jobs running, notifier failures, staging rows, the database size and peer and operator state are read from their tables, so Actions, Notify, Peers and Assist need no counters; the latest values come from the recent window; the Prometheus check is a strict line grammar in the test rather than a new dependency | Fewer moving parts | plan | - |
 | D52 | 2026-11-20 | T41 | One step; the two `hub_start` tests in the integration tier (systemd containers) | Done in parts, each committed: T41a (`hub init`, `hub run` as the composition root, `hub detect replay`, the unit file), then the carried-in wiring; the `hub_start` checks run in the live tier on the lab's Debian 12 hub (`m1::`, L2) because systemd in Docker can't hand a service's user its credential, and were run by hand there now; `hub_cmd` tests and the carried-in tests were written with their code and seen failing with the behaviour removed; `config/notifiers.toml`'s format (`[[discord]]`, `[[smtp]]`, `secret:` references) and a `probe_ranges` table (the committed seq ranges outliving staging) fill design gaps, owner to confirm | Size of the step; the container can't host the check | plan | - |
 | D53 | 2026-11-20 | T41 | The `ManagedSetupSource` from T51 and T53 (D21) | Composed in `hub_cmd::joins`: the automation and assistant public keys from the Vault, the wrapper's one sudoers line, and the command list of the current runbooks plus the diagnostics, signed with the node key, valid 1 hour, versioned by the signing time. The join server is built at the first join after first run names the hub's site (before that no token exists; the connection closes as from an unknown peer). A join tells the machine the QUIC endpoint's direct addresses (its interfaces, or the one address it is bound to) other than loopback and link-local, then each certificate name that is an IP address, on the QUIC port, read when the join server is built; the probe settings are the design defaults (15 s, 500 tuples, 64 MB). The 1-hour validity and the address rule fill design gaps, owner to confirm | Nothing else provided the managed setup; the site is only known after first run | plan | - |
+| D54 | 2026-11-20 | T42 | One step; `vitals_visible_within_30s` lists containers; `probe_check` in T42 | Done in parts, each committed: T42a (the daemon, with unit tests and the carried-in `probe::` tests in `crates/rackhand-hub/tests/probe_daemon.rs` against the real probe server), T42b (the integration tests and the unit file), T42c (`wait_report`). Containers come from the helper (T43), so T42 asserts metrics and services and T43 carries the container check. `probe_check` has no fields and no wire message, so its test moves to T46 with the checks, owner to define. `probe.toml` gains `hub.addrs`, `hub.relays` and a `[machine]` section (`id`, `access`, `mode`), read through one module by the wrapper and the daemon; `probe.state` is JSON (`state` connecting, connected, disconnected or stopped; `version`, `at_ms`, `reason`, `retry_in_ms`, `epoch`, `buffered`) replaced whole on each change. The probe runs on a single-thread runtime (its footprint budget). Design gaps, owner to confirm | Size of the step; the helper and the check message don't exist yet | plan | - |
 
 ## Follow-ups (out of scope)
 

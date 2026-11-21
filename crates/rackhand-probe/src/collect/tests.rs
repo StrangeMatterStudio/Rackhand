@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use rackhand_proto::catalogue::{self, METRICS};
 use rackhand_proto::probe::ServiceStatus;
 
-use super::{Collection, Config, RootHost, SelfUse, collect};
+use super::{Collection, Config, RootHost, SelfUse, Stamp, collect, collect_at};
 
 fn fixture(case: &str, snap: &str) -> RootHost {
     RootHost::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/proc").join(case).join(snap))
@@ -202,4 +202,18 @@ fn failed_units_and_watched_services_reported() {
     let c = two("rates", &Config::default());
     let names: Vec<&str> = c.services.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, ["nginx.service"]);
+}
+
+#[test]
+fn rate_interval_is_monotonic() {
+    // the wall clock steps back 50 s between the snapshots; 10 s pass on the monotonic clock
+    let cfg = Config::default();
+    let first =
+        collect_at(&fixture("rates", "a"), None, Stamp { wall_ms: 100_000, mono_ms: 0 }, &cfg, SelfUse::default());
+    let stepped = Stamp { wall_ms: 50_000, mono_ms: 10_000 };
+    let c = collect_at(&fixture("rates", "b"), Some(&first.snapshot), stepped, &cfg, SelfUse::default());
+    let wall = two("rates", &cfg);
+    assert_eq!(value(&c, "net.rx_bps", Some("eth0")), value(&wall, "net.rx_bps", Some("eth0")), "rates over 10 s");
+    assert!(value(&c, "net.rx_bps", Some("eth0")).is_some_and(|v| v > 0.0));
+    assert_eq!(c.snapshot.at_ms, 50_000, "samples keep the wall clock");
 }

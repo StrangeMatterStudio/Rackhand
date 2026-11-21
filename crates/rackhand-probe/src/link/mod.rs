@@ -8,14 +8,14 @@ use iroh::{Endpoint, EndpointAddr, EndpointId};
 use prost::Message;
 use rackhand_net::frames;
 use rackhand_proto::close::CloseCode;
-use rackhand_proto::common::{IfaceInfo, LabelEntry, OsInfo, SemVer};
+use rackhand_proto::common::{IfaceInfo, LabelEntry, OsInfo, ProbeConfig, SemVer};
 use rackhand_proto::probe::{
     DataDropped, Hello, HubToProbe, ProbeToHub, ReplayBatch, Report, Welcome, hub_to_probe, probe_to_hub,
 };
 use tokio::sync::mpsc;
 
 use crate::buffer::epoch::{EpochState, Received};
-use crate::buffer::segments::Buffer;
+use crate::buffer::segments::{Buffer, Stored};
 
 /// A replay batch holds at most 100 reports or 4 MB (7.3.2).
 const BATCH_REPORTS: usize = 100;
@@ -222,34 +222,28 @@ impl Link {
         s.send_report(&report).await
     }
 
-    /// Sends the backlog (buffered reports sampled before this connection's Hello) on stream 2, in batches; returns
-    /// how many reports went out.
+    /// The backlog: buffered reports sampled before this connection's Hello, which go out on stream 2.
+    pub fn backlog(&self, s: &Session) -> Vec<Stored> {
+        self.buffer.stored_before(s.hello_at_ms)
+    }
+
+    /// Sends the backlog on stream 2, in batches; returns how many reports went out.
     pub async fn replay(&mut self, s: &mut Session) -> Result<usize, Stop> {
-        let keys: Vec<(u64, u64)> =
-            self.buffer.pending().filter(|r| r.sampled_at_ms < s.hello_at_ms).map(|r| (r.epoch, r.seq)).collect();
-        if keys.is_empty() {
-            return Ok(0);
-        }
-        let Ok(mut stream) = s.conn.open_uni().await else { return Err(stop_of(&s.conn).await) };
-        if stream.write_all(&[rackhand_proto::streams::REPLAY]).await.is_err() {
-            return Err(stop_of(&s.conn).await);
-        }
-        let mut batch = ReplayBatch::default();
-        let mut size = 0;
-        for (epoch, seq) in &keys {
-            let payload = self.buffer.read(*epoch, *seq).map_err(|e| Stop::Buffer(e.to_string()))?;
-            let report = Report::decode(payload.as_slice()).map_err(|e| Stop::Buffer(e.to_string()))?;
-            if !batch.reports.is_empty() && (batch.reports.len() == BATCH_REPORTS || size + payload.len() > BATCH_BYTES)
-            {
-                s.send_batch(&mut stream, &std::mem::take(&mut batch)).await?;
-                size = 0;
+        replay(s.conn.clone(), self.backlog(s)).await
+    }
+
+    /// Acts on one message from the hub: an `Ack` deletes the buffered reports it covers; a `ConfigUpdate` is returned.
+    pub fn on_message(&mut self, msg: HubToProbe) -> Result<Option<ProbeConfig>, Stop> {
+        match msg.msg {
+            Some(hub_to_probe::Msg::Ack(ack)) => {
+                let ranges: Vec<(u64, u64)> = ack.ranges.iter().map(|r| (r.from, r.to)).collect();
+                self.buffer.ack(ack.epoch, &ranges).map_err(|e| Stop::Buffer(e.to_string()))?;
+                self.last_ack = Some((ack.epoch, ranges));
+                Ok(None)
             }
-            size += payload.len();
-            batch.reports.push(report);
+            Some(hub_to_probe::Msg::ConfigUpdate(u)) => Ok(u.config),
+            _ => Ok(None),
         }
-        s.send_batch(&mut stream, &batch).await?;
-        let _ = stream.finish();
-        Ok(keys.len())
     }
 
     /// Reads acks (deleting the buffered reports they cover) until `done` holds for the buffer, the connection ends,
@@ -270,13 +264,47 @@ impl Link {
                 Ok(None) => return Err(stop_of(&s.conn).await),
                 Ok(Some(m)) => m,
             };
-            if let Some(hub_to_probe::Msg::Ack(ack)) = msg.msg {
-                let ranges: Vec<(u64, u64)> = ack.ranges.iter().map(|r| (r.from, r.to)).collect();
-                self.buffer.ack(ack.epoch, &ranges).map_err(|e| Stop::Buffer(e.to_string()))?;
-                self.last_ack = Some((ack.epoch, ranges));
-            }
+            self.on_message(msg)?;
         }
     }
+}
+
+/// Sends `stored` on a new stream 2 of `conn`, in batches of at most 100 reports or 4 MB. Runs beside live sends: a
+/// report acked or dropped since the list was made is skipped.
+pub async fn replay(conn: Connection, stored: Vec<Stored>) -> Result<usize, Stop> {
+    if stored.is_empty() {
+        return Ok(0);
+    }
+    let Ok(mut stream) = conn.open_uni().await else { return Err(stop_of(&conn).await) };
+    if stream.write_all(&[rackhand_proto::streams::REPLAY]).await.is_err() {
+        return Err(stop_of(&conn).await);
+    }
+    let mut batch = ReplayBatch::default();
+    let (mut size, mut sent) = (0, 0);
+    for item in &stored {
+        let Ok(payload) = item.read() else { continue };
+        let report = Report::decode(payload.as_slice()).map_err(|e| Stop::Buffer(e.to_string()))?;
+        if !batch.reports.is_empty() && (batch.reports.len() == BATCH_REPORTS || size + payload.len() > BATCH_BYTES) {
+            send_batch(&conn, &mut stream, &std::mem::take(&mut batch)).await?;
+            size = 0;
+        }
+        size += payload.len();
+        sent += 1;
+        batch.reports.push(report);
+    }
+    if !batch.reports.is_empty() {
+        send_batch(&conn, &mut stream, &batch).await?;
+    }
+    let _ = stream.finish();
+    Ok(sent)
+}
+
+async fn send_batch(conn: &Connection, stream: &mut SendStream, batch: &ReplayBatch) -> Result<(), Stop> {
+    let body = rackhand_proto::zstd::compress(&batch.encode_to_vec()).map_err(|e| Stop::Buffer(e.to_string()))?;
+    if frames::write(stream, &body).await.is_err() {
+        return Err(stop_of(conn).await);
+    }
+    Ok(())
 }
 
 impl Session {
@@ -294,12 +322,22 @@ impl Session {
         Ok(())
     }
 
-    async fn send_batch(&mut self, stream: &mut SendStream, batch: &ReplayBatch) -> Result<(), Stop> {
-        let body = rackhand_proto::zstd::compress(&batch.encode_to_vec()).map_err(|e| Stop::Buffer(e.to_string()))?;
-        if frames::write(stream, &body).await.is_err() {
-            return Err(stop_of(&self.conn).await);
+    /// The next message from the hub; the connection's end gives its reason.
+    pub async fn next_message(&mut self) -> Result<HubToProbe, Stop> {
+        match self.incoming.recv().await {
+            Some(m) => Ok(m),
+            None => Err(stop_of(&self.conn).await),
         }
-        Ok(())
+    }
+
+    /// The connection, for a replay running beside this session.
+    pub fn connection(&self) -> Connection {
+        self.conn.clone()
+    }
+
+    /// Closes the connection (the probe is stopping).
+    pub fn close(&self) {
+        self.conn.close(0u32.into(), b"stopping");
     }
 
     /// Tells the hub that buffered reports were deleted unsent (buffer full).

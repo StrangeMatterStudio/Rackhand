@@ -7,7 +7,6 @@ use ed25519_dalek::VerifyingKey;
 use prost::Message;
 use rackhand_proto::common::SignedPayload;
 use rackhand_proto::signed::{self, SignedError};
-use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum InstallError {
@@ -27,30 +26,10 @@ pub enum InstallError {
     Write(String),
 }
 
-#[derive(Deserialize)]
-struct ProbeToml {
-    hub: HubSection,
-}
-
-#[derive(Deserialize)]
-struct HubSection {
-    /// The hub's node key (its endpoint id), 64 hex characters.
-    id: String,
-}
-
 /// The hub key pinned in `probe.toml`.
 pub fn pinned_hub_key(path: &Path) -> Result<VerifyingKey, InstallError> {
-    let text = std::fs::read_to_string(path).map_err(|e| InstallError::Config(e.to_string()))?;
-    let cfg: ProbeToml = toml::from_str(&text).map_err(|e| InstallError::Config(e.to_string()))?;
-    let id = cfg.hub.id.trim();
-    if id.len() != 64 {
-        return Err(InstallError::Config("hub.id isn't 64 hex characters".into()));
-    }
-    let mut bytes = [0u8; 32];
-    for (i, b) in bytes.iter_mut().enumerate() {
-        *b = u8::from_str_radix(&id[2 * i..2 * i + 2], 16)
-            .map_err(|_| InstallError::Config("hub.id isn't hex".into()))?;
-    }
+    let cfg = crate::config::ProbeToml::load(path).map_err(|e| InstallError::Config(e.to_string()))?;
+    let bytes = cfg.hub_key().map_err(|e| InstallError::Config(e.to_string()))?;
     VerifyingKey::from_bytes(&bytes).map_err(|_| InstallError::Config("hub.id isn't a key".into()))
 }
 

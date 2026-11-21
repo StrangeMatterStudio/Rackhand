@@ -256,3 +256,9 @@ fn hub_addrs_from_endpoint_and_names() {
         "a specific bind once"
     );
 }
+
+#[test]
+fn probe_welcome_has_design_defaults() {
+    let config = probe_server_settings().config;
+    assert_eq!((config.interval_s, config.max_connection_tuples, config.buffer_max_mb), (15, 500, 64));
+}

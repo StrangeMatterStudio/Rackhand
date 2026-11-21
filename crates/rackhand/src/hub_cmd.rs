@@ -249,7 +249,7 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let addrs = Arc::new(move || hub_addrs(&quic, &ep.addr().ip_addrs().copied().collect::<Vec<_>>()));
     let join = joins::LazyJoin::new(db.clone(), registry.clone(), setup, addrs, joined_tx);
     let probe_server =
-        ProbeServer::new(ingest.clone(), Arc::new(MachinesDirectory(db.clone())), ServerSettings::default());
+        ProbeServer::new(ingest.clone(), Arc::new(MachinesDirectory(db.clone())), probe_server_settings());
     let observations = Arc::new(crate::observations::FromIngest(ingest.clone()));
     let mcp = rackhand_hub::mcp::Mcp::new(db.clone(), audit.clone(), observations)
         .with_actions(actions)
@@ -274,6 +274,11 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     ingest.compact().await.map_err(|e| e.to_string())?;
     endpoint.close().await;
     Ok(())
+}
+
+/// What the probe server's Welcome tells probes: the default probe settings (7.8.1).
+pub fn probe_server_settings() -> ServerSettings {
+    ServerSettings { config: joins::probe_defaults(), ..ServerSettings::default() }
 }
 
 /// The public half of one of the hub's SSH identities, as an `authorized_keys` key (made the first time).

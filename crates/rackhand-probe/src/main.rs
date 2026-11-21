@@ -3,10 +3,11 @@
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rackhand_probe::collect::{self, Config, RootHost, SelfUse};
+use rackhand_probe::collect::{self, Config, RootHost, SelfUse, Stamp};
 
-const USAGE: &str =
-    "usage: rackhand-probe --version\n       rackhand-probe collect --once --json [--root <dir>] [--interval-ms <n>]";
+const USAGE: &str = "usage: rackhand-probe --version
+       rackhand-probe collect --once --json [--root <dir>] [--interval-ms <n>]
+       rackhand-probe run [--config <probe.toml>] [--data-dir <dir>] [--state-file <path>] [--root <dir>]";
 
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
@@ -26,6 +27,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("collect") => collect_once(&args[1..]),
+        Some("run") => run(&args[1..]),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -54,11 +56,13 @@ fn collect_once(args: &[String]) -> ExitCode {
     }
     let host = root.map_or_else(RootHost::system, RootHost::new);
     let cfg = Config::default();
-    let first = collect::collect(&host, None, now_ms(), &cfg, SelfUse::default());
+    let start = std::time::Instant::now();
+    let first = collect::collect_at(&host, None, Stamp { wall_ms: now_ms(), mono_ms: 0 }, &cfg, SelfUse::default());
     std::thread::sleep(Duration::from_millis(interval_ms));
     let now = now_ms();
     let self_use = SelfUse { rss_bytes: collect::own_rss_bytes(), ..SelfUse::default() };
-    let second = collect::collect(&host, Some(&first.snapshot), now, &cfg, self_use);
+    let at = Stamp { wall_ms: now, mono_ms: start.elapsed().as_millis() as i64 };
+    let second = collect::collect_at(&host, Some(&first.snapshot), at, &cfg, self_use);
     println!("{}", collect::to_json(&second, now));
     ExitCode::SUCCESS
 }
@@ -66,4 +70,34 @@ fn collect_once(args: &[String]) -> ExitCode {
 fn usage() -> ExitCode {
     eprintln!("{USAGE}");
     ExitCode::from(2)
+}
+
+/// `run`: the probe daemon (7.3.2). Exits 3 when the hub revokes this machine.
+fn run(args: &[String]) -> ExitCode {
+    let mut paths = rackhand_probe::run::Paths::default();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let Some(v) = it.next() else { return usage() };
+        match a.as_str() {
+            "--config" => paths.config = v.into(),
+            "--data-dir" => paths.data_dir = v.into(),
+            "--state-file" => paths.state_file = v.into(),
+            "--root" => paths.root = Some(v.into()),
+            _ => return usage(),
+        }
+    }
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("rackhand-probe: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    match runtime.block_on(rackhand_probe::run::main(paths)) {
+        Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
+        Err(e) => {
+            eprintln!("rackhand-probe: {e}");
+            ExitCode::from(1)
+        }
+    }
 }
