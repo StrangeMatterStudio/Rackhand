@@ -127,3 +127,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-21 | T49f done: the hub serves its release files and the offline variant installs from them (D83). Found: `ci win` fails (mingw link in `iroh-relay`, Unix-only modes in `rackhand-net`), left for T89, which owns that tier |
 | 2026-11-21 | T49g part 1: the machine's address at join and the hub's SSH test after a managed machine's report, with unit and wiring tests; the Add page list and the integration test follow |
 | 2026-11-21 | T49g done: the machine's address at join, the hub's SSH test after a managed machine's report, and the Add page's recently added machines (D84, owner to confirm the enroll-at-join lifecycle) |
+| 2026-11-21 | T49h done, and with it T49: Proxmox, TrueNAS, Redfish and SNMP simulators added through the Add page's forms report their readings and are silent (warning) after 2 failed polls |
