@@ -137,3 +137,150 @@ async fn two_failures_warn_four_critical() {
 }
 
 const MIN_MS: i64 = 60_000;
+
+mod agentless {
+    use super::*;
+    use rackhand_drivers::TrueNas;
+    use rackhand_drivers::truenas::sim::{Api, Sim};
+    use rackhand_store::{RegistryChange, RowUpdate, RowWrite};
+
+    use crate::vault::master_key::MasterKey;
+    use crate::vault::{Secret, Vault};
+
+    const KEY: &str = "1-invented-api-key";
+    const NAS: &str = "01JD00000000000000000000NS";
+
+    fn t(s: &str) -> Value {
+        Value::Text(s.into())
+    }
+
+    async fn appliance(db: &Arc<Db>, address: &str) {
+        let rows = vec![
+            RowWrite::insert("sites", Row::from([("id", t("s1")), ("name", t("home")), ("timezone", t("UTC"))])),
+            RowWrite::insert(
+                "machines",
+                Row::from([
+                    ("id", t(NAS)),
+                    ("site_id", t("s1")),
+                    ("name", t("nas1")),
+                    ("kind", t("appliance")),
+                    ("state", t("enrolled")),
+                    ("driver", t("truenas")),
+                    ("address", t(address)),
+                    ("driver_settings", t(&format!("{{\"api_key\":\"secret:driver.{NAS}\"}}"))),
+                ]),
+            ),
+        ];
+        db.writer().send(WriteCmd::Batch(rows)).await.unwrap();
+    }
+
+    async fn credentials(vault: &Vault, key: &str, fingerprint: &str) {
+        let v = serde_json::json!({ "api_key": key, "fingerprint": fingerprint });
+        vault.put(&format!("driver.{NAS}"), &Secret::new(v.to_string().into_bytes())).await.unwrap();
+    }
+
+    fn setup(db: &Arc<Db>) -> (Env, Arc<Vault>) {
+        let ingest = Ingest::new(db.clone(), Bus::new(), Arc::new(Roomy));
+        let vault = Arc::new(Vault::new(MasterKey::from_bytes([5u8; 32]), db.clone()));
+        let mut env = Env::start(db.clone(), ingest);
+        env.checks =
+            Checks::new(db.clone(), env.ingest.clone()).with_agentless(vault.clone(), vec![Arc::new(TrueNas::new())]);
+        (env, vault)
+    }
+
+    fn results(db: &Db) -> Vec<bool> {
+        db.readers()
+            .with(|c| {
+                let mut s = c.prepare("SELECT ok FROM check_results WHERE check_id = ?1 ORDER BY at_ms")?;
+                s.query_map([format!("driver:{NAS}")], |r| r.get::<_, i64>(0).map(|v| v != 0))?.collect()
+            })
+            .unwrap()
+    }
+
+    fn incident(db: &Db, kind: &str) -> Option<(String, String)> {
+        db.readers()
+            .with(|c| {
+                use rusqlite::OptionalExtension;
+                c.query_row(
+                    "SELECT state, severity FROM incidents WHERE kind = ?1 AND machine_id = ?2",
+                    [kind, NAS],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+            })
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn polled_every_60s_with_its_vault_settings_and_kept_across_config_syncs() {
+        let db = db("agentless-poll");
+        let sim = Sim::start(Api::WebSocket).await;
+        appliance(&db, &sim.url).await;
+        let (env, vault) = setup(&db);
+        credentials(&vault, KEY, &sim.fingerprint).await;
+        env.checks.refresh().await.unwrap();
+        assert_eq!(env.checks.run_due(T0).await.unwrap(), 1);
+        assert_eq!(env.checks.run_due(T0 + 30_000).await.unwrap(), 0, "not due for 60 s");
+        assert_eq!(results(&db), vec![true]);
+        assert!(sim.authorized(), "with the key from the Vault");
+        // its 7.4.2 readings are series of the machine
+        let pool = env.ingest.tier_series(
+            NAS,
+            "truenas.pool.used_pct",
+            "{\"pool\":\"tank1\"}",
+            rackhand_store::series::chunk::Tier::Raw,
+            T0 - 1,
+            T0 + 1,
+        );
+        assert_eq!(pool.unwrap().len(), 1, "the pool's use as a series of nas1");
+        // config/checks changes don't touch it, run or row
+        env.checks.sync("").await.unwrap();
+        assert_eq!(env.checks.run_due(T0 + 60_000).await.unwrap(), 1);
+        let interval = |db: &Db| -> i64 {
+            db.readers()
+                .with(|c| {
+                    c.query_row("SELECT interval_s FROM checks WHERE id = ?1", [format!("driver:{NAS}")], |r| r.get(0))
+                })
+                .unwrap()
+        };
+        assert_eq!(interval(&db), 60, "not retired by a config/checks sync");
+        // revoked, it stops
+        let revoke = RowUpdate { table: "machines", key: ("id", t(NAS)), set: Row::from([("state", t("revoked"))]) };
+        let change = RegistryChange { consume: None, writes: vec![], updates: vec![revoke] };
+        db.writer().send(WriteCmd::RegistryChange(change)).await.unwrap();
+        env.checks.refresh().await.unwrap();
+        assert_eq!(env.checks.run_due(T0 + 120_000).await.unwrap(), 0);
+        assert_eq!(interval(&db), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn silent_after_2_failed_polls_critical_after_5() {
+        let db = db("agentless-silent");
+        let sim = Sim::start(Api::WebSocket).await;
+        appliance(&db, &sim.url).await;
+        let (env, vault) = setup(&db);
+        credentials(&vault, "1-revoked-key", &sim.fingerprint).await;
+        env.incidents.set_started(T0 - 10 * MIN_MS);
+        env.checks.refresh().await.unwrap();
+        env.run(T0).await;
+        assert_eq!(incident(&db, "machine.silent"), None, "one failed poll");
+        env.run(T0 + MIN_MS).await;
+        assert_eq!(incident(&db, "machine.silent"), Some(("open".into(), "warning".into())), "2 in a row");
+        for i in 2..5 {
+            env.run(T0 + i * MIN_MS).await;
+        }
+        assert_eq!(incident(&db, "machine.silent"), Some(("open".into(), "critical".into())), "5 in a row");
+        assert_eq!(incident(&db, "check.failing"), None, "one incident for it, not a check's too");
+        // the hub restarts: in its first 3 minutes the open incident stays
+        let (env, vault) = setup(&db);
+        env.incidents.set_started(T0 + 5 * MIN_MS);
+        env.checks.refresh().await.unwrap();
+        env.incidents.evaluate(T0 + 5 * MIN_MS + 1_000).await.unwrap();
+        assert_eq!(incident(&db, "machine.silent").map(|i| i.0), Some("open".into()));
+        // the key is put right: the next poll answers and resolves it
+        credentials(&vault, KEY, &sim.fingerprint).await;
+        env.run(T0 + 9 * MIN_MS).await;
+        assert_eq!(results(&db).last(), Some(&true));
+        assert_eq!(incident(&db, "machine.silent").map(|i| i.0), Some("resolved".into()));
+    }
+}

@@ -1,5 +1,9 @@
 //! Machine silence (7.6.3): an enrolled probe machine that hasn't reported for 60 s (at least 4 intervals) is silent;
 //! the first report resolves it. A machine whose policy expects it offline gets one info event instead (E38).
+//!
+//! An agentless machine (a driver and no probe) is silent after 2 failed polls in a row and critical after 5, counted
+//! from the stored poll results, so a restart doesn't start the count again; its next good poll resolves it. A
+//! machine with both, such as a Proxmox host whose API was added, is silent by its probe's reports.
 
 use rackhand_detect::rules::Severity;
 use rackhand_detect::silence::{Context, Subject, silence};
@@ -18,7 +22,8 @@ impl Incidents {
         let machines: Vec<(String, bool, Option<i64>)> = self.inner.db.readers().with(|c| {
             let mut s = c.prepare(
                 "SELECT m.id, coalesce(p.expected_offline, 0) != 0, m.enrolled_at FROM machines m
-                 LEFT JOIN policies p ON p.id = m.policy_id WHERE m.state = 'enrolled' AND m.driver IS NULL",
+                 LEFT JOIN policies p ON p.id = m.policy_id
+                 WHERE m.state = 'enrolled' AND (m.driver IS NULL OR m.probe_endpoint_id IS NOT NULL)",
             )?;
             s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect()
         })?;
@@ -55,6 +60,32 @@ impl Incidents {
             let severity = severity.filter(|s| *s != Severity::Info);
             let key = CondKey::new(&machine, "machine.silent", "{}");
             self.condition(key, severity, 1, "No report from the machine", now_ms).await?;
+        }
+        self.evaluate_agentless_silence(&ctx).await
+    }
+
+    async fn evaluate_agentless_silence(&self, ctx: &Context) -> Result<(), IncidentsError> {
+        // in the start grace the rule says nothing, which isn't the appliance answering again: an open incident stays
+        if ctx.now_ms - ctx.hub_started_ms < rackhand_detect::silence::HUB_START_GRACE_MS {
+            return Ok(());
+        }
+        let machines: Vec<String> = self.inner.db.readers().with(|c| {
+            let mut s = c.prepare(
+                "SELECT id FROM machines WHERE state = 'enrolled' AND driver IS NOT NULL AND probe_endpoint_id IS NULL",
+            )?;
+            s.query_map([], |r| r.get(0))?.collect()
+        })?;
+        for machine in machines {
+            let latest: Vec<bool> = self.inner.db.readers().with(|c| {
+                let mut s =
+                    c.prepare("SELECT ok FROM check_results WHERE check_id = ?1 ORDER BY at_ms DESC LIMIT 5")?;
+                s.query_map([crate::checks::agentless::check_id(&machine)], |r| r.get::<_, i64>(0).map(|v| v != 0))?
+                    .collect()
+            })?;
+            let failed_polls = latest.iter().take_while(|ok| !**ok).count() as u32;
+            let severity = silence(&Subject::Agentless { failed_polls }, ctx.now_ms, ctx);
+            let key = CondKey::new(&machine, "machine.silent", "{}");
+            self.condition(key, severity, 1, "No answer from the machine's API", ctx.now_ms).await?;
         }
         Ok(())
     }

@@ -5,6 +5,13 @@
 //!
 //! A check taken out of the file keeps its row, since its results refer to it, with `interval_s` 0: it no longer runs
 //! and its incidents resolve.
+//!
+//! Agentless machines (FR-10, 7.3.12) are polled the same way: every enrolled machine with a driver is a check
+//! `driver:<machine id>` of its driver's kind, every 60 s, with the settings of its Vault entry `driver.<machine id>`
+//! (read at each poll, so changed credentials apply at once). Their readings are series of the machine. Incidents
+//! counts their failed polls in a row as the machine's silence (7.6.3) when it has no probe.
+
+pub mod agentless;
 
 pub mod config;
 pub mod steps;
@@ -42,19 +49,28 @@ struct Scheduled {
     spec: config::CheckSpec,
     machine_id: Option<String>,
     next_ms: i64,
+    /// An agentless machine's poll: its driver is an API driver and its settings are in the Vault.
+    agentless: bool,
 }
 
 #[derive(Default)]
 struct State {
     checks: BTreeMap<String, Scheduled>,
+    /// The agentless machines' polls, by check id (`driver:<machine id>`).
+    agentless: BTreeMap<String, Scheduled>,
     /// The `config/checks` text last synced, so a new revision is picked up.
     synced: Option<String>,
 }
+
+/// The API drivers, by name.
+type ApiDrivers = BTreeMap<&'static str, Arc<dyn Driver>>;
 
 struct Inner {
     db: Arc<Db>,
     ingest: Ingest,
     drivers: BTreeMap<&'static str, Box<dyn Driver>>,
+    /// The Vault and the API drivers, for the agentless machines.
+    api: Option<(Arc<crate::vault::Vault>, ApiDrivers)>,
     state: Mutex<State>,
 }
 
@@ -76,7 +92,16 @@ fn text(s: &str) -> Value {
 impl Checks {
     pub fn new(db: Arc<Db>, ingest: Ingest) -> Checks {
         let drivers = DriverKind::ALL.into_iter().filter_map(|k| check_driver(k).map(|d| (k.name(), d))).collect();
-        Checks { inner: Arc::new(Inner { db, ingest, drivers, state: Mutex::new(State::default()) }) }
+        Checks { inner: Arc::new(Inner { db, ingest, drivers, api: None, state: Mutex::new(State::default()) }) }
+    }
+
+    /// Polls the agentless machines too, with these drivers and the credentials in `vault`. Called on a new
+    /// `Checks`, before it is cloned.
+    pub fn with_agentless(mut self, vault: Arc<crate::vault::Vault>, drivers: Vec<Arc<dyn Driver>>) -> Checks {
+        let drivers = drivers.into_iter().map(|d| (d.kind().name(), d)).collect();
+        let inner = Arc::get_mut(&mut self.inner).expect("with_agentless on a Checks not yet cloned");
+        inner.api = Some((vault, drivers));
+        self
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -118,14 +143,18 @@ impl Checks {
                 ("settings", text(&spec.settings_json().to_string())),
             ]);
             self.inner.db.writer().send(WriteCmd::PutCheck(row)).await?;
-            next.insert(spec.name.clone(), Scheduled { spec, machine_id, next_ms: kept.unwrap_or(i64::MIN) });
+            next.insert(
+                spec.name.clone(),
+                Scheduled { spec, machine_id, next_ms: kept.unwrap_or(i64::MIN), agentless: false },
+            );
         }
         type Stored = (String, String, String, Option<String>, String);
         let stored: Vec<Stored> = self.inner.db.readers().with(|c| {
             let mut s = c.prepare("SELECT id, kind, target, machine_id, settings FROM checks WHERE interval_s != 0")?;
             s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect()
         })?;
-        for (id, kind, target, machine_id, settings) in stored.into_iter().filter(|c| !next.contains_key(&c.0)) {
+        let retired = stored.into_iter().filter(|c| !next.contains_key(&c.0) && !c.0.starts_with(agentless::PREFIX));
+        for (id, kind, target, machine_id, settings) in retired {
             let row = Row::from([
                 ("id", text(&id)),
                 ("kind", text(&kind)),
@@ -151,16 +180,21 @@ impl Checks {
         if self.state().synced.as_deref() != Some(current.as_str()) {
             self.sync(&current).await?;
         }
+        if self.inner.api.is_some() {
+            self.sync_agentless().await?;
+        }
         Ok(())
     }
 
     /// Runs every check that is due at `now_ms`, all at once; returns how many ran.
     pub async fn run_due(&self, now_ms: i64) -> Result<usize, ChecksError> {
         let due: Vec<Scheduled> = {
-            let mut state = self.state();
+            let mut guard = self.state();
+            let state = &mut *guard;
             state
                 .checks
                 .values_mut()
+                .chain(state.agentless.values_mut())
                 .filter(|s| s.next_ms <= now_ms)
                 .map(|s| {
                     s.next_ms = now_ms + i64::from(s.spec.interval_s) * 1000;
@@ -190,7 +224,7 @@ impl Checks {
                 ("detail", text(&reading.detail)),
             ]));
             let label_set = serde_json::json!({ "check": s.spec.name }).to_string();
-            let series = reading
+            let mut series: Vec<SeriesPoints> = reading
                 .metrics
                 .iter()
                 .map(|(name, value)| SeriesPoints {
@@ -201,6 +235,14 @@ impl Checks {
                     late: vec![],
                 })
                 .collect();
+            // a driver's own readings (7.4.2), labelled as it labels them
+            series.extend(reading.points.iter().map(|p| SeriesPoints {
+                name: p.name.clone(),
+                unit: unit(&p.name).into(),
+                label_set: serde_json::to_string(&p.labels).unwrap_or_else(|_| "{}".into()),
+                points: vec![(now_ms, p.value)],
+                late: vec![],
+            }));
             self.inner.ingest.put_points(s.machine_id.as_deref().unwrap_or(HUB_MACHINE), series, now_ms).await?;
         }
         if !results.is_empty() {
@@ -210,6 +252,9 @@ impl Checks {
     }
 
     async fn run_one(&self, s: &Scheduled) -> DriverReading {
+        if s.agentless {
+            return self.poll_agentless(s).await;
+        }
         let Some(driver) = self.inner.drivers.get(s.spec.kind.as_str()) else {
             return DriverReading::down(format!("no driver for {}", s.spec.kind), vec![]);
         };

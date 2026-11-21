@@ -1,7 +1,8 @@
 //! Check incidents (7.6.1, 7.6.2): a check failing 2 runs in a row warns and 4 is critical, and 2 good runs in a row
 //! resolve it; a TLS check's certificate with 14 days left warns and 3 is critical. Both come from what is stored (the
 //! latest results, the latest `check.cert_days` point), so a restart doesn't start a count again, and an evaluation
-//! between two runs changes nothing. A check that belongs to no machine has its incidents without one.
+//! between two runs changes nothing. A check that belongs to no machine has its incidents without one. An agentless
+//! machine's poll with no probe on the machine is its silence instead (machine silence), so it is no check failing.
 
 use rackhand_detect::counted::check_failing;
 use rackhand_detect::forecast::cert_expiry;
@@ -19,18 +20,30 @@ struct Check {
     kind: String,
     interval_s: i64,
     machine: Option<String>,
+    /// An agentless machine's poll, the machine having no probe: its failures are the machine's silence.
+    silence_instead: bool,
 }
 
 impl Incidents {
     pub(crate) async fn evaluate_checks(&self, now_ms: i64) -> Result<(), IncidentsError> {
         let checks: Vec<Check> = self.inner.db.readers().with(|c| {
-            let mut s = c.prepare("SELECT id, kind, interval_s, machine_id FROM checks ORDER BY id")?;
+            let mut s = c.prepare(
+                "SELECT c.id, c.kind, c.interval_s, c.machine_id,
+                        c.id LIKE 'driver:%' AND m.id IS NOT NULL AND m.probe_endpoint_id IS NULL
+                 FROM checks c LEFT JOIN machines m ON m.id = c.machine_id ORDER BY c.id",
+            )?;
             s.query_map([], |r| {
-                Ok(Check { id: r.get(0)?, kind: r.get(1)?, interval_s: r.get(2)?, machine: r.get(3)? })
+                Ok(Check {
+                    id: r.get(0)?,
+                    kind: r.get(1)?,
+                    interval_s: r.get(2)?,
+                    machine: r.get(3)?,
+                    silence_instead: r.get(4)?,
+                })
             })?
             .collect()
         })?;
-        for check in checks {
+        for check in checks.into_iter().filter(|c| !c.silence_instead) {
             let labels = serde_json::json!({ "check": check.id }).to_string();
             let machine = check.machine.clone().unwrap_or_default();
             let failing = CondKey::new(&machine, "check.failing", &labels);

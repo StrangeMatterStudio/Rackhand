@@ -505,6 +505,26 @@ async fn silent_machine_warns_after_60s_and_clears_on_report() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn probe_machine_with_an_api_still_silent_by_report() {
+    // a Proxmox host runs a probe and has its API attached (7.3.12): its silence is still the probe's
+    let mut env = Env::new("silent-with-api").await;
+    let set = rackhand_store::Row::from([
+        ("driver", rusqlite::types::Value::Text("proxmox".into())),
+        ("probe_endpoint_id", rusqlite::types::Value::Text("e".repeat(64))),
+    ]);
+    let update =
+        rackhand_store::RowUpdate { table: "machines", key: ("id", rusqlite::types::Value::Text(M1.into())), set };
+    let change = rackhand_store::RegistryChange { consume: None, writes: vec![], updates: vec![update] };
+    env.db.writer().send(rackhand_store::WriteCmd::RegistryChange(change)).await.unwrap();
+    env.incidents.set_started(T0 - 10 * MIN);
+    env.sample(M1, CPU, T0, 1.0, Stream::Live, T0).await;
+    env.incidents.evaluate(T0 + 60_000).await.unwrap();
+    let inc = env.incidents();
+    assert_eq!(inc.len(), 1, "{inc:?}");
+    assert_eq!(inc[0].3, format!("{M1}:machine.silent:{{}}"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn silence_stays_open_across_a_restart() {
     // the rule says nothing in the hub's first 3 minutes (E44); that isn't the machine reporting again
     let mut env = Env::new("silent-restart").await;
