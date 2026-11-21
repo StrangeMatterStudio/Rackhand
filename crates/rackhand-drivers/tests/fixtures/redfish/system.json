@@ -1,0 +1,11 @@
+{
+  "@odata.id": "/redfish/v1/Systems/1",
+  "Id": "1",
+  "Name": "Lab Server",
+  "PowerState": "On",
+  "Status": {
+    "State": "Enabled",
+    "Health": "OK",
+    "HealthRollup": "Warning"
+  }
+}

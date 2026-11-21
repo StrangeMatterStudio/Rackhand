@@ -1,0 +1,19 @@
+{
+  "@odata.id": "/redfish/v1/Chassis/1/Power",
+  "PowerSupplies": [
+    {
+      "Name": "PSU1",
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      }
+    },
+    {
+      "Name": "PSU2",
+      "Status": {
+        "State": "Enabled",
+        "Health": "Critical"
+      }
+    }
+  ]
+}

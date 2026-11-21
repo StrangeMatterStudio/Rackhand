@@ -1,0 +1,48 @@
+{
+  "@odata.id": "/redfish/v1/Chassis/1/Thermal",
+  "Temperatures": [
+    {
+      "Name": "CPU1 Temp",
+      "ReadingCelsius": 46,
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      }
+    },
+    {
+      "Name": "Inlet Temp",
+      "ReadingCelsius": 24,
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      }
+    },
+    {
+      "Name": "Absent Sensor",
+      "ReadingCelsius": 0,
+      "Status": {
+        "State": "Absent"
+      }
+    }
+  ],
+  "Fans": [
+    {
+      "Name": "Fan1",
+      "Reading": 5400,
+      "ReadingUnits": "RPM",
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      }
+    },
+    {
+      "Name": "Fan2",
+      "Reading": 5520,
+      "ReadingUnits": "RPM",
+      "Status": {
+        "State": "Enabled",
+        "Health": "OK"
+      }
+    }
+  ]
+}

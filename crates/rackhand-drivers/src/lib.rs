@@ -7,6 +7,7 @@ mod http;
 mod icmp;
 pub mod pinned;
 pub mod proxmox;
+pub mod redfish;
 mod tcp;
 mod tls;
 pub mod truenas;
@@ -17,6 +18,7 @@ pub use driver::{Driver, DriverError, DriverKind, DriverOp, DriverOpResult, Driv
 pub use http::Http;
 pub use icmp::Icmp;
 pub use proxmox::Proxmox;
+pub use redfish::Redfish;
 pub use tcp::Tcp;
 pub use tls::Tls;
 pub use truenas::TrueNas;
