@@ -212,9 +212,15 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let mirror_alerts = mirror.spawn(changes);
     // guest binding (7.3.12): the probes' MACs from their Hellos, the Proxmox hosts' guests from their polls
     let bindings = Arc::new(rackhand_hub::registry::guest_binding::GuestBindings::new(db.clone(), ingest.clone()));
+    // the hub's SSH test after a managed machine's first report (7.3.12)
+    let (greeted, greeted_rx) = tokio::sync::mpsc::unbounded_channel();
     let probe_server =
         ProbeServer::new(ingest.clone(), Arc::new(MachinesDirectory(db.clone())), probe_server_settings(&db))
-            .with_bindings(bindings.clone());
+            .with_bindings(bindings.clone())
+            .with_greeted(greeted);
+    let pinned = rackhand_hub::ssh::enroll_test::Pinned { vault: vault.clone(), host_keys: host_keys.clone() };
+    let enroll_test = Arc::new(rackhand_hub::ssh::enroll_test::EnrollTest::new(db.clone(), Arc::new(pinned)));
+    joins::spawn_enroll_tests(ingest.clone(), enroll_test.clone(), greeted_rx);
     let executor = rackhand_hub::executor::Executor::new(vault.clone(), host_keys.clone()).with_other(Arc::new(steps(
         &db,
         &vault,
@@ -259,7 +265,7 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         signing: ed25519_dalek::SigningKey::from_bytes(&node_key.to_bytes()),
     });
     let (joined_tx, joined) = tokio::sync::mpsc::unbounded_channel();
-    joins::spawn_events(ingest.clone(), host_keys, joined, host_alerts, mirror_alerts);
+    joins::spawn_events(ingest.clone(), host_keys, joined, host_alerts, mirror_alerts, enroll_test);
     let alpns = vec![
         rackhand_proto::alpn::PROBE.to_vec(),
         rackhand_proto::alpn::MCP.to_vec(),

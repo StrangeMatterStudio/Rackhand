@@ -496,3 +496,41 @@ async fn level_change_token_keeps_machine_id() {
     assert_eq!(hub.query("SELECT id FROM windows"), ["w1"]);
     assert_eq!(hub.query("SELECT CAST(count(*) AS TEXT) FROM machines"), ["1"]);
 }
+
+/// The machine's address at join (T49): the IP a direct caller came from, so the hub can reach it over SSH. A relayed
+/// join records none, and a machine whose address names its API (a driver is attached) keeps it.
+#[tokio::test(flavor = "multi_thread")]
+async fn machine_join_records_direct_address() {
+    let hub = hub("address").await;
+    let join = |token: &Token, remote: &'static str, caller: u8| {
+        let req = JoinRequest { kind: Some(machine_req(token, Access::Managed)) };
+        let (server, caller) = (hub.server.clone(), iroh::SecretKey::from_bytes(&[caller; 32]).public());
+        async move { server.handle(req, caller, remote, now_ms()).await.kind.unwrap() }
+    };
+    let address = |id: ulid::Ulid| hub.query(&format!("SELECT address FROM machines WHERE id = '{id}'"));
+
+    let (direct, token) = hub.add_machine("web1", Access::Managed, &[]).await;
+    joined(join(&token, "ip:198.51.100.7", 1).await);
+    assert_eq!(address(direct), ["198.51.100.7"]);
+
+    let (relayed, token) = hub.add_machine("web2", Access::Managed, &[]).await;
+    joined(join(&token, "relay:https://relay.example.net/", 2).await);
+    assert_eq!(address(relayed), [""], "no address for a relayed join");
+
+    let (pve, token) = hub.add_machine("pve1", Access::Managed, &[]).await;
+    let api = RowUpdate {
+        table: "machines",
+        key: ("id", Value::Text(pve.to_string())),
+        set: row(&[
+            ("driver", Value::Text("proxmox".into())),
+            ("address", Value::Text("https://192.0.2.30:8006".into())),
+        ]),
+    };
+    hub.db
+        .writer()
+        .send(WriteCmd::RegistryChange(RegistryChange { updates: vec![api], ..Default::default() }))
+        .await
+        .unwrap();
+    joined(join(&token, "ip:198.51.100.9", 3).await);
+    assert_eq!(address(pve), ["https://192.0.2.30:8006"], "the API's address is kept");
+}

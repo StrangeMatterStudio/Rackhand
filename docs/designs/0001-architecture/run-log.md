@@ -125,3 +125,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-21 | T49d done: agentless machines polled every 60 s with the Vault's settings, silent after 2 failed polls and critical after 5; a Proxmox host with an API still silent by its probe (D81) |
 | 2026-11-21 | T49e done: the probe reports its MACs, Proxmox polls give each guest's configured MACs, and guest binding judges whichever arrives (D82) |
 | 2026-11-21 | T49f done: the hub serves its release files and the offline variant installs from them (D83). Found: `ci win` fails (mingw link in `iroh-relay`, Unix-only modes in `rackhand-net`), left for T89, which owns that tier |
+| 2026-11-21 | T49g part 1: the machine's address at join and the hub's SSH test after a managed machine's report, with unit and wiring tests; the Add page list and the integration test follow |

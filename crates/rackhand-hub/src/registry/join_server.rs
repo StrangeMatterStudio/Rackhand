@@ -158,6 +158,12 @@ pub fn remote_key(conn: &Connection) -> String {
     }
 }
 
+/// The IP of a direct caller, from its `remote_key`; none for a relayed one.
+fn direct_ip(remote_key: &str) -> Option<String> {
+    let ip: std::net::IpAddr = remote_key.strip_prefix("ip:")?.parse().ok()?;
+    Some(ip.to_canonical().to_string())
+}
+
 impl JoinServer {
     pub fn new(
         registry: Arc<Registry>,
@@ -204,7 +210,7 @@ impl JoinServer {
             return failed(Failure::new(JoinError::RateLimited, "too many failed joins; try again in a minute"));
         }
         let result = match req.kind {
-            Some(Req::Machine(m)) => self.machine(m, caller, now_ms).await,
+            Some(Req::Machine(m)) => self.machine(m, caller, remote_key, now_ms).await,
             Some(Req::Device(d)) => self.device(d, caller, now_ms).await,
             Some(Req::Operator(o)) => self.operator(o, caller, now_ms).await,
             Some(Req::Peer(p)) => self.peer(p, caller, now_ms).await,
@@ -256,7 +262,13 @@ impl JoinServer {
         let _ = self.joined.send(Joined { kind, id: id.into(), endpoint_id: caller, ssh_host_keys });
     }
 
-    async fn machine(&self, m: MachineJoin, caller: EndpointId, now_ms: i64) -> Result<Resp, Failure> {
+    async fn machine(
+        &self,
+        m: MachineJoin,
+        caller: EndpointId,
+        remote_key: &str,
+        now_ms: i64,
+    ) -> Result<Resp, Failure> {
         let token = Token::parse(&m.token);
         let stored = self.check(&token, TokenKind::Machine, now_ms)?;
         let access = Access::try_from(m.access).ok().and_then(access_name);
@@ -277,7 +289,13 @@ impl JoinServer {
         let previous = self.registry.machine_endpoint(&machine_id)?;
         let facts = m.facts.unwrap_or_default();
         let os = format!("{} {}", facts.os_name, facts.os_version).trim().to_string();
-        let update = Registry::enroll_change(&machine_id, caller, access, mode, &os, previous.is_none(), now_ms);
+        // The address SSH reaches it at (7.3.7): the IP a direct join came from. A machine whose address names its API
+        // (a driver is attached) keeps it.
+        let address = direct_ip(remote_key).filter(|_| !self.registry.machine_has_driver(&machine_id).unwrap_or(true));
+        let mut update = Registry::enroll_change(&machine_id, caller, access, mode, &os, previous.is_none(), now_ms);
+        if let Some(ip) = address {
+            update.set.insert("address", Value::Text(ip));
+        }
         self.commit(&token, TokenKind::Machine, now_ms, RegistryChange { updates: vec![update], ..Default::default() })
             .await?;
         if let Some(old) = previous.filter(|p| *p != caller.to_string()).and_then(|p| p.parse::<EndpointId>().ok()) {

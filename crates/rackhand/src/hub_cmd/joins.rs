@@ -1,5 +1,6 @@
 //! What a join hands the other systems (7.3.1, 7.3.7): a managed machine's keys, sudoers and first command list, its
-//! host keys pinned in SSH, and the host key and mirror alerts raised as events through Ingest (7.3.8).
+//! host keys pinned in SSH, the hub's SSH test after its first report (7.3.12), and the host key and mirror alerts
+//! raised as events through Ingest (7.3.8).
 
 use std::sync::{Arc, Mutex};
 
@@ -11,6 +12,7 @@ use rackhand_hub::library::mirror::MirrorAlert;
 use rackhand_hub::registry::Registry;
 use rackhand_hub::registry::join_server::{HubInfo, JoinServer, Joined, ManagedSetupSource};
 use rackhand_hub::registry::tokens::TokenKind;
+use rackhand_hub::ssh::enroll_test::{self, EnrollTest, Outcome};
 use rackhand_hub::ssh::hostkeys::{HostKeyAlert, HostKeys};
 use rackhand_net::router::Handler;
 use rackhand_proto::common::ProbeConfig;
@@ -90,13 +92,47 @@ pub fn mirror_event(alert: &MirrorAlert) -> Option<Event> {
     }
 }
 
-/// Runs until the channels close: a managed machine's join pins its host keys; alerts become events.
+/// The event for an SSH test's outcome (7.3.12): info when it passed, a warning naming the account when it didn't.
+pub fn ssh_test_event(machine_id: &str, outcome: &Outcome) -> Event {
+    match outcome {
+        Outcome::Passed => Event::machine(machine_id, enroll_test::PASSED, Severity::Info, serde_json::json!({})),
+        Outcome::Failed { account, reason } => Event::machine(
+            machine_id,
+            enroll_test::FAILED,
+            Severity::Warning,
+            serde_json::json!({ "account": account, "reason": reason }),
+        ),
+    }
+}
+
+/// Runs until `greeted` closes: a report from a machine that is due an SSH test is followed by one (7.3.12).
+pub fn spawn_enroll_tests(ingest: Ingest, test: Arc<EnrollTest>, mut greeted: UnboundedReceiver<String>) {
+    tokio::spawn(async move {
+        while let Some(machine) = greeted.recv().await {
+            if !test.due(&machine) {
+                continue;
+            }
+            let (test, ingest) = (test.clone(), ingest.clone());
+            tokio::spawn(async move {
+                if let Some(outcome) = test.run(&machine).await {
+                    if let Err(e) = ingest.raise_event(ssh_test_event(&machine, &outcome)).await {
+                        tracing::error!(error = %e, %machine, "SSH test event");
+                    }
+                }
+            });
+        }
+    });
+}
+
+/// Runs until the channels close: a managed machine's join pins its host keys and makes its next report tested over
+/// SSH; alerts become events.
 pub fn spawn_events(
     ingest: Ingest,
     host_keys: Arc<HostKeys>,
     mut joined: UnboundedReceiver<Joined>,
     mut host_alerts: UnboundedReceiver<HostKeyAlert>,
     mut mirror_alerts: UnboundedReceiver<MirrorAlert>,
+    test: Arc<EnrollTest>,
 ) {
     tokio::spawn(async move {
         while let Some(j) = joined.recv().await {
@@ -104,6 +140,7 @@ pub fn spawn_events(
                 if let Err(e) = host_keys.pin_join_message(&j.id, &j.ssh_host_keys, now_ms()).await {
                     tracing::error!(error = %e, machine = %j.id, "pinning the joined machine's host keys");
                 }
+                test.joined(&j.id);
             }
         }
     });

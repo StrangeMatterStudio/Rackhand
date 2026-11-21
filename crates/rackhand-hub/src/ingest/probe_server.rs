@@ -93,6 +93,8 @@ pub struct ProbeServer {
     outbound: Arc<Outbound>,
     /// Guest binding, given the MACs each Hello reports.
     bindings: Option<Arc<crate::registry::guest_binding::GuestBindings>>,
+    /// Told the machine id of each accepted Hello (the hub's SSH test follows a managed machine's first report).
+    greeted: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 /// How a connection ends.
@@ -103,12 +105,18 @@ enum End {
 
 impl ProbeServer {
     pub fn new(ingest: Ingest, directory: Arc<dyn ProbeDirectory>, settings: ServerSettings) -> ProbeServer {
-        ProbeServer { ingest, directory, settings, outbound: Arc::default(), bindings: None }
+        ProbeServer { ingest, directory, settings, outbound: Arc::default(), bindings: None, greeted: None }
     }
 
     /// Gives guest binding the MACs of each probe's interfaces, as its Hello reports them.
     pub fn with_bindings(mut self, bindings: Arc<crate::registry::guest_binding::GuestBindings>) -> ProbeServer {
         self.bindings = Some(bindings);
+        self
+    }
+
+    /// Tells `greeted` the machine id of each accepted Hello.
+    pub fn with_greeted(mut self, greeted: tokio::sync::mpsc::UnboundedSender<String>) -> ProbeServer {
+        self.greeted = Some(greeted);
         self
     }
 
@@ -173,6 +181,9 @@ impl ProbeServer {
             if let Err(e) = bindings.reported(&machine, macs, now_ms()).await {
                 tracing::warn!(error = %e, %machine, "guest binding");
             }
+        }
+        if let Some(greeted) = &self.greeted {
+            let _ = greeted.send(machine.clone());
         }
         let received = self.ingest.received(&machine, hello.epoch);
         let welcome = Welcome {

@@ -2,6 +2,7 @@
 //! pinned from the join. Owns `ssh_host_keys`.
 
 pub mod client;
+pub mod enroll_test;
 pub mod hostkeys;
 pub mod keys;
 pub mod quote;

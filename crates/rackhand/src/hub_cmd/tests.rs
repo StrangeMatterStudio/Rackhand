@@ -137,7 +137,12 @@ async fn join_and_host_key_events_wired() {
     let (joined, joined_rx) = tokio::sync::mpsc::unbounded_channel();
     let (host_alerts, host_alerts_rx) = tokio::sync::mpsc::unbounded_channel();
     let (mirror_alerts, mirror_alerts_rx) = tokio::sync::mpsc::unbounded_channel();
-    joins::spawn_events(ingest, host_keys.clone(), joined_rx, host_alerts_rx, mirror_alerts_rx);
+    let login = rackhand_hub::ssh::enroll_test::Pinned {
+        vault: Arc::new(Vault::new(MasterKey::from_bytes([3; 32]), db.clone())),
+        host_keys: host_keys.clone(),
+    };
+    let test = Arc::new(rackhand_hub::ssh::enroll_test::EnrollTest::new(db.clone(), Arc::new(login)));
+    joins::spawn_events(ingest, host_keys.clone(), joined_rx, host_alerts_rx, mirror_alerts_rx, test);
 
     let (_, key) = rackhand_hub::ssh::keys::generate_ed25519("host").unwrap();
     let openssh = key.to_openssh().unwrap();
@@ -426,4 +431,114 @@ async fn ticket_names_the_node_key_and_addresses() {
         "the endpoint id and the QUIC port, as the probe's installer reads them"
     );
     assert!(ticket(&config, &[]).is_err(), "a ticket needs an address");
+}
+
+/// The hub's SSH test after a managed machine's first report (7.3.12): its outcome becomes an event on the machine,
+/// a failure naming the account; a failed machine is tested again at its next report, a passed one isn't.
+#[tokio::test(flavor = "multi_thread")]
+async fn ssh_test_after_first_report_wired() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use rackhand_hub::registry::join_server::Joined;
+    use rackhand_hub::registry::tokens::TokenKind;
+    use rackhand_hub::ssh::client::{Output, SshError};
+    use rackhand_hub::ssh::enroll_test::{BoxFuture, EnrollTest, Login};
+    use rackhand_hub::ssh::hostkeys::HostKeys;
+    use rackhand_hub::ssh::keys::Identity;
+    use rackhand_store::{Row, RowUpdate, WriteCmd};
+    use rusqlite::types::Value;
+
+    #[derive(Default)]
+    struct Sudo {
+        works: AtomicBool,
+        logins: AtomicUsize,
+    }
+    impl Login for Sudo {
+        fn run<'a>(
+            &'a self,
+            _: std::net::SocketAddr,
+            _: &'a str,
+            id: Identity,
+            _: &'a str,
+        ) -> BoxFuture<'a, Result<Output, SshError>> {
+            self.logins.fetch_add(1, Ordering::SeqCst);
+            let code = u32::from(id == Identity::Assistant && !self.works.load(Ordering::SeqCst));
+            Box::pin(async move { Ok(Output { exit_code: Some(code), stdout: Vec::new(), stderr: Vec::new() }) })
+        }
+    }
+
+    const M: &str = "01JD0000000000000000000002";
+    let dir = temp("ssh-test");
+    let db = Arc::new(Db::open(&dir.join("hub.db")).unwrap());
+    machine_row(&db, M).await;
+    let enrolled = RowUpdate {
+        table: "machines",
+        key: ("id", Value::Text(M.into())),
+        set: Row::from([("state", Value::Text("enrolled".into())), ("address", Value::Text("192.0.2.5".into()))]),
+    };
+    db.writer()
+        .send(WriteCmd::RegistryChange(rackhand_store::RegistryChange {
+            updates: vec![enrolled],
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+    let ingest = Ingest::new(db.clone(), rackhand_hub::bus::Bus::new(), Arc::new(Statvfs(dir.clone())));
+    let (host_keys, _) = HostKeys::new(db.clone());
+    let login = Arc::new(Sudo::default());
+    let test = Arc::new(EnrollTest::new(db.clone(), login.clone()));
+    let (joined, joined_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (_host_alerts, host_alerts_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (_mirror_alerts, mirror_alerts_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (greeted, greeted_rx) = tokio::sync::mpsc::unbounded_channel();
+    joins::spawn_events(ingest.clone(), host_keys, joined_rx, host_alerts_rx, mirror_alerts_rx, test.clone());
+    joins::spawn_enroll_tests(ingest, test, greeted_rx);
+
+    let (_, key) = rackhand_hub::ssh::keys::generate_ed25519("host").unwrap();
+    let openssh = key.to_openssh().unwrap();
+    let mut parts = openssh.split(' ');
+    let (algorithm, public_key) = (parts.next().unwrap().to_string(), parts.next().unwrap().to_string());
+    let endpoint_id = iroh::SecretKey::from_bytes(&[8; 32]).public();
+    let keys = vec![rackhand_proto::common::SshHostKey { algorithm, public_key }];
+    joined.send(Joined { kind: TokenKind::Machine, id: M.into(), endpoint_id, ssh_host_keys: keys }).unwrap();
+
+    let ssh_events = |db: &Db| -> Vec<(String, String, String)> {
+        db.readers()
+            .with(|c| {
+                let mut s = c.prepare(
+                    "SELECT kind, severity, coalesce(json_extract(data, '$.account'), '') FROM events
+                     WHERE machine_id = ?1 AND kind LIKE 'machine.ssh_test_%' ORDER BY at_ms, kind",
+                )?;
+                s.query_map([M], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect()
+            })
+            .unwrap()
+    };
+    let wait = |n: usize| {
+        let db = db.clone();
+        async move {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while ssh_events(&db).len() < n && std::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            ssh_events(&db)
+        }
+    };
+    greeted.send(M.to_string()).unwrap();
+    let failed = ("machine.ssh_test_failed".to_string(), "warning".to_string(), "rackhand-ai".to_string());
+    assert_eq!(
+        wait(1).await,
+        std::slice::from_ref(&failed),
+        "the first report is followed by the test; the failure names the account"
+    );
+
+    login.works.store(true, Ordering::SeqCst);
+    greeted.send(M.to_string()).unwrap();
+    let passed = ("machine.ssh_test_passed".to_string(), "info".to_string(), String::new());
+    assert_eq!(wait(2).await, [failed.clone(), passed.clone()], "tested again at the next report until it passes");
+
+    let before = login.logins.load(Ordering::SeqCst);
+    greeted.send(M.to_string()).unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(login.logins.load(Ordering::SeqCst), before, "a passed machine isn't tested at every report");
+    assert_eq!(ssh_events(&db), [failed, passed]);
 }

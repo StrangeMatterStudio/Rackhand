@@ -124,6 +124,13 @@ impl Registry {
         RowUpdate { table: "machines", key: ("id", Value::Text(machine_id.into())), set }
     }
 
+    /// Whether a driver is attached to the machine, so its `address` names the driver's API.
+    pub(crate) fn machine_has_driver(&self, machine_id: &str) -> rusqlite::Result<bool> {
+        self.db()
+            .readers()
+            .with(|c| c.query_row("SELECT driver IS NOT NULL FROM machines WHERE id = ?1", [machine_id], |r| r.get(0)))
+    }
+
     /// The machine's current probe endpoint id, if it has enrolled before.
     pub(crate) fn machine_endpoint(&self, machine_id: &str) -> rusqlite::Result<Option<String>> {
         use rusqlite::OptionalExtension;
