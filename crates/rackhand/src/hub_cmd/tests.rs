@@ -214,11 +214,45 @@ async fn join_server_waits_for_first_run_site() {
         signing: ed25519_dalek::SigningKey::from_bytes(&[9; 32]),
     });
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let join = joins::LazyJoin::new(db.clone(), registry, setup, vec!["192.0.2.10:7443".into()], tx);
+    let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = reads.clone();
+    let addrs: joins::HubAddrs = Arc::new(move || {
+        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        vec!["192.0.2.10:7443".into()]
+    });
+    let join = joins::LazyJoin::new(db.clone(), registry, setup, addrs, tx);
     assert!(join.server().is_none(), "no join server before first run names the site");
     let site = rackhand_hub::registry::peers::local_site_row("home", "UTC");
     db.writer().send(rackhand_store::WriteCmd::Batch(vec![site])).await.unwrap();
     let server = join.server().expect("built once the site exists");
     assert!(Arc::ptr_eq(&server, &join.server().unwrap()), "built once");
     assert!(format!("{server:?}").contains("home"), "{server:?}");
+    assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1, "the addresses are read when the server is built");
+}
+
+#[test]
+fn hub_addrs_from_endpoint_and_names() {
+    let dir = temp("addrs");
+    let mut config = HubConfig::defaults(&dir.join("etc"), &dir.join("lib"));
+    let sock = |s: &str| s.parse::<SocketAddr>().unwrap();
+    let endpoint =
+        [sock("127.0.0.1:7443"), sock("192.168.1.5:7443"), sock("[fe80::1]:7443"), sock("[2001:db8::5]:7443")];
+    assert_eq!(
+        hub_addrs(&config, &endpoint),
+        vec!["192.168.1.5:7443".to_string(), "[2001:db8::5]:7443".to_string()],
+        "a default hub (0.0.0.0) advertises its endpoint's direct addresses, without loopback or link-local"
+    );
+    config.names = vec!["10.0.0.2".into(), "hub.example.net".into(), "192.168.1.5".into()];
+    assert_eq!(
+        hub_addrs(&config, &endpoint),
+        vec!["192.168.1.5:7443".to_string(), "[2001:db8::5]:7443".to_string(), "10.0.0.2:7443".to_string()],
+        "IP names on the QUIC port, each address once"
+    );
+    config.quic = sock("192.0.2.10:7443");
+    config.names.clear();
+    assert_eq!(
+        hub_addrs(&config, &[sock("192.0.2.10:7443")]),
+        vec!["192.0.2.10:7443".to_string()],
+        "a specific bind once"
+    );
 }

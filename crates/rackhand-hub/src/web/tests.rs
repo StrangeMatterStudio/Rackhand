@@ -467,6 +467,39 @@ async fn settings_changes_reach_the_mirror() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn policy_changes_reach_the_mirror() {
+    // a policy is a revision of `config/policies.toml`, written outside `Library::save` (7.3.13)
+    let slot: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::library::items::Change>>>> =
+        Arc::default();
+    let keep = slot.clone();
+    let app = app_with("policy-mirror", move |web| {
+        let (library, changes) = crate::library::items::Library::new(web.0.db.clone(), web.0.audit.clone());
+        *keep.lock().unwrap() = Some(changes);
+        web.with_library(library)
+    })
+    .await;
+    let mut changes = slot.lock().unwrap().take().unwrap();
+    complete_first_run(&app, SETUP_CODE).await;
+    let admin = session_for(&app.db, Role::Admin).await;
+    let csrf = csrf_of(&app, &admin).await;
+    let policy = [
+        ("csrf", csrf.as_str()),
+        ("name", "web-servers"),
+        ("patch", "auto"),
+        ("snapshot", "required"),
+        ("quarantine", "approval"),
+        ("peer_requests", "approval"),
+    ];
+    assert_eq!(send(&app.router, post("/policies", &admin, &policy)).await.status(), StatusCode::SEE_OTHER);
+    let change = changes.try_recv().expect("a policy change reaches the mirror");
+    assert!(change.user.starts_with("admin-") && change.summary.contains("config/policies"), "{change:?}");
+    let csrf = csrf_of(&app, &admin).await;
+    let bad = [("csrf", csrf.as_str()), ("name", "Bad Name!"), ("patch", "auto")];
+    assert_ne!(send(&app.router, post("/policies", &admin, &bad)).await.status(), StatusCode::SEE_OTHER);
+    assert!(changes.try_recv().is_err(), "a refused change sends nothing");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn serves_https_with_generated_certificate() {
     let (cert_pem, key_pem) = super::tls::generate(&["localhost".to_string()]).unwrap();
     let config = super::tls::server_config(&cert_pem, &key_pem).unwrap();

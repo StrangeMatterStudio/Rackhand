@@ -136,18 +136,21 @@ fn local_site(db: &Db) -> Option<String> {
 
 /// The `rackhand/join/1` server, built at the first join after first run has named this hub's site (7.3.1). Before
 /// that no token exists, so a join is closed as from an unknown peer.
+pub type HubAddrs = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
+
 pub struct LazyJoin {
     db: Arc<Db>,
     registry: Arc<Registry>,
     setup: Arc<dyn ManagedSetupSource>,
-    hub_addrs: Vec<String>,
+    /// The addresses joins hand out, read when the server is built.
+    hub_addrs: HubAddrs,
     joined: UnboundedSender<Joined>,
     server: Mutex<Option<Arc<JoinServer>>>,
 }
 
 impl std::fmt::Debug for LazyJoin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LazyJoin").field("hub_addrs", &self.hub_addrs).finish_non_exhaustive()
+        f.debug_struct("LazyJoin").finish_non_exhaustive()
     }
 }
 
@@ -156,7 +159,7 @@ impl LazyJoin {
         db: Arc<Db>,
         registry: Arc<Registry>,
         setup: Arc<dyn ManagedSetupSource>,
-        hub_addrs: Vec<String>,
+        hub_addrs: HubAddrs,
         joined: UnboundedSender<Joined>,
     ) -> Arc<LazyJoin> {
         Arc::new(LazyJoin { db, registry, setup, hub_addrs, joined, server: Mutex::new(None) })
@@ -172,7 +175,7 @@ impl LazyJoin {
             site: local_site(&self.db)?,
             version: env!("CARGO_PKG_VERSION").into(),
             relays: Vec::new(),
-            hub_addrs: self.hub_addrs.clone(),
+            hub_addrs: (self.hub_addrs)(),
             probe_config: ProbeConfig {
                 interval_s: 15,
                 max_connection_tuples: 500,

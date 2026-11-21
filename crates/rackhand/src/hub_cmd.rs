@@ -237,7 +237,6 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     });
     let (joined_tx, joined) = tokio::sync::mpsc::unbounded_channel();
     joins::spawn_events(ingest.clone(), host_keys, joined, host_alerts, mirror_alerts);
-    let join = joins::LazyJoin::new(db.clone(), registry.clone(), setup, hub_addrs(config), joined_tx);
     let alpns = vec![
         rackhand_proto::alpn::PROBE.to_vec(),
         rackhand_proto::alpn::MCP.to_vec(),
@@ -246,6 +245,9 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let endpoint_config =
         rackhand_net::endpoint::EndpointConfig { relays: Default::default(), alpns, bind: Some(config.quic) };
     let endpoint = rackhand_net::endpoint::bind(node_key, &endpoint_config).await.map_err(|e| e.to_string())?;
+    let (ep, quic) = (endpoint.clone(), config.clone());
+    let addrs = Arc::new(move || hub_addrs(&quic, &ep.addr().ip_addrs().copied().collect::<Vec<_>>()));
+    let join = joins::LazyJoin::new(db.clone(), registry.clone(), setup, addrs, joined_tx);
     let probe_server =
         ProbeServer::new(ingest.clone(), Arc::new(MachinesDirectory(db.clone())), ServerSettings::default());
     let observations = Arc::new(crate::observations::FromIngest(ingest.clone()));
@@ -280,16 +282,29 @@ async fn ssh_public(vault: &Vault, id: rackhand_hub::ssh::keys::Identity) -> Res
     key.public_key().to_openssh().map_err(|e| e.to_string())
 }
 
-/// The addresses a joining machine is told to reach the hub at: the QUIC address when it is a specific one, and each
-/// certificate name that is an IP address, on the QUIC port.
-fn hub_addrs(config: &HubConfig) -> Vec<String> {
+/// The addresses a joining machine is told to reach the hub at: the QUIC endpoint's direct addresses (its interfaces,
+/// or the one address it is bound to) other than loopback and link-local, then each certificate name that is an IP
+/// address, on the QUIC port; each once.
+pub fn hub_addrs(config: &HubConfig, endpoint: &[SocketAddr]) -> Vec<String> {
     let port = config.quic.port();
     let named =
         config.names.iter().filter_map(|n| n.parse::<std::net::IpAddr>().ok()).map(|ip| SocketAddr::new(ip, port));
-    let bound = Some(config.quic).filter(|a| !a.ip().is_unspecified());
-    let mut addrs: Vec<String> = bound.into_iter().chain(named).map(|a| a.to_string()).collect();
-    addrs.dedup();
+    let mut addrs: Vec<String> = Vec::new();
+    for a in endpoint.iter().copied().filter(|a| reachable(a.ip())).chain(named) {
+        let a = a.to_string();
+        if !addrs.contains(&a) {
+            addrs.push(a);
+        }
+    }
     addrs
+}
+
+/// Whether another machine could reach this address: not unspecified, loopback or link-local.
+fn reachable(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => !(v4.is_unspecified() || v4.is_loopback() || v4.is_link_local()),
+        std::net::IpAddr::V6(v6) => !(v6.is_unspecified() || v6.is_loopback() || v6.is_unicast_link_local()),
+    }
 }
 
 /// The hub's periodic work: evaluation and callouts every 15 s, compaction every 5 minutes, rollups every minute
