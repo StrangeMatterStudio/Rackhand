@@ -2,12 +2,13 @@
 
 use std::time::Duration;
 
-use rackhand_drivers::{DriverReading, DriverTarget};
+use rackhand_drivers::{DriverOp, DriverReading, DriverTarget};
 use rackhand_store::{Row, WriteCmd};
 use rusqlite::types::Value;
 
 use super::{Checks, ChecksError, MAX_TIMEOUT, Scheduled, config::CheckSpec, text};
 use crate::registry::agentless::vault_name;
+use crate::registry::guest_binding::GuestMacs;
 
 /// The check id of an agentless machine's poll is this and the machine's id.
 pub const PREFIX: &str = "driver:";
@@ -90,9 +91,43 @@ impl Checks {
         };
         let timeout = Duration::from_secs(INTERVAL_S.into()).min(MAX_TIMEOUT);
         let target = DriverTarget { target: s.spec.target.clone(), settings, timeout };
-        match driver.poll(&target).await {
+        let reading = match driver.poll(&target).await {
             Ok(r) => r,
             Err(e) => DriverReading::down(e.to_string(), vec![]),
+        };
+        if reading.ok && s.spec.kind == "proxmox" {
+            self.feed_guests(machine, driver.as_ref(), &target).await;
+        }
+        reading
+    }
+
+    /// A Proxmox host's guests and their MACs, to guest binding; a list that didn't load every guest is skipped.
+    async fn feed_guests(&self, host: &str, driver: &dyn rackhand_drivers::Driver, target: &DriverTarget) {
+        let Some(bindings) = &self.inner.bindings else { return };
+        let op = DriverOp { name: "guests".into(), args: serde_json::json!({}) };
+        let listed = match driver.call(target, op).await {
+            Ok(r) => r.output,
+            Err(e) => {
+                tracing::debug!(error = %e, host, "guest list incomplete: not judged this round");
+                return;
+            }
+        };
+        let guests = listed
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|g| {
+                Some(GuestMacs {
+                    host: host.to_string(),
+                    node: g["node"].as_str()?.to_string(),
+                    vmid: g["vmid"].as_u64()?,
+                    kind: g["type"].as_str()?.to_string(),
+                    macs: g["macs"].as_array()?.iter().filter_map(|m| m.as_str().map(str::to_string)).collect(),
+                })
+            })
+            .collect();
+        if let Err(e) = bindings.host_guests(host, guests, rackhand_store::ids::now_ms()).await {
+            tracing::warn!(error = %e, host, "guest binding");
         }
     }
 }

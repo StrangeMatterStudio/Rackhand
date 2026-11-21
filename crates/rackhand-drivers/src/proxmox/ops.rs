@@ -172,6 +172,44 @@ async fn firewall_restore(c: &Client, g: &Guest, saved: &Value) -> Result<(), Dr
     Ok(())
 }
 
+/// A MAC address as a configuration writes it: six pairs of hex digits.
+fn is_mac(v: &str) -> bool {
+    let parts: Vec<&str> = v.split(':').collect();
+    parts.len() == 6 && parts.iter().all(|p| p.len() == 2 && p.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// The MACs of a guest's network devices (`netN`): `virtio=<mac>,...` for a VM, `...,hwaddr=<mac>,...` for a container.
+fn config_macs(config: &Value) -> Vec<String> {
+    config
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(k, _)| k.len() > 3 && k.starts_with("net") && k[3..].chars().all(|d| d.is_ascii_digit()))
+        .filter_map(|(_, v)| v.as_str())
+        .filter_map(|line| line.split(',').filter_map(|kv| kv.split_once('=')).map(|(_, v)| v).find(|v| is_mac(v)))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Every guest of every node with the MACs its configuration gives (7.3.12 guest binding). A configuration that
+/// doesn't load fails the whole list: a list without that guest could miss a second guest with the same MAC.
+async fn guests(c: &Client) -> Result<Value, DriverError> {
+    let mut out = Vec::new();
+    for node in super::nodes(c).await? {
+        for kind in ["lxc", "qemu"] {
+            let list = c.call("GET", &format!("/nodes/{node}/{kind}"), &[]).await?;
+            for g in list.as_array().into_iter().flatten() {
+                let Some(vmid) = g["vmid"].as_u64().or_else(|| g["vmid"].as_str().and_then(|v| v.parse().ok())) else {
+                    continue;
+                };
+                let config = c.call("GET", &format!("/nodes/{node}/{kind}/{vmid}/config"), &[]).await?;
+                out.push(json!({ "node": node, "vmid": vmid, "type": kind, "macs": config_macs(&config) }));
+            }
+        }
+    }
+    Ok(Value::Array(out))
+}
+
 pub(super) async fn run(c: &Client, target: &DriverTarget, op: DriverOp) -> Result<DriverOpResult, DriverError> {
     let a = &op.args;
     let limit = target.timeout.max(Duration::from_secs(10));
@@ -222,6 +260,7 @@ pub(super) async fn run(c: &Client, target: &DriverTarget, op: DriverOp) -> Resu
             wait(c, &g.node, &upid, limit).await?
         }
         "config" => c.call("GET", &guest(c, a).await?.path("/config"), &[]).await?,
+        "guests" => guests(c).await?,
         other => return Err(bad(&format!("no Proxmox operation `{other}`"))),
     };
     Ok(DriverOpResult { output })

@@ -22,6 +22,8 @@ struct Guest {
     options: Map<String, Value>,
     rules: Vec<Value>,
     config: Map<String, Value>,
+    /// Its configuration doesn't load (a 500).
+    broken: bool,
 }
 
 #[derive(Debug)]
@@ -94,6 +96,16 @@ impl Sim {
 
     pub fn requests(&self) -> Vec<Request> {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).requests.clone()
+    }
+
+    /// From now on the configuration of guest `vmid` doesn't load.
+    pub fn fail_config(&self, vmid: u32) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        for ((_, id), g) in s.guests.iter_mut() {
+            if *id == vmid {
+                g.broken = true;
+            }
+        }
     }
 
     /// What a quarantine does to a container's firewall (D104): policies DROP, a rule, the device's flag on.
@@ -195,6 +207,9 @@ fn answer(state: &Mutex<State>, req: Request) -> (&'static str, String) {
             let key = (kind.to_string(), vmid.parse::<u32>().unwrap_or(0));
             let Some(g) = s.guests.get_mut(&key) else { return ("404 Not Found", "{}".into()) };
             match (method, tail) {
+                ("GET", ["config"]) if g.broken => {
+                    ("500 Internal Server Error", json!({ "data": null, "message": "config unreadable" }).to_string())
+                }
                 ("GET", ["config"]) => ok(Value::Object(g.config.clone())),
                 ("PUT", ["config"]) => {
                     for (k, v) in form(&req.body) {

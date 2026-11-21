@@ -210,8 +210,11 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         clock: Arc::new(now_ms),
     };
     let mirror_alerts = mirror.spawn(changes);
+    // guest binding (7.3.12): the probes' MACs from their Hellos, the Proxmox hosts' guests from their polls
+    let bindings = Arc::new(rackhand_hub::registry::guest_binding::GuestBindings::new(db.clone(), ingest.clone()));
     let probe_server =
-        ProbeServer::new(ingest.clone(), Arc::new(MachinesDirectory(db.clone())), probe_server_settings(&db));
+        ProbeServer::new(ingest.clone(), Arc::new(MachinesDirectory(db.clone())), probe_server_settings(&db))
+            .with_bindings(bindings.clone());
     let executor = rackhand_hub::executor::Executor::new(vault.clone(), host_keys.clone()).with_other(Arc::new(steps(
         &db,
         &vault,
@@ -235,11 +238,10 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         let addrs = addrs();
         (!addrs.is_empty()).then(|| format!("rackhand1:{id}@{}", addrs.join(",")))
     });
-    let bindings = Arc::new(rackhand_hub::registry::guest_binding::GuestBindings::new(db.clone(), ingest.clone()));
     let web = rackhand_hub::web::Web::new(db.clone(), vault.clone(), audit.clone(), recovery, web_config)
         .with_ticket(ticket)
         .with_release_dir(config.data_dir.join("release"))
-        .with_bindings(bindings)
+        .with_bindings(bindings.clone())
         .with_drivers(api_drivers())
         .with_registry(registry.clone())
         .with_library(library.clone())
@@ -282,8 +284,11 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     tokio::spawn(router.serve());
     let watch = Arc::new(self_watch(config, &db, &ingest, &notify));
     spawn_loops(ingest.clone(), incidents, notify, db.clone(), Nightly { config: config.clone(), watch });
-    // the service checks of config/checks.toml, each at its interval (FR-9)
-    rackhand_hub::checks::Checks::new(db.clone(), ingest.clone()).with_agentless(vault.clone(), api_drivers()).spawn();
+    // the service checks of config/checks.toml, each at its interval (FR-9), and the agentless machines' polls (FR-10)
+    rackhand_hub::checks::Checks::new(db.clone(), ingest.clone())
+        .with_agentless(vault.clone(), api_drivers())
+        .with_bindings(bindings)
+        .spawn();
     // the dashboard over TLS
     let (cert, key_pem) =
         rackhand_hub::web::tls::load_or_create(&vault, &config.names).await.map_err(|e| e.to_string())?;

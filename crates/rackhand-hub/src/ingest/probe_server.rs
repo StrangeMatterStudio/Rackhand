@@ -91,6 +91,8 @@ pub struct ProbeServer {
     directory: Arc<dyn ProbeDirectory>,
     settings: ServerSettings,
     outbound: Arc<Outbound>,
+    /// Guest binding, given the MACs each Hello reports.
+    bindings: Option<Arc<crate::registry::guest_binding::GuestBindings>>,
 }
 
 /// How a connection ends.
@@ -101,7 +103,13 @@ enum End {
 
 impl ProbeServer {
     pub fn new(ingest: Ingest, directory: Arc<dyn ProbeDirectory>, settings: ServerSettings) -> ProbeServer {
-        ProbeServer { ingest, directory, settings, outbound: Arc::default() }
+        ProbeServer { ingest, directory, settings, outbound: Arc::default(), bindings: None }
+    }
+
+    /// Gives guest binding the MACs of each probe's interfaces, as its Hello reports them.
+    pub fn with_bindings(mut self, bindings: Arc<crate::registry::guest_binding::GuestBindings>) -> ProbeServer {
+        self.bindings = Some(bindings);
+        self
     }
 
     /// The runner of `probe_check` steps (D115), sending them to the machines' connected probes.
@@ -160,6 +168,12 @@ impl ProbeServer {
             return End::Gone;
         }
         self.ingest.set_capabilities(&machine, &hello.capabilities);
+        if let Some(bindings) = &self.bindings {
+            let macs = hello.interfaces.iter().map(|i| i.mac.clone()).collect();
+            if let Err(e) = bindings.reported(&machine, macs, now_ms()).await {
+                tracing::warn!(error = %e, %machine, "guest binding");
+            }
+        }
         let received = self.ingest.received(&machine, hello.epoch);
         let welcome = Welcome {
             hub_version: Some(SemVer { version: self.settings.hub_version.clone() }),

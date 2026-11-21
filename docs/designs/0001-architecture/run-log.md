@@ -123,3 +123,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-21 | T49b done: the Add page's install commands per OS, access and mode with an offline variant, and device, operator and peer invites (D79) |
 | 2026-11-21 | T49c done: appliance forms per driver, the certificate accepted before any credential is sent, credentials only in the Vault, a Proxmox API attached to its host (D80) |
 | 2026-11-21 | T49d done: agentless machines polled every 60 s with the Vault's settings, silent after 2 failed polls and critical after 5; a Proxmox host with an API still silent by its probe (D81) |
+| 2026-11-21 | T49e done: the probe reports its MACs, Proxmox polls give each guest's configured MACs, and guest binding judges whichever arrives (D82) |

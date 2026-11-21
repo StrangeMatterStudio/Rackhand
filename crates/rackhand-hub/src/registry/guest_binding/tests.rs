@@ -158,3 +158,28 @@ async fn reported_mac_of_other_guest_sets_mismatch_and_event() {
     assert_eq!(b2.observe(GUEST, &["02:00:00:00:00:01".into()], &guests(), T0 + 2).await.unwrap(), Outcome::Mismatch);
     assert_eq!(binding(&db2).1, "mismatch");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn judged_when_either_the_report_or_the_guest_list_arrives() {
+    let (db, b) = env("feed").await;
+    b.reported(GUEST, vec!["bc:24:11:82:f7:1a".into()], T0).await.unwrap();
+    assert_eq!(binding(&db).1, "none", "no guest list yet");
+    assert_eq!(b.reported_macs(GUEST), Some(vec!["bc:24:11:82:f7:1a".to_string()]));
+    b.host_guests(HOST, guests(), T0 + 1).await.unwrap();
+    assert_eq!(binding(&db), (Some(reference(100, "lxc")), "proposed".into()));
+    // the other order
+    let (db2, b2) = env("feed-other").await;
+    b2.host_guests(HOST, guests(), T0).await.unwrap();
+    b2.reported(GUEST, vec!["BC:24:11:82:F7:1A".into()], T0 + 1).await.unwrap();
+    assert_eq!(binding(&db2).1, "proposed");
+    // a probe that reports no MACs (one that can't read them) isn't a mismatch of its confirmed binding
+    assert!(b2.confirm(GUEST, &reference(100, "lxc"), "admin", T0 + 2).await.unwrap());
+    b2.reported(GUEST, vec![], T0 + 3).await.unwrap();
+    b2.reported(GUEST, vec!["00:00:00:00:00:00".into()], T0 + 4).await.unwrap();
+    b2.host_guests(HOST, guests(), T0 + 5).await.unwrap();
+    assert_eq!(binding(&db2).1, "confirmed");
+    assert!(mismatch_events(&db2).is_empty());
+    // but another guest's MAC, reported later, is
+    b2.reported(GUEST, vec!["BC:24:11:00:00:C8".into()], T0 + 6).await.unwrap();
+    assert_eq!(binding(&db2).1, "mismatch");
+}

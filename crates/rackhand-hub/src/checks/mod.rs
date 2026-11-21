@@ -71,6 +71,8 @@ struct Inner {
     drivers: BTreeMap<&'static str, Box<dyn Driver>>,
     /// The Vault and the API drivers, for the agentless machines.
     api: Option<(Arc<crate::vault::Vault>, ApiDrivers)>,
+    /// Guest binding, given each Proxmox host's guests and their MACs after a poll.
+    bindings: Option<Arc<crate::registry::guest_binding::GuestBindings>>,
     state: Mutex<State>,
 }
 
@@ -92,7 +94,23 @@ fn text(s: &str) -> Value {
 impl Checks {
     pub fn new(db: Arc<Db>, ingest: Ingest) -> Checks {
         let drivers = DriverKind::ALL.into_iter().filter_map(|k| check_driver(k).map(|d| (k.name(), d))).collect();
-        Checks { inner: Arc::new(Inner { db, ingest, drivers, api: None, state: Mutex::new(State::default()) }) }
+        Checks {
+            inner: Arc::new(Inner {
+                db,
+                ingest,
+                drivers,
+                api: None,
+                bindings: None,
+                state: Mutex::new(State::default()),
+            }),
+        }
+    }
+
+    /// Feeds guest binding each Proxmox host's guests after its polls. Called on a new `Checks`, before it is cloned.
+    pub fn with_bindings(mut self, bindings: Arc<crate::registry::guest_binding::GuestBindings>) -> Checks {
+        let inner = Arc::get_mut(&mut self.inner).expect("with_bindings on a Checks not yet cloned");
+        inner.bindings = Some(bindings);
+        self
     }
 
     /// Polls the agentless machines too, with these drivers and the credentials in `vault`. Called on a new

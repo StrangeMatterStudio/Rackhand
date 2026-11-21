@@ -131,3 +131,23 @@ async fn task_polling_reports_failure_detail() {
     let unknown = Proxmox::new().call(&target(&sim), op("explode", json!({}))).await;
     assert!(matches!(unknown, Err(DriverError::Invalid(_))), "{unknown:?}");
 }
+
+/// The guests' configured MACs, for guest binding (7.3.12): every guest, or none at all.
+#[tokio::test]
+async fn guests_op_lists_each_guest_with_its_configured_macs() {
+    let sim = Sim::start("pve8").await;
+    let out = Proxmox::new().call(&target(&sim), op("guests", json!({}))).await.unwrap().output;
+    let list = out.as_array().expect("a list");
+    assert!(
+        list.contains(&json!({ "node": "pve8", "vmid": 100, "type": "lxc", "macs": ["BC:24:11:82:F7:1A"] })),
+        "{out}"
+    );
+    assert!(
+        list.contains(&json!({ "node": "pve8", "vmid": 200, "type": "qemu", "macs": ["BC:24:11:E6:A8:A6"] })),
+        "{out}"
+    );
+    assert_eq!(list.len(), 2, "{out}");
+    // a guest whose configuration doesn't load: no list, rather than one without it
+    sim.fail_config(200);
+    assert!(Proxmox::new().call(&target(&sim), op("guests", json!({}))).await.is_err());
+}

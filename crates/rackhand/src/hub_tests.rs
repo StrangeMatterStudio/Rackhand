@@ -243,7 +243,8 @@ async fn probe_directory_from_registry() {
     let registry = rackhand_hub::registry::Registry::load(db.clone()).unwrap();
     let ingest = Ingest::new(db.clone(), Bus::new(), Arc::new(Roomy));
     let hub = rackhand_net::testing::endpoint(&relay_url, &[rackhand_proto::alpn::PROBE]).await;
-    let server = ProbeServer::new(ingest.clone(), directory, ServerSettings::default());
+    let bindings = Arc::new(rackhand_hub::registry::guest_binding::GuestBindings::new(db.clone(), ingest.clone()));
+    let server = ProbeServer::new(ingest.clone(), directory, ServerSettings::default()).with_bindings(bindings.clone());
     let router =
         rackhand_net::router::Router::new(hub.clone(), registry).route(rackhand_proto::alpn::PROBE, server.handler());
     tokio::spawn(router.serve());
@@ -251,7 +252,9 @@ async fn probe_directory_from_registry() {
     addr.addrs.insert(iroh::TransportAddr::Relay(relay_url.clone()));
     let dir = std::env::temp_dir().join(format!("rackhand-composition-probe-buffer-{}", std::process::id()));
     let buffer = rackhand_probe::buffer::segments::Buffer::open(&dir, Default::default(), now_ms()).unwrap();
-    let cfg = rackhand_probe::link::LinkConfig::new(addr, machine_id.to_bytes(), "0.1.0");
+    let mut cfg = rackhand_probe::link::LinkConfig::new(addr, machine_id.to_bytes(), "0.1.0");
+    cfg.interfaces =
+        vec![rackhand_proto::common::IfaceInfo { name: "eth0".into(), mac: "bc:24:11:82:f7:1a".into(), addrs: vec![] }];
     let mut link = rackhand_probe::link::Link::new(
         probe_endpoint,
         cfg,
@@ -268,6 +271,8 @@ async fn probe_directory_from_registry() {
     link.send_live(&mut session, report, now_ms()).await.unwrap();
     link.read_acks(&mut session, |b| b.is_empty(), std::time::Duration::from_secs(10)).await.unwrap();
     assert_eq!(ingest.reports_total(), 1, "the report reached Ingest");
+    // and the MACs its Hello gave reached guest binding (7.3.12)
+    assert_eq!(bindings.reported_macs(&machine_id.to_string()), Some(vec!["bc:24:11:82:f7:1a".to_string()]));
     drop(relay);
 }
 

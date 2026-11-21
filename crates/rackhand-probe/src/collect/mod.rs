@@ -104,6 +104,22 @@ pub struct Collection {
     pub snapshot: Snapshot,
 }
 
+/// The machine's interfaces and their MACs, for the Hello (guest binding, 7.3.12): those `/sys/class/net` lists with a
+/// MAC, without the loopback and the guests' and containers' own devices.
+pub fn interfaces(host: &dyn Host) -> Vec<rackhand_proto::common::IfaceInfo> {
+    let mut names = host.list("sys/class/net");
+    names.sort();
+    names
+        .into_iter()
+        .filter(|n| !matches(n, EXCLUDED_IFACES))
+        .filter_map(|name| {
+            let mac = host.read(&format!("sys/class/net/{name}/address"))?.trim().to_ascii_lowercase();
+            let real = !mac.is_empty() && mac.chars().any(|c| c.is_ascii_hexdigit() && c != '0');
+            real.then(|| rackhand_proto::common::IfaceInfo { name, mac, addrs: vec![] })
+        })
+        .collect()
+}
+
 fn matches(name: &str, patterns: &[&str]) -> bool {
     patterns.iter().any(|p| match p.strip_suffix('*') {
         Some(prefix) => name.starts_with(prefix),

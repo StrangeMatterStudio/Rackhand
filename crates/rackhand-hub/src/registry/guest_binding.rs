@@ -4,6 +4,11 @@
 //! reports never change it. A confirmed machine that reports another guest's MAC, or none of its own guest's, is
 //! `mismatch` (one `machine.guest_binding_mismatch` warning), which blocks hypervisor-side actions until an admin
 //! confirms a binding again: the one it had, or the guest it now looks like.
+//!
+//! What it compares: the MACs each probe's Hello reported (the latest, kept in memory and sent again on every
+//! connect) and each Proxmox host's guest list from its latest poll that loaded every guest's configuration. Whichever
+//! arrives, the machines are judged again. A probe that reports no MACs isn't judged, so a probe that can't read
+//! them is never a mismatch.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -53,6 +58,10 @@ pub struct GuestBindings {
     ingest: Ingest,
     /// The guest a mismatched machine now looks like, offered to the admin (until confirmed or a restart).
     seen: Mutex<HashMap<String, String>>,
+    /// The MACs each machine's probe reported last.
+    reported: Mutex<HashMap<String, Vec<String>>>,
+    /// Each Proxmox host's guests, from its latest complete poll.
+    hosts: Mutex<HashMap<String, Vec<GuestMacs>>>,
 }
 
 impl std::fmt::Debug for GuestBindings {
@@ -68,7 +77,13 @@ fn norm(mac: &str) -> String {
 
 impl GuestBindings {
     pub fn new(db: Arc<Db>, ingest: Ingest) -> GuestBindings {
-        GuestBindings { db, ingest, seen: Mutex::new(HashMap::new()) }
+        GuestBindings {
+            db,
+            ingest,
+            seen: Mutex::new(HashMap::new()),
+            reported: Mutex::new(HashMap::new()),
+            hosts: Mutex::new(HashMap::new()),
+        }
     }
 
     fn seen(&self) -> std::sync::MutexGuard<'_, HashMap<String, String>> {
@@ -176,6 +191,46 @@ impl GuestBindings {
     /// The guest a mismatched machine now looks like, if one.
     pub fn looks_like(&self, machine: &str) -> Option<String> {
         self.seen().get(machine).cloned()
+    }
+
+    fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+        m.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn all_guests(&self) -> Vec<GuestMacs> {
+        Self::lock(&self.hosts).values().flatten().cloned().collect()
+    }
+
+    /// A probe's Hello: the MACs of its interfaces. The machine is judged against the guests known now.
+    pub async fn reported(&self, machine: &str, macs: Vec<String>, now_ms: i64) -> Result<(), BindingError> {
+        let macs: Vec<String> = macs.into_iter().filter(|m| norm(m).chars().any(|c| c != '0')).collect();
+        if macs.is_empty() {
+            Self::lock(&self.reported).remove(machine);
+            return Ok(());
+        }
+        Self::lock(&self.reported).insert(machine.to_string(), macs.clone());
+        let guests = self.all_guests();
+        if !guests.is_empty() {
+            self.observe(machine, &macs, &guests, now_ms).await?;
+        }
+        Ok(())
+    }
+
+    /// A Proxmox host's guests from a poll that loaded every one; every machine that reported MACs is judged again.
+    pub async fn host_guests(&self, host: &str, guests: Vec<GuestMacs>, now_ms: i64) -> Result<(), BindingError> {
+        Self::lock(&self.hosts).insert(host.to_string(), guests);
+        let all = self.all_guests();
+        let reported: Vec<(String, Vec<String>)> =
+            Self::lock(&self.reported).iter().map(|(m, macs)| (m.clone(), macs.clone())).collect();
+        for (machine, macs) in reported {
+            self.observe(&machine, &macs, &all, now_ms).await?;
+        }
+        Ok(())
+    }
+
+    /// The MACs a machine's probe reported last, if any.
+    pub fn reported_macs(&self, machine: &str) -> Option<Vec<String>> {
+        Self::lock(&self.reported).get(machine).cloned()
     }
 }
 

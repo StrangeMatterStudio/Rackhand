@@ -484,12 +484,14 @@ pub async fn main(paths: Paths) -> Result<i32, String> {
         .map_err(|e| format!("{}: {e}", buffer_dir.display()))?;
     let backlog = buffer.pending().last().map(|r| (r.epoch, r.seq));
     let version = env!("CARGO_PKG_VERSION");
-    let link_cfg = crate::link::LinkConfig::new(hub, machine_id, version);
-    let link = Link::new(endpoint, link_cfg, buffer, crate::buffer::epoch::EpochState::start(backlog));
     let host: Arc<dyn Host + Send + Sync> = Arc::new(match &paths.root {
         Some(root) => collect::RootHost::new(root.clone()),
         None => collect::RootHost::system(),
     });
+    let mut link_cfg = crate::link::LinkConfig::new(hub, machine_id, version);
+    // the MACs the hub compares with the guests' configurations (guest binding, 7.3.12)
+    link_cfg.interfaces = collect::interfaces(host.as_ref());
+    let link = Link::new(endpoint, link_cfg, buffer, crate::buffer::epoch::EpochState::start(backlog));
     if let Some(dir) = paths.state_file.parent() {
         let _ = std::fs::create_dir_all(dir);
     }

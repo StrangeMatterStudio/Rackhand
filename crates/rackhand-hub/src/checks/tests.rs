@@ -284,3 +284,89 @@ mod agentless {
         assert_eq!(incident(&db, "machine.silent").map(|i| i.0), Some("resolved".into()));
     }
 }
+
+mod guest_macs {
+    use super::*;
+    use rackhand_drivers::Proxmox;
+    use rackhand_drivers::proxmox::sim::Sim;
+    use rackhand_store::RowWrite;
+
+    use crate::registry::guest_binding::GuestBindings;
+    use crate::vault::master_key::MasterKey;
+    use crate::vault::{Secret, Vault};
+
+    const TOKEN: &str = "rackhand@pve!hub=00000000-1111-2222-3333-444444444444";
+    const PVE: &str = "01JD00000000000000000000PV";
+    const CT: &str = "01JD00000000000000000000CT";
+
+    fn t(s: &str) -> Value {
+        Value::Text(s.into())
+    }
+
+    async fn setup(name: &str, sim: &Sim) -> (Arc<Db>, Checks, Arc<GuestBindings>) {
+        let db = db(name);
+        let machine = |id: &str, name: &str, kind: &str, driver: Option<&str>| {
+            let mut row = Row::from([
+                ("id", t(id)),
+                ("site_id", t("s1")),
+                ("name", t(name)),
+                ("kind", t(kind)),
+                ("state", t("enrolled")),
+            ]);
+            if let Some(d) = driver {
+                row.insert("driver", t(d));
+                row.insert("address", t(&sim.url));
+            }
+            RowWrite::insert("machines", row)
+        };
+        let rows = vec![
+            RowWrite::insert("sites", Row::from([("id", t("s1")), ("name", t("home")), ("timezone", t("UTC"))])),
+            machine(PVE, "pve", "hypervisor", Some("proxmox")),
+            machine(CT, "ct-test", "linux", None),
+        ];
+        db.writer().send(WriteCmd::Batch(rows)).await.unwrap();
+        let vault = Arc::new(Vault::new(MasterKey::from_bytes([6u8; 32]), db.clone()));
+        let creds = serde_json::json!({ "token": TOKEN, "fingerprint": sim.fingerprint });
+        vault.put(&format!("driver.{PVE}"), &Secret::new(creds.to_string().into_bytes())).await.unwrap();
+        let ingest = Ingest::new(db.clone(), Bus::new(), Arc::new(Roomy));
+        let bindings = Arc::new(GuestBindings::new(db.clone(), ingest.clone()));
+        let checks = Checks::new(db.clone(), ingest)
+            .with_agentless(vault, vec![Arc::new(Proxmox::new())])
+            .with_bindings(bindings.clone());
+        (db, checks, bindings)
+    }
+
+    fn binding(db: &Db) -> (Option<String>, String) {
+        db.readers()
+            .with(|c| {
+                c.query_row("SELECT proxmox_ref, proxmox_ref_state FROM machines WHERE id = ?1", [CT], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+            })
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn proxmox_poll_feeds_the_guests_macs_to_guest_binding() {
+        let sim = Sim::start("pve8").await;
+        let (db, checks, bindings) = setup("guest-macs", &sim).await;
+        // the container's probe said which MACs it has
+        bindings.reported(CT, vec!["bc:24:11:82:f7:1a".into()], T0).await.unwrap();
+        checks.refresh().await.unwrap();
+        checks.run_due(T0).await.unwrap();
+        let reference = serde_json::json!({ "cluster": PVE, "node": "pve8", "vmid": 100, "type": "lxc" }).to_string();
+        assert_eq!(binding(&db), (Some(reference), "proposed".into()), "proposed from the host's guest list");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_guest_list_that_failed_to_load_is_not_judged() {
+        let sim = Sim::start("pve8").await;
+        let (db, checks, bindings) = setup("guest-macs-partial", &sim).await;
+        bindings.reported(CT, vec!["bc:24:11:82:f7:1a".into()], T0).await.unwrap();
+        // VM 200's configuration doesn't load: it might carry the same MAC, so this round proposes nothing
+        sim.fail_config(200);
+        checks.refresh().await.unwrap();
+        checks.run_due(T0).await.unwrap();
+        assert_eq!(binding(&db).1, "none");
+    }
+}

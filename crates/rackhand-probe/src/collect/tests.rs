@@ -245,3 +245,28 @@ fn fixture_usage_can_change_between_collections() {
     assert_eq!(usage(4), Some(96.0));
     assert_eq!(usage(30), Some(70.0), "read again, not cached");
 }
+
+/// The interfaces and their MACs, for guest binding (7.3.12): what `/sys/class/net` gives, without the loopback, the
+/// guests' and containers' own devices, and devices with no MAC.
+#[test]
+fn interfaces_with_their_macs_from_sys_class_net() {
+    let root = std::env::temp_dir().join(format!("rackhand-ifaces-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for (name, mac) in [
+        ("lo", Some("00:00:00:00:00:00")),
+        ("eth0", Some("bc:24:11:82:f7:1a")),
+        ("ens19", Some("00:00:00:00:00:00")),
+        ("veth9a1b", Some("de:ad:be:ef:00:01")),
+        ("docker0", Some("02:42:ac:11:00:01")),
+        ("wg0", None),
+    ] {
+        let dir = root.join("sys/class/net").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        if let Some(mac) = mac {
+            std::fs::write(dir.join("address"), format!("{mac}\n")).unwrap();
+        }
+    }
+    let found = crate::collect::interfaces(&crate::collect::RootHost::new(&root));
+    let found: Vec<(&str, &str)> = found.iter().map(|i| (i.name.as_str(), i.mac.as_str())).collect();
+    assert_eq!(found, vec![("eth0", "bc:24:11:82:f7:1a")]);
+}
