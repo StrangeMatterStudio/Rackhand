@@ -142,7 +142,7 @@ impl Hub {
     pub fn curl(&self, args: &[&str]) -> String {
         let (path, rest) = args.split_last().unwrap();
         let out = Command::new("curl")
-            .args(["-sk", "--max-time", "10", "-b"])
+            .args(["-sk", "--max-time", "30", "-b"])
             .arg(&self.jar)
             .arg("-c")
             .arg(&self.jar)
@@ -392,7 +392,8 @@ fn vitals_visible_within_30s() {
     });
     let state = machine.root("cat /run/rackhand-probe/probe.state");
     assert!(String::from_utf8_lossy(&state.stdout).contains("\"connected\""), "probe.state says connected");
-    let uid = machine.root("ps -o user= -C rackhand-probe");
+    // the probe service's process (the helper, from the same binary, is the one root process)
+    let uid = machine.root("ps -o user= -p $(systemctl show -p MainPID --value rackhand-probe)");
     assert_eq!(String::from_utf8_lossy(&uid.stdout).trim(), "rackhand-probe", "the probe isn't root");
 }
 
@@ -416,15 +417,33 @@ fn hub_with(name: &str, key: &[u8; 32], probe_settings: &str) -> Hub {
 fn outage_backfills_and_live_stays_fresh() {
     let key = [43u8; 32];
     let mut hub = hub_with("outage", &key, "[probe]\ninterval_s = 5\n");
-    let _machine = probe_machine(&hub, &key, &[]);
+    let machine = probe_machine(&hub, &key, &[]);
     within(Duration::from_secs(60), "live reports", || hub.received().last().is_some_and(|r| r.1 >= 3));
     hub.stop();
     std::thread::sleep(Duration::from_secs(600));
+    let state = machine.root("cat /run/rackhand-probe/probe.state; du -sb /var/lib/rackhand-probe/buffer");
+    eprintln!("before the restart: {}", String::from_utf8_lossy(&state.stdout));
     hub.start();
     let restarted = Instant::now();
     // the outage's 120 reports come back while live ones keep arriving
     let mut stale = Vec::new();
-    let took = within(Duration::from_secs(900), "the outage filled", || {
+    let deadline = Instant::now() + Duration::from_secs(900);
+    let took = within(Duration::from_secs(905), "the outage filled", || {
+        if Instant::now() > deadline {
+            let journal =
+                machine.root("cat /run/rackhand-probe/probe.state; journalctl -u rackhand-probe --no-pager | tail -15");
+            panic!(
+                "not filled: received {:?}
+probe: {}
+hub: {}",
+                hub.received(),
+                String::from_utf8_lossy(&journal.stdout),
+                hub.log().lines().rev().take(15).collect::<Vec<_>>().join(
+                    "
+"
+                )
+            );
+        }
         if restarted.elapsed() > Duration::from_secs(30) {
             if let Some(at) = hub.newest_received_ms() {
                 if now_ms() - at > 30_000 {

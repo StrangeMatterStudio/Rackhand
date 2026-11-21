@@ -186,7 +186,12 @@ async fn managed_setup_has_keys_sudoers_and_signed_commands() {
     let managed = setup.managed_setup(ulid::Ulid::new(), true);
     assert_eq!(managed.automation_pubkey, "ssh-ed25519 AAAA automation");
     assert_eq!(managed.assistant_pubkey.as_deref(), Some("ssh-ed25519 BBBB assistant"));
-    assert_eq!(managed.sudoers, "rackhand ALL=(root) NOPASSWD: /usr/local/lib/rackhand/run\n");
+    assert_eq!(
+        managed.sudoers,
+        "rackhand ALL=(root) NOPASSWD: /usr/local/lib/rackhand/run\n\
+         Defaults:rackhand-ai log_output, iolog_dir=/var/log/rackhand/sudo-io\nrackhand-ai ALL=(ALL) NOPASSWD: ALL\n",
+        "the wrapper's entry, and the assistant's with its sessions logged"
+    );
     let commands = managed.commands.expect("the first command list comes with the join");
     let env = rackhand_proto::signed::verify(&commands, &signing.verifying_key(), "commands", 0, now_ms())
         .expect("signed with the hub's node key");
@@ -200,6 +205,7 @@ async fn managed_setup_has_keys_sudoers_and_signed_commands() {
     );
     let hub_role = setup.managed_setup(ulid::Ulid::new(), false);
     assert_eq!(hub_role.assistant_pubkey, None, "no assistant account on a machine with role hub");
+    assert_eq!(hub_role.sudoers, "rackhand ALL=(root) NOPASSWD: /usr/local/lib/rackhand/run\n", "nor its sudo");
 }
 
 #[tokio::test(flavor = "multi_thread")]

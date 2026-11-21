@@ -3736,6 +3736,7 @@ dependencies = [
  "rackhand-net",
  "rackhand-probe",
  "rackhand-proto",
+ "rackhand-release",
  "rackhand-runbook",
  "rackhand-store",
  "rusqlite",
@@ -3815,6 +3816,16 @@ dependencies = [
 [[package]]
 name = "rackhand-relay"
 version = "0.1.0"
+
+[[package]]
+name = "rackhand-release"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake2 0.10.6",
+ "ed25519-dalek 2.2.0",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "rackhand-runbook"

@@ -22,6 +22,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 /// The automation user's one sudo entry: the command wrapper (7.3.7).
 pub const SUDOERS: &str = "rackhand ALL=(root) NOPASSWD: /usr/local/lib/rackhand/run\n";
+/// The assistant's sudo (7.3.7): everything, with every session's input and output logged.
+pub const ASSISTANT_SUDOERS: &str =
+    "Defaults:rackhand-ai log_output, iolog_dir=/var/log/rackhand/sudo-io\nrackhand-ai ALL=(ALL) NOPASSWD: ALL\n";
 /// How long the command list in a join response stays valid: the installer applies it right away.
 const JOIN_COMMANDS_TTL_MS: i64 = 3_600_000;
 
@@ -58,7 +61,7 @@ impl ManagedSetupSource for HubSetup {
         ManagedSetup {
             automation_pubkey: self.automation.clone(),
             assistant_pubkey: with_assistant.then(|| self.assistant.clone()),
-            sudoers: SUDOERS.into(),
+            sudoers: if with_assistant { format!("{SUDOERS}{ASSISTANT_SUDOERS}") } else { SUDOERS.into() },
             commands: SignedPayload::decode(bytes.as_slice()).ok(),
         }
     }

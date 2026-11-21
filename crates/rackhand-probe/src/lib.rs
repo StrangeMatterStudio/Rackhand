@@ -3,6 +3,8 @@
 pub mod buffer;
 pub mod collect;
 pub mod config;
+#[cfg(unix)]
+pub mod enroll;
 pub mod helper;
 pub mod link;
 pub mod run;

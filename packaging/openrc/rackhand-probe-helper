@@ -1,0 +1,16 @@
+#!/sbin/openrc-run
+# The Rackhand probe helper (7.3.3): the only root process of a probe machine.
+description="Rackhand probe helper"
+command=/usr/local/lib/rackhand/rackhand-probe
+command_args=helper
+command_background=true
+pidfile=/run/rackhand-probe-helper.pid
+
+depend() {
+	need localmount
+	before rackhand-probe
+}
+
+start_pre() {
+	checkpath -d -m 0755 -o root:root /run/rackhand-helper
+}

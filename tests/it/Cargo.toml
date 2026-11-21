@@ -16,6 +16,7 @@ serde_json = { workspace = true }
 blake3 = "1"
 rackhand-hub = { path = "../../crates/rackhand-hub", features = ["testing"] }
 rackhand-probe = { path = "../../crates/rackhand-probe" }
+rackhand-release = { path = "../../crates/rackhand-release", features = ["signing"] }
 rackhand-net = { path = "../../crates/rackhand-net", features = ["testing"] }
 ulid = { workspace = true }
 rackhand-store = { path = "../../crates/rackhand-store" }

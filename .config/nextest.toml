@@ -1,5 +1,8 @@
 # Test profiles for `cargo xtask ci <tier>` (design 14). Retries stay at 0: a flaky test is a bug.
 
+[test-groups]
+timed = { max-threads = 1 }
+
 [profile.default]
 retries = 0
 slow-timeout = { period = "30s", terminate-after = 4 }
@@ -20,6 +23,12 @@ junit = { path = "junit.xml" }
 [[profile.it.overrides]]
 filter = 'test(outage_backfills_and_live_stays_fresh) | test(disk_rule_callouts_and_resolution)'
 slow-timeout = { period = "60s", terminate-after = 30 }
+
+# The tests that time a real hub and probe (AC1, AC2, AC5, AC8) run one at a time: under the tier's other containers
+# the outage test once missed its 15 minutes (plan T43), and alone it fills in under 2.
+[[profile.it.overrides]]
+filter = 'test(probe_hub::) | test(callouts::)'
+test-group = 'timed'
 
 [profile.net]
 retries = 0

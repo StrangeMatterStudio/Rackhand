@@ -14,6 +14,36 @@ pub fn musl_binary(package: &str, bin: &str) -> PathBuf {
     build(package, bin, Some("x86_64-unknown-linux-musl"))
 }
 
+/// A static musl binary built with `features`, copied out of the target directory (a later build without the
+/// features writes the same path).
+pub fn musl_binary_with(package: &str, bin: &str, features: &str) -> PathBuf {
+    static BUILT: OnceLock<std::sync::Mutex<std::collections::HashMap<String, PathBuf>>> = OnceLock::new();
+    let key = format!("{bin}+{features}");
+    let cache = BUILT.get_or_init(Default::default);
+    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(p) = cache.get(&key) {
+        return p.clone();
+    }
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let out = Command::new(cargo)
+        .args(["build", "-q", "-p", package, "--bin", bin, "--features", features, "--message-format=json"])
+        .args(["--target", "x86_64-unknown-linux-musl"])
+        .stderr(Stdio::inherit())
+        .output()
+        .unwrap_or_else(|e| panic!("cargo build {bin}: {e}"));
+    assert!(out.status.success(), "building {bin} with {features} failed");
+    let built = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|m| m["reason"] == "compiler-artifact" && m["target"]["name"] == bin)
+        .find_map(|m| m["executable"].as_str().map(PathBuf::from))
+        .unwrap_or_else(|| panic!("no executable for {bin}"));
+    let copy = std::env::temp_dir().join(format!("{bin}-{}-{}", features.replace([',', '/'], "-"), std::process::id()));
+    std::fs::copy(&built, &copy).unwrap_or_else(|e| panic!("copying {bin}: {e}"));
+    cache.insert(key, copy.clone());
+    copy
+}
+
 fn build(package: &str, bin: &str, target: Option<&str>) -> PathBuf {
     static BUILT: OnceLock<std::sync::Mutex<std::collections::HashMap<String, PathBuf>>> = OnceLock::new();
     let key = format!("{bin}@{}", target.unwrap_or("host"));

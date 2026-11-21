@@ -8,7 +8,8 @@ use rackhand_probe::collect::{self, Config, RootHost, SelfUse, Stamp};
 const USAGE: &str = "usage: rackhand-probe --version
        rackhand-probe collect --once --json [--root <dir>] [--interval-ms <n>]
        rackhand-probe run [--config <probe.toml>] [--data-dir <dir>] [--state-file <path>] [--root <dir>]
-       rackhand-probe helper [--socket <path>]";
+       rackhand-probe helper [--socket <path>]
+       rackhand-probe enroll --ticket <ticket> --token <token> [--monitor] [--remote] [--role <role>]";
 
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
@@ -29,6 +30,8 @@ fn main() -> ExitCode {
         }
         Some("collect") => collect_once(&args[1..]),
         Some("run") => run(&args[1..]),
+        #[cfg(unix)]
+        Some("enroll") => enroll(&args[1..]),
         #[cfg(target_os = "linux")]
         Some("helper") => helper(&args[1..]),
         _ => {
@@ -127,6 +130,51 @@ fn helper(args: &[String]) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("rackhand-probe helper: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// `enroll`: the join, as root (the installer runs it). Prints `machine_id=`, `managed=` and `assistant=` lines.
+#[cfg(unix)]
+fn enroll(args: &[String]) -> ExitCode {
+    use rackhand_proto::common::{Access, ProbeMode};
+    let (mut ticket, mut token, mut role) = (None, None, String::new());
+    let (mut access, mut mode) = (Access::Managed, ProbeMode::Local);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--ticket" => ticket = it.next().cloned(),
+            "--token" => token = it.next().cloned(),
+            "--monitor" => access = Access::Monitor,
+            "--remote" => mode = ProbeMode::Remote,
+            "--role" => role = it.next().cloned().unwrap_or_default(),
+            _ => return usage(),
+        }
+    }
+    let (Some(ticket), Some(token)) = (ticket, token) else { return usage() };
+    let ticket = match rackhand_probe::enroll::Ticket::parse(&ticket) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("rackhand-probe enroll: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let req = rackhand_probe::enroll::Request { ticket, token, access, mode, role };
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("rackhand-probe enroll: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    match runtime.block_on(rackhand_probe::enroll::enroll(&req, &rackhand_probe::enroll::Paths::default())) {
+        Ok(e) => {
+            println!("machine_id={}\nmanaged={}\nassistant={}", e.machine_id, e.managed, e.assistant);
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("rackhand-probe enroll: {e}");
             ExitCode::from(1)
         }
     }

@@ -1,0 +1,28 @@
+[package]
+name = "rackhand-release"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Release signatures: minisign signatures checked against the two pinned release keys"
+
+[features]
+# pin the test keys of tests/keys/ instead of the release keys; never enabled for a release build
+test-keys = []
+# make signatures (tests, and the maintainer's offline signing in T91)
+signing = []
+
+[[bin]]
+name = "rackhand-verify"
+path = "src/bin/verify.rs"
+
+[dependencies]
+ed25519-dalek = { workspace = true }
+blake2 = "0.10"
+base64 = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
