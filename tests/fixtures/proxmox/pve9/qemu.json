@@ -1,0 +1,27 @@
+{
+  "data": [
+    {
+      "cpu": 0,
+      "cpus": 1,
+      "disk": 0,
+      "maxdisk": 209715200,
+      "maxmem": 402653184,
+      "mem": 221630464,
+      "memhost": 221630464,
+      "name": "vm-test",
+      "netin": 6228,
+      "netout": 796,
+      "pid": 1210,
+      "pressurecpufull": 0,
+      "pressurecpusome": 0,
+      "pressureiofull": 0,
+      "pressureiosome": 0,
+      "pressurememoryfull": 0,
+      "pressurememorysome": 0,
+      "serial": 1,
+      "status": "running",
+      "uptime": 247,
+      "vmid": 200
+    }
+  ]
+}

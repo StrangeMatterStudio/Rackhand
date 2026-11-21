@@ -1,0 +1,14 @@
+{
+  "data": {
+    "exitstatus": "snapshot 'rackhand-missing' does not exist",
+    "id": "100",
+    "node": "pve8",
+    "pid": 4510,
+    "pstart": 25416,
+    "starttime": 1795264658,
+    "status": "stopped",
+    "type": "vzdelsnapshot",
+    "upid": "UPID:pve8:0000119E:00006348:6B019092:vzdelsnapshot:100:root@pam:",
+    "user": "root@pam"
+  }
+}

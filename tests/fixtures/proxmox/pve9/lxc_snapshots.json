@@ -1,0 +1,16 @@
+{
+  "data": [
+    {
+      "description": "",
+      "name": "rackhand-fixture",
+      "snaptime": 1795264625
+    },
+    {
+      "description": "You are here!",
+      "digest": "a7667cb4992fba82bcc075f0cbfc35104b3f15ca",
+      "name": "current",
+      "parent": "rackhand-fixture",
+      "running": 1
+    }
+  ]
+}

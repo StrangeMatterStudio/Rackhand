@@ -7,6 +7,7 @@ pub mod config;
 pub mod deploy;
 pub mod images;
 pub mod qemu;
+mod record;
 mod seed;
 
 #[cfg(test)]
@@ -43,6 +44,7 @@ const USAGE: &str = "usage: cargo xtask lab <command>
   ssh <machine>              print the SSH command for a machine
   deploy [--hub-on <name>]   build, sign and serve this build, install the hub (default `hub`), complete first run
          [--restore <backup> --master-key <key>]  or install it from a hub backup instead of first run
+  record-proxmox             record the Proxmox API answers of pve8 and pve9 for the driver's simulator
   destroy                    stop everything and delete all lab state except downloaded images";
 
 pub fn run(args: &[String]) -> Result<()> {
@@ -100,6 +102,7 @@ pub fn run(args: &[String]) -> Result<()> {
             Ok(())
         }
         Some("destroy") => destroy(&lab),
+        Some("record-proxmox") => record::record_proxmox(&lab),
         Some("deploy") => {
             let (mut hub, mut restore, mut key) = ("hub", None, None);
             let mut i = 1;

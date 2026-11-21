@@ -1,0 +1,23 @@
+{
+  "data": {
+    "boot": "order=scsi0",
+    "ciuser": "lab",
+    "cores": 1,
+    "digest": "0a2b96b23a5a135c9eb368e8366982f8b45734a6",
+    "ide2": "tank:vm-200-cloudinit,media=cdrom",
+    "ipconfig0": "ip=192.0.2.161/24",
+    "memory": "384",
+    "meta": "creation-qemu=9.2.0,ctime=1795093884",
+    "name": "vm-test",
+    "net0": "virtio=BC:24:11:E6:A8:A6,bridge=vmbr0",
+    "onboot": 1,
+    "ostype": "l26",
+    "scsi0": "tank:vm-200-disk-0,size=200M",
+    "scsihw": "virtio-scsi-pci",
+    "serial0": "socket",
+    "smbios1": "uuid=97132ec5-fb8b-4638-8c95-2b8148e1fe38",
+    "sshkeys": "ssh-ed25519%20AAAAlabkey%20rackhand-lab%0A",
+    "vga": "serial0",
+    "vmgenid": "6409e172-85fa-43bf-9d2e-2bf2959cdcb6"
+  }
+}

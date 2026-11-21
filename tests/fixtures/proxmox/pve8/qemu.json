@@ -1,0 +1,20 @@
+{
+  "data": [
+    {
+      "cpu": 0,
+      "cpus": 1,
+      "disk": 0,
+      "maxdisk": 209715200,
+      "maxmem": 402653184,
+      "mem": 91187946,
+      "name": "vm-test",
+      "netin": 6386,
+      "netout": 796,
+      "pid": 1490,
+      "serial": 1,
+      "status": "running",
+      "uptime": 224,
+      "vmid": 200
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "data": {
+    "exitstatus": "OK",
+    "id": "100",
+    "node": "pve9",
+    "pid": 2975,
+    "pstart": 26664,
+    "starttime": 1795264671,
+    "status": "stopped",
+    "type": "vzsnapshot",
+    "upid": "UPID:pve9:00000B9F:00006828:6B01909F:vzsnapshot:100:root@pam:",
+    "user": "root@pam"
+  }
+}

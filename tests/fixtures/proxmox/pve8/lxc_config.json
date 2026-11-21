@@ -1,0 +1,14 @@
+{
+  "data": {
+    "arch": "amd64",
+    "digest": "b05077a5939c561cb20fcd4c5e7d4f81e86ee7cd",
+    "hostname": "ct-test",
+    "memory": 256,
+    "net0": "name=eth0,bridge=vmbr0,hwaddr=BC:24:11:82:F7:1A,ip=192.0.2.151/24,type=veth",
+    "onboot": 1,
+    "ostype": "alpine",
+    "rootfs": "tank:subvol-100-disk-0,size=2G",
+    "swap": 0,
+    "unprivileged": 1
+  }
+}

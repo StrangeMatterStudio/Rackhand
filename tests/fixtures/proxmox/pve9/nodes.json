@@ -1,0 +1,19 @@
+{
+  "data": [
+    {
+      "cpu": 0.0194805194805195,
+      "disk": 5943431168,
+      "id": "node/pve9",
+      "level": "",
+      "maxcpu": 4,
+      "maxdisk": 33603391488,
+      "maxmem": 4103667712,
+      "mem": 1822699520,
+      "node": "pve9",
+      "ssl_fingerprint": "64:E8:F9:50:5E:95:ED:99:D6:25:A6:D6:2F:FF:DC:10:AE:64:7D:44:FA:81:C9:03:D1:24:57:C9:81:D0:54:1E",
+      "status": "online",
+      "type": "node",
+      "uptime": 247
+    }
+  ]
+}

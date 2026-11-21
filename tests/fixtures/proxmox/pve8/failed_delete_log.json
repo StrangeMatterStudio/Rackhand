@@ -1,0 +1,12 @@
+{
+  "data": [
+    {
+      "n": 1,
+      "t": ""
+    },
+    {
+      "n": 2,
+      "t": "TASK ERROR: snapshot 'rackhand-missing' does not exist"
+    }
+  ]
+}

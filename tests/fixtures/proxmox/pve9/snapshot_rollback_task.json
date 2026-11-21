@@ -1,0 +1,14 @@
+{
+  "data": {
+    "exitstatus": "OK",
+    "id": "100",
+    "node": "pve9",
+    "pid": 3033,
+    "pstart": 26826,
+    "starttime": 1795264673,
+    "status": "stopped",
+    "type": "vzrollback",
+    "upid": "UPID:pve9:00000BD9:000068CA:6B0190A1:vzrollback:100:root@pam:",
+    "user": "root@pam"
+  }
+}
