@@ -109,6 +109,8 @@ fn kind_of(s: &str) -> Option<Kind> {
     match s {
         "runbook" => Some(Kind::Runbook),
         "playbook" => Some(Kind::Playbook),
+        // the configuration files (7.3.13), edited here as the git mirror holds them
+        "config" => Some(Kind::Config),
         _ => None,
     }
 }
@@ -122,7 +124,7 @@ fn item_path(path: &str) -> Option<(Kind, &str, &str)> {
 
 pub(super) fn list(web: &Web, ctx: &Ctx) -> Response<Body> {
     let found = web.0.db.readers().with(|c| {
-        let mut s = c.prepare("SELECT kind, name, rev FROM library_items WHERE kind != 'config' ORDER BY kind DESC, name")?;
+        let mut s = c.prepare("SELECT kind, name, rev FROM library_items ORDER BY kind DESC, name")?;
         let items =
             s.query_map([], |r| Ok(Item { kind: r.get(0)?, name: r.get(1)?, rev: r.get(2)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let mut s = c.prepare(

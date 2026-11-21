@@ -296,7 +296,9 @@ fn silent_proxmox_node_after_two_polls() {
     let dash = Dash::shared().signed_in();
     ensure_proxmox(&dash, "pve8", "192.0.2.51");
     let silent = |dash: &Dash| {
-        open_incidents(dash).into_iter().find(|i| i.machine == "pve8" && i.title == "No answer from the machine's API")
+        open_incidents(dash)
+            .into_iter()
+            .find(|i| i.machine == "pve8" && unescape(&i.title) == "No answer from the machine's API")
     };
     assert!(eventually(Duration::from_secs(150), || silent(&dash).is_none()), "pve8 answers before the pause");
     lab(&["pause", "pve8"]);
@@ -339,14 +341,12 @@ fn probe_in_lxc_is_bound_to_its_guest() {
             names.push(f);
         }
         let fetch: Vec<String> = names.iter().map(|n| format!("curl -fsSO {RELEASE_URL}/{n}")).collect();
-        on(
-            "hub",
-            &format!(
-                "sudo mkdir -p /var/lib/rackhand/release && cd /var/lib/rackhand/release && sudo sh -c '{}' && \
-                 sudo chown -R rackhand-hub:rackhand-hub /var/lib/rackhand/release",
-                fetch.join(" && ")
-            ),
+        let fetch = format!(
+            "mkdir -p /var/lib/rackhand/release && cd /var/lib/rackhand/release && {} && \
+             chown -R rackhand-hub:rackhand-hub /var/lib/rackhand/release",
+            fetch.join(" && ")
         );
+        on("hub", &format!("sudo sh -c '{fetch}'"));
         // the Add page's offline command, as the admin copies it from the dashboard at the hub's site address
         let (_, add) = dash.get("/add");
         let csrf = field(&add, "csrf").unwrap();

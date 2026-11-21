@@ -2525,6 +2525,10 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-21 | L3: cargo nextest run -p xtask -E 'test(machine_script_is_part_of_the_stamp)' (before, after) | failed to build: no `machine_script`; then 9 lab tests passed (`lab/provision/<name>.sh` runs at first boot and counts in the stamp; `agentless.sh` installs `snmpd` with v2c community `rackhand-lab`) |
+  | 2026-11-21 | L3: cargo xtask lab up m2 | `agentless` provisioned (snmpd active); `ct-test` on `pve9` reaches the hub (`https://192.0.2.10:8443/healthz` ok) but not the release server, and has `wget` but no `curl` |
+  | 2026-11-21 | L3: cargo nextest run -p rackhand-hub --lib -E 'test(machine_command_per_os_mode_and_level)' (before, after) | failed: the Alpine offline command used `curl`, which a stock Alpine machine lacks; then passed: `wget -q --no-check-certificate -O /tmp/rackhand-install.sh https://<hub>:8443/install.sh && ... && sh ...`, no `curl` on Alpine |
+  | 2026-11-21 | L3: cargo xtask ci live --target local --milestone m2 --no-deploy (the L2 build still on `hub`) | 0 passed, 7 failed: `no form on /add` (no Add page forms in that build) and the checks never configured |
 
 ### M3: Actions
 

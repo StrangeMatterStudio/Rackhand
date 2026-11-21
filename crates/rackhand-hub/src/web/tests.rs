@@ -1096,6 +1096,42 @@ mod pages {
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
+    /// The configuration files (7.3.13: `config/checks.toml` and the others) are edited on the Library page too, with
+    /// the same validation; the page lists them; only an admin edits them.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn library_edits_configuration_files() {
+        let app = app("library-config").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let page = text(send(&app.router, get("/library/config/checks", &admin)).await).await;
+        assert!(page.contains("action=\"/library/config/checks\""), "an editor for a file not written yet: {page}");
+        let checks = "[[check]]\nname = \"web\"\nkind = \"tcp\"\ntarget = \"192.0.2.20:22\"\n";
+        let csrf = csrf_of(&app, &admin).await;
+        let fields = [("csrf", csrf.as_str()), ("content", checks)];
+        let resp = send(&app.router, post("/library/config/checks", &admin, &fields)).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(Library::current_in(&app.db, Kind::Config, "checks").unwrap().unwrap().1, checks);
+        // validated as the file it is
+        let csrf = csrf_of(&app, &admin).await;
+        let bad = "[[check]]\nname = \"web\"\nkind = \"gopher\"\ntarget = \"x\"\n";
+        let resp =
+            send(&app.router, post("/library/config/checks", &admin, &[("csrf", csrf.as_str()), ("content", bad)]))
+                .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert!(text(resp).await.contains("gopher"), "the reason");
+        let listed = text(send(&app.router, get("/library", &admin)).await).await;
+        assert!(listed.contains("/library/config/checks"), "listed: {listed}");
+        // a responder reads it but doesn't edit it
+        let responder = session_for(&app.db, Role::Responder).await;
+        let csrf = csrf_of(&app, &responder).await;
+        let resp = send(
+            &app.router,
+            post("/library/config/checks", &responder, &[("csrf", csrf.as_str()), ("content", checks)]),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn nothing_waiting_empty_state() {
         let app = app("approvals-empty").await;
