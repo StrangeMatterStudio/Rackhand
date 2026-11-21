@@ -7,5 +7,6 @@ pub mod config;
 pub mod enroll;
 pub mod helper;
 pub mod link;
+pub mod logging;
 pub mod run;
 pub mod runcmd;

@@ -80,6 +80,7 @@ fn usage() -> ExitCode {
 
 /// `run`: the probe daemon (7.3.2). Exits 3 when the hub revokes this machine.
 fn run(args: &[String]) -> ExitCode {
+    rackhand_probe::logging::init();
     let mut paths = rackhand_probe::run::Paths::default();
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -111,6 +112,7 @@ fn run(args: &[String]) -> ExitCode {
 /// `helper`: the root helper (7.3.3).
 #[cfg(target_os = "linux")]
 fn helper(args: &[String]) -> ExitCode {
+    rackhand_probe::logging::init();
     let mut paths = rackhand_probe::helper::daemon::Paths::default();
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -138,6 +140,7 @@ fn helper(args: &[String]) -> ExitCode {
 /// `enroll`: the join, as root (the installer runs it). Prints `machine_id=`, `managed=` and `assistant=` lines.
 #[cfg(unix)]
 fn enroll(args: &[String]) -> ExitCode {
+    rackhand_probe::logging::init();
     use rackhand_proto::common::{Access, ProbeMode};
     let (mut ticket, mut token, mut role) = (None, None, String::new());
     let (mut access, mut mode) = (Access::Managed, ProbeMode::Local);

@@ -16,6 +16,7 @@ name = "rackhand-probe"
 path = "src/main.rs"
 
 [dependencies]
+tracing-subscriber = { workspace = true }
 rackhand-proto = { path = "../rackhand-proto" }
 rackhand-net = { path = "../rackhand-net" }
 iroh = { workspace = true }

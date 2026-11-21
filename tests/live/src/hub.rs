@@ -158,14 +158,18 @@ impl Dash {
 
     /// Both factors. A code is accepted once, so a second sign-in in the same 30 s waits for the next code.
     pub fn sign_in(&self) {
-        self.password_step();
         let secret = cred("totp_secret");
-        for attempt in 0..2 {
+        let mut said = String::new();
+        for attempt in 0..3 {
             if attempt > 0 {
                 std::thread::sleep(Duration::from_secs((30 - now_s() % 30 + 1) as u64));
             }
+            let (code, body) = self.password_step();
             let (_, page) = self.get("/sign-in/code");
-            let Some(csrf) = field(&page, "csrf") else { break };
+            let Some(csrf) = field(&page, "csrf") else {
+                said = format!("the password step answered {code}: {}", &body[..body.len().min(300)]);
+                continue;
+            };
             let code = totp(&secret, now_s());
             self.curl(
                 &["--data-urlencode", &format!("csrf={csrf}"), "--data", &format!("code={code}")],
@@ -174,8 +178,9 @@ impl Dash {
             if self.get("/").0 == 200 {
                 return;
             }
+            said = "the code was refused".into();
         }
-        panic!("signing in to the lab hub failed");
+        panic!("signing in to the lab hub failed: {said}");
     }
 
     /// Signs in when the shared session is gone.
@@ -392,7 +397,7 @@ pub fn ensure_target(dash: &Dash, token: &str) -> String {
         );
         assert!(
             eventually(Duration::from_secs(120), || live(token, "target", 45.0)),
-            "the hub knows target but it doesn't report"
+            "the hub knows target ({state}) but it doesn't report: if its join never finished,              `cargo xtask lab reset hub` and `lab reset target`, then run again"
         );
         return id;
     }

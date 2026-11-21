@@ -1,6 +1,6 @@
 //! `cargo xtask lab deploy [--hub-on <machine>]` (plan L2): the current build onto the lab.
 //!
-//! It builds static musl binaries (the hub with `lab-build`, so the test release keys are pinned and `lab-token`
+//! It builds static musl release binaries (the hub with `lab-build`, so the test release keys are pinned and `lab-token`
 //! exists; the probe; `rackhand-verify` with the test keys), signs the release files with the test key of
 //! `tests/keys/`, renders `install.sh` for them, and serves the directory from WSL, where the machines reach it at the
 //! QEMU gateway. Then it installs the hub on its machine with the packaged systemd unit and completes first run with
@@ -37,6 +37,7 @@ fn build(package: &str, bin: &str, features: &[&str]) -> Result<PathBuf> {
     cmd.current_dir(root()).args([
         "build",
         "-q",
+        "--release",
         "-p",
         package,
         "--bin",

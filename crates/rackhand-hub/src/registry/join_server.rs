@@ -171,8 +171,20 @@ impl JoinServer {
     /// Serves one connection: one request, one response.
     pub async fn serve(self: Arc<Self>, conn: Connection) {
         let key = remote_key(&conn);
-        let Ok((mut send, mut recv)) = conn.accept_bi().await else { return };
-        let Ok(data) = recv.read_to_end(frame::MAX_FRAME + 4).await else { return };
+        let (mut send, mut recv) = match conn.accept_bi().await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(remote = %key, error = %e, "join: no request stream");
+                return;
+            }
+        };
+        let data = match recv.read_to_end(frame::MAX_FRAME + 4).await {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!(remote = %key, error = %e, "join: the request couldn't be read");
+                return;
+            }
+        };
         let request = frame::read_frame(&mut data.as_slice()).ok().and_then(|b| JoinRequest::decode(b.as_slice()).ok());
         let response = match request {
             Some(req) => self.handle(req, conn.remote_id(), &key, now_ms()).await,

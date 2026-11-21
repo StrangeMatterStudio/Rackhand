@@ -18,8 +18,11 @@ fn hub_service_runs_unprivileged_and_healthz_ok() {
         on("hub", "pid=$(systemctl show -p MainPID --value rackhand-hub); awk '/^Uid:/ {print $2}' /proc/$pid/status");
     let uid = uid.trim();
     assert!(!uid.is_empty() && uid != "0", "the hub runs as uid {uid}");
-    let first_run = on("hub", "curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:8443/first-run");
-    assert_eq!(first_run.trim(), "200", "first run is reachable");
+    // the page before first run, a redirect to the overview once the deploy has completed it
+    let first_run =
+        on("hub", "curl -sk -o /dev/null -w '%{http_code} %{redirect_url}' https://127.0.0.1:8443/first-run");
+    let first_run = first_run.trim();
+    assert!(first_run == "200" || first_run.starts_with("303 "), "first run answers: {first_run}");
 }
 
 #[test]

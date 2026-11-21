@@ -1,6 +1,7 @@
 //! Composition root for the hub, the relay and the operator (design 7.2).
 
 mod hub_cmd;
+mod logging;
 mod observations;
 
 #[cfg(test)]
@@ -190,6 +191,7 @@ fn hub_run(rest: &[&str]) -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
+    logging::init();
     let path = PathBuf::from(o.get("config").copied().unwrap_or("/etc/rackhand/hub.toml"));
     let config = match hub_cmd::HubConfig::load(&path) {
         Ok(c) => c,

@@ -8,6 +8,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+tracing-subscriber = { workspace = true }
 rackhand-hub = { path = "../rackhand-hub" }
 rackhand-release = { path = "../rackhand-release" }
 rackhand-runbook = { path = "../rackhand-runbook" }
