@@ -1,0 +1,44 @@
+[
+ {
+  "args": null,
+  "datetime": {
+   "$date": 1738897293000
+  },
+  "dismissed": true,
+  "formatted": "A critical alert of class BootPoolStatus.",
+  "id": "0000000000000021",
+  "key": "{\"status\": \"DEGRADED\", \"status_detail\": \"One or more devices has experienced an unrecoverable error. An attempt was made to correct the error. Applications are unaffected.\"}",
+  "klass": "BootPoolStatus",
+  "last_occurrence": {
+   "$date": 1795233614000
+  },
+  "level": "CRITICAL",
+  "mail": null,
+  "node": "Controller A",
+  "one_shot": false,
+  "source": "VolumeStatus",
+  "text": "A critical alert of class BootPoolStatus.",
+  "uuid": "0000000000000021"
+ },
+ {
+  "args": null,
+  "datetime": {
+   "$date": 1750228180000
+  },
+  "dismissed": false,
+  "formatted": "A warning alert of class SMBUserMissingHash.",
+  "id": "0000000000000022",
+  "key": "{\"entries\": \"nxtcloud\"}",
+  "klass": "SMBUserMissingHash",
+  "last_occurrence": {
+   "$date": 1794947058000
+  },
+  "level": "WARNING",
+  "mail": null,
+  "node": "Controller A",
+  "one_shot": false,
+  "source": "",
+  "text": "A warning alert of class SMBUserMissingHash.",
+  "uuid": "0000000000000022"
+ }
+]

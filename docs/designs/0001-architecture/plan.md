@@ -219,7 +219,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T11 | Spike S11: collectors on current distributions | T02, L1 | scripted measurement (containers, local Proxmox) | done |
 | T12 | Spike S4: Proxmox privileges, firewall, upgrade command | T02, L1 | scripted measurement (local Proxmox) | done |
 | T13 | Spike S5: Claude Code headless | T02 | scripted measurement (owner's login) | done |
-| T14 | Spike S9: TrueNAS API | T02 | lab measurement | todo |
+| T14 | Spike S9: TrueNAS API | T02 | lab measurement | done |
 | T15 | Spike S10: threat list and GeoIP terms | T02 | scripted measurement + reading | done (owner decision pending for T69) |
 | T16 | Wire format: framing, limits, close codes, messages | T15 | unit, golden | done |
 | T17 | Net: endpoint, node key, registry, contract harness | T16, T08, T09 | contract | done |
@@ -914,12 +914,14 @@ Every spike step follows the same rules:
 - **Regression:** `cargo xtask ci fast`: exit 0.
 - **Manual verification:** MV6 (the owner provides the key and revokes it after).
 - **Done when:**
-  - [ ] Report and redacted fixtures committed; finding in design 17
-  - [ ] Spike code deleted
+  - [x] Report and redacted fixtures committed; finding in design 17
+  - [x] Spike code deleted
 - **Risk / rollback:** none beyond the finding.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-21 | spikes/s9/run.sh --report docs/designs/0001-architecture/spikes/s9.md --fixtures crates/rackhand-drivers/tests/fixtures/truenas --check | exit 0 on TrueNAS 25.04.2.6 (1 pool, 5 disks): every metric of the 7.4.2 TrueNAS row in both REST and JSON-RPC; redaction check passed (no address outside the documentation ranges, no original serial or pool name, not the NAS's address), and the files were read through by hand for names. Spike code deleted; the owner revokes the key (MV6) |
+  | 2026-11-21 | cargo xtask ci fast | exit 0 (no code changed) |
 
 ### T15: Spike S10: threat list and GeoIP terms
 - **Design refs:** 7.8.5, D19, D65, D75, NG10, S10

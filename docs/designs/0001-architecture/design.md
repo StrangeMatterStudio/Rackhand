@@ -2123,6 +2123,10 @@ the owner and the document is updated before the work that depends on it starts.
   tier 1 and 2 chunks of 120 points and tier 2 kept 1 year, projected at 1.81 GB (7.4.1). Report: `spikes/s8.md`.
 - **S9** TrueNAS API: which API (REST or JSON-RPC over WebSocket) the current releases support for pool, disk and alert
   reads.
+  **Finding (2026-11-21):** TrueNAS 25.04 answers every read over both; REST is deprecated from 25.04, so the driver
+  uses JSON-RPC 2.0 over the WebSocket at `/api/current` (`auth.login_with_api_key`, `pool.query`, `disk.query`,
+  `disk.temperatures`, `smart.test.results`, `alert.list`) and REST `/api/v2.0` only for a release without it.
+  Recorded, redacted responses: `crates/rackhand-drivers/tests/fixtures/truenas/`. Report: `spikes/s9.md`.
 - **S10** Threat list and GeoIP terms for default use in an open-source product, and whether the default lists still
   carry enough entries to be worth shipping as the defaults.
   **Finding (2026-11-19):** All three default sources may be used by default: Feodo Tracker is CC0 (abuse.ch terms
@@ -2326,3 +2330,4 @@ None.
 | 2026-11-21 | D113: notifiers trust public CA roots only (7.3.9) | Owner decision on a T42 question | Owen |
 | 2026-11-21 | D114 (probe files, probe settings, `ConfigUpdate` on edit) and D115 (`probe_check`: `RunCheck` and `CheckResult` on stream 0 of `rackhand/probe/1`; 7.3.2, 7.8.7) | T42 gaps, delegated by the owner | Claude (delegated) |
 | 2026-11-21 | 7.3.5: the Claude Code runner's flags from spike S5 (`--strict-mcp-config` and `--tools ""` added; SIGTERM at the deadline); finding in 17 | Spike S5 (T13) | Implementation run |
+| 2026-11-21 | 7.4.2 TrueNAS driver: JSON-RPC over WebSocket (`/api/current`), REST `/api/v2.0` as the fallback; finding in 17 | Spike S9 (T14) | Implementation run |
