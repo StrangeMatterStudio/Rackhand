@@ -5,6 +5,10 @@
 <h1>{{ name }}</h1>
 <p>Site: <a href="/sites/{{ site }}">{{ site }}</a>. Kind: {{ kind }}. OS: {{ os }}. State: {{ state }}.</p>
 <p>Access: {{ access }}. Capture: {{ capture }}.</p>
+{% if let Some(b) = binding %}<h2>Proxmox guest</h2>
+<p>Guest binding: {{ b.state }}.</p>
+{% for g in b.guests %}<form method="post" action="/machines/{{ id }}/binding/confirm"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="guest" value="{{ g.1 }}"><span>{{ g.0 }}</span>{% if b.state != "confirmed" %} <button type="submit">Confirm this guest</button>{% endif %}</form>
+{% endfor %}{% endif %}
 {% if let Some(since) = silent_since %}<p class="banner warning">Probe silent since {{ since }}</p>{% endif %}
 <h2>Vitals</h2>
 <div hx-get="/machines/{{ id }}/vitals" hx-trigger="load, every 15s">Loading vitals</div>

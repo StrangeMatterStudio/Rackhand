@@ -39,6 +39,7 @@ fn incident_view(r: &rusqlite::Row<'_>) -> rusqlite::Result<IncidentView> {
 #[derive(Template)]
 #[template(path = "machine.html")]
 struct MachinePage {
+    csrf: String,
     id: String,
     name: String,
     site: String,
@@ -52,6 +53,19 @@ struct MachinePage {
     services: Vec<(String, String)>,
     containers: Vec<(String, String)>,
     updates: Option<UpdatesView>,
+    binding: Option<BindingView>,
+}
+
+/// The guest binding (7.3.12): its state and the guests the admin may confirm.
+struct BindingView {
+    state: String,
+    guests: Vec<(String, String)>,
+}
+
+/// `pve8 lxc vmid 100` for a `proxmox_ref`.
+fn guest_label(reference: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(reference).unwrap_or_default();
+    format!("{} {} vmid {}", v["node"].as_str().unwrap_or("?"), v["type"].as_str().unwrap_or("?"), v["vmid"])
 }
 
 struct UpdatesView {
@@ -96,14 +110,26 @@ pub(super) fn machine(web: &Web, ctx: &Ctx) -> Response<Body> {
     let id = ctx.path.strip_prefix("/machines/").unwrap_or("").to_string();
     let found = web.0.db.readers().with(|c| {
         c.query_row(
-            "SELECT m.name, s.name, m.kind, coalesce(m.os, ''), m.access, m.state FROM machines m
-             JOIN sites s ON s.id = m.site_id WHERE m.id = ?1",
+            "SELECT m.name, s.name, m.kind, coalesce(m.os, ''), m.access, m.state, m.proxmox_ref, m.proxmox_ref_state
+             FROM machines m JOIN sites s ON s.id = m.site_id WHERE m.id = ?1",
             [&id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get::<_, Option<String>>(6)?,
+                    r.get::<_, String>(7)?,
+                ))
+            },
         )
         .optional()
     });
-    let (name, site, kind, os, access, state): (String, String, String, String, String, String) = match found {
+    type MachineRow = (String, String, String, String, String, String, Option<String>, String);
+    let (name, site, kind, os, access, state, reference, binding_state): MachineRow = match found {
         Ok(Some(row)) => row,
         Ok(None) => return status(StatusCode::NOT_FOUND, "No such machine"),
         Err(_) => return status(StatusCode::INTERNAL_SERVER_ERROR, "The database couldn't be read"),
@@ -141,7 +167,16 @@ pub(super) fn machine(web: &Web, ctx: &Ctx) -> Response<Body> {
         packages: u.packages.join(", "),
     });
     let caps = web.0.ingest.as_ref().map(|i| i.capabilities(&id)).unwrap_or_default();
+    let binding = reference.map(|r| {
+        let mut guests = vec![(guest_label(&r), r)];
+        let seen = web.0.bindings.as_ref().and_then(|b| b.looks_like(&id));
+        if let Some(seen) = seen.filter(|s| *s != guests[0].1) {
+            guests.push((guest_label(&seen), seen));
+        }
+        BindingView { state: binding_state.clone(), guests }
+    });
     let page = MachinePage {
+        csrf: ctx.csrf.clone(),
         silent_since: silent_since(web, &id),
         id,
         name,
@@ -155,6 +190,7 @@ pub(super) fn machine(web: &Web, ctx: &Ctx) -> Response<Body> {
         services,
         containers,
         updates,
+        binding,
     };
     html(StatusCode::OK, page.render())
 }

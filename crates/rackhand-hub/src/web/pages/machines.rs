@@ -1,4 +1,5 @@
-//! Machine actions from the dashboard. Accepting a changed host key is high risk (7.6.8): admin, after a step-up.
+//! Machine actions from the dashboard. Accepting a changed host key and confirming a guest binding are high risk
+//! (7.6.8, 7.3.12): admin, after a step-up.
 
 use axum::body::Body;
 use axum::http::{Response, StatusCode};
@@ -36,6 +37,33 @@ pub(super) async fn accept_host_key(web: &Web, ctx: &Ctx) -> Response<Body> {
     }
     let data = serde_json::json!({ "key_type": key_type, "fingerprint": fingerprint }).to_string();
     if let Err(e) = web.0.audit.append(&user.name, "ssh.host_key_accepted", Some(id), &data).await {
+        tracing::error!(error = %e, "audit");
+    }
+    redirect("/")
+}
+
+/// Confirms the guest the form names as the machine's (its proposal or binding, or the guest it now looks like).
+pub(super) async fn confirm_binding(web: &Web, ctx: &Ctx) -> Response<Body> {
+    let Some(user) = &ctx.user else { return redirect("/sign-in") };
+    if !step_up::fresh(user.step_up_at, ctx.now_ms) {
+        return redirect("/step-up");
+    }
+    let Some(id) = machine_id(&ctx.path) else { return status(StatusCode::NOT_FOUND, "No such machine") };
+    let Some(bindings) = web.0.bindings.as_ref() else { return status(StatusCode::NOT_FOUND, "No such machine") };
+    let Some(guest) = ctx.form.get("guest").map(|g| g.trim().to_string()).filter(|g| !g.is_empty()) else {
+        return status(StatusCode::BAD_REQUEST, "Name the guest you are confirming");
+    };
+    match bindings.confirm(id, &guest, &user.name, ctx.now_ms).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return status(StatusCode::CONFLICT, "That guest isn't this machine's binding or what it looks like now");
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "binding");
+            return status(StatusCode::INTERNAL_SERVER_ERROR, "The binding couldn't be stored");
+        }
+    }
+    if let Err(e) = web.0.audit.append(&user.name, "machine.binding_confirmed", Some(id), &guest).await {
         tracing::error!(error = %e, "audit");
     }
     redirect("/")

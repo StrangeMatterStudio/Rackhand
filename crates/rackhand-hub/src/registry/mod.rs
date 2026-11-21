@@ -4,6 +4,7 @@
 //! updated by every join and revocation, so the router never waits on the database.
 
 pub mod devices;
+pub mod guest_binding;
 pub mod join_server;
 pub mod machines;
 pub mod operators;

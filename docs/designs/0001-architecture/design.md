@@ -2345,3 +2345,4 @@ None.
 | 2026-11-21 | E54, 7.3.7: a detached step's start that lost its answer is followed by `job-status` before the step is failed; found in T46's regression (D74), owner to confirm | Implementation (T46) | Implementation run |
 | 2026-11-21 | 7.4.2: the Proxmox series' names; 7.3.12: `proxmox_ref.cluster` is the hypervisor machine, its API credentials the Vault's `driver.<id>`; the snapshot and rollback steps' snapshot name; gaps filled in T47 (D76), owner to confirm | Implementation (T47) | Implementation run |
 | 2026-11-21 | 7.4.2: the TrueNAS, Redfish and SNMP series' names and labels; SNMPv3 is SHA with AES-128 (authPriv) only; gaps filled in T48 (D77), owner to confirm | Implementation (T48) | Implementation run |
+| 2026-11-21 | 7.3.12: how a binding is proposed, when a confirmed one is a mismatch, and what an admin can confirm after one; gaps filled in T49a (D78), owner to confirm | Implementation (T49a) | Implementation run |

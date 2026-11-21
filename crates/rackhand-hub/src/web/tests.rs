@@ -1657,3 +1657,117 @@ mod metrics {
         );
     }
 }
+
+mod binding {
+    use super::*;
+    use crate::registry::guest_binding::{GuestBindings, GuestMacs};
+
+    const HOST: &str = "01JD0000000000000000000H01";
+    const GUEST: &str = "01JD0000000000000000000G01";
+
+    #[derive(Debug)]
+    struct Roomy;
+
+    impl crate::ingest::DiskSpace for Roomy {
+        fn free_fraction(&self) -> f64 {
+            0.5
+        }
+    }
+
+    fn guests() -> Vec<GuestMacs> {
+        let g = |vmid: u64, kind: &str, mac: &str| GuestMacs {
+            host: HOST.into(),
+            node: "pve8".into(),
+            vmid,
+            kind: kind.into(),
+            macs: vec![mac.into()],
+        };
+        vec![g(100, "lxc", "BC:24:11:82:F7:1A"), g(200, "qemu", "BC:24:11:00:00:C8")]
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn confirm_after_mismatch_needs_admin_step_up() {
+        type Slot = Arc<std::sync::Mutex<Option<Arc<GuestBindings>>>>;
+        let slot: Slot = Arc::default();
+        let keep = slot.clone();
+        let app = app_with("binding-confirm", move |web| {
+            let ingest = crate::ingest::Ingest::new(web.0.db.clone(), crate::bus::Bus::new(), Arc::new(Roomy));
+            let bindings = Arc::new(GuestBindings::new(web.0.db.clone(), ingest));
+            *keep.lock().unwrap() = Some(bindings.clone());
+            web.with_bindings(bindings)
+        })
+        .await;
+        let bindings = slot.lock().unwrap().take().unwrap();
+        complete_first_run(&app, SETUP_CODE).await;
+        let site: String =
+            app.db.readers().with(|c| c.query_row("SELECT id FROM sites LIMIT 1", [], |r| r.get(0))).unwrap();
+        let machine = |id: &str, name: &str, kind: &str| {
+            RowWrite::insert(
+                "machines",
+                Row::from([
+                    ("id", Value::Text(id.into())),
+                    ("site_id", Value::Text(site.clone())),
+                    ("name", Value::Text(name.into())),
+                    ("kind", Value::Text(kind.into())),
+                    ("state", Value::Text("enrolled".into())),
+                ]),
+            )
+        };
+        app.db
+            .writer()
+            .send(WriteCmd::Batch(vec![machine(HOST, "pve", "hypervisor"), machine(GUEST, "ct-test", "linux")]))
+            .await
+            .unwrap();
+        bindings.observe(GUEST, &["BC:24:11:82:F7:1A".into()], &guests(), now_ms()).await.unwrap();
+        let first = guests()[0].reference();
+        bindings.confirm(GUEST, &first, "admin", now_ms()).await.unwrap();
+        bindings.observe(GUEST, &["BC:24:11:00:00:C8".into()], &guests(), now_ms()).await.unwrap();
+        let other = guests()[1].reference();
+        // the machine page says so, and offers both
+        let admin = session_for(&app.db, Role::Admin).await;
+        let page = text(send(&app.router, get(&format!("/machines/{GUEST}"), &admin)).await).await;
+        assert!(page.contains("Guest binding: mismatch"), "{page}");
+        assert!(page.contains("vmid 100") && page.contains("vmid 200"), "{page}");
+        let path = format!("/machines/{GUEST}/binding/confirm");
+        let state = |app: &App| -> String {
+            app.db
+                .readers()
+                .with(|c| c.query_row("SELECT proxmox_ref_state FROM machines WHERE id = ?1", [GUEST], |r| r.get(0)))
+                .unwrap()
+        };
+        // a responder can't
+        let responder = session_for(&app.db, Role::Responder).await;
+        let csrf = csrf_of(&app, &responder).await;
+        let resp =
+            send(&app.router, post(&path, &responder, &[("csrf", csrf.as_str()), ("guest", other.as_str())])).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        // an admin is sent to step up first
+        let csrf = csrf_of(&app, &admin).await;
+        let resp = send(&app.router, post(&path, &admin, &[("csrf", csrf.as_str()), ("guest", other.as_str())])).await;
+        assert_eq!((resp.status(), location(&resp).as_deref()), (StatusCode::SEE_OTHER, Some("/step-up")));
+        assert_eq!(state(&app), "mismatch");
+        let token = admin.split_once('=').unwrap().1;
+        let hash: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+        session::set_step_up(&app.db, &hash, now_ms()).await.unwrap();
+        let csrf = csrf_of(&app, &admin).await;
+        let resp = send(&app.router, post(&path, &admin, &[("csrf", csrf.as_str()), ("guest", other.as_str())])).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(state(&app), "confirmed");
+        let audited: i64 = app
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row("SELECT count(*) FROM audit_log WHERE action = 'machine.binding_confirmed'", [], |r| {
+                    r.get(0)
+                })
+            })
+            .unwrap();
+        assert_eq!(audited, 1);
+        // a guest it neither is nor looks like can't be confirmed
+        let csrf = csrf_of(&app, &admin).await;
+        let stranger = serde_json::json!({ "cluster": HOST, "node": "pve8", "vmid": 300, "type": "qemu" }).to_string();
+        let resp =
+            send(&app.router, post(&path, &admin, &[("csrf", csrf.as_str()), ("guest", stranger.as_str())])).await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+}

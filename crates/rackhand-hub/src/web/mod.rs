@@ -63,6 +63,7 @@ struct Inner {
     limits: Mutex<auth::limits::Limits>,
     pending: Mutex<HashMap<String, auth::Pending>>,
     host_keys: Option<Arc<crate::ssh::hostkeys::HostKeys>>,
+    pub(crate) bindings: Option<Arc<crate::registry::guest_binding::GuestBindings>>,
     registry: Option<Arc<crate::registry::Registry>>,
     passkeys: Option<auth::passkey::Passkeys>,
     oidc_flows: Mutex<HashMap<String, auth::oidc::Flow>>,
@@ -109,6 +110,7 @@ impl Web {
             limits: Mutex::new(auth::limits::Limits::default()),
             pending: Mutex::new(HashMap::new()),
             host_keys: None,
+            bindings: None,
             registry: None,
             passkeys: None,
             oidc_flows: Mutex::new(HashMap::new()),
@@ -144,6 +146,13 @@ impl Web {
     }
 
     /// The SSH system's host keys, for accepting a changed one; before the router is built.
+    pub fn with_bindings(mut self, bindings: Arc<crate::registry::guest_binding::GuestBindings>) -> Web {
+        if let Some(inner) = Arc::get_mut(&mut self.0) {
+            inner.bindings = Some(bindings);
+        }
+        self
+    }
+
     pub fn with_host_keys(mut self, keys: Arc<crate::ssh::hostkeys::HostKeys>) -> Web {
         if let Some(inner) = Arc::get_mut(&mut self.0) {
             inner.host_keys = Some(keys);
