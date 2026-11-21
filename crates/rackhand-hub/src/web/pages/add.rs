@@ -1,7 +1,8 @@
 //! Add (7.7.1, 7.3.12): the one-time install command for a Linux, Alpine or Windows machine (local or remote, managed
 //! or monitor; for Linux and Alpine also the offline variant, which fetches the hub's own `install.sh` and checks it
 //! against its SHA-256), invites for devices, operators and peers (the hub's ticket plus a one-time secret, 24 hours),
-//! and the site bootstrap command (7.7.4). Admin only.
+//! the site bootstrap command (7.7.4), and the machines added in the last day with how their enrollment went. Admin
+//! only.
 
 use askama::Template;
 use axum::body::Body;
@@ -28,7 +29,12 @@ struct AddPage<'a> {
     machines: Vec<(String, String)>,
     bootstrap: String,
     lxc: String,
+    /// Machines enrolled in the last day, newest first: name, access, how it went.
+    recent: Vec<(String, String, String)>,
 }
+
+/// How long a machine stays in the Add page's list.
+const RECENT_MS: i64 = 86_400_000;
 
 #[derive(Template)]
 #[template(path = "add_done.html")]
@@ -60,6 +66,7 @@ pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
         })
         .unwrap_or_default();
     let drivers = super::appliance::DRIVERS.iter().map(|d| (d.0, d.1, d.2)).collect();
+    let recent = recent(web);
     let url = release_url();
     let page = AddPage {
         csrf: &ctx.csrf,
@@ -68,8 +75,52 @@ pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
         machines,
         bootstrap: format!("curl -fsSL {url}/install.sh | sudo sh -s -- --hub"),
         lxc: format!("curl -fsSL {url}/rackhand-lxc.sh | sudo sh"),
+        recent,
     };
     html(StatusCode::OK, page.render())
+}
+
+/// The machines enrolled in the last day (7.3.12): a managed one is enrolled and healthy once the hub's SSH test
+/// passed, and shows the latest failure with its account until then; a monitor one once it reports.
+fn recent(web: &Web) -> Vec<(String, String, String)> {
+    type Row = (String, String, String, Option<String>, Option<String>, Option<String>);
+    let since = rackhand_store::ids::now_ms() - RECENT_MS;
+    let rows: Vec<Row> = web
+        .0
+        .db
+        .readers()
+        .with(|c| {
+            let mut s = c.prepare(
+                "SELECT m.id, m.name, m.access, e.kind, json_extract(e.data, '$.account'), json_extract(e.data, '$.reason')
+                 FROM machines m
+                 LEFT JOIN events e ON e.id = (
+                   SELECT id FROM events WHERE machine_id = m.id
+                     AND kind IN ('machine.ssh_test_passed', 'machine.ssh_test_failed')
+                   ORDER BY at_ms DESC LIMIT 1)
+                 WHERE m.state = 'enrolled' AND m.enrolled_at >= ?1 AND m.driver IS NULL
+                 ORDER BY m.enrolled_at DESC LIMIT 50",
+            )?;
+            s.query_map([since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
+                .collect()
+        })
+        .unwrap_or_default();
+    let reporting = |id: &str| web.0.ingest.as_ref().and_then(|i| i.last_seen(id)).is_some();
+    rows.into_iter()
+        .map(|(id, name, access, test, account, reason)| {
+            let state = match (access.as_str(), test.as_deref()) {
+                ("managed", Some(crate::ssh::enroll_test::PASSED)) => "Enrolled and healthy".to_string(),
+                ("managed", Some(_)) => format!(
+                    "SSH test failed as {}: {}",
+                    account.unwrap_or_else(|| "rackhand".into()),
+                    reason.unwrap_or_default()
+                ),
+                ("managed", None) => "Waiting for the hub's SSH test".to_string(),
+                _ if reporting(&id) => "Enrolled and healthy".to_string(),
+                _ => "Waiting for its first report".to_string(),
+            };
+            (name, access, state)
+        })
+        .collect()
 }
 
 pub(super) fn valid_name(n: &str) -> bool {

@@ -1904,6 +1904,84 @@ mod add {
         assert_eq!(send(&bare.router, fetch("/install.sh")).await.status(), StatusCode::NOT_FOUND);
     }
 
+    /// The machines added in the last day, as the Add page lists them (7.3.12, AC35): enrolled and healthy once the
+    /// hub's SSH test passed, or the failure with its account; a monitor machine once it reports.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lists_recently_added_machines_with_ssh_test_result() {
+        let app = add_app("add-recent").await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let site: String =
+            app.db.readers().with(|c| c.query_row("SELECT id FROM sites LIMIT 1", [], |r| r.get(0))).unwrap();
+        let now = rackhand_store::ids::now_ms();
+        let day = 86_400_000;
+        let mut writes = Vec::new();
+        for (id, access, enrolled_at) in [
+            ("web1", "managed", now - 60_000),
+            ("web2", "managed", now - 120_000),
+            ("web3", "managed", now - 1_000),
+            ("mon1", "monitor", now - 5_000),
+            ("old1", "managed", now - 2 * day),
+        ] {
+            writes.push(RowWrite::insert(
+                "machines",
+                Row::from([
+                    ("id", Value::Text(id.into())),
+                    ("site_id", Value::Text(site.clone())),
+                    ("name", Value::Text(id.into())),
+                    ("kind", Value::Text("linux".into())),
+                    ("access", Value::Text(access.into())),
+                    ("state", Value::Text("enrolled".into())),
+                    ("enrolled_at", Value::Integer(enrolled_at)),
+                ]),
+            ));
+        }
+        for (n, (machine, kind, at, data)) in [
+            ("web1", "machine.ssh_test_passed", now - 50_000, "{}"),
+            ("web2", "machine.ssh_test_passed", now - 110_000, "{}"),
+            (
+                "web2",
+                "machine.ssh_test_failed",
+                now - 100_000,
+                r#"{"account":"rackhand-ai","reason":"`sudo -n true`: exit 1"}"#,
+            ),
+            ("old1", "machine.ssh_test_passed", now - day, "{}"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            writes.push(RowWrite::insert(
+                "events",
+                Row::from([
+                    ("id", Value::Text(format!("e{n}"))),
+                    ("machine_id", Value::Text(machine.into())),
+                    ("at_ms", Value::Integer(at)),
+                    ("kind", Value::Text(kind.into())),
+                    ("severity", Value::Text("info".into())),
+                    ("data", Value::Text(data.into())),
+                ]),
+            ));
+        }
+        app.db.writer().send(WriteCmd::Batch(writes)).await.unwrap();
+
+        let page = unescape(&text(send(&app.router, get("/add", &admin)).await).await);
+        let at = page.find("Recently added").unwrap_or_else(|| panic!("a recently added list: {page}"));
+        let list = &page[at..page[at..].find("</table>").map_or(page.len(), |e| at + e)];
+        let row = |name: &str| {
+            let start = list.find(&format!("<td>{name}</td>")).unwrap_or_else(|| panic!("{name} listed: {list}"));
+            list[start..list[start..].find("</tr>").map_or(list.len(), |e| start + e)].to_string()
+        };
+        assert!(row("web1").contains("Enrolled and healthy"), "{}", row("web1"));
+        let failed = row("web2");
+        assert!(
+            failed.contains("SSH test failed as rackhand-ai") && failed.contains("exit 1"),
+            "the latest test: {failed}"
+        );
+        assert!(row("web3").contains("Waiting for the hub's SSH test"), "{}", row("web3"));
+        assert!(row("mon1").contains("Waiting for its first report"), "{}", row("mon1"));
+        assert!(!list.contains("old1"), "only the last day: {list}");
+        assert!(list.find("web3").unwrap() < list.find("web1").unwrap(), "newest first: {list}");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn device_operator_peer_invites_expire_in_24h() {
         let app = add_app("add-invites").await;

@@ -161,6 +161,31 @@ fn reporting(hub: &Hub) {
     within(Duration::from_secs(60), "the machine's reports on /metrics", || hub.metrics().contains("machine=\"web1\""));
 }
 
+/// One column of the machine's row in the hub's database.
+fn machine_column(hub: &Hub, id: &str, column: &str) -> String {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let _in = rt.enter();
+    let db = rackhand_store::Db::open(&hub.data.join("hub.db")).unwrap();
+    let sql = format!("SELECT coalesce({column}, '') FROM machines WHERE id = ?1");
+    db.readers().with(|c| c.query_row(&sql, [id], |r| r.get(0))).unwrap()
+}
+
+/// The hub's SSH tests of the machine, oldest first: the event kind and the account a failure names.
+fn ssh_tests(hub: &Hub, id: &str) -> Vec<(String, String)> {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let _in = rt.enter();
+    let db = rackhand_store::Db::open(&hub.data.join("hub.db")).unwrap();
+    db.readers()
+        .with(|c| {
+            let mut s = c.prepare(
+                "SELECT kind, coalesce(json_extract(data, '$.account'), '') FROM events
+                 WHERE machine_id = ?1 AND kind LIKE 'machine.ssh_test_%' ORDER BY at_ms",
+            )?;
+            s.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
+        })
+        .unwrap()
+}
+
 /// What a managed machine must have (7.3.7); `assistant` says whether `rackhand-ai` is one of them.
 fn assert_managed(c: &Container, hub_ip: &str, assistant: bool) {
     let keys = sh(c, "cat /home/rackhand/.ssh/authorized_keys");
@@ -300,6 +325,44 @@ mod install {
         reporting(&hub);
     }
 
+    /// The hub's SSH test after a managed machine's first report (7.3.12, AC35): it logs in as `rackhand` (`true`) and
+    /// as `rackhand-ai` (`sudo -n true`) with the host key pinned at join, at the address the join came from. With sshd
+    /// down the test fails naming the account; once sshd is up the next report is tested again, and the Add page shows
+    /// the machine enrolled and healthy.
+    #[test]
+    fn hub_ssh_test_completes_enrollment() {
+        let hub = hub("inst-sshtest");
+        let release = Release::new("sshtest", "current", false);
+        let (id, token) = add_machine(&hub, Access::Managed, &[]);
+        let c = Container::start_systemd_with("debian-install-sshd", &[]);
+        within(Duration::from_secs(30), "systemd up", || {
+            matches!(sh(&c, "systemctl is-system-running 2>/dev/null || true").as_str(), "running" | "degraded")
+        });
+        ok(&c.root("systemctl stop ssh.socket ssh.service 2>/dev/null; systemctl stop ssh; true"));
+        ok(&install(&c, &hub, &release, &release.script(None), &token, ""));
+        reporting(&hub);
+        let (ip, _) = c.ip_and_gateway();
+        assert_eq!(machine_column(&hub, &id, "address"), ip, "the address the join came from");
+
+        let failed = || ssh_tests(&hub, &id).iter().any(|(k, _)| k == "machine.ssh_test_failed");
+        within(Duration::from_secs(60), "the SSH test failed", failed);
+        let (_, account) = ssh_tests(&hub, &id).into_iter().find(|(k, _)| k == "machine.ssh_test_failed").unwrap();
+        assert_eq!(account, "rackhand", "the failure names the account");
+        let add = |hub: &Hub| super::unescape(&hub.curl(&["/add"]));
+        assert!(add(&hub).contains("SSH test failed as rackhand"), "{}", add(&hub));
+
+        ok(&c.root("systemctl start ssh"));
+        within(Duration::from_secs(20), "sshd up", || sh(&c, "systemctl is-active ssh") == "active");
+        ok(&c.root("systemctl restart rackhand-probe"));
+        let passed = || ssh_tests(&hub, &id).last().is_some_and(|(k, _)| k == "machine.ssh_test_passed");
+        within(Duration::from_secs(60), "the SSH test passed at the next report", passed);
+        let page = add(&hub);
+        let row = page.find("<td>web1</td>").map(|at| &page[at..at + page[at..].find("</tr>").unwrap()]);
+        assert!(row.is_some_and(|r| r.contains("Enrolled and healthy")), "{page}");
+        let logins = sh(&c, "journalctl -u ssh --no-pager | grep -c 'Accepted publickey for rackhand' || true");
+        assert_eq!(logins, "2", "one login per account: {}", sh(&c, "journalctl -u ssh --no-pager"));
+    }
+
     #[test]
     fn alpine_managed_enrolls_and_reports() {
         let hub = hub("inst-alpine");
@@ -416,6 +479,8 @@ mod runcmd {
         ok(&install(&c, &hub, &release, &release.script(None), &token, ""));
         // the hub's list: its library's runbooks' root steps and the diagnostics' root commands (7.3.7, 7.8.3)
         let installed: serde_json::Value = serde_json::from_str(&sh(&c, "cat /etc/rackhand/commands.json")).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let _in = rt.enter();
         let db = rackhand_store::Db::open(&hub.data.join("hub.db")).unwrap();
         let runbooks: Vec<_> = rackhand_hub::library::items::Library::all_current(&db)
             .unwrap()

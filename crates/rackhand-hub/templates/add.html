@@ -3,6 +3,12 @@
 {% block nav %}<nav><a href="/">Overview</a> <a href="/settings">Settings</a></nav>{% endblock %}
 {% block content %}
 <h1>Add</h1>
+{% if !recent.is_empty() %}
+<h2>Recently added</h2>
+<table><tr><th>Machine</th><th>Access</th><th>Enrollment</th></tr>
+{% for m in recent %}<tr><td>{{ m.0 }}</td><td>{{ m.1 }}</td><td>{{ m.2 }}</td></tr>
+{% endfor %}</table>
+{% endif %}
 <h2>Add a machine</h2>
 <form method="post" action="/add/machine">
 <input type="hidden" name="csrf" value="{{ csrf }}">
