@@ -80,6 +80,17 @@ impl Vault {
         Ok(())
     }
 
+    /// `value` sealed as `name`, as a write to make in the same transaction as the change it belongs to.
+    pub fn sealed(&self, name: &str, value: &Secret, now_ms: i64) -> Result<rackhand_store::RowWrite, VaultError> {
+        let sealed = self.key.seal(name, value.expose())?;
+        let mut row = Row::new();
+        row.insert("name", Value::Text(name.into()));
+        row.insert("nonce", Value::Blob(sealed.nonce.to_vec()));
+        row.insert("ciphertext", Value::Blob(sealed.ciphertext));
+        row.insert("created_at", Value::Integer(now_ms));
+        Ok(rackhand_store::RowWrite::upsert("secrets", "name", row))
+    }
+
     pub fn get(&self, name: &str) -> Result<Secret, VaultError> {
         let found: Option<(Vec<u8>, Vec<u8>)> = self.db.readers().with(|c| {
             c.query_row("SELECT nonce, ciphertext FROM secrets WHERE name = ?1", [name], |r| Ok((r.get(0)?, r.get(1)?)))

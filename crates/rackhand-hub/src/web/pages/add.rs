@@ -22,6 +22,10 @@ fn release_url() -> String {
 struct AddPage<'a> {
     csrf: &'a str,
     users: Vec<(String, String)>,
+    /// The appliance forms: driver, title, address example.
+    drivers: Vec<(&'static str, &'static str, &'static str)>,
+    /// Enrolled machines a Proxmox API can belong to.
+    machines: Vec<(String, String)>,
     bootstrap: String,
     lxc: String,
 }
@@ -44,17 +48,31 @@ pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
             s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
         })
         .unwrap_or_default();
+    let machines = web
+        .0
+        .db
+        .readers()
+        .with(|c| {
+            let mut s = c.prepare(
+                "SELECT id, name FROM machines WHERE state = 'enrolled' AND probe_endpoint_id IS NOT NULL ORDER BY name",
+            )?;
+            s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
+        })
+        .unwrap_or_default();
+    let drivers = super::appliance::DRIVERS.iter().map(|d| (d.0, d.1, d.2)).collect();
     let url = release_url();
     let page = AddPage {
         csrf: &ctx.csrf,
         users,
+        drivers,
+        machines,
         bootstrap: format!("curl -fsSL {url}/install.sh | sudo sh -s -- --hub"),
         lxc: format!("curl -fsSL {url}/rackhand-lxc.sh | sudo sh"),
     };
     html(StatusCode::OK, page.render())
 }
 
-fn valid_name(n: &str) -> bool {
+pub(super) fn valid_name(n: &str) -> bool {
     (1..=64).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_')
 }
 

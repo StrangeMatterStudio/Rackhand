@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Add {{ name }}: Rackhand{% endblock %}
+{% block nav %}<nav><a href="/">Overview</a> <a href="/add">Add</a></nav>{% endblock %}
+{% block content %}
+<h1>Add {{ name }}</h1>
+<p>{{ title }} at <code>{{ address }}</code>.</p>
+<form method="post" action="/add/appliance/accept">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="token" value="{{ token }}">
+{% if !fingerprint.is_empty() %}
+<p>It presented a certificate with this SHA-256 fingerprint. Check it against the one the appliance shows (its web
+interface, or <code>openssl x509 -noout -fingerprint -sha256</code> on it) before you accept it. From now on Rackhand
+talks to this certificate only.</p>
+<pre><code>{{ fingerprint }}</code></pre>
+<input type="hidden" name="fingerprint" value="{{ fingerprint }}">
+{% endif %}
+{% for fl in fields %}
+<label>{{ fl.1 }} {% if fl.2 %}<input type="password" name="{{ fl.0 }}" autocomplete="off">{% else %}<input name="{{ fl.0 }}">{% endif %}</label>
+{% endfor %}
+<p>The credentials go into the Vault. Rackhand polls the appliance once with them; only a poll that works adds it.</p>
+<button type="submit">{% if !fingerprint.is_empty() %}Accept the certificate and add it{% else %}Add it{% endif %}</button>
+</form>
+<p>This form works once, for 60 minutes.</p>
+{% endblock %}

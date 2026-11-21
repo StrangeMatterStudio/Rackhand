@@ -1939,3 +1939,292 @@ mod add {
         assert_eq!(send(&app.router, post("/add/invite", &responder, &invite)).await.status(), StatusCode::FORBIDDEN);
     }
 }
+
+mod agentless {
+    use super::*;
+    use rackhand_drivers::{Driver, Proxmox, Redfish, Snmp, TrueNas};
+
+    const KEY: &str = "1-invented-api-key";
+    const PVE_TOKEN: &str = "rackhand@pve!hub=00000000-1111-2222-3333-444444444444";
+
+    fn drivers() -> Vec<Arc<dyn Driver>> {
+        vec![Arc::new(Proxmox::new()), Arc::new(TrueNas::new()), Arc::new(Redfish::new()), Arc::new(Snmp::new())]
+    }
+
+    async fn agentless_app(name: &str) -> App {
+        let app = app_with(name, |web| {
+            let registry = crate::registry::Registry::load(web.db().clone()).unwrap();
+            web.with_registry(registry).with_drivers(drivers())
+        })
+        .await;
+        complete_first_run(&app, SETUP_CODE).await;
+        app
+    }
+
+    fn vault(app: &App) -> Vault {
+        Vault::new(MasterKey::from_bytes([3u8; 32]), app.db.clone())
+    }
+
+    fn unescape(html: &str) -> String {
+        html.replace("&#x2F;", "/")
+            .replace("&#x27;", "'")
+            .replace("&amp;", "&")
+            .replace("&#39;", "'")
+            .replace("&quot;", "\"")
+    }
+
+    /// The value of the hidden field `name` on a page.
+    fn hidden(page: &str, name: &str) -> String {
+        let at = page.find(&format!("name=\"{name}\" value=\"")).unwrap_or_else(|| panic!("a `{name}` field: {page}"));
+        let rest = &page[at + name.len() + 15..];
+        rest[..rest.find('"').unwrap()].to_string()
+    }
+
+    async fn submit(app: &App, admin: &str, path: &str, fields: &[(&str, &str)]) -> (StatusCode, String) {
+        let csrf = csrf_of(app, admin).await;
+        let mut all = vec![("csrf", csrf.as_str())];
+        all.extend_from_slice(fields);
+        let resp = send(&app.router, post(path, admin, &all)).await;
+        let code = resp.status();
+        (code, unescape(&text(resp).await))
+    }
+
+    /// Every text and blob value in the database, for looking for a credential where none may be.
+    fn every_value(db: &Db) -> Vec<String> {
+        db.readers()
+            .with(|c| {
+                let tables: Vec<String> = {
+                    let mut s = c.prepare("SELECT name FROM sqlite_master WHERE type = 'table'")?;
+                    s.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?
+                };
+                let mut out = Vec::new();
+                for t in tables {
+                    let mut s = c.prepare(&format!("SELECT * FROM \"{t}\""))?;
+                    let n = s.column_count();
+                    let mut rows = s.query([])?;
+                    while let Some(r) = rows.next()? {
+                        for i in 0..n {
+                            match r.get_ref(i)? {
+                                rusqlite::types::ValueRef::Text(b) | rusqlite::types::ValueRef::Blob(b) => {
+                                    out.push(format!("{t}: {}", String::from_utf8_lossy(b)));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                Ok(out)
+            })
+            .unwrap()
+    }
+
+    fn machine_row(db: &Db, name: &str) -> (String, String, String, Option<String>, Option<String>, String) {
+        db.readers()
+            .with(|c| {
+                c.query_row(
+                    "SELECT id, kind, state, driver, driver_settings, address FROM machines WHERE name = ?1",
+                    [name],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+                )
+            })
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn form_stores_credentials_in_vault_only() {
+        let app = agentless_app("agentless-vault").await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let sim = rackhand_drivers::truenas::sim::Sim::start(rackhand_drivers::truenas::sim::Api::WebSocket).await;
+        let page = unescape(&text(send(&app.router, get("/add", &admin)).await).await);
+        assert!(page.contains("/add/appliance") && page.contains("truenas"), "the appliance forms: {page}");
+        // first the address: the hub shows the certificate it was given, before any credential is asked for
+        let fields = [("driver", "truenas"), ("name", "nas1"), ("address", sim.url.as_str())];
+        let (code, shown) = submit(&app, &admin, "/add/appliance", &fields).await;
+        assert_eq!(code, StatusCode::OK, "{shown}");
+        assert!(shown.contains(&sim.fingerprint), "the fingerprint to accept: {shown}");
+        assert!(sim.calls().is_empty(), "nothing sent to an unaccepted certificate: {:?}", sim.calls());
+        let token = hidden(&shown, "token");
+        // a wrong key fails the first poll: refused, and the form can be sent again
+        let wrong =
+            [("token", token.as_str()), ("fingerprint", sim.fingerprint.as_str()), ("api_key", "1-not-the-key")];
+        let (code, _) = submit(&app, &admin, "/add/appliance/accept", &wrong).await;
+        assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
+        // a fingerprint that isn't the appliance's: the poll is pinned to what the admin accepted
+        let other = "AA:".repeat(31) + "AA";
+        let pinned = [("token", token.as_str()), ("fingerprint", other.as_str()), ("api_key", KEY)];
+        let (code, _) = submit(&app, &admin, "/add/appliance/accept", &pinned).await;
+        assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
+        let right = [("token", token.as_str()), ("fingerprint", sim.fingerprint.as_str()), ("api_key", KEY)];
+        let (code, done) = submit(&app, &admin, "/add/appliance/accept", &right).await;
+        assert_eq!(code, StatusCode::OK, "{done}");
+        let (id, kind, state, driver, settings, _) = machine_row(&app.db, "nas1");
+        assert_eq!((kind.as_str(), state.as_str(), driver.as_deref()), ("appliance", "enrolled", Some("truenas")));
+        let settings: serde_json::Value = serde_json::from_str(&settings.unwrap()).unwrap();
+        assert_eq!(settings["api_key"], format!("secret:driver.{id}"), "a reference: {settings}");
+        assert_eq!(settings["fingerprint"], sim.fingerprint.as_str(), "the accepted certificate: {settings}");
+        let held: serde_json::Value =
+            serde_json::from_slice(vault(&app).get(&format!("driver.{id}")).unwrap().expose()).unwrap();
+        assert_eq!(held["api_key"], KEY);
+        assert_eq!(held["fingerprint"], sim.fingerprint.as_str());
+        let leaks: Vec<String> = every_value(&app.db).into_iter().filter(|v| v.contains(KEY)).collect();
+        assert!(leaks.is_empty(), "the key only in the Vault: {leaks:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn form_join_completes_and_used_invite_refused() {
+        let app = agentless_app("agentless-once").await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let sim = rackhand_drivers::truenas::sim::Sim::start(rackhand_drivers::truenas::sim::Api::WebSocket).await;
+        let fields = [("driver", "truenas"), ("name", "nas1"), ("address", sim.url.as_str())];
+        let (_, shown) = submit(&app, &admin, "/add/appliance", &fields).await;
+        let token = hidden(&shown, "token");
+        let right = [("token", token.as_str()), ("fingerprint", sim.fingerprint.as_str()), ("api_key", KEY)];
+        let (code, done) = submit(&app, &admin, "/add/appliance/accept", &right).await;
+        assert_eq!(code, StatusCode::OK, "{done}");
+        assert!(done.contains("nas1"), "{done}");
+        let (id, ..) = machine_row(&app.db, "nas1");
+        // sent again, even with other credentials: refused with its reason, and nothing changes
+        let again = [("token", token.as_str()), ("fingerprint", sim.fingerprint.as_str()), ("api_key", "1-other")];
+        let (code, refused) = submit(&app, &admin, "/add/appliance/accept", &again).await;
+        assert_eq!(code, StatusCode::CONFLICT);
+        assert!(refused.contains("already been used"), "{refused}");
+        let held: serde_json::Value =
+            serde_json::from_slice(vault(&app).get(&format!("driver.{id}")).unwrap().expose()).unwrap();
+        assert_eq!(held["api_key"], KEY, "the stored credential is untouched");
+        // an expired form
+        let (_, shown) = submit(
+            &app,
+            &admin,
+            "/add/appliance",
+            &[("driver", "truenas"), ("name", "nas2"), ("address", sim.url.as_str())],
+        )
+        .await;
+        let late = hidden(&shown, "token");
+        let expire = rackhand_store::RowUpdate {
+            table: "join_tokens",
+            key: (
+                "hash",
+                Value::Blob(crate::registry::tokens::hash(&crate::registry::tokens::Token::parse(&late)).to_vec()),
+            ),
+            set: Row::from([("expires_at", Value::Integer(1))]),
+        };
+        let change = rackhand_store::RegistryChange { consume: None, writes: vec![], updates: vec![expire] };
+        app.db.writer().send(WriteCmd::RegistryChange(change)).await.unwrap();
+        let fields = [("token", late.as_str()), ("fingerprint", sim.fingerprint.as_str()), ("api_key", KEY)];
+        let (code, refused) = submit(&app, &admin, "/add/appliance/accept", &fields).await;
+        assert_eq!(code, StatusCode::GONE);
+        assert!(refused.contains("expired"), "{refused}");
+        // a probe machine's install token isn't an appliance form's, nor the other way round
+        let registry = crate::registry::Registry::load(app.db.clone()).unwrap();
+        let add = crate::registry::machines::AddMachine {
+            site_id: app.db.readers().with(|c| c.query_row("SELECT id FROM sites LIMIT 1", [], |r| r.get(0))).unwrap(),
+            name: "web9".into(),
+            kind: "linux".into(),
+            access: rackhand_proto::common::Access::Managed,
+            mode: rackhand_proto::common::ProbeMode::Local,
+            roles: vec![],
+        };
+        let (_, machine_token) = registry.add_machine(&add, "admin", now_ms()).await.unwrap();
+        let fields = [("token", machine_token.as_str()), ("fingerprint", sim.fingerprint.as_str()), ("api_key", KEY)];
+        let (code, refused) = submit(&app, &admin, "/add/appliance/accept", &fields).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        assert!(refused.contains("another kind"), "{refused}");
+        let (_, shown) = submit(
+            &app,
+            &admin,
+            "/add/appliance",
+            &[("driver", "truenas"), ("name", "nas3"), ("address", sim.url.as_str())],
+        )
+        .await;
+        let form_token = crate::registry::tokens::Token::parse(&hidden(&shown, "token"));
+        let as_probe = rackhand_store::RegistryChange {
+            consume: Some(rackhand_store::ConsumeToken {
+                hash: crate::registry::tokens::hash(&form_token).to_vec(),
+                kind: "machine".into(),
+                now_ms: now_ms(),
+            }),
+            writes: vec![],
+            updates: vec![],
+        };
+        assert!(app.db.writer().send(WriteCmd::RegistryChange(as_probe)).await.is_err(), "a probe can't join with it");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn proxmox_token_attaches_to_its_enrolled_host() {
+        let app = agentless_app("agentless-pve").await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let sim = rackhand_drivers::proxmox::sim::Sim::start("pve8").await;
+        // the Proxmox host already runs a probe
+        let site: String =
+            app.db.readers().with(|c| c.query_row("SELECT id FROM sites LIMIT 1", [], |r| r.get(0))).unwrap();
+        let host = "01JD00000000000000000000PV";
+        let row = Row::from([
+            ("id", Value::Text(host.into())),
+            ("site_id", Value::Text(site)),
+            ("name", Value::Text("pve".into())),
+            ("kind", Value::Text("linux".into())),
+            ("state", Value::Text("enrolled".into())),
+            ("probe_endpoint_id", Value::Text("e".repeat(64))),
+        ]);
+        app.db.writer().send(WriteCmd::Batch(vec![RowWrite::insert("machines", row)])).await.unwrap();
+        let fields = [("driver", "proxmox"), ("machine", host), ("address", sim.url.as_str())];
+        let (code, shown) = submit(&app, &admin, "/add/appliance", &fields).await;
+        assert_eq!(code, StatusCode::OK, "{shown}");
+        let token = hidden(&shown, "token");
+        let fields = [("token", token.as_str()), ("fingerprint", sim.fingerprint.as_str()), ("token_value", PVE_TOKEN)];
+        let (code, done) = submit(&app, &admin, "/add/appliance/accept", &fields).await;
+        assert_eq!(code, StatusCode::OK, "{done}");
+        let count: i64 =
+            app.db.readers().with(|c| c.query_row("SELECT count(*) FROM machines", [], |r| r.get(0))).unwrap();
+        assert_eq!(count, 1, "no second row for the same host");
+        let (id, kind, state, driver, _, address) = machine_row(&app.db, "pve");
+        assert_eq!((id.as_str(), kind.as_str(), state.as_str()), (host, "linux", "enrolled"));
+        assert_eq!(driver.as_deref(), Some("proxmox"));
+        assert_eq!(address, sim.url);
+        // what the snapshot step reads (`driver.<host>`: token and fingerprint)
+        let held: serde_json::Value =
+            serde_json::from_slice(vault(&app).get(&format!("driver.{host}")).unwrap().expose()).unwrap();
+        assert_eq!(
+            (held["token"].as_str(), held["fingerprint"].as_str()),
+            (Some(PVE_TOKEN), Some(sim.fingerprint.as_str()))
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn snmp_form_has_no_certificate_and_keeps_its_community_secret() {
+        let app = agentless_app("agentless-snmp").await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let sim = rackhand_drivers::snmp::sim::Sim::start().await;
+        let fields = [("driver", "snmp"), ("name", "switch1"), ("address", sim.addr.as_str())];
+        let (code, shown) = submit(&app, &admin, "/add/appliance", &fields).await;
+        assert_eq!(code, StatusCode::OK, "{shown}");
+        assert!(!shown.contains("fingerprint\" value"), "no certificate to accept: {shown}");
+        let token = hidden(&shown, "token");
+        let community = "public-lab";
+        let fields = [("token", token.as_str()), ("version", "2c"), ("community", community)];
+        let (code, done) = submit(&app, &admin, "/add/appliance/accept", &fields).await;
+        assert_eq!(code, StatusCode::OK, "{done}");
+        let (id, _, state, _, settings, _) = machine_row(&app.db, "switch1");
+        assert_eq!(state, "enrolled");
+        assert!(settings.unwrap().contains(&format!("secret:driver.{id}")));
+        let leaks: Vec<String> = every_value(&app.db).into_iter().filter(|v| v.contains(community)).collect();
+        assert!(leaks.is_empty(), "the community only in the Vault: {leaks:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn appliance_forms_admin_only() {
+        let app = agentless_app("agentless-admin").await;
+        let responder = session_for(&app.db, Role::Responder).await;
+        let csrf = csrf_of(&app, &responder).await;
+        let fields = [("csrf", csrf.as_str()), ("driver", "snmp"), ("name", "x"), ("address", "192.0.2.1")];
+        assert_eq!(
+            send(&app.router, post("/add/appliance", &responder, &fields)).await.status(),
+            StatusCode::FORBIDDEN
+        );
+        let fields = [("csrf", csrf.as_str()), ("token", "X")];
+        assert_eq!(
+            send(&app.router, post("/add/appliance/accept", &responder, &fields)).await.status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+}

@@ -1,5 +1,5 @@
 //! One-time join tokens and invite secrets (7.3.1): 128-bit random, single use, bound to a kind, stored only as a
-//! SHA-256 hash. Machine tokens last 60 minutes; device, operator and peer invites 24 hours.
+//! SHA-256 hash. Machine tokens and appliance forms last 60 minutes; device, operator and peer invites 24 hours.
 
 use rackhand_proto::alpn;
 use rackhand_store::{Row, RowWrite};
@@ -19,6 +19,8 @@ pub enum TokenKind {
     Device,
     Operator,
     Peer,
+    /// An appliance form (7.3.12): from its address to its accepted certificate and credentials.
+    Agentless,
 }
 
 impl TokenKind {
@@ -28,11 +30,12 @@ impl TokenKind {
             TokenKind::Device => "device",
             TokenKind::Operator => "operator",
             TokenKind::Peer => "peer",
+            TokenKind::Agentless => "agentless",
         }
     }
 
     pub fn ttl_ms(self) -> i64 {
-        if self == TokenKind::Machine { MACHINE_TTL_MS } else { INVITE_TTL_MS }
+        if matches!(self, TokenKind::Machine | TokenKind::Agentless) { MACHINE_TTL_MS } else { INVITE_TTL_MS }
     }
 
     /// The ALPNs an id that joined with this kind may use (7.3.2, 7.3.4 to 7.3.6, 7.3.11).
@@ -43,6 +46,8 @@ impl TokenKind {
             TokenKind::Device => &[alpn::TUNNEL, alpn::XFER, alpn::MCP],
             TokenKind::Operator => &[alpn::OPERATOR, alpn::MCP],
             TokenKind::Peer => &[alpn::PEER, alpn::XFER],
+            // An appliance has no endpoint: the hub calls its API.
+            TokenKind::Agentless => &[],
         }
     }
 }
@@ -95,6 +100,13 @@ pub struct Bound {
     /// Device invites: the user the device belongs to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_id: Option<String>,
+    /// Appliance forms: the driver, the address, and the certificate fingerprint shown to the admin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
 }
 
 /// A new token and the row that stores its hash.

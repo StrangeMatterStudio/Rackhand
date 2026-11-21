@@ -240,6 +240,7 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         .with_ticket(ticket)
         .with_release_dir(config.data_dir.join("release"))
         .with_bindings(bindings)
+        .with_drivers(api_drivers())
         .with_registry(registry.clone())
         .with_library(library.clone())
         .with_host_keys(host_keys.clone())
@@ -335,6 +336,16 @@ pub fn steps(
         .with(StepKind::Snapshot, hypervisor.clone())
         .with(StepKind::Rollback, hypervisor)
         .with(StepKind::ProbeCheck, Arc::new(probes.probe_checks()))
+}
+
+/// The drivers of the agentless machines' APIs (7.3.12): the appliance forms poll with them.
+fn api_drivers() -> Vec<Arc<dyn rackhand_drivers::Driver>> {
+    vec![
+        Arc::new(rackhand_drivers::Proxmox::new()),
+        Arc::new(rackhand_drivers::TrueNas::new()),
+        Arc::new(rackhand_drivers::Redfish::new()),
+        Arc::new(rackhand_drivers::Snmp::new()),
+    ]
 }
 
 /// The public half of one of the hub's SSH identities, as an `authorized_keys` key (made the first time).

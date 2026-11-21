@@ -69,6 +69,8 @@ struct Inner {
     /// The release files the hub holds (`install.sh`, ...), for the offline install command.
     release_dir: Option<std::path::PathBuf>,
     registry: Option<Arc<crate::registry::Registry>>,
+    /// The API drivers, by name, for the appliance forms' first poll.
+    drivers: std::collections::BTreeMap<&'static str, Arc<dyn rackhand_drivers::Driver>>,
     passkeys: Option<auth::passkey::Passkeys>,
     oidc_flows: Mutex<HashMap<String, auth::oidc::Flow>>,
     library: Option<crate::library::items::Library>,
@@ -120,6 +122,7 @@ impl Web {
             ticket: None,
             release_dir: None,
             registry: None,
+            drivers: std::collections::BTreeMap::new(),
             passkeys: None,
             oidc_flows: Mutex::new(HashMap::new()),
             library: None,
@@ -174,6 +177,14 @@ impl Web {
 
     pub(crate) fn release_dir(&self) -> Option<&std::path::Path> {
         self.0.release_dir.as_deref()
+    }
+
+    /// The API drivers the appliance forms poll with; before the router is built.
+    pub fn with_drivers(mut self, drivers: Vec<Arc<dyn rackhand_drivers::Driver>>) -> Web {
+        if let Some(inner) = Arc::get_mut(&mut self.0) {
+            inner.drivers = drivers.into_iter().map(|d| (d.kind().name(), d)).collect();
+        }
+        self
     }
 
     pub fn with_bindings(mut self, bindings: Arc<crate::registry::guest_binding::GuestBindings>) -> Web {

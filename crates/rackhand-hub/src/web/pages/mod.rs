@@ -2,6 +2,7 @@
 
 mod account;
 mod add;
+mod appliance;
 mod approvals;
 mod audit;
 mod first_run;
@@ -46,6 +47,8 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
         Page::Add => add::page(web, ctx),
         Page::AddMachine => add::machine(web, ctx).await,
         Page::AddInvite => add::invite(web, ctx).await,
+        Page::AddAppliance => appliance::start(web, ctx).await,
+        Page::AddApplianceAccept => appliance::accept(web, ctx).await,
         Page::UserCreate => users::create(web, ctx).await,
         Page::UserRole => users::change_role(web, ctx).await,
         Page::UserDisable => users::disable(web, ctx).await,

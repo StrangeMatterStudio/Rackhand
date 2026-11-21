@@ -179,3 +179,29 @@ async fn icmp_uses_unprivileged_socket_or_cap_net_raw() {
         .unwrap();
     assert!(!quiet.ok);
 }
+
+mod pinned_tls {
+    use super::*;
+
+    /// The certificate an appliance presents, read before it is pinned (7.3.12): the handshake only, nothing sent.
+    #[tokio::test]
+    async fn presented_is_the_servers_fingerprint_and_nothing_is_sent() {
+        let (acceptor, fingerprint) = crate::pinned::test_server();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut s = acceptor.accept(tcp).await.unwrap();
+            let mut buf = Vec::new();
+            let _ = s.read_to_end(&mut buf).await;
+            let _ = tx.send(buf.len());
+        });
+        let seen = crate::pinned::presented("127.0.0.1", port, Duration::from_secs(3)).await.unwrap();
+        assert_eq!(seen, fingerprint);
+        assert_eq!(rx.await.unwrap(), 0, "no request after the handshake");
+        // nothing listening: a reason, not a fingerprint
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().port();
+        assert!(crate::pinned::presented("127.0.0.1", closed, Duration::from_secs(3)).await.is_err());
+    }
+}

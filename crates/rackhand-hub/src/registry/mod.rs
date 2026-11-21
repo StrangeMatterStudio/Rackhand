@@ -3,6 +3,7 @@
 //! Admission (which endpoint ids may use which ALPN) is answered from memory: loaded from the tables at start and
 //! updated by every join and revocation, so the router never waits on the database.
 
+pub mod agentless;
 pub mod devices;
 pub mod guest_binding;
 pub mod join_server;

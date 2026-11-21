@@ -108,6 +108,71 @@ pub async fn connect(
     tls.connect(name, tcp).await.map_err(|e| format!("TLS: {e}"))
 }
 
+/// Takes whatever certificate is presented and remembers its fingerprint; the handshake's signatures are still checked.
+#[derive(Debug)]
+struct Presented {
+    seen: std::sync::Mutex<Option<[u8; 32]>>,
+    provider: Arc<CryptoProvider>,
+}
+
+impl ServerCertVerifier for Presented {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        let mut fp = [0u8; 32];
+        fp.copy_from_slice(ring::digest::digest(&ring::digest::SHA256, end_entity.as_ref()).as_ref());
+        *self.seen.lock().unwrap_or_else(|e| e.into_inner()) = Some(fp);
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls12_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls13_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+/// The fingerprint of the certificate `host:port` presents, for the admin to accept before it is pinned (7.3.12).
+/// Only the handshake happens: no request, and so no credential, is sent.
+pub async fn presented(host: &str, port: u16, timeout: std::time::Duration) -> Result<String, String> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let verifier = Arc::new(Presented { seen: std::sync::Mutex::new(None), provider: provider.clone() });
+    let config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| e.to_string())?
+        .dangerous()
+        .with_custom_certificate_verifier(verifier.clone())
+        .with_no_client_auth();
+    let tls = tokio_rustls::TlsConnector::from(Arc::new(config));
+    let mut stream = tokio::time::timeout(timeout, connect(&tls, host, port))
+        .await
+        .map_err(|_| format!("{host}:{port}: no answer in {} s", timeout.as_secs()))??;
+    let _ = tokio::io::AsyncWriteExt::shutdown(&mut stream).await;
+    let seen = *verifier.seen.lock().unwrap_or_else(|e| e.into_inner());
+    seen.map(|f| show(&f)).ok_or_else(|| "no certificate was presented".to_string())
+}
+
 /// A simulator's self-signed certificate and key, with its fingerprint (for the simulators' servers).
 #[cfg(any(test, feature = "sim"))]
 pub fn test_server() -> (tokio_rustls::TlsAcceptor, String) {

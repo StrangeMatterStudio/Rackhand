@@ -20,6 +20,7 @@ CREATE TABLE machines (
   access TEXT NOT NULL DEFAULT 'managed' CHECK (access IN ('managed', 'monitor')),
   probe_endpoint_id TEXT,
   driver TEXT,
+  driver_settings TEXT, -- JSON: the driver's settings, each credential as `secret:driver.<id>` (7.3.12)
   roles TEXT NOT NULL DEFAULT '[]',
   tags TEXT NOT NULL DEFAULT '[]',
   policy_id TEXT REFERENCES policies(id),

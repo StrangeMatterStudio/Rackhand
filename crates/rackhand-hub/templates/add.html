@@ -12,6 +12,18 @@
 <label>Probe <select name="mode"><option value="local">Local (it dials the hub)</option><option value="remote">Remote</option></select></label>
 <button type="submit">Make the install command</button>
 </form>
+<h2>Add an appliance</h2>
+<p>Rackhand checks these through their API; nothing is installed on them.</p>
+{% for d in drivers %}
+<form method="post" action="/add/appliance">
+<input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="driver" value="{{ d.0 }}">
+<h3>{{ d.1 }}</h3>
+<label>Name <input name="name" pattern="[A-Za-z0-9._-]{1,64}"></label>
+{% if d.0 == "proxmox" %}<label>Or the machine it is <select name="machine"><option value="">A new machine</option>{% for m in machines %}<option value="{{ m.0 }}">{{ m.1 }}</option>{% endfor %}</select></label>{% endif %}
+<label>Address <input name="address" required placeholder="{{ d.2 }}"></label>
+<button type="submit">Next</button>
+</form>
+{% endfor %}
 <h2>Invite</h2>
 <form method="post" action="/add/invite"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="operator"><button type="submit">Invite an operator host</button></form>
 <form method="post" action="/add/invite"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="peer"><button type="submit">Invite a peer hub</button></form>
