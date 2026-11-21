@@ -11,13 +11,6 @@ fn labels(key: &str, value: &str) -> String {
 }
 
 impl Incidents {
-    /// The severity of the incident open for `key`. The report counts and the first-seen times are in memory, so after
-    /// a restart they start again: while the condition is still there, an incident open across the restart keeps at
-    /// least its severity rather than reading the short count as the condition clearing.
-    fn held(&self, key: &CondKey) -> Option<rackhand_detect::rules::Severity> {
-        self.eval().conditions.get(key).and_then(|s| s.active)
-    }
-
     pub(crate) async fn evaluate_counted(&self, now_ms: i64) -> Result<(), IncidentsError> {
         for machine in self.inner.ingest.machines() {
             // nothing reported since the hub started: the counts say nothing yet, so nothing opens or clears

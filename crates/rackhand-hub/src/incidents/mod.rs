@@ -2,6 +2,7 @@
 //! `incident_events` and `silences`. Routing beyond a person comes with runbooks and playbooks (T57, T78).
 
 mod baselines;
+mod checks;
 mod conditions;
 mod counted;
 mod dedupe;

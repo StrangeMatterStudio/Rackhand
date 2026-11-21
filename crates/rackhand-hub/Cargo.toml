@@ -12,6 +12,7 @@ publish = false
 testing = []
 
 [dependencies]
+rackhand-drivers = { path = "../rackhand-drivers" }
 rackhand-store = { path = "../rackhand-store" }
 rackhand-net = { path = "../rackhand-net" }
 rackhand-proto = { path = "../rackhand-proto" }

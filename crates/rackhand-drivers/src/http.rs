@@ -64,8 +64,12 @@ impl Driver for Http {
         DriverKind::Http
     }
 
+    fn known_settings(&self) -> &'static [&'static str] {
+        &["status", "body_contains"]
+    }
+
     async fn poll(&self, target: &DriverTarget) -> Result<DriverReading, DriverError> {
-        let s = settings(&target.settings, &["status", "body_contains"])?;
+        let s = settings(&target.settings, self.known_settings())?;
         let expect = match s.and_then(|m| m.get("status")) {
             None => 200,
             Some(v) => v

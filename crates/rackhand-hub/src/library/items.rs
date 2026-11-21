@@ -106,6 +106,9 @@ pub fn validate(kind: Kind, name: &str, content: &str) -> Result<(), String> {
             if name == crate::library::config::HUB {
                 crate::library::config::parse_hub(content).map_err(|e| e.to_string())?;
             }
+            if name == "checks" {
+                crate::checks::config::parse(content)?;
+            }
             return Ok(());
         }
     };

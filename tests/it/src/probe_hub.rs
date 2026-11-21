@@ -264,6 +264,22 @@ impl Hub {
         });
     }
 
+    /// Stores a revision of `config/<name>.toml`, as the Library or the dashboard would.
+    pub fn config(&self, name: &str, text: &str) {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let db = std::sync::Arc::new(rackhand_store::Db::open(&self.data.join("hub.db")).unwrap());
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+            rackhand_hub::library::config::put(&db, name, text, "admin", now).await.unwrap();
+        });
+    }
+
+    /// A read-only look at the hub's database.
+    pub fn read_db(&self) -> rusqlite::Connection {
+        rusqlite::Connection::open_with_flags(self.data.join("hub.db"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap()
+    }
+
     /// The machine's seqs the hub holds (staged, or kept by compaction), merged into ranges.
     pub fn received(&self) -> Vec<(u64, u64)> {
         let db = self.db();

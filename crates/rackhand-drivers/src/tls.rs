@@ -95,8 +95,12 @@ impl Driver for Tls {
         DriverKind::Tls
     }
 
+    fn known_settings(&self) -> &'static [&'static str] {
+        &["server_name"]
+    }
+
     async fn poll(&self, target: &DriverTarget) -> Result<DriverReading, DriverError> {
-        let s = settings(&target.settings, &["server_name"])?;
+        let s = settings(&target.settings, self.known_settings())?;
         let host = target.target.rsplit_once(':').map(|(h, _)| h).unwrap_or(&target.target);
         let host = host.trim_start_matches('[').trim_end_matches(']');
         let name = text(s, "server_name")?.unwrap_or(host).to_string();

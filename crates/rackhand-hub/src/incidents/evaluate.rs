@@ -41,6 +41,7 @@ impl Incidents {
         stats.changed += events.changed;
         self.evaluate_counted(now_ms).await?;
         self.evaluate_silence(now_ms).await?;
+        self.evaluate_checks(now_ms).await?;
         self.evaluate_baselines(now_ms).await?;
         if now_ms - self.eval().last_forecast_ms >= super::forecasts::FORECAST_EVERY_MS {
             self.evaluate_forecasts(now_ms).await?;

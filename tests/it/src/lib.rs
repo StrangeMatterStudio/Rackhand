@@ -3,6 +3,9 @@
 #[cfg(test)]
 mod callouts;
 #[cfg(test)]
+#[path = "checks_it.rs"]
+mod checks;
+#[cfg(test)]
 mod executor_it;
 #[cfg(test)]
 mod helper_it;

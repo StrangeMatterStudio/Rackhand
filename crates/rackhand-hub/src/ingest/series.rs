@@ -77,6 +77,26 @@ impl Ingest {
         })?)
     }
 
+    /// Points that come from the hub's own polling (service checks, drivers) rather than a probe's reports, stored as
+    /// tier 0 series of `machine` (7.4.2): Ingest stays the one writer of the series.
+    pub async fn put_points(
+        &self,
+        machine: &str,
+        series: Vec<rackhand_store::series::compact::SeriesPoints>,
+        now_ms: i64,
+    ) -> Result<usize, IngestError> {
+        if series.is_empty() {
+            return Ok(0);
+        }
+        let compaction = rackhand_store::series::compact::Compaction {
+            machine_id: machine.to_string(),
+            series,
+            now_ms,
+            ..Default::default()
+        };
+        Ok(self.inner.writer.send(WriteCmd::CompactStaged(compaction)).await?.rows)
+    }
+
     /// One tier of a stored series (every column) over `[from_ms, to_ms]`.
     pub fn tier_series(
         &self,

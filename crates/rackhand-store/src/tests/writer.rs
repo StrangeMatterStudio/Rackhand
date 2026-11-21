@@ -285,3 +285,37 @@ async fn mcp_keys_and_job_tokens_stored_and_revoked() {
     assert_eq!(k, ("read".to_string(), 5));
     assert_eq!(j, ("[\"get_incident\"]".to_string(), 6));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn checks_and_their_results_written() {
+    let path = temp("checks");
+    let db = Db::open(&path).unwrap();
+    let w = db.writer();
+    let check = |interval: i64| {
+        Row::from([
+            ("id", Value::Text("web".into())),
+            ("kind", Value::Text("http".into())),
+            ("target", Value::Text("http://192.0.2.80/".into())),
+            ("interval_s", Value::Integer(interval)),
+            ("settings", Value::Text("{}".into())),
+        ])
+    };
+    w.send(WriteCmd::PutCheck(check(60))).await.unwrap();
+    let result = |at: i64, ok: bool| {
+        Row::from([
+            ("check_id", Value::Text("web".into())),
+            ("at_ms", Value::Integer(at)),
+            ("ok", Value::Integer(ok as i64)),
+            ("latency_ms", Value::Real(12.5)),
+            ("detail", Value::Text("status 200".into())),
+        ])
+    };
+    w.send(WriteCmd::PutCheckResults(vec![result(1_000, true), result(2_000, false)])).await.unwrap();
+    // a result already stored isn't written twice; a changed check is updated in place (its results refer to it)
+    w.send(WriteCmd::PutCheckResults(vec![result(2_000, false)])).await.unwrap();
+    w.send(WriteCmd::PutCheck(check(30))).await.unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let interval: i64 = conn.query_row("SELECT interval_s FROM checks WHERE id = 'web'", [], |r| r.get(0)).unwrap();
+    let results: i64 = conn.query_row("SELECT count(*) FROM check_results", [], |r| r.get(0)).unwrap();
+    assert_eq!((interval, results), (30, 2));
+}

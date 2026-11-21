@@ -684,3 +684,87 @@ async fn security_updates_older_than_7_days() {
     .await;
     assert_eq!(env.incidents()[0].1, "resolved", "installed");
 }
+
+async fn put_check(env: &Env, id: &str, kind: &str, interval_s: i64) {
+    let row = Row::from([
+        ("id", t(id)),
+        ("kind", t(kind)),
+        ("target", t("192.0.2.80:443")),
+        ("interval_s", Value::Integer(interval_s)),
+        ("machine_id", t(M1)),
+        ("settings", t("{}")),
+    ]);
+    env.db.writer().send(WriteCmd::PutCheck(row)).await.unwrap();
+}
+
+async fn put_result(env: &Env, id: &str, at: i64, ok: bool) {
+    let row = Row::from([("check_id", t(id)), ("at_ms", Value::Integer(at)), ("ok", Value::Integer(ok as i64))]);
+    env.db.writer().send(WriteCmd::PutCheckResults(vec![row])).await.unwrap();
+}
+
+fn by_kind(env: &Env, kind: &str) -> Vec<(String, String, String)> {
+    env.db
+        .readers()
+        .with(|c| {
+            let mut s = c.prepare("SELECT state, severity, title FROM incidents WHERE kind = ?1 ORDER BY opened_at")?;
+            s.query_map([kind], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect()
+        })
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn check_failing_2_and_4_runs() {
+    let env = Env::new("check-failing").await;
+    put_check(&env, "svc", "tcp", 15).await;
+    put_result(&env, "svc", T0, false).await;
+    env.incidents.evaluate(T0).await.unwrap();
+    assert!(by_kind(&env, "check.failing").is_empty(), "one failure isn't enough");
+    put_result(&env, "svc", T0 + 15_000, false).await;
+    env.incidents.evaluate(T0 + 15_000).await.unwrap();
+    assert_eq!(by_kind(&env, "check.failing")[0].1, "warning", "2 in a row");
+    for i in 2..4 {
+        put_result(&env, "svc", T0 + i * 15_000, false).await;
+        env.incidents.evaluate(T0 + i * 15_000).await.unwrap();
+    }
+    assert_eq!(by_kind(&env, "check.failing")[0].1, "critical", "4 in a row");
+    // evaluations between runs see the same results and change nothing
+    env.incidents.evaluate(T0 + 50_000).await.unwrap();
+    put_result(&env, "svc", T0 + 60_000, true).await;
+    env.incidents.evaluate(T0 + 60_000).await.unwrap();
+    env.incidents.evaluate(T0 + 70_000).await.unwrap();
+    assert_eq!(by_kind(&env, "check.failing")[0].0, "open", "one good run isn't enough");
+    put_result(&env, "svc", T0 + 75_000, true).await;
+    env.incidents.evaluate(T0 + 75_000).await.unwrap();
+    let inc = by_kind(&env, "check.failing");
+    assert_eq!((inc.len(), inc[0].0.as_str()), (1, "resolved"), "2 good runs resolve it");
+    assert!(inc[0].2.contains("svc"), "{}", inc[0].2);
+}
+
+async fn cert_days(env: &Env, at: i64, days: f64) {
+    let points = rackhand_store::series::compact::SeriesPoints {
+        name: "check.cert_days".into(),
+        unit: "days".into(),
+        label_set: "{\"check\":\"site\"}".into(),
+        points: vec![(at, days)],
+        late: vec![],
+    };
+    env.ingest.put_points(M1, vec![points], at).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cert_expiry_warns_at_14_days() {
+    let env = Env::new("cert-expiry").await;
+    put_check(&env, "site", "tls", 3600).await;
+    cert_days(&env, T0, 20.0).await;
+    env.incidents.evaluate(T0).await.unwrap();
+    assert!(by_kind(&env, "cert.expiry").is_empty(), "20 days left");
+    cert_days(&env, T0 + H, 14.0).await;
+    env.incidents.evaluate(T0 + H).await.unwrap();
+    assert_eq!(by_kind(&env, "cert.expiry")[0].1, "warning", "14 days");
+    cert_days(&env, T0 + 2 * H, 3.0).await;
+    env.incidents.evaluate(T0 + 2 * H).await.unwrap();
+    assert_eq!(by_kind(&env, "cert.expiry")[0].1, "critical", "3 days");
+    cert_days(&env, T0 + 3 * H, 89.0).await;
+    env.incidents.evaluate(T0 + 3 * H).await.unwrap();
+    assert_eq!(by_kind(&env, "cert.expiry")[0].0, "resolved", "renewed");
+}

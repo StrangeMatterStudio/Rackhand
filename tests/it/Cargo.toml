@@ -12,6 +12,8 @@ name = "it"
 path = "src/lib.rs"
 
 [dev-dependencies]
+rcgen = { workspace = true }
+time = "0.3"
 serde_json = { workspace = true }
 blake3 = "1"
 rackhand-hub = { path = "../../crates/rackhand-hub", features = ["testing"] }

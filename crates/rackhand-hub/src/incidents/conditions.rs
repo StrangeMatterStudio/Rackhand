@@ -49,7 +49,8 @@ impl Incidents {
             (_, Some(Severity::Info)) => return Ok(()),
             (None, Some(severity)) => {
                 let opening = Opening {
-                    machine_id: Some(key.machine.clone()),
+                    // a check that belongs to no machine has an empty machine
+                    machine_id: (!key.machine.is_empty()).then(|| key.machine.clone()),
                     rule_id: Some(key.rule.clone()),
                     dedupe_key: key.dedupe(),
                     kind: key.rule.clone(),
@@ -87,6 +88,13 @@ impl Incidents {
             eval.conditions.insert(key, next);
         }
         Ok(())
+    }
+
+    /// The severity of the incident open for `key`. The counted rules' counts and first-seen times are in memory, so
+    /// after a restart they start again: while the condition is still there, an incident open across the restart keeps
+    /// at least its severity rather than reading the short count as the condition clearing.
+    pub(crate) fn held(&self, key: &CondKey) -> Option<Severity> {
+        self.eval().conditions.get(key).and_then(|s| s.active)
     }
 
     /// The condition rules of `rule` on `machine` that are active but weren't evaluated this time: they are gone.

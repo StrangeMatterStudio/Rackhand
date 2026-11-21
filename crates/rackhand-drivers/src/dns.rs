@@ -96,8 +96,12 @@ impl Driver for Dns {
         DriverKind::Dns
     }
 
+    fn known_settings(&self) -> &'static [&'static str] {
+        &["server", "expect"]
+    }
+
     async fn poll(&self, target: &DriverTarget) -> Result<DriverReading, DriverError> {
-        let s = settings(&target.settings, &["server", "expect"])?;
+        let s = settings(&target.settings, self.known_settings())?;
         let server = match text(s, "server")? {
             Some(a) => a
                 .parse::<SocketAddr>()

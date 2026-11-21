@@ -112,3 +112,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-21 | L2 done: the m1 live tier 10 of 10 on the lab (pass 5), xtask lab 9 of 9, the lab regression 7 of 7, fast 396; the MV12 page walk waits for the owner (the in-app browser refuses the hub's self-signed certificate) (D68) |
 | 2026-11-21 | After L2: an open silence incident no longer resolves in the start grace after a restart (D69); the container-restarts case carried into T98 |
 | 2026-11-21 | T46a done: the ICMP, TCP, HTTP(S), DNS and TLS-expiry drivers behind `Driver`; T46 split in three (D70) |
+| 2026-11-21 | T46b done: the hub runs `config/checks.toml` at each check's interval, stores results and series, and opens check-failing and certificate incidents from what is stored (D71); AC10 passes in the integration tier |

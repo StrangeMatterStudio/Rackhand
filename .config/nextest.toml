@@ -27,7 +27,7 @@ slow-timeout = { period = "60s", terminate-after = 30 }
 # The tests that time a real hub and probe (AC1, AC2, AC5, AC8) run one at a time: under the tier's other containers
 # the outage test once missed its 15 minutes (plan T43), and alone it fills in under 2.
 [[profile.it.overrides]]
-filter = 'test(probe_hub::) | test(callouts::)'
+filter = 'test(probe_hub::) | test(callouts::) | test(checks::)'
 test-group = 'timed'
 
 [profile.net]

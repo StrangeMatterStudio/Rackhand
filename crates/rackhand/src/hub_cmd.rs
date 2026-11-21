@@ -261,6 +261,8 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     tokio::spawn(router.serve());
     let watch = Arc::new(self_watch(config, &db, &ingest, &notify));
     spawn_loops(ingest.clone(), incidents, notify, db.clone(), Nightly { config: config.clone(), watch });
+    // the service checks of config/checks.toml, each at its interval (FR-9)
+    rackhand_hub::checks::Checks::new(db.clone(), ingest.clone()).spawn();
     // the dashboard over TLS
     let (cert, key_pem) =
         rackhand_hub::web::tls::load_or_create(&vault, &config.names).await.map_err(|e| e.to_string())?;

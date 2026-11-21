@@ -117,6 +117,11 @@ pub enum DriverError {
 pub trait Driver: Send + Sync {
     fn kind(&self) -> DriverKind;
 
+    /// The settings a target of this driver may have; any other is refused.
+    fn known_settings(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     async fn poll(&self, target: &DriverTarget) -> Result<DriverReading, DriverError>;
 
     async fn call(&self, _target: &DriverTarget, _op: DriverOp) -> Result<DriverOpResult, DriverError> {

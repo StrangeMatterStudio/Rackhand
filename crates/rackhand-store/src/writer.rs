@@ -754,6 +754,9 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
         }
         WriteCmd::UpsertIncident(row) => upsert_one(conn, "incidents", "id", row),
         WriteCmd::PutSilence(row) => upsert_one(conn, "silences", "id", row),
+        // a check is updated in place, since its results refer to it; a result is written once
+        WriteCmd::PutCheck(row) => upsert_one(conn, "checks", "id", row),
+        WriteCmd::PutCheckResults(rows) => insert_or_ignore(conn, "check_results", &rows),
         WriteCmd::PutNotification(row) => upsert_one(conn, "notifications", "id", row),
         // a bucket row is the whole state of its bucket
         WriteCmd::UpdateBaselines(rows) => replace_rows(conn, "baseline_buckets", rows),
