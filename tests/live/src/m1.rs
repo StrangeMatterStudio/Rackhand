@@ -199,7 +199,9 @@ fn paused_target_raises_silence_warning() {
     assert!(clock_lag("target").abs() <= 2, "target's clock is set");
     std::thread::sleep(Duration::from_secs(30));
     let open = open_incidents(&dash);
-    assert!(!open.iter().any(|i| i.machine == "target"), "nothing left open for target: {open:?}");
+    let left =
+        |i: &hub::Open| i.machine == "target" && (i.title == "No report from the machine" || i.title.contains("clock"));
+    assert!(!open.iter().any(left), "the pause left no silence or clock skew open: {open:?}");
 }
 
 #[test]

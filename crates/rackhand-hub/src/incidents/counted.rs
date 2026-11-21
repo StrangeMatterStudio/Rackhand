@@ -20,6 +20,10 @@ impl Incidents {
 
     pub(crate) async fn evaluate_counted(&self, now_ms: i64) -> Result<(), IncidentsError> {
         for machine in self.inner.ingest.machines() {
+            // nothing reported since the hub started: the counts say nothing yet, so nothing opens or clears
+            if self.inner.ingest.last_seen(&machine).is_none() {
+                continue;
+            }
             let c = self.inner.ingest.counted(&machine);
             let mut seen = Vec::new();
             for (service, n) in &c.services_down {

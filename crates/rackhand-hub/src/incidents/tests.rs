@@ -587,6 +587,13 @@ async fn counted_incidents_stay_open_across_a_restart() {
     let Env { db, path, seq, .. } = env;
     let mut env = Env::start(db, path, seq).await;
     env.ingest.start(T0 + 8 * DAY + MIN).await.unwrap();
+    // the first evaluation comes before the machine has reported again: it knows nothing new
+    env.incidents.evaluate(T0 + 8 * DAY + MIN + 1).await.unwrap();
+    assert_eq!(
+        open(&env),
+        vec![(service.clone(), "open critical".into()), (updates.clone(), "open warning".into())],
+        "no report since the restart isn't the condition clearing"
+    );
     env.report(M1, T0 + 8 * DAY + 2 * MIN, down).await;
     assert_eq!(
         open(&env),
