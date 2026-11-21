@@ -116,3 +116,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-21 | T46c done: `verify` and `api` steps run by Checks (D72) |
 | 2026-11-21 | T46d done: `probe_check` steps run on the probe over stream 0 (D73); next the integration tier for T46 as a whole |
 | 2026-11-21 | T46 regression: two tier runs at 46 of 47; a lost `job-start` answer failed a running detached step (D74), reproduced 2 of 16 and fixed (16 of 16); the other failure didn't reproduce and is instrumented |
+| 2026-11-21 | T46 done: the integration tier 47 of 47 at 1f55869, after the lost-start fix (D74) and containers waiting out their boot (D75) |
