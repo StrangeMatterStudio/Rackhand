@@ -90,17 +90,17 @@ pub fn binary_check(exe: &Path, exe_name: &str, manifest: &Manifest) -> Result<O
     }))
 }
 
-/// A config file that isn't root's, or that its group or others could change.
+/// A config file that isn't `owner`'s (root on a hub), or whose mode allows more than `max_mode`.
 #[cfg(unix)]
-pub fn config_check(path: &Path, max_mode: u32) -> Option<Finding> {
+pub fn config_check(path: &Path, max_mode: u32, owner: u32) -> Option<Finding> {
     use std::os::unix::fs::MetadataExt;
     let meta = std::fs::symlink_metadata(path).ok()?;
     let mode = meta.mode() & 0o777;
-    let exposed = meta.uid() != 0 || mode & !max_mode != 0 || meta.file_type().is_symlink();
+    let exposed = meta.uid() != owner || mode & !max_mode != 0 || meta.file_type().is_symlink();
     exposed.then(|| Finding {
         kind: "hub.config_exposed",
         detail: format!(
-            "{} is owner {} mode {mode:o}; it should be root's and at most {max_mode:o}",
+            "{} is owner {} mode {mode:o}; it should be {owner}'s and at most {max_mode:o}",
             path.display(),
             meta.uid()
         ),
@@ -134,7 +134,7 @@ impl SelfWatch {
         }
         #[cfg(unix)]
         for (path, mode) in &self.configs {
-            found.extend(config_check(path, *mode));
+            found.extend(config_check(path, *mode, 0));
         }
         if let Err(e) = crate::audit::verify(self.db.readers()) {
             found.push(Finding { kind: "hub.audit_broken", detail: e.to_string() });

@@ -55,6 +55,11 @@ async fn backup_is_encrypted_and_restores_identically() {
     std::fs::write(&cut, &raw[..raw.len() - 10]).unwrap();
     assert!(restore(&cut, &key, &other.join("hub.db"), &other.join("node.key")).is_err(), "a truncated file");
     assert!(!other.join("hub.db").exists());
+    // cut exactly after a whole chunk (the header): the missing last chunk is noticed too
+    let header_len = u32::from_be_bytes(raw[6..10].try_into().unwrap()) as usize;
+    std::fs::write(&cut, &raw[..6 + 4 + 24 + header_len]).unwrap();
+    assert!(restore(&cut, &key, &other.join("hub.db"), &other.join("node.key")).is_err(), "cut at a chunk boundary");
+    assert!(!other.join("hub.db").exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]

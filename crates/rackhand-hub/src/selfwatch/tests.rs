@@ -138,6 +138,10 @@ fn config_writable_by_others_is_exposed() {
     let f = dir.join("hub.toml");
     std::fs::write(&f, "web = \"0.0.0.0:8443\"\n").unwrap();
     std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o666)).unwrap();
-    let finding = config_check(&f, 0o640).expect("group and others can write it");
+    let me = std::os::unix::fs::MetadataExt::uid(&std::fs::metadata(&f).unwrap());
+    let finding = config_check(&f, 0o640, me).expect("group and others can write it");
     assert_eq!(finding.kind, "hub.config_exposed");
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o640)).unwrap();
+    assert_eq!(config_check(&f, 0o640, me), None, "its owner's, and no more than 640");
+    assert!(config_check(&f, 0o640, me + 1).is_some(), "someone else's");
 }
