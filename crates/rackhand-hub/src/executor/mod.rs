@@ -46,6 +46,32 @@ impl StepRunner for Unavailable {
     }
 }
 
+/// The runner for each step kind other than `ssh`, by the system that owns it; any other kind is unavailable.
+#[derive(Default)]
+pub struct ByKind(Vec<(StepKind, Arc<dyn StepRunner>)>);
+
+impl std::fmt::Debug for ByKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.0.iter().map(|(k, _)| kind_name(*k))).finish()
+    }
+}
+
+impl ByKind {
+    pub fn with(mut self, kind: StepKind, runner: Arc<dyn StepRunner>) -> ByKind {
+        self.0.push((kind, runner));
+        self
+    }
+}
+
+impl StepRunner for ByKind {
+    fn run<'a>(&'a self, ctx: &'a StepCtx, step: &'a Step, argv: Option<&'a [String]>) -> BoxFuture<'a, StepResult> {
+        match self.0.iter().find(|(k, _)| *k == step.kind) {
+            Some((_, runner)) => runner.run(ctx, step, argv),
+            None => Unavailable.run(ctx, step, argv),
+        }
+    }
+}
+
 pub struct Executor {
     vault: Arc<Vault>,
     host_keys: Arc<HostKeys>,

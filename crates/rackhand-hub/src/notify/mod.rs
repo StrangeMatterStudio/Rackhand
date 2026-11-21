@@ -436,7 +436,8 @@ impl crate::actions::runner::StepRunner for Notify {
     }
 }
 
-#[cfg(test)]
-mod smtp_sink;
+/// A mail server for tests (the hub's own and the integration tier's).
+#[cfg(any(test, feature = "testing"))]
+pub mod smtp_sink;
 #[cfg(test)]
 mod tests;

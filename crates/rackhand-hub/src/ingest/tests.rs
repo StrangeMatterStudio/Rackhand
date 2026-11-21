@@ -440,3 +440,39 @@ async fn steady_state_compaction_marks_nothing_dirty() {
     let rows = |tier: i64| env.count(&format!("SELECT count(*) FROM series_chunks WHERE tier = {tier}"));
     assert_eq!((rows(0), rows(1), rows(2)), (3, 1, 1), "rows by the chunk rule: 280 points, 70 minutes, 1 hour");
 }
+
+fn step_ctx(timeout: std::time::Duration) -> crate::actions::runner::StepCtx {
+    crate::actions::runner::StepCtx {
+        job_id: "j1".into(),
+        machine_id: "m1".into(),
+        machine_kind: "linux".into(),
+        address: None,
+        identity: rackhand_runbook::runbook::Identity::Automation,
+        timeout,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wait_report_step_waits_for_fresh_report() {
+    use crate::actions::runner::{StepOutcome, StepRunner};
+    use rackhand_store::ids::now_ms;
+    use std::time::{Duration, Instant};
+    let env = Env::new("wait-report");
+    let ingest = env.ingest();
+    hello(&ingest, "m1", 1).await;
+    live(&ingest, "m1", report(1, 1, now_ms(), 5.0), now_ms()).await;
+    let step: rackhand_runbook::runbook::Step = toml::from_str("id = \"wait\"\nkind = \"wait_report\"\n").unwrap();
+    // a report that arrives after the step started completes it
+    let sender = ingest.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        live(&sender, "m1", report(1, 2, now_ms(), 6.0), now_ms()).await;
+    });
+    let started = Instant::now();
+    let done = ingest.run(&step_ctx(Duration::from_secs(5)), &step, None).await;
+    assert_eq!(done.outcome, StepOutcome::Succeeded);
+    assert!(started.elapsed() >= Duration::from_millis(500), "the report from before the step doesn't count");
+    // none arrives
+    let done = ingest.run(&step_ctx(Duration::from_millis(800)), &step, None).await;
+    assert_eq!(done.outcome, StepOutcome::Failed("timeout".into()));
+}

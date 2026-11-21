@@ -1,4 +1,5 @@
 //! An in-process SMTP receiver for tests: EHLO, STARTTLS with a self-signed certificate, AUTH PLAIN, MAIL, RCPT, DATA.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,6 +17,7 @@ pub struct Mail {
     pub data: String,
 }
 
+#[derive(Debug)]
 pub struct Sink {
     pub port: u16,
     pub cert: CertificateDer<'static>,

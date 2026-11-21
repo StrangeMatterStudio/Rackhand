@@ -210,8 +210,8 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         clock: Arc::new(now_ms),
     };
     let mirror_alerts = mirror.spawn(changes);
-    let executor =
-        rackhand_hub::executor::Executor::new(vault.clone(), host_keys.clone()).with_other(Arc::new(notify.clone()));
+    let executor = rackhand_hub::executor::Executor::new(vault.clone(), host_keys.clone())
+        .with_other(Arc::new(steps(&notify, &ingest)));
     let actions = rackhand_hub::actions::Actions::new(db.clone(), audit.clone(), bus.clone(), Arc::new(executor))
         .with_gate(Arc::new(ingest.clone()));
     let web_config = rackhand_hub::web::WebConfig {
@@ -290,6 +290,14 @@ pub fn probe_server_settings(db: &Db) -> ServerSettings {
         Err(e) => tracing::warn!(error = %e, "probe settings: using the defaults"),
     }
     ServerSettings { config, ..ServerSettings::default() }
+}
+
+/// The systems that run the step kinds other than `ssh` (7.8.7): `notify` by Notify, `wait_report` by Ingest.
+pub fn steps(notify: &rackhand_hub::notify::Notify, ingest: &Ingest) -> rackhand_hub::executor::ByKind {
+    use rackhand_runbook::runbook::StepKind;
+    rackhand_hub::executor::ByKind::default()
+        .with(StepKind::Notify, Arc::new(notify.clone()))
+        .with(StepKind::WaitReport, Arc::new(ingest.clone()))
 }
 
 /// The public half of one of the hub's SSH identities, as an `authorized_keys` key (made the first time).

@@ -217,3 +217,31 @@ fn rate_interval_is_monotonic() {
     assert!(value(&c, "net.rx_bps", Some("eth0")).is_some_and(|v| v > 0.0));
     assert_eq!(c.snapshot.at_ms, 50_000, "samples keep the wall clock");
 }
+
+#[test]
+fn fixture_usage_can_change_between_collections() {
+    // the disk rule's integration test rewrites a mount's usage under a running probe (plan T42)
+    let dir = std::env::temp_dir().join(format!("rackhand-fixture-usage-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("proc")).unwrap();
+    std::fs::write(
+        dir.join("proc/mounts"),
+        "/dev/sdc1 /data ext4 rw 0 0
+",
+    )
+    .unwrap();
+    let host = RootHost::new(&dir);
+    let usage = |free: u64| {
+        std::fs::write(
+            dir.join("statvfs.txt"),
+            format!(
+                "/data 100 {free} {free} 10 5
+"
+            ),
+        )
+        .unwrap();
+        value(&collect(&host, None, 0, &Config::default(), SelfUse::default()), "disk.used_pct", Some("/data"))
+    };
+    assert_eq!(usage(4), Some(96.0));
+    assert_eq!(usage(30), Some(70.0), "read again, not cached");
+}

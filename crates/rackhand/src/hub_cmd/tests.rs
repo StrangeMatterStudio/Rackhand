@@ -274,3 +274,39 @@ async fn probe_welcome_from_settings() {
         assert!(validate(Kind::Config, "hub", bad).is_err(), "{bad} is refused on save");
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn step_kinds_reach_their_systems() {
+    use rackhand_hub::actions::runner::{StepCtx, StepOutcome, StepRunner};
+    let dir = temp("steps");
+    let db = Arc::new(Db::open(&dir.join("hub.db")).unwrap());
+    let ingest = Ingest::new(db.clone(), rackhand_hub::bus::Bus::new(), Arc::new(Statvfs(dir.clone())));
+    let notify = rackhand_hub::notify::Notify::new(db, ingest.clone(), Vec::new());
+    let steps = steps(&notify, &ingest);
+    let ctx = StepCtx {
+        job_id: "j1".into(),
+        machine_id: "m1".into(),
+        machine_kind: "linux".into(),
+        address: None,
+        identity: rackhand_runbook::runbook::Identity::Automation,
+        timeout: Duration::from_millis(300),
+    };
+    let step = |kind: &str| -> rackhand_runbook::runbook::Step {
+        toml::from_str(&format!("id = \"s\"\nkind = \"{kind}\"\nmessage = \"hi\"\n")).unwrap()
+    };
+    let outcome = |o: rackhand_hub::actions::runner::StepResult| o.outcome;
+    assert_eq!(
+        outcome(steps.run(&ctx, &step("wait_report"), None).await),
+        StepOutcome::Failed("timeout".into()),
+        "Ingest waits for a report"
+    );
+    assert_ne!(
+        outcome(steps.run(&ctx, &step("notify"), None).await),
+        StepOutcome::Failed("notify_unavailable".into()),
+        "Notify sends it"
+    );
+    assert_eq!(
+        outcome(steps.run(&ctx, &step("probe_check"), None).await),
+        StepOutcome::Failed("probe_check_unavailable".into())
+    );
+}

@@ -47,6 +47,8 @@ pub struct Hub {
     pub id_hex: String,
     jar: PathBuf,
     child: Option<Child>,
+    /// When `start` last ran.
+    pub started: Option<Instant>,
 }
 
 impl Hub {
@@ -78,7 +80,7 @@ impl Hub {
         let key: [u8; 32] = std::fs::read(etc.join("node.key")).unwrap().try_into().unwrap();
         let id_hex = hex(iroh::SecretKey::from_bytes(&key).public().as_bytes());
         let jar = dir.join("cookies");
-        Hub { dir, etc, data, web, quic, setup_code, id_hex, jar, child: None }
+        Hub { dir, etc, data, web, quic, setup_code, id_hex, jar, child: None, started: None }
     }
 
     fn db(&self) -> rusqlite::Connection {
@@ -111,6 +113,7 @@ impl Hub {
             .spawn()
             .unwrap();
         self.child = Some(child);
+        self.started = Some(Instant::now());
         let deadline = Instant::now() + Duration::from_secs(30);
         while self.curl(&["/healthz"]).trim() != "ok" {
             assert!(Instant::now() < deadline, "the hub didn't start: {}", self.log());
@@ -211,8 +214,66 @@ impl Hub {
         })
     }
 
+    /// Stores `config/hub.toml` (the hub reads its probe settings when it starts).
+    pub fn settings(&self, text: &str) {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let db = std::sync::Arc::new(rackhand_store::Db::open(&self.data.join("hub.db")).unwrap());
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+            rackhand_hub::library::config::put(&db, rackhand_hub::library::config::HUB, text, "admin", now)
+                .await
+                .unwrap();
+        });
+    }
+
+    /// The machine's seqs the hub holds (staged, or kept by compaction), merged into ranges.
+    pub fn received(&self) -> Vec<(u64, u64)> {
+        let db = self.db();
+        let mut seqs: Vec<(u64, u64)> = db
+            .prepare("SELECT seq FROM report_staging WHERE machine_id = ?1")
+            .unwrap()
+            .query_map([MACHINE], |r| r.get::<_, i64>(0))
+            .unwrap()
+            .map(|s| {
+                let s = s.unwrap() as u64;
+                (s, s)
+            })
+            .collect();
+        let kept: Vec<String> = db
+            .prepare("SELECT ranges FROM probe_ranges WHERE machine_id = ?1")
+            .unwrap()
+            .query_map([MACHINE], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        for k in kept {
+            seqs.extend(serde_json::from_str::<Vec<(u64, u64)>>(&k).unwrap_or_default());
+        }
+        seqs.sort();
+        let mut merged: Vec<(u64, u64)> = Vec::new();
+        for (a, b) in seqs {
+            match merged.last_mut() {
+                Some(last) if a <= last.1 + 1 => last.1 = last.1.max(b),
+                _ => merged.push((a, b)),
+            }
+        }
+        merged
+    }
+
+    /// When the newest staged report arrived (none right after a compaction).
+    pub fn newest_received_ms(&self) -> Option<i64> {
+        self.db().query_row("SELECT max(received_at_ms) FROM report_staging", [], |r| r.get(0)).unwrap()
+    }
+
+    /// Open incidents: kind and severity.
+    pub fn open_incidents(&self) -> Vec<(String, String)> {
+        let db = self.db();
+        let mut s =
+            db.prepare("SELECT kind, severity FROM incidents WHERE state != 'resolved' ORDER BY opened_at").unwrap();
+        s.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect()
+    }
+
     /// The events of `kind`: their severity and data.
-    #[allow(dead_code)]
     pub fn events(&self, kind: &str) -> Vec<(String, String)> {
         let db = self.db();
         let mut s = db.prepare("SELECT severity, data FROM events WHERE kind = ?1 ORDER BY at_ms").unwrap();
@@ -332,4 +393,113 @@ fn vitals_visible_within_30s() {
     assert!(String::from_utf8_lossy(&state.stdout).contains("\"connected\""), "probe.state says connected");
     let uid = machine.root("ps -o user= -C rackhand-probe");
     assert_eq!(String::from_utf8_lossy(&uid.stdout).trim(), "rackhand-probe", "the probe isn't root");
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64
+}
+
+/// A hub with a 5 s probe interval and more settings, its machine enrolled and the admin signed in.
+fn hub_with(name: &str, key: &[u8; 32], probe_settings: &str) -> Hub {
+    let mut hub = Hub::init(name);
+    hub.enroll(MACHINE, key);
+    hub.start();
+    hub.first_run();
+    hub.stop();
+    hub.settings(probe_settings);
+    hub.start();
+    hub
+}
+
+#[test]
+fn outage_backfills_and_live_stays_fresh() {
+    let key = [43u8; 32];
+    let mut hub = hub_with("outage", &key, "[probe]\ninterval_s = 5\n");
+    let _machine = probe_machine(&hub, &key, &[]);
+    within(Duration::from_secs(60), "live reports", || hub.received().last().is_some_and(|r| r.1 >= 3));
+    hub.stop();
+    std::thread::sleep(Duration::from_secs(600));
+    hub.start();
+    let restarted = Instant::now();
+    // the outage's 120 reports come back while live ones keep arriving
+    let mut stale = Vec::new();
+    let took = within(Duration::from_secs(900), "the outage filled", || {
+        if restarted.elapsed() > Duration::from_secs(30) {
+            if let Some(at) = hub.newest_received_ms() {
+                if now_ms() - at > 30_000 {
+                    stale.push(now_ms() - at);
+                }
+            }
+        }
+        let r = hub.received();
+        r.len() == 1 && r[0].0 == 1 && r[0].1 >= 130
+    });
+    eprintln!("outage filled {took:?} after the restart; received {:?}", hub.received());
+    assert!(stale.is_empty(), "live reports stayed under 30 s old during the replay: {stale:?}");
+    let opened: Vec<_> = hub.open_incidents().into_iter().filter(|(k, _)| k != "machine.silent").collect();
+    assert!(opened.is_empty(), "replayed samples opened no threshold incident: {opened:?}");
+}
+
+#[test]
+fn buffer_limit_drops_oldest_with_gap_event() {
+    let key = [44u8; 32];
+    let mut hub = hub_with("buffer", &key, "[probe]\ninterval_s = 5\nbuffer_max_mb = 1\n");
+    let machine = probe_machine(&hub, &key, &[]);
+    within(Duration::from_secs(60), "live reports", || hub.received().last().is_some_and(|r| r.1 >= 2));
+    // 1500 failed units with long names make each report about 70 KB, so the 1 MB buffer fills in about a minute
+    let units = "for i in $(seq -w 1 1500); do printf '[Service]\nType=oneshot\nExecStart=/bin/false\n'         > /etc/systemd/system/rackhand-test-filler-unit-$i.service; done; systemctl daemon-reload;         systemctl start $(seq -f 'rackhand-test-filler-unit-%04g' 1 1500); true";
+    machine.root(units);
+    let before = hub.received().last().map_or(0, |r| r.1);
+    hub.stop();
+    std::thread::sleep(Duration::from_secs(180));
+    let buffer = machine.root("du -sb /var/lib/rackhand-probe/buffer | cut -f1");
+    let bytes: u64 = String::from_utf8_lossy(&buffer.stdout).trim().parse().unwrap_or(0);
+    assert!((900 * 1024..=1024 * 1024 + 64 * 1024).contains(&bytes), "the buffer filled to its cap: {bytes} bytes");
+    hub.start();
+    let mut gaps = Vec::new();
+    within(Duration::from_secs(180), "probe.data_gap", || {
+        gaps = hub.events("probe.data_gap");
+        !gaps.is_empty()
+    });
+    let data: serde_json::Value = serde_json::from_str(&gaps[0].1).unwrap();
+    let (from, to) = (data["from_seq"].as_u64().unwrap(), data["to_seq"].as_u64().unwrap());
+    assert!(
+        from > before.saturating_sub(5) && to >= from,
+        "the range names the dropped reports: {data} (before {before})"
+    );
+    // the hub never holds a seq inside the dropped range
+    for (a, b) in hub.received() {
+        assert!(b < from || a > to, "{a}..{b} overlaps the dropped {from}..{to}");
+    }
+}
+
+#[test]
+fn stopped_probe_opens_silent_warning_at_60s() {
+    let key = [45u8; 32];
+    let mut hub = Hub::init("silent");
+    hub.enroll(MACHINE, &key);
+    hub.start();
+    hub.first_run();
+    let machine = probe_machine(&hub, &key, &[]);
+    within(Duration::from_secs(60), "live reports", || !hub.received().is_empty());
+    // no silence for the hub's first 3 minutes (E44)
+    let grace = Duration::from_secs(185).saturating_sub(hub.started.unwrap().elapsed());
+    std::thread::sleep(grace);
+    machine.root("systemctl stop rackhand-probe");
+    let stopped = Instant::now();
+    let silent = || hub.open_incidents().iter().any(|(k, s)| k == "machine.silent" && s == "warning");
+    within(Duration::from_secs(100), "a machine.silent warning", silent);
+    assert!(stopped.elapsed() >= Duration::from_secs(55), "not before 60 s: {:?}", stopped.elapsed());
+    machine.root("systemctl start rackhand-probe");
+    within(Duration::from_secs(60), "the first report resolves it", || !silent());
+    // a machine whose policy expects it offline gets one info event instead
+    let db = hub.db();
+    db.execute("INSERT INTO policies (id, name, expected_offline) VALUES ('sleepy', 'sleepy', 1)", []).unwrap();
+    db.execute("UPDATE machines SET policy_id = 'sleepy' WHERE id = ?1", [MACHINE]).unwrap();
+    let info_before = hub.events("machine.silent").len();
+    machine.root("systemctl stop rackhand-probe");
+    std::thread::sleep(Duration::from_secs(90));
+    let events = hub.events("machine.silent");
+    assert!(events.len() > info_before && events.last().unwrap().0 == "info", "an info event: {events:?}");
+    assert!(!silent(), "and no warning");
 }

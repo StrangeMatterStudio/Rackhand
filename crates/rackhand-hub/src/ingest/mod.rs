@@ -11,6 +11,7 @@ pub mod probe_server;
 mod replay_limits;
 mod series;
 mod staging;
+mod wait;
 mod window;
 
 use std::collections::{BTreeMap, HashMap};

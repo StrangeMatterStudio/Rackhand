@@ -14,7 +14,10 @@ path = "src/lib.rs"
 [dev-dependencies]
 serde_json = { workspace = true }
 blake3 = "1"
-rackhand-hub = { path = "../../crates/rackhand-hub" }
+rackhand-hub = { path = "../../crates/rackhand-hub", features = ["testing"] }
+rackhand-probe = { path = "../../crates/rackhand-probe" }
+rackhand-net = { path = "../../crates/rackhand-net", features = ["testing"] }
+ulid = { workspace = true }
 rackhand-store = { path = "../../crates/rackhand-store" }
 rackhand-runbook = { path = "../../crates/rackhand-runbook" }
 rackhand-proto = { path = "../../crates/rackhand-proto" }

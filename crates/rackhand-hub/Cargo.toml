@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+# test helpers for other crates' tests (the SMTP sink)
+testing = []
+
 [dependencies]
 rackhand-store = { path = "../rackhand-store" }
 rackhand-net = { path = "../rackhand-net" }

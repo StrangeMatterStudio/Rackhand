@@ -28,35 +28,20 @@ pub trait Host {
 #[derive(Debug, Clone)]
 pub struct RootHost {
     root: PathBuf,
-    /// A fixture's `statvfs.txt`, parsed once.
-    fixture_fs: std::sync::OnceLock<std::collections::BTreeMap<String, FsStat>>,
 }
 
 impl RootHost {
     pub fn new(root: impl Into<PathBuf>) -> RootHost {
-        RootHost { root: root.into(), fixture_fs: std::sync::OnceLock::new() }
+        RootHost { root: root.into() }
     }
 
-    fn fixture_statvfs(&self) -> &std::collections::BTreeMap<String, FsStat> {
-        self.fixture_fs.get_or_init(|| {
-            self.read("statvfs.txt")
-                .unwrap_or_default()
-                .lines()
-                .filter_map(|l| {
-                    let p: Vec<&str> = l.split_whitespace().collect();
-                    let n = |i: usize| p.get(i).and_then(|v| v.parse::<u64>().ok());
-                    Some((
-                        p.first()?.to_string(),
-                        FsStat {
-                            total_bytes: n(1)?,
-                            free_bytes: n(2)?,
-                            avail_bytes: n(3)?,
-                            files: n(4)?,
-                            files_free: n(5)?,
-                        },
-                    ))
-                })
-                .collect()
+    /// A fixture's `statvfs.txt` line for `mount`, read each time, so a test can change a mount's usage.
+    fn fixture_statvfs(&self, mount: &str) -> Option<FsStat> {
+        self.read("statvfs.txt")?.lines().find_map(|l| {
+            let p: Vec<&str> = l.split_whitespace().collect();
+            let n = |i: usize| p.get(i).and_then(|v| v.parse::<u64>().ok());
+            (p.first() == Some(&mount)).then_some(())?;
+            Some(FsStat { total_bytes: n(1)?, free_bytes: n(2)?, avail_bytes: n(3)?, files: n(4)?, files_free: n(5)? })
         })
     }
 
@@ -91,7 +76,7 @@ impl Host for RootHost {
         if self.is_system() {
             return system_statvfs(mount);
         }
-        self.fixture_statvfs().get(mount).copied()
+        self.fixture_statvfs(mount)
     }
 
     fn units(&self) -> Option<String> {

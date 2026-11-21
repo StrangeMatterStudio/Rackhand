@@ -16,6 +16,11 @@ fail-fast = false
 slow-timeout = { period = "60s", terminate-after = 10 }
 junit = { path = "junit.xml" }
 
+# AC2's 10-minute outage and up to 15 minutes of replay (plan T42)
+[[profile.it.overrides]]
+filter = 'test(outage_backfills_and_live_stays_fresh) | test(disk_rule_callouts_and_resolution)'
+slow-timeout = { period = "60s", terminate-after = 30 }
+
 [profile.net]
 retries = 0
 fail-fast = false

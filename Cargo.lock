@@ -3733,6 +3733,8 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "iroh",
  "rackhand-hub",
+ "rackhand-net",
+ "rackhand-probe",
  "rackhand-proto",
  "rackhand-runbook",
  "rackhand-store",
@@ -3742,6 +3744,7 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "tower",
+ "ulid",
 ]
 
 [[package]]
