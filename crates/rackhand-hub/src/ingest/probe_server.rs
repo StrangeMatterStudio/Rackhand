@@ -193,6 +193,7 @@ async fn ack(ingest: &Ingest, machine: &str, epoch: u64, receipt: Receipt, acks:
         Receipt::Staged { ranges } => ranges,
         // A resend of committed reports is acked again, so the probe can delete them.
         Receipt::Duplicate => ingest.received(machine, epoch),
+        Receipt::Held => return,
     };
     let _ = acks.send(Ack { epoch, ranges: seq_ranges(&ranges) }).await;
 }

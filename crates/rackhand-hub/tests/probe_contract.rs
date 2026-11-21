@@ -329,15 +329,20 @@ async fn stream1_over_rate_closes_0x14() {
     let env = env("rate", ServerSettings::default()).await;
     let mut link = env.probe("rate", M1).await;
     let mut s = connect(&mut link).await;
-    for _ in 0..12 {
+    // straight onto stream 1 (no buffer writes), until the hub closes it: a loaded machine can't slow the burst
+    // below the refill of one report a second and so never cross the limit
+    let started = std::time::Instant::now();
+    for _ in 0..50 {
         let r = report(&mut link, now_ms(), 1.0);
-        if link.send_live(&mut s, r, now_ms()).await.is_err() {
+        if s.send_report(&r).await.is_err() {
             break;
         }
     }
     let stop = link.read_acks(&mut s, |_| false, WAIT).await.unwrap_err();
     assert_eq!(stop, Stop::RateLimited);
-    assert_eq!(env.count("SELECT count(*) FROM report_staging"), 10, "a burst of 10 is allowed");
+    let refill = started.elapsed().as_secs() as i64 + 1;
+    let staged = env.count("SELECT count(*) FROM report_staging");
+    assert!((10..=10 + refill).contains(&staged), "a burst of 10 is allowed, then one a second: {staged}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

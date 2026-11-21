@@ -15,7 +15,9 @@ const USAGE: &str = "usage: rackhand hub init [--config-dir <dir>] [--data-dir <
        rackhand hub detect replay --machine <id> --from <ms> --to <ms> [--db <path>]
        rackhand hub audit verify [--db <path>]
        rackhand hub runbook check <file>
-       rackhand hub restore-library <checkout> [--db <path>]";
+       rackhand hub restore-library <checkout> [--db <path>]
+       rackhand hub backup [--config <hub.toml>]
+       rackhand hub restore <file> --master-key <path> [--config-dir <dir>] [--data-dir <dir>]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -31,6 +33,8 @@ fn main() -> ExitCode {
         ["hub", "audit", "verify", rest @ ..] => audit_verify(rest),
         ["hub", "runbook", "check", file] => runbook_check(file),
         ["hub", "restore-library", checkout, rest @ ..] => restore_library(checkout, rest),
+        ["hub", "backup", rest @ ..] => hub_backup(rest),
+        ["hub", "restore", file, rest @ ..] => hub_restore(file, rest),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -223,6 +227,51 @@ fn detect_replay(rest: &[&str]) -> ExitCode {
             if lines.is_empty() {
                 println!("nothing would have fired");
             }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `hub backup`: one backup now into the data directory's `backups/` (the newest 2 are kept).
+fn hub_backup(rest: &[&str]) -> ExitCode {
+    let Some(o) = options(rest, &["config"]) else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    let path = PathBuf::from(o.get("config").copied().unwrap_or("/etc/rackhand/hub.toml"));
+    let result = hub_cmd::HubConfig::load(&path)
+        .and_then(|config| hub_cmd::backups::backup_now(&config, rackhand_store::ids::now_ms()));
+    match result {
+        Ok(file) => {
+            println!("{}", file.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `hub restore <file> --master-key <path>`: a hub from its backup, on a machine without one (9, AC47).
+fn hub_restore(file: &str, rest: &[&str]) -> ExitCode {
+    let Some(o) = options(rest, &["master-key", "config-dir", "data-dir"]) else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    let Some(key) = o.get("master-key") else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    let etc = PathBuf::from(o.get("config-dir").copied().unwrap_or("/etc/rackhand"));
+    let data = PathBuf::from(o.get("data-dir").copied().unwrap_or("/var/lib/rackhand"));
+    match hub_cmd::backups::restore(std::path::Path::new(file), std::path::Path::new(key), &etc, &data) {
+        Ok(toml) => {
+            println!("Restored. Wrote {}; start the hub with `rackhand hub run`.", toml.display());
             ExitCode::SUCCESS
         }
         Err(e) => {

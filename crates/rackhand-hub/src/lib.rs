@@ -3,6 +3,8 @@
 pub mod actions;
 pub mod assist;
 pub mod audit;
+#[cfg(unix)]
+pub mod backup;
 pub mod bus;
 pub mod checks;
 pub mod executor;
@@ -18,6 +20,7 @@ pub mod policy;
 pub mod query;
 pub mod registry;
 pub mod scheduler;
+pub mod selfwatch;
 pub mod ssh;
 pub mod vault;
 pub mod web;

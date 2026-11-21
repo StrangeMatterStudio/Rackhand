@@ -33,6 +33,8 @@ pub enum Receipt {
     Staged { ranges: Vec<(u64, u64)> },
     /// Every report was already committed.
     Duplicate,
+    /// Not staged: the database failed its integrity check (E33). No ack, so the probe keeps the reports.
+    Held,
 }
 
 /// Merged, inclusive seq ranges.
@@ -191,6 +193,20 @@ impl Ingest {
             self.raise_events(events).await?;
             return Ok(Receipt::Duplicate);
         }
+        if self.state().integrity_failed {
+            // E33: the window and the latest values in memory only; nothing written, nothing acked
+            let mut s = self.state();
+            let m = s.machines.entry(machine.to_string()).or_default();
+            for p in &prepared {
+                let _ = add_to_window(m, machine, &p.report, p.offset_ms, received_at_ms);
+                if stream == Stream::Live {
+                    keep_latest(m, &p.report, p.offset_ms);
+                    count(m, &p.report, p.offset_ms, received_at_ms);
+                }
+            }
+            m.window.prune(received_at_ms - WINDOW_MS);
+            return Ok(Receipt::Held);
+        }
         // Queue every row, then wait for each commit: commands commit in the order they were queued.
         let mut commits = Vec::with_capacity(prepared.len());
         for p in &prepared {
@@ -238,6 +254,7 @@ impl Ingest {
         let s = self.state();
         let probe_ok = s.machines.get(machine).is_none_or(|m| m.replay.available(limits.probe_bps, now_ms) > 0.0);
         !s.disk_low
+            && !s.integrity_failed
             && probe_ok
             && s.hub_replay.available(limits.hub_bps, now_ms) > 0.0
             && s.staging_bytes < limits.staging_bytes

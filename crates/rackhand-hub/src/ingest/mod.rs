@@ -137,6 +137,8 @@ struct State {
     staging_bytes: u64,
     hub_replay: replay_limits::Bucket,
     disk_low: bool,
+    /// The database failed its integrity check (E33): nothing is staged or acked and no job starts.
+    integrity_failed: bool,
 }
 
 #[derive(Debug)]
@@ -332,7 +334,19 @@ impl Ingest {
 
     /// Whether Actions may start new jobs (E32: not while the hub's disk is nearly full).
     pub fn accepting_jobs(&self) -> bool {
-        !self.state().disk_low
+        let s = self.state();
+        !s.disk_low && !s.integrity_failed
+    }
+
+    /// The database failed its integrity check (E33): from now on reports update the in-memory window only (the
+    /// dashboard and the latest values stay current), nothing is staged or acked, so probes keep their reports
+    /// buffered, and no job starts. It lasts until an admin restores from a backup and restarts the hub.
+    pub fn set_integrity_failed(&self) {
+        self.state().integrity_failed = true;
+    }
+
+    pub fn integrity_failed(&self) -> bool {
+        self.state().integrity_failed
     }
 
     /// Reads the free disk space; below 2% stops replays and new jobs and raises one critical `hub.disk_low`.

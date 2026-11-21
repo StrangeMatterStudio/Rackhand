@@ -316,3 +316,54 @@ async fn step_kinds_reach_their_systems() {
         StepOutcome::Failed("probe_check_unavailable".into())
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn backup_and_restore_commands() {
+    let dir = temp("backup-cmd");
+    let made = init(&dir.join("etc"), &dir.join("lib")).await.unwrap();
+    let config = HubConfig::load(&made.config).unwrap();
+    let file = backups::backup_now(&config, 1_000).unwrap();
+    assert!(file.starts_with(dir.join("lib/backups")), "{}", file.display());
+    // a new machine, with the old hub's master key
+    let (etc, data) = (dir.join("new-etc"), dir.join("new-lib"));
+    let toml = backups::restore(&file, &config.master_key, &etc, &data).unwrap();
+    let restored = HubConfig::load(&toml).unwrap();
+    assert_eq!(
+        std::fs::read(&restored.node_key).unwrap(),
+        std::fs::read(&config.node_key).unwrap(),
+        "the same node key"
+    );
+    assert_eq!(std::fs::read(&restored.master_key).unwrap(), std::fs::read(&config.master_key).unwrap());
+    let db = Db::open(&restored.db_path()).unwrap();
+    let secrets: i64 = db.readers().with(|c| c.query_row("SELECT count(*) FROM secrets", [], |r| r.get(0))).unwrap();
+    assert!(secrets >= 3, "the Vault came along");
+    assert!(
+        backups::restore(&file, &config.master_key, &etc, &data).unwrap_err().contains("already exists"),
+        "never over a hub"
+    );
+}
+
+#[test]
+fn nightly_at_two_site_time() {
+    assert_eq!(backups::nightly(120), (true, false), "02:00: the backup");
+    assert_eq!(backups::nightly(150), (false, true), "02:30: the self-watch");
+    assert_eq!(backups::nightly(121), (false, false));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn site_minute_in_the_sites_time_zone() {
+    use rackhand_store::{Row, RowWrite, WriteCmd};
+    use rusqlite::types::Value;
+    let dir = temp("site-minute");
+    let db = Db::open(&dir.join("hub.db")).unwrap();
+    assert_eq!(backups::site_minute(&db, 0), None, "no site before first run");
+    let site = Row::from([
+        ("id", Value::Text("s".into())),
+        ("name", Value::Text("home".into())),
+        ("timezone", Value::Text("Europe/Berlin".into())),
+        ("is_local", Value::Integer(1)),
+    ]);
+    db.writer().send(WriteCmd::Batch(vec![RowWrite::insert("sites", site)])).await.unwrap();
+    // 2026-01-15 01:00 UTC is 02:00 in Berlin (winter)
+    assert_eq!(backups::site_minute(&db, 1_768_438_800_000), Some(120));
+}

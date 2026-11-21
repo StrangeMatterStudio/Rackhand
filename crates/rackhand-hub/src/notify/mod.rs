@@ -301,6 +301,28 @@ impl Notify {
         if self.send(msg, now_ms).await? == 0 { Err(NotifyError::NotSent) } else { Ok(()) }
     }
 
+    /// A critical message straight to every notifier, for what the hub can't record as an incident (its database
+    /// failed its integrity check, E33). Returns how many took it.
+    pub async fn send_critical(&self, title: &str, description: &str, now_ms: i64) -> usize {
+        let inc = CalloutIncident {
+            id: String::new(),
+            site: String::new(),
+            machine: "hub".into(),
+            severity: "critical".into(),
+            title: title.to_string(),
+            description: description.to_string(),
+        };
+        let msg =
+            Message { kind: MessageKind::Callout, severity: "critical".into(), incidents: vec![inc], at_ms: now_ms };
+        let mut sent = 0;
+        for transport in &self.inner.transports {
+            if transport.send(&msg).await.is_ok() {
+                sent += 1;
+            }
+        }
+        sent
+    }
+
     /// Tries every notifier once (failures are retried by [`Notify::tick`]); returns how many took it.
     async fn send(&self, msg: Message, now_ms: i64) -> Result<usize, NotifyError> {
         let mut sent = 0;

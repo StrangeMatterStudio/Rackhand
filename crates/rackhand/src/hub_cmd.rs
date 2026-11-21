@@ -259,7 +259,8 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         .route(rackhand_proto::alpn::MCP, mcp.handler())
         .route(rackhand_proto::alpn::JOIN, join.handler());
     tokio::spawn(router.serve());
-    spawn_loops(ingest.clone(), incidents, notify, db.clone());
+    let watch = Arc::new(self_watch(config, &db, &ingest, &notify));
+    spawn_loops(ingest.clone(), incidents, notify, db.clone(), Nightly { config: config.clone(), watch });
     // the dashboard over TLS
     let (cert, key_pem) =
         rackhand_hub::web::tls::load_or_create(&vault, &config.names).await.map_err(|e| e.to_string())?;
@@ -333,11 +334,43 @@ fn reachable(ip: std::net::IpAddr) -> bool {
 
 /// The hub's periodic work: evaluation and callouts every 15 s, compaction every 5 minutes, rollups every minute
 /// and hour, retention hourly.
+/// The nightly work (9, 10): a backup at 02:00 site time and the self-watch at 02:30.
+struct Nightly {
+    config: HubConfig,
+    watch: Arc<rackhand_hub::selfwatch::SelfWatch>,
+}
+
+/// The self-watch's checks for this hub: its database, its binary against the release manifest beside `hub.toml`
+/// (`release-manifest.json` and its `.minisig`, installed with the release), and its key and config files.
+fn self_watch(
+    config: &HubConfig,
+    db: &Arc<Db>,
+    ingest: &Ingest,
+    notify: &rackhand_hub::notify::Notify,
+) -> rackhand_hub::selfwatch::SelfWatch {
+    use rackhand_hub::selfwatch::{Manifest, SelfWatch, quick_check};
+    let config_dir = config.master_key.parent().map(Path::to_path_buf).unwrap_or_default();
+    let manifest = config_dir.join("release-manifest.json");
+    let manifest =
+        manifest.exists().then(|| Manifest { signature: manifest.with_extension("json.minisig"), path: manifest });
+    SelfWatch {
+        ingest: ingest.clone(),
+        notify: notify.clone(),
+        db: db.clone(),
+        integrity: quick_check(config.db_path()),
+        exe: std::env::current_exe().unwrap_or_default(),
+        exe_name: format!("rackhand-{}-unknown-linux-musl", std::env::consts::ARCH),
+        manifest,
+        configs: vec![(config.master_key.clone(), 0o600), (config_dir.join("hub.toml"), 0o640)],
+    }
+}
+
 fn spawn_loops(
     ingest: Ingest,
     incidents: rackhand_hub::incidents::Incidents,
     notify: rackhand_hub::notify::Notify,
     db: Arc<Db>,
+    nightly: Nightly,
 ) {
     let (i, n, g) = (incidents.clone(), notify, ingest.clone());
     tokio::spawn(async move {
@@ -358,7 +391,22 @@ fn spawn_loops(
         let mut tick = tokio::time::interval(Duration::from_secs(60));
         loop {
             tick.tick().await;
-            every_minute(&ingest, &incidents, &db, now_ms(), &rackhand_store::retention::TokioSleeper).await;
+            let now = now_ms();
+            every_minute(&ingest, &incidents, &db, now, &rackhand_store::retention::TokioSleeper).await;
+            let (backup, watch) = backups::site_minute(&db, now).map(backups::nightly).unwrap_or_default();
+            if backup && !ingest.integrity_failed() {
+                let config = nightly.config.clone();
+                match tokio::task::spawn_blocking(move || backups::backup_now(&config, now)).await {
+                    Ok(Ok(path)) => tracing::info!(path = %path.display(), "nightly backup"),
+                    Ok(Err(e)) => tracing::error!(error = %e, "nightly backup"),
+                    Err(e) => tracing::error!(error = %e, "nightly backup"),
+                }
+            }
+            if watch {
+                for f in nightly.watch.daily(now).await {
+                    tracing::warn!(kind = f.kind, detail = %f.detail, "self-watch");
+                }
+            }
         }
     });
 }
@@ -415,6 +463,7 @@ pub fn detect_replay(db_path: &Path, machine: &str, from_ms: i64, to_ms: i64) ->
     rackhand_hub::incidents::replay::replay(&db, machine, from_ms, to_ms, 15)
 }
 
+pub mod backups;
 pub mod joins;
 
 #[cfg(test)]

@@ -83,6 +83,44 @@ impl Hub {
         Hub { dir, etc, data, web, quic, setup_code, id_hex, jar, child: None, started: None }
     }
 
+    /// A hub restored from `file` with `master_key` (`rackhand hub restore`), on the given ports: the same address.
+    pub fn restore(name: &str, file: &Path, master_key: &Path, web: u16, quic: u16) -> Hub {
+        let dir = temp(name);
+        let (etc, data) = (dir.join("etc"), dir.join("lib"));
+        let out = Command::new(binary("rackhand", "rackhand"))
+            .args(["hub", "restore"])
+            .arg(file)
+            .arg("--master-key")
+            .arg(master_key)
+            .arg("--config-dir")
+            .arg(&etc)
+            .arg("--data-dir")
+            .arg(&data)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "hub restore: {}", String::from_utf8_lossy(&out.stderr));
+        let toml = etc.join("hub.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        let text =
+            text.replace("0.0.0.0:8443", &format!("0.0.0.0:{web}")).replace("0.0.0.0:7443", &format!("0.0.0.0:{quic}"));
+        std::fs::write(&toml, text).unwrap();
+        let key: [u8; 32] = std::fs::read(etc.join("node.key")).unwrap().try_into().unwrap();
+        let id_hex = hex(iroh::SecretKey::from_bytes(&key).public().as_bytes());
+        let jar = dir.join("cookies");
+        Hub { dir, etc, data, web, quic, setup_code: String::new(), id_hex, jar, child: None, started: None }
+    }
+
+    /// `rackhand hub backup` while the hub runs; the backup file.
+    pub fn backup(&self) -> PathBuf {
+        let out = Command::new(binary("rackhand", "rackhand"))
+            .args(["hub", "backup", "--config"])
+            .arg(self.etc.join("hub.toml"))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "hub backup: {}", String::from_utf8_lossy(&out.stderr));
+        PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
+    }
+
     fn db(&self) -> rusqlite::Connection {
         rusqlite::Connection::open(self.data.join("hub.db")).unwrap()
     }
@@ -556,5 +594,33 @@ impl Drop for Cleanup {
         for n in &self.0 {
             let _ = Command::new("docker").args(["rm", "-f", n]).output();
         }
+    }
+}
+
+mod backup {
+    use super::*;
+
+    #[test]
+    fn restore_on_new_machine_probes_reconnect() {
+        let key = [47u8; 32];
+        let mut a = Hub::init("backup-a");
+        a.enroll(MACHINE, &key);
+        a.start();
+        a.first_run();
+        let machine = probe_machine(&a, &key, &[]);
+        within(Duration::from_secs(60), "reports at the first hub", || a.received().last().is_some_and(|r| r.1 >= 2));
+        let file = a.backup();
+        let toml_before = machine.root("cat /etc/rackhand-probe/probe.toml").stdout;
+        a.stop();
+        let seen = a.received().last().map_or(0, |r| r.1);
+        // a new machine at the same address: the backup, restored with the master key
+        let mut b = Hub::restore("backup-b", &file, &a.etc.join("master.key"), a.web, a.quic);
+        assert_eq!(b.id_hex, a.id_hex, "the restored hub has the same endpoint id");
+        b.start();
+        within(Duration::from_secs(120), "the probe reporting to the restored hub", || {
+            b.received().last().is_some_and(|r| r.1 > seen)
+        });
+        assert_eq!(machine.root("cat /etc/rackhand-probe/probe.toml").stdout, toml_before, "without re-enrolling");
+        assert!(b.events("machine.identity_conflict").is_empty());
     }
 }
