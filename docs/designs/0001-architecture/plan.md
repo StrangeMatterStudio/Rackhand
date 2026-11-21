@@ -218,7 +218,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T10 | Spike S1: aya eBPF | T02, L1 | scripted measurement (eBPF VMs, local Proxmox) | done |
 | T11 | Spike S11: collectors on current distributions | T02, L1 | scripted measurement (containers, local Proxmox) | done |
 | T12 | Spike S4: Proxmox privileges, firewall, upgrade command | T02, L1 | scripted measurement (local Proxmox) | done |
-| T13 | Spike S5: Claude Code headless | T02 | scripted measurement (owner's login) | todo |
+| T13 | Spike S5: Claude Code headless | T02 | scripted measurement (owner's login) | done |
 | T14 | Spike S9: TrueNAS API | T02 | lab measurement | todo |
 | T15 | Spike S10: threat list and GeoIP terms | T02 | scripted measurement + reading | done (owner decision pending for T69) |
 | T16 | Wire format: framing, limits, close codes, messages | T15 | unit, golden | done |
@@ -886,12 +886,14 @@ Every spike step follows the same rules:
 - **Regression:** `cargo xtask ci fast`: exit 0.
 - **Manual verification:** MV5 (the owner signs in to Claude Code in the spike's configuration directory).
 - **Done when:**
-  - [ ] Report committed; flags written into 7.3.5; finding in design 17
-  - [ ] Spike code deleted; the spike user's configuration directory removed
+  - [x] Report committed; flags written into 7.3.5; finding in design 17
+  - [x] Spike code deleted; the spike user's configuration directory removed
 - **Risk / rollback:** none beyond the finding.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-21 | spikes/s5/run.sh --report docs/designs/0001-architecture/spikes/s5.md --check | exit 0. Only the stub's tools were listed and called (`mcp__stub__echo`; a shell request found no tool), the user-level and project decoys didn't start (the control run without `--strict-mcp-config` started both), every stream-json line parsed, and SIGTERM 20 s into a 120 s tool call left no process after 5 s. Flags in 7.3.5, finding in 17. Spike code deleted; the signed-in configuration directory removed (D56) |
+  | 2026-11-21 | cargo xtask ci fast | exit 0 (no code changed) |
 
 ### T14: Spike S9: TrueNAS API
 - **Design refs:** FR-10, 7.4.2 (TrueNAS row), AC11, S9
@@ -4653,6 +4655,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D53 | 2026-11-20 | T41 | The `ManagedSetupSource` from T51 and T53 (D21) | Composed in `hub_cmd::joins`: the automation and assistant public keys from the Vault, the wrapper's one sudoers line, and the command list of the current runbooks plus the diagnostics, signed with the node key, valid 1 hour, versioned by the signing time. The join server is built at the first join after first run names the hub's site (before that no token exists; the connection closes as from an unknown peer). A join tells the machine the QUIC endpoint's direct addresses (its interfaces, or the one address it is bound to) other than loopback and link-local, then each certificate name that is an IP address, on the QUIC port, read when the join server is built; the probe settings are the design defaults (15 s, 500 tuples, 64 MB). The 1-hour validity and the address rule fill design gaps, owner to confirm | Nothing else provided the managed setup; the site is only known after first run | plan | - |
 | D54 | 2026-11-20 | T42 | One step; `vitals_visible_within_30s` lists containers; `probe_check` in T42 | Done in parts, each committed: T42a (the daemon, with unit tests and the carried-in `probe::` tests in `crates/rackhand-hub/tests/probe_daemon.rs` against the real probe server), T42b (the integration tests and the unit file), T42c (`wait_report`). Containers come from the helper (T43), so T42 asserts metrics and services and T43 carries the container check. `probe_check` has no fields and no wire message, so its test moves to T46 with the checks, owner to define. `probe.toml` gains `hub.addrs`, `hub.relays` and a `[machine]` section (`id`, `access`, `mode`), read through one module by the wrapper and the daemon; `probe.state` is JSON (`state` connecting, connected, disconnected or stopped; `version`, `at_ms`, `reason`, `retry_in_ms`, `epoch`, `buffered`) replaced whole on each change. The probe runs on a single-thread runtime (its footprint budget). Design gaps, owner to confirm | Size of the step; the helper and the check message don't exist yet | plan | - |
 | D55 | 2026-11-21 | T42 | `disk_rule_callouts_and_resolution` through the hub binary; `wait_report` in the integration tier; the buffer cap and the 5 s interval as test knobs | The disk-rule callout test composes the hub's own Ingest, Incidents and Notify in the test process with the real probe daemon, because the hub binary trusts only public CA roots for SMTP over TLS (D113) and a local test mail server can't hold a public certificate (Discord over plain HTTP is allowed to loopback); the hub's SMTP sink is shared through a `testing` feature. `wait_report` is tested in the hub's own tests (it only reads Ingest). `config/hub.toml` gains a `[probe]` section (`interval_s` 5 to 300, `connection_tuples` 100 to 5000, `buffer_max_mb` 1 to 64) read when the hub starts, which is how the tests set the 5 s interval and the 1 MB cap (D114; pushing an edit as `ConfigUpdate` is carried into T98). The buffer test makes each report large with 1500 failed units, since a normal report is about 0.6 KB. The integration tests were written after the daemon; the daemon's behaviour they rely on was seen failing in T42a's mutation checks, and the hub-side rules in T32 and T32b | The binary can't trust a test mail server; settings had no probe section | plan | - |
+| D56 | 2026-11-21 | T13 | A separate Unix user with an empty configuration directory | The same user with its own `CLAUDE_CONFIG_DIR` (the owner signed in there), and each run from a fresh directory holding only a copy of `.credentials.json`; the isolation under test is the configuration directory, which this keeps | No second account in WSL needed | plan | - |
 
 ## Follow-ups (out of scope)
 

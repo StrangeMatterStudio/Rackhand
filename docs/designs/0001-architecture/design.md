@@ -630,12 +630,12 @@ pub struct RunHandle { pub events: mpsc::Receiver<JobEvent>, pub cancel: Cancell
 
 The Claude Code runner writes the brief to a temporary work directory, writes an MCP config whose only server is
 `rackhand operator mcp-bridge --hub <id> --job <job_id>` (stdio, bridging to `rackhand/mcp/1`), and runs
-`claude -p --output-format stream-json --mcp-config <file> --allowedTools "mcp__rackhand__*" --max-turns <n>` with no
-other tools allowed. The runner process runs as the unprivileged `rackhand-operator` user with a configuration
+`claude -p --output-format stream-json --verbose --mcp-config <file> --strict-mcp-config --tools "" --allowedTools
+"mcp__rackhand__*" --max-turns <n> --no-session-persistence --permission-mode dontAsk` (spike S5), so the run has no
+built-in tools and no MCP server but the bridge. The runner process runs as the unprivileged `rackhand-operator` user with a configuration
 directory of its own that holds only the AI provider credential set up at `rackhand operator join`, so no MCP server,
 tool or setting already present on the host is loaded. It parses stream-json
-into `JobEvent`s and kills the process at the deadline (spike S5 confirms the exact flags, including the one that
-limits the run to the given MCP config).
+into `JobEvent`s and sends SIGTERM at the deadline, which ends `claude` and its bridge child within 5 s (S5).
 
 #### 7.3.6 MCP (`rackhand/mcp/1`)
 
@@ -2099,6 +2099,11 @@ the owner and the document is updated before the work that depends on it starts.
 - **S5** Claude Code headless: stdio MCP only, `--allowedTools` limited to MCP tools, stream-json events, kill at
   deadline; the flag that limits a run to the given MCP config; any extra flag stream-json needs in a non-interactive
   run; and running with a configuration directory that holds only the provider credential.
+  **Finding (2026-11-21):** `claude -p --output-format stream-json --verbose --mcp-config <file> --strict-mcp-config
+  --tools "" --allowedTools "mcp__<server>__*" --max-turns <n> --no-session-persistence --permission-mode dontAsk`
+  with `CLAUDE_CONFIG_DIR` set to a directory holding only `.credentials.json`. `--strict-mcp-config` is required: a
+  `-p` run otherwise also starts user-level servers and the working directory's `.mcp.json`. stream-json needs
+  `--verbose`. SIGTERM ends the process tree within 5 s. Report: `spikes/s5.md`.
 - **S6** Probe footprint: static musl binary size and steady RSS with iroh, aya and tokio.
   **Finding (2026-11-19):** A static musl probe skeleton (iroh 1.5 endpoint, aya tracepoint, tokio, /proc reads and a
   1.2 KB zstd frame every 15 s) is 5.55 MB on x86_64 and 4.43 MB on aarch64, with 4.9 MB steady RSS and 0.019% of a
@@ -2320,3 +2325,4 @@ None.
 | 2026-11-20 | 7.3.3, 7.3.2: `probe.toml` holds `[hub] id, addrs, relays` and `[machine] id, access, mode`; `probe.state` is JSON with `state` (`connecting`, `connected`, `disconnected`, `stopped`), `version`, `at_ms`, `reason`, `retry_in_ms`, `epoch` and `buffered`, replaced whole on each change; gaps filled in T42, owner to confirm | Implementation (T42) | Implementation run |
 | 2026-11-21 | D113: notifiers trust public CA roots only (7.3.9) | Owner decision on a T42 question | Owen |
 | 2026-11-21 | D114 (probe files, probe settings, `ConfigUpdate` on edit) and D115 (`probe_check`: `RunCheck` and `CheckResult` on stream 0 of `rackhand/probe/1`; 7.3.2, 7.8.7) | T42 gaps, delegated by the owner | Claude (delegated) |
+| 2026-11-21 | 7.3.5: the Claude Code runner's flags from spike S5 (`--strict-mcp-config` and `--tools ""` added; SIGTERM at the deadline); finding in 17 | Spike S5 (T13) | Implementation run |
