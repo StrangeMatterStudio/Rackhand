@@ -59,7 +59,16 @@ fn survives_session_kill(c: &Container) {
     c.spawn_detached("rackhand", &session);
     let start = Instant::now();
     while !c.root("test -s /tmp/session").status.success() {
-        assert!(start.elapsed() < Duration::from_secs(20), "the session never started the job");
+        if start.elapsed() > Duration::from_secs(20) {
+            let state = c.root(
+                "systemctl is-system-running; ls -la /var/lib/rackhand-run/jobs/*/* 2>&1 | head;                  ps -ef | grep -E '[s]udo|[r]un job|[s]ystemd-run|[s]low-echo'; journalctl --no-pager -n 30 | tail -30",
+            );
+            panic!(
+                "the session never started the job:
+{}",
+                String::from_utf8_lossy(&state.stdout)
+            );
+        }
         std::thread::sleep(Duration::from_millis(200));
     }
     // `kill -9 -<pgid>`: dash and busybox both take a negative pid this way (dash refuses `--` before it).

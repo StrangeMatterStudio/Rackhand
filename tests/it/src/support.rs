@@ -99,9 +99,13 @@ impl Container {
         ];
         args.extend_from_slice(extra);
         let c = Container::start_with(image, &args);
-        for _ in 0..50 {
-            if c.root("systemctl is-system-running 2>/dev/null | grep -qE 'running|degraded'").status.success() {
-                break;
+        // Booted before the test uses it: under the tier's load a container's systemd can take a while, and a test
+        // racing its boot (systemd-run blocks until the boot ends) fails in ways that say nothing about Rackhand.
+        let start = std::time::Instant::now();
+        while !c.root("systemctl is-system-running 2>/dev/null | grep -qE 'running|degraded'").status.success() {
+            if start.elapsed() > std::time::Duration::from_secs(60) {
+                let state = c.root("systemctl is-system-running; systemctl list-jobs --no-pager | head -20");
+                panic!("{image}: systemd didn't finish booting in 60 s: {}", String::from_utf8_lossy(&state.stdout));
             }
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
