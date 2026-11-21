@@ -130,3 +130,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-21 | T49h done, and with it T49: Proxmox, TrueNAS, Redfish and SNMP simulators added through the Add page's forms report their readings and are silent (warning) after 2 failed polls |
 | 2026-11-21 | L3 done: M2 live 7 passed on a fresh deploy, M1 regression 10 passed; fixed on the way: config files on the Library page (D86, owner to confirm), no false mirror warning, Alpine offline install with wget, the lab's agentless snmpd and target without unattended upgrades (D87). The M2 page walk waits for the owner (self-signed certificate in the pane, as MV12) |
 | 2026-11-21 | T57 done: incidents route to the most specific runbook through StartJob, with level 0, 1 and 2 behaviour, the 10-minute clear wait and 2 automatic starts per 24 hours (D88, owner to confirm `targets.machines`) |
+| 2026-11-21 | T59a done: patch window selection (D89 splits T59 in five parts) |
