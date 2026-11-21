@@ -441,6 +441,21 @@ pub async fn every_minute(
     }
 }
 
+/// The hub as an install command names it (7.3.12): `rackhand1:<endpoint id hex>@<addr>:<quic port>,...`, the
+/// endpoint id from the node key. Used by `hub lab-token` until the Add page issues tickets (T49).
+#[cfg(any(test, feature = "lab-build"))]
+pub fn ticket(config: &HubConfig, addrs: &[std::net::IpAddr]) -> Result<String, String> {
+    if addrs.is_empty() {
+        return Err("a ticket needs at least one address of the hub".into());
+    }
+    let key = rackhand_net::key::load_or_create(&config.node_key)
+        .map_err(|e| format!("{}: {e}", config.node_key.display()))?;
+    let id: String = key.public().as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+    let port = config.quic.port();
+    let addrs: Vec<String> = addrs.iter().map(|ip| SocketAddr::new(*ip, port).to_string()).collect();
+    Ok(format!("rackhand1:{id}@{}", addrs.join(",")))
+}
+
 /// `rackhand hub metrics-token`: the bearer token `/metrics` checks, read from the Vault with the master key, so only
 /// root can read it. The database is opened read-only, so it is safe while the hub runs.
 pub fn metrics_token(config: &HubConfig) -> Result<String, String> {

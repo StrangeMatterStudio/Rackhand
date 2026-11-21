@@ -386,3 +386,19 @@ async fn metrics_token_read_with_the_master_key() {
     let wrong = HubConfig { master_key: other, ..config.clone() };
     assert!(metrics_token(&wrong).is_err());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ticket_names_the_node_key_and_addresses() {
+    let dir = temp("ticket");
+    let made = init(&dir.join("etc"), &dir.join("lib")).await.unwrap();
+    let config = HubConfig::load(&made.config).unwrap();
+    let key: [u8; 32] = std::fs::read(&config.node_key).unwrap().try_into().unwrap();
+    let id: String = iroh::SecretKey::from_bytes(&key).public().as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+    let addrs = ["192.0.2.10".parse().unwrap(), "2001:db8::10".parse().unwrap()];
+    assert_eq!(
+        ticket(&config, &addrs).unwrap(),
+        format!("rackhand1:{id}@192.0.2.10:7443,[2001:db8::10]:7443"),
+        "the endpoint id and the QUIC port, as the probe's installer reads them"
+    );
+    assert!(ticket(&config, &[]).is_err(), "a ticket needs an address");
+}

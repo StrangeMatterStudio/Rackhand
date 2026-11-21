@@ -1266,6 +1266,36 @@ mod pages {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn machine_page_shows_updates() {
+        let (app, ingest) = monitored("machine-updates").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        monitor_machine(&app, M, "managed").await;
+        let viewer = session_for(&app.db, Role::Viewer).await;
+        ingest.hello(M, 1, &[rackhand_proto::common::LabelEntry::default()]).await.unwrap();
+        let at = now_ms();
+        let plain = rackhand_proto::probe::Report { epoch: 1, seq: 1, sampled_at_ms: at, ..Default::default() };
+        ingest.receive(M, crate::ingest::Stream::Live, vec![plain], 100, at).await.unwrap();
+        let html = text(send(&app.router, get(&format!("/machines/{M}"), &viewer)).await).await;
+        assert!(html.contains("Updates not reported yet"), "{html}");
+        let r = rackhand_proto::probe::Report {
+            epoch: 1,
+            seq: 2,
+            sampled_at_ms: at + 15_000,
+            updates: Some(rackhand_proto::probe::UpdateSummary {
+                pending: 3,
+                security: 1,
+                reboot_required: true,
+                packages: vec!["openssl".into()],
+            }),
+            ..Default::default()
+        };
+        ingest.receive(M, crate::ingest::Stream::Live, vec![r], 100, at + 15_000).await.unwrap();
+        let html = text(send(&app.router, get(&format!("/machines/{M}"), &viewer)).await).await;
+        assert!(html.contains("3 pending, 1 security"), "{html}");
+        assert!(html.contains("Reboot required") && html.contains("openssl"), "{html}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn silent_machine_shows_since() {
         let (app, _ingest) = monitored("silent-page").await;
         complete_first_run(&app, SETUP_CODE).await;

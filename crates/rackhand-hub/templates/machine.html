@@ -16,6 +16,8 @@
 <h2>Services</h2>
 {% if services.is_empty() %}<p>No services reported.</p>{% else %}
 <table><tr><th>Service</th><th>State</th></tr>{% for s in services %}<tr><td>{{ s.0 }}</td><td>{{ s.1 }}</td></tr>{% endfor %}</table>{% endif %}
+<h2>Updates</h2>
+{% if let Some(u) = updates %}<p>{{ u.summary }}.{% if u.reboot_required %} Reboot required.{% endif %}</p>{% if !u.packages.is_empty() %}<p>Packages: {{ u.packages }}</p>{% endif %}{% else %}<p>Updates not reported yet.</p>{% endif %}
 <h2>Containers</h2>
 {% if containers.is_empty() %}<p>No containers reported.</p>{% else %}
 <table><tr><th>Container</th><th>State</th></tr>{% for c in containers %}<tr><td>{{ c.0 }}</td><td>{{ c.1 }}</td></tr>{% endfor %}</table>{% endif %}

@@ -304,12 +304,12 @@ fn hub_restore(file: &str, rest: &[&str]) -> ExitCode {
     }
 }
 
-/// `hub lab-token --kind machine --access managed|monitor [--name <name>] [--role <role>]`: a pending machine and its
-/// one-time token, as the Add page (T49) will issue them. Lab builds only (plan L2): a release build has no such command.
+/// `hub lab-token --kind machine --access managed|monitor --addr <hub ip> [--name <name>] [--role <role>]`: a pending
+/// machine, its one-time token and the hub's ticket, as the Add page (T49) will issue them. Lab builds only (plan L2): a release build has no such command.
 #[cfg(feature = "lab-build")]
 fn hub_lab_token(rest: &[&str]) -> ExitCode {
     use rackhand_proto::common::{Access, ProbeMode};
-    let Some(o) = options(rest, &["kind", "access", "name", "role", "config"]) else {
+    let Some(o) = options(rest, &["kind", "access", "name", "role", "config", "addr"]) else {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
@@ -332,6 +332,11 @@ fn hub_lab_token(rest: &[&str]) -> ExitCode {
     };
     let result = rt.block_on(async {
         let config = hub_cmd::HubConfig::load(&path)?;
+        let addr: std::net::IpAddr = o
+            .get("addr")
+            .and_then(|a| a.parse().ok())
+            .ok_or_else(|| "lab-token: --addr <the hub's IP address>".to_string())?;
+        let ticket = hub_cmd::ticket(&config, &[addr])?;
         let db = std::sync::Arc::new(rackhand_store::Db::open(&config.db_path()).map_err(|e| e.to_string())?);
         let site: String = db
             .readers()
@@ -348,12 +353,15 @@ fn hub_lab_token(rest: &[&str]) -> ExitCode {
         };
         let (id, token) =
             registry.add_machine(&add, "lab", rackhand_store::ids::now_ms()).await.map_err(|e| e.to_string())?;
-        Ok::<_, String>((id, token.as_str().to_string()))
+        Ok::<_, String>((id, token.as_str().to_string(), ticket))
     });
     match result {
-        Ok((id, token)) => {
-            eprintln!("machine {id}");
-            println!("{token}");
+        Ok((id, token, ticket)) => {
+            println!(
+                "machine={id}
+ticket={ticket}
+token={token}"
+            );
             ExitCode::SUCCESS
         }
         Err(e) => {

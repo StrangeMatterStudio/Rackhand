@@ -6,6 +6,8 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 #[cfg(test)]
+mod hub;
+#[cfg(test)]
 mod lab;
 #[cfg(test)]
 mod m1;

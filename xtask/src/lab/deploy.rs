@@ -136,8 +136,18 @@ pub fn serve(dir: &Path) -> Result<()> {
 
 /// The hub on `m` with the packaged unit; `hub init` only the first time. Returns the setup code when it initialized.
 fn install_hub(m: &Machine) -> Result<Option<String>> {
+    let first = "if [ ! -f /etc/rackhand/master.key ]; then sudo /usr/local/bin/rackhand hub init; fi";
+    let out = qemu::ssh(m, &install_script(first))?;
+    Ok(out
+        .lines()
+        .find_map(|l| l.strip_prefix("Setup code (for the dashboard's first run, once): "))
+        .map(|s| s.trim().to_string()))
+}
+
+/// The install steps around `setup`, which makes the hub's keys and database (`hub init` or `hub restore`).
+fn install_script(setup: &str) -> String {
     let url = format!("http://10.0.2.2:{RELEASE_PORT}");
-    let script = format!(
+    format!(
         "set -e
 curl -fsSL {url}/rackhand-{TARGET} -o /tmp/rackhand
 curl -fsSL {url}/rackhand-hub.service -o /tmp/rackhand-hub.service
@@ -145,7 +155,7 @@ sudo systemctl stop rackhand-hub 2>/dev/null || true
 sudo install -m 0755 /tmp/rackhand /usr/local/bin/rackhand
 sudo install -m 0644 /tmp/rackhand-hub.service /etc/systemd/system/rackhand-hub.service
 id rackhand-hub >/dev/null 2>&1 || sudo useradd -r -U -M -d /var/lib/rackhand -s /usr/sbin/nologin rackhand-hub
-if [ ! -f /etc/rackhand/master.key ]; then sudo /usr/local/bin/rackhand hub init; fi
+{setup}
 sudo chown -R rackhand-hub:rackhand-hub /var/lib/rackhand
 sudo chown rackhand-hub:rackhand-hub /etc/rackhand/node.key
 sudo chown root:rackhand-hub /etc/rackhand/hub.toml
@@ -153,12 +163,27 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now rackhand-hub >/dev/null 2>&1
 for i in $(seq 1 60); do curl -sk https://127.0.0.1:8443/healthz | grep -q ok && exit 0; sleep 1; done
 echo 'the hub did not answer /healthz' >&2; sudo journalctl -u rackhand-hub --no-pager | tail -20 >&2; exit 1"
-    );
-    let out = qemu::ssh(m, &script)?;
-    Ok(out
-        .lines()
-        .find_map(|l| l.strip_prefix("Setup code (for the dashboard's first run, once): "))
-        .map(|s| s.trim().to_string()))
+    )
+}
+
+/// `lab deploy --restore <backup> --master-key <key>`: this build onto a machine without a hub, from a hub backup
+/// (AC47). The admin of `creds` comes back with the database.
+pub fn deploy_restore(lab: &Lab, hub_on: &str, backup: &Path, master_key: &Path) -> Result<()> {
+    let m = lab.machine(hub_on)?;
+    if !qemu::is_running(&m.name) {
+        bail!("{} isn't running: `cargo xtask lab up <profile>` first", m.name);
+    }
+    let dir = release_dir();
+    build_release(&dir, false)?;
+    serve(&dir)?;
+    qemu::scp_to(m, backup, "/tmp/rackhand-restore.rhbk")?;
+    qemu::scp_to(m, master_key, "/tmp/rackhand-restore.key")?;
+    let setup = "if [ -f /etc/rackhand/master.key ]; then echo 'this machine has a hub; reset it first' >&2; exit 1; fi
+sudo /usr/local/bin/rackhand hub restore /tmp/rackhand-restore.rhbk --master-key /tmp/rackhand-restore.key
+rm -f /tmp/rackhand-restore.rhbk /tmp/rackhand-restore.key";
+    qemu::ssh(m, &install_script(setup))?;
+    println!("hub restored on {} from {}", m.name, backup.display());
+    Ok(())
 }
 
 /// `curl` against the hub's dashboard through its forwarded port, with a cookie jar; returns the body.

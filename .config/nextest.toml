@@ -46,6 +46,11 @@ fail-fast = false
 test-threads = 1
 slow-timeout = { period = "120s", terminate-after = 15 }
 
+# The cut test waits 10 minutes, then up to 15 for the hole to fill (AC2).
+[[profile.live.overrides]]
+filter = 'test(cut_link_backfills_without_stale_incidents)'
+slow-timeout = { period = "120s", terminate-after = 25 }
+
 [profile.perf]
 retries = 0
 fail-fast = false

@@ -42,6 +42,7 @@ const USAGE: &str = "usage: cargo xtask lab <command>
   run <machine> -- <cmd>     run a command over SSH as `lab` (with sudo available)
   ssh <machine>              print the SSH command for a machine
   deploy [--hub-on <name>]   build, sign and serve this build, install the hub (default `hub`), complete first run
+         [--restore <backup> --master-key <key>]  or install it from a hub backup instead of first run
   destroy                    stop everything and delete all lab state except downloaded images";
 
 pub fn run(args: &[String]) -> Result<()> {
@@ -100,12 +101,23 @@ pub fn run(args: &[String]) -> Result<()> {
         }
         Some("destroy") => destroy(&lab),
         Some("deploy") => {
-            let hub = match (arg(1), arg(2)) {
-                (Some("--hub-on"), Some(name)) => name,
-                (None, _) => "hub",
-                _ => bail!("{USAGE}"),
-            };
-            deploy::deploy(&lab, hub)
+            let (mut hub, mut restore, mut key) = ("hub", None, None);
+            let mut i = 1;
+            while let Some(flag) = arg(i) {
+                let value = arg(i + 1).with_context(|| format!("{flag} needs a value"))?;
+                match flag {
+                    "--hub-on" => hub = value,
+                    "--restore" => restore = Some(std::path::PathBuf::from(value)),
+                    "--master-key" => key = Some(std::path::PathBuf::from(value)),
+                    _ => bail!("{USAGE}"),
+                }
+                i += 2;
+            }
+            match (restore, key) {
+                (None, None) => deploy::deploy(&lab, hub),
+                (Some(file), Some(key)) => deploy::deploy_restore(&lab, hub, &file, &key),
+                _ => bail!("--restore and --master-key go together"),
+            }
         }
         _ => bail!("{USAGE}"),
     }

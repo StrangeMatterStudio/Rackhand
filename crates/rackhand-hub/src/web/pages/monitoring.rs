@@ -51,6 +51,13 @@ struct MachinePage {
     incidents: Vec<IncidentView>,
     services: Vec<(String, String)>,
     containers: Vec<(String, String)>,
+    updates: Option<UpdatesView>,
+}
+
+struct UpdatesView {
+    summary: String,
+    reboot_required: bool,
+    packages: String,
 }
 
 fn capture(caps: &[i32]) -> &'static str {
@@ -128,6 +135,11 @@ pub(super) fn machine(web: &Web, ctx: &Ctx) -> Response<Body> {
         .as_ref()
         .map(|l| l.containers.iter().map(|c| (c.name.clone(), c.state.clone())).collect())
         .unwrap_or_default();
+    let updates = latest.as_ref().and_then(|l| l.updates.as_ref()).map(|u| UpdatesView {
+        summary: format!("{} pending, {} security", u.pending, u.security),
+        reboot_required: u.reboot_required,
+        packages: u.packages.join(", "),
+    });
     let caps = web.0.ingest.as_ref().map(|i| i.capabilities(&id)).unwrap_or_default();
     let page = MachinePage {
         silent_since: silent_since(web, &id),
@@ -142,6 +154,7 @@ pub(super) fn machine(web: &Web, ctx: &Ctx) -> Response<Body> {
         incidents,
         services,
         containers,
+        updates,
     };
     html(StatusCode::OK, page.render())
 }

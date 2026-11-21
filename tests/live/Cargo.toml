@@ -11,5 +11,9 @@ publish = false
 name = "live"
 path = "src/lib.rs"
 
+[dev-dependencies]
+ring = { workspace = true }
+toml = { workspace = true }
+
 [lints]
 workspace = true
