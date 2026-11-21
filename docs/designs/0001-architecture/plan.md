@@ -254,7 +254,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T45 | Hub self-watch, integrity and backups | T41 | unit + integration | done |
 | T39b | Settings: add or replace a notifier | T39, T41 | unit (HTTP) | done |
 | L2 | Live tier and the M1 pass | T44, T45, L1 | live (local lab) | done (MV12 page walk waits for the owner) |
-| T46 | Service checks and network drivers | T41 | unit + integration | todo |
+| T46 | Service checks and network drivers | T41 | unit + integration | in progress (T46a done) |
 | T47 | Proxmox driver | T46, T12 | unit (recorded API) | todo |
 | T48 | TrueNAS, Redfish and SNMP drivers | T46, T14 | unit (simulators) + integration | todo |
 | T49 | Add page, agentless enrollment and guest binding | T47, T48, T39 | unit + integration | todo |
@@ -2303,6 +2303,10 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-21 | T46a: cargo nextest run -p rackhand-drivers -E 'test(drivers::)' (before) | compile errors: `DriverTarget`, `DriverReading`, `DriverError`, `Http`, `Tcp`, `Dns`, `Tls`, `Icmp` not found |
+  | 2026-11-21 | T46a: same (after) | 4 passed: HTTP status and body (a 500, a body mismatch and an unfollowed 302 fail with detail; an unknown setting is a configuration error), TCP open and closed, DNS against a local stub (the expected address, a wrong one, NXDOMAIN), the days to a self-signed certificate's expiry (10), and an unprivileged ping to loopback (WSL's `ping_group_range` allows every group), one to an address nothing answers failing within its timeout |
+  | 2026-11-21 | T46a: mutation checks | each seen failing with its behaviour removed: the status not compared, the body not checked, the days computed wrong, unknown settings allowed, the DNS answer not compared, a closed port passing (1 failed each) |
+  | 2026-11-21 | T46a: cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0 (with `cargo deny check` for the new dependencies); fast 401 passed, 1 skipped; no violations |
 
 ### T47: Proxmox driver
 - **Design refs:** FR-10 (Proxmox VE API), 7.4.2 (Proxmox row), 7.8.6 (role from T12), 7.3.12 (certificate pinning),
@@ -4753,6 +4757,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D67 | 2026-11-21 | L2 | The live tests as written | Found while running them: `reboot` waits for a new boot id (a transient timer fires up to a minute late by default, so the old system still answered); the pause test waits until the hub has run 3 minutes (no silence in its first 3, E44) and sets `target`'s clock from WSL's after the resume (a paused VM's clock stays behind, which opened `clock_skew`); the live profile prints passing tests' output, kept as evidence; `lab deploy` builds release binaries (the debug probe was 254 MB) | Lab behaviour | plan | - |
 | D68 | 2026-11-21 | L2 | Expected 8 m1 and 6 lab tests; MV12 done by the run | 10 m1 tests (the 8 listed and the 2 carried from T41) and 7 lab tests. The page walk waits for the owner: the in-app browser refuses the hub's self-signed certificate, and continuing past that warning is the owner's choice | Counts grew; a browser trust setting | plan | - |
 | D69 | 2026-11-21 | L2 | (a bug found while checking D65's kind) | An open `machine.silent` resolved at the first evaluation after a hub restart: in the 3-minute start grace the rule gives no severity, which the tracker read as the condition clearing, so every restart while a machine was down sent a false resolution and, 3 minutes later, a new callout. A machine that hasn't reported since the start is now left as it is during the grace. A container-restarts incident has the same exposure (the restart window is in memory): carried into T98 | Found reviewing L2 | plan | - |
+| D70 | 2026-11-21 | T46 | One step | Split into T46a (the drivers crate and its 4 tests), T46b (the hub's schedule, results, series and incidents, `config/checks`, the integration test) and T46c (the carried executor and `probe_check` tests), one commit each. Filled in for the drivers: `crates/rackhand-drivers/src/driver.rs` for the trait (a module can't be called `trait`); series `check.up`, `check.latency_ms`, `check.status_code` and `check.cert_days` (7.4.2 names only what they measure); settings per kind, unknown ones refused: HTTP `status` (200) and `body_contains`, DNS `server` (the first `nameserver` of `/etc/resolv.conf`) and `expect`, TLS `server_name`; HTTP doesn't follow redirects and HTTPS trusts the public roots only, as D113 does for notifiers (a self-signed internal service then fails its HTTPS check: a per-check option is on the owner's list); the TLS check reads the certificate whoever signed it, since its expiry is what's watched, and fails once expired; ICMP uses an unprivileged ICMP socket and falls back to a raw one (`CAP_NET_RAW`) | A large step; values the design didn't give | plan | - |
 
 ## Follow-ups (out of scope)
 
