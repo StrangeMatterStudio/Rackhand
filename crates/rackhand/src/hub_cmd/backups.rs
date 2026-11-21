@@ -18,7 +18,28 @@ pub fn backups_dir(config: &HubConfig) -> PathBuf {
 pub fn backup_now(config: &HubConfig, now_ms: i64) -> Result<PathBuf, String> {
     let key = MasterKey::load(Some(&config.master_key))
         .map_err(|_| format!("the master key {} can't be read", config.master_key.display()))?;
-    backup::take(&config.db_path(), &key, &config.node_key, &backups_dir(config), now_ms).map_err(|e| e.to_string())
+    let dir = backups_dir(config);
+    let file = backup::take(&config.db_path(), &key, &config.node_key, &dir, now_ms).map_err(|e| e.to_string())?;
+    keep_with_the_data(&config.data_dir, &dir)?;
+    Ok(file)
+}
+
+/// The backups belong to whoever owns the data directory: a backup the owner takes as root (`sudo rackhand hub
+/// backup`) mustn't leave the directory to root, or the hub's own 02:00 backup can't write or prune there.
+fn keep_with_the_data(data_dir: &Path, dir: &Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let owner = std::fs::metadata(data_dir).map_err(|e| format!("{}: {e}", data_dir.display()))?;
+    let (uid, gid) = (owner.uid(), owner.gid());
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let mut paths = vec![dir.to_path_buf()];
+    paths.extend(entries.filter_map(|e| e.ok().map(|e| e.path())));
+    for path in paths {
+        let meta = std::fs::symlink_metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if meta.uid() != uid || meta.gid() != gid {
+            std::os::unix::fs::chown(&path, Some(uid), Some(gid)).map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Restores `file` onto a machine that has no hub yet: the database, the node key (so probes stay pinned), the master

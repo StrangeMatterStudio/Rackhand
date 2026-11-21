@@ -531,11 +531,17 @@ pub fn recover_unit() {
     on("target", &format!("sudo systemctl reset-failed {UNIT}; sudo systemctl start {UNIT}"));
 }
 
-/// Reboots a lab machine and waits for it to answer SSH again.
+/// Reboots a lab machine and waits until it answers SSH from its next boot (a new boot id, so the old system shutting
+/// down doesn't count).
 pub fn reboot(machine: &str) {
-    on(machine, "sudo systemd-run --on-active=2 /bin/systemctl reboot");
-    std::thread::sleep(Duration::from_secs(10));
-    assert!(eventually(Duration::from_secs(300), || ok_on(machine, "true")), "{machine} didn't come back");
+    let boot_id = || on(machine, "cat /proc/sys/kernel/random/boot_id").trim().to_string();
+    let before = boot_id();
+    on(machine, "sudo systemd-run --on-active=1 --timer-property=AccuracySec=100ms /bin/systemctl reboot");
+    let back = eventually(Duration::from_secs(300), || {
+        let out = xtask(&["lab", "run", machine, "--", "cat /proc/sys/kernel/random/boot_id"]);
+        out.status.success() && String::from_utf8_lossy(&out.stdout).trim() != before
+    });
+    assert!(back, "{machine} didn't come back from its reboot");
 }
 
 /// Reads a file on a lab machine as root, bytes intact (through base64).
