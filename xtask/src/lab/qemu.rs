@@ -18,6 +18,11 @@ use super::config::{Lab, Machine};
 use super::lab_dir;
 use crate::vm::run_checked;
 
+/// Where WSL reaches a machine's dashboard (port 8443 inside it).
+pub fn web_port(machine: &Machine) -> u16 {
+    machine.ssh_port + 10_000
+}
+
 pub fn machine_dir(name: &str) -> PathBuf {
     lab_dir().join("machines").join(name)
 }
@@ -124,7 +129,12 @@ pub fn start(lab: &Lab, machine: &Machine, stage: Stage, seed_url: Option<&str>)
         cmd.arg("-drive").arg(format!("file={},if=virtio,cache=writeback", extra.display()));
     }
     cmd.arg("-netdev")
-        .arg(format!("user,id=u0,hostfwd=tcp:127.0.0.1:{}-:22", machine.ssh_port))
+        // SSH, and the dashboard's port (8443) on the SSH port plus 10000, so tests and the browser reach a lab hub
+        .arg(format!(
+            "user,id=u0,hostfwd=tcp:127.0.0.1:{}-:22,hostfwd=tcp:127.0.0.1:{}-:8443",
+            machine.ssh_port,
+            web_port(machine)
+        ))
         .arg("-device")
         .arg(format!("virtio-net-pci,netdev=u0,mac={}", mac(lab, machine, 0)));
     for (i, nic) in machine.nics.iter().enumerate() {

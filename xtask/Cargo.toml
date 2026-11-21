@@ -14,6 +14,9 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 toml = { workspace = true }
 yaml-rust2 = "0.10"
+rackhand-release = { path = "../crates/rackhand-release", features = ["signing"] }
+ed25519-dalek = { workspace = true }
+ring = { workspace = true }
 
 [lints]
 workspace = true

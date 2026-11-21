@@ -101,7 +101,7 @@ fn live(args: &[String]) -> Result<()> {
         println!("== live {m} (local)");
         crate::lab::up(&lab, m)?;
         if deploy && m != "lab" {
-            bail!("deploying a build to the lab arrives in L2");
+            crate::lab::deploy::deploy(&lab, "hub")?;
         }
         run_checked(
             cargo()

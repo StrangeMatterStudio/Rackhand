@@ -4,6 +4,7 @@
 //! `~/.cache/rackhand-lab` (Linux filesystem). See `lab/lab.toml` for the machines and profiles.
 
 pub mod config;
+pub mod deploy;
 pub mod images;
 pub mod qemu;
 mod seed;
@@ -40,6 +41,7 @@ const USAGE: &str = "usage: cargo xtask lab <command>
   cut|heal <machine>         take its site link down or up
   run <machine> -- <cmd>     run a command over SSH as `lab` (with sudo available)
   ssh <machine>              print the SSH command for a machine
+  deploy [--hub-on <name>]   build, sign and serve this build, install the hub (default `hub`), complete first run
   destroy                    stop everything and delete all lab state except downloaded images";
 
 pub fn run(args: &[String]) -> Result<()> {
@@ -97,6 +99,14 @@ pub fn run(args: &[String]) -> Result<()> {
             Ok(())
         }
         Some("destroy") => destroy(&lab),
+        Some("deploy") => {
+            let hub = match (arg(1), arg(2)) {
+                (Some("--hub-on"), Some(name)) => name,
+                (None, _) => "hub",
+                _ => bail!("{USAGE}"),
+            };
+            deploy::deploy(&lab, hub)
+        }
         _ => bail!("{USAGE}"),
     }
 }
