@@ -31,6 +31,7 @@ pub fn list_at(socket: &Path) -> Result<Vec<ContainerInfo>, String> {
             health: detail["State"]["Health"]["Status"].as_str().map(str::to_string),
             restart_count: detail["RestartCount"].as_u64().unwrap_or(0) as u32,
             started_at_ms: detail["State"]["StartedAt"].as_str().and_then(rfc3339_ms).filter(|t| *t > 0).unwrap_or(0),
+            project: c["Labels"]["com.docker.compose.project"].as_str().unwrap_or_default().to_string(),
             id: id.chars().take(12).collect(),
         });
     }

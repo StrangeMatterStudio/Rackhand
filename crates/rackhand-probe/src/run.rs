@@ -346,6 +346,7 @@ impl Daemon {
                 health: c.health.clone().unwrap_or_default(),
                 restart_count: c.restart_count,
                 started_at_ms: c.started_at_ms,
+                project: c.project.clone(),
             })
             .collect();
         let updates = h.updates.as_ref().map(|u| UpdateSummary {

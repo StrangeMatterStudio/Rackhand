@@ -7,6 +7,7 @@
 //! and its incidents resolve.
 
 pub mod config;
+pub mod steps;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};

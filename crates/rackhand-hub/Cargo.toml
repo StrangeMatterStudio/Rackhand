@@ -54,6 +54,7 @@ rackhand-release = { path = "../rackhand-release" }
 webpki-roots = { workspace = true }
 
 [dev-dependencies]
+async-trait = "0.1"
 tower = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 rackhand-net = { path = "../rackhand-net", features = ["testing"] }

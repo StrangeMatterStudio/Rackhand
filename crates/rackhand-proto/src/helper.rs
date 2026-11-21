@@ -78,6 +78,9 @@ pub struct ContainerInfo {
     pub health: Option<String>,
     pub restart_count: u32,
     pub started_at_ms: i64,
+    /// The Docker Compose project (`com.docker.compose.project`), empty outside one.
+    #[serde(default)]
+    pub project: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

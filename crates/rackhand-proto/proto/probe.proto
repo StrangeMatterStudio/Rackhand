@@ -117,6 +117,8 @@ message ContainerState {
   string health = 5;
   uint32 restart_count = 6;
   int64 started_at_ms = 7;
+  // the Docker Compose project (`com.docker.compose.project`), empty for a container outside one
+  string project = 8;
 }
 
 message UpdateSummary {

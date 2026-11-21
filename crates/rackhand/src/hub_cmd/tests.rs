@@ -287,8 +287,8 @@ async fn step_kinds_reach_their_systems() {
     let dir = temp("steps");
     let db = Arc::new(Db::open(&dir.join("hub.db")).unwrap());
     let ingest = Ingest::new(db.clone(), rackhand_hub::bus::Bus::new(), Arc::new(Statvfs(dir.clone())));
-    let notify = rackhand_hub::notify::Notify::new(db, ingest.clone(), Vec::new());
-    let steps = steps(&notify, &ingest);
+    let notify = rackhand_hub::notify::Notify::new(db.clone(), ingest.clone(), Vec::new());
+    let steps = steps(&db, &notify, &ingest);
     let ctx = StepCtx {
         job_id: "j1".into(),
         machine_id: "m1".into(),
@@ -314,6 +314,13 @@ async fn step_kinds_reach_their_systems() {
     assert_eq!(
         outcome(steps.run(&ctx, &step("probe_check"), None).await),
         StepOutcome::Failed("probe_check_unavailable".into())
+    );
+    // verify and api go to Checks: a verify with nothing to check passes, an api step without a call says so
+    assert_eq!(outcome(steps.run(&ctx, &step("verify"), None).await), StepOutcome::Succeeded, "Checks verifies");
+    assert_eq!(
+        outcome(steps.run(&ctx, &step("api"), None).await),
+        StepOutcome::Failed("no_call".into()),
+        "Checks calls"
     );
 }
 

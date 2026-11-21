@@ -80,6 +80,7 @@ fn report() -> probe::Report {
             health: "healthy".into(),
             restart_count: 0,
             started_at_ms: 2,
+            project: String::new(),
         }],
         updates: Some(probe::UpdateSummary {
             pending: 3,
