@@ -1794,6 +1794,7 @@ mod add {
     fn unescape(html: &str) -> String {
         html.replace("&#x2F;", "/")
             .replace("&#x27;", "'")
+            .replace("&#38;", "&")
             .replace("&amp;", "&")
             .replace("&#39;", "'")
             .replace("&quot;", "\"")
@@ -1865,6 +1866,14 @@ mod add {
             alpine.contains("wget -qO-") && !alpine.contains("--monitor") && !alpine.contains("--remote"),
             "{alpine}"
         );
+        // its offline variant with BusyBox's wget too, as root
+        assert!(
+            alpine.contains(&format!(
+                "wget -q --no-check-certificate -O /tmp/rackhand-install.sh https://192.0.2.10:8443/install.sh && echo '{sha}  /tmp/rackhand-install.sh' | sha256sum -c - && sh /tmp/rackhand-install.sh"
+            )),
+            "{alpine}"
+        );
+        assert!(!alpine.contains("curl"), "a stock Alpine machine has no curl: {alpine}");
         let (_, windows) =
             add(&app, &admin, &[("os", "windows"), ("name", "desk1"), ("access", "managed"), ("mode", "local")]).await;
         assert!(windows.contains("install.ps1") && windows.contains("-Ticket"), "{windows}");

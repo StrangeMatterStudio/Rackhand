@@ -11,6 +11,8 @@ mod hub;
 mod lab;
 #[cfg(test)]
 mod m1;
+#[cfg(test)]
+mod m2;
 
 /// Runs `cargo xtask <args>` through the xtask binary that started this test run.
 pub fn xtask(args: &[&str]) -> Output {

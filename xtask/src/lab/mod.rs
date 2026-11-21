@@ -194,11 +194,20 @@ pub(crate) fn is_provisioned(dir: &std::path::Path, stamp: &str) -> bool {
     std::fs::read_to_string(dir.join("base.provisioned")).is_ok_and(|s| s.trim() == stamp)
 }
 
-fn provision_stamp(lab: &Lab, m: &Machine) -> Result<String> {
+/// The machine's own provisioning script, `lab/provision/<name>.sh`, if it has one.
+pub(crate) fn machine_script(m: &Machine) -> Option<std::path::PathBuf> {
+    let path = workspace_root().join(format!("lab/provision/{}.sh", m.name));
+    path.is_file().then_some(path)
+}
+
+pub(crate) fn provision_stamp(lab: &Lab, m: &Machine) -> Result<String> {
     let user_data = seed::user_data(lab, m)?;
     let mut parts = vec![user_data.into_bytes()];
     if m.proxmox.is_some() {
         parts.push(std::fs::read(workspace_root().join("lab/provision/proxmox.sh"))?);
+    }
+    if let Some(script) = machine_script(m) {
+        parts.push(std::fs::read(script)?);
     }
     // The extra disk became an overlay on a provisioned base: machines provisioned before that start over.
     if m.extra_disk_gb.is_some() {
@@ -338,7 +347,8 @@ fn reset(lab: &Lab, m: &Machine) -> Result<()> {
     Ok(())
 }
 
-/// First boot from the base overlay: cloud-init, then Proxmox for the nodes; then shut down and mark provisioned.
+/// First boot from the base overlay: cloud-init, then Proxmox for the nodes and the machine's own script; then shut
+/// down and mark provisioned.
 fn provision(lab: &Lab, m: &Machine, server: &seed::Server) -> Result<()> {
     let image = images::find(&m.image)?;
     let image_path = image.fetch()?;
@@ -367,6 +377,11 @@ fn provision(lab: &Lab, m: &Machine, server: &seed::Server) -> Result<()> {
     qemu::ssh(m, "sudo touch /etc/cloud/cloud-init.disabled; sudo sync")?;
     if let Some(major) = m.proxmox {
         provision_proxmox(lab, m, major)?;
+    }
+    if let Some(script) = machine_script(m) {
+        println!("{}: running {}", m.name, script.display());
+        qemu::scp_to(m, &script, "/tmp/provision.sh")?;
+        run_logged(m, "sudo sh /tmp/provision.sh", "provision.log")?;
     }
     qemu::stop(m)?;
     std::fs::write(dir.join("base.provisioned"), stamp)?;

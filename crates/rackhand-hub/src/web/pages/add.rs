@@ -217,11 +217,16 @@ pub(super) async fn machine(web: &Web, ctx: &Ctx) -> Response<Body> {
         });
         if let (Some(sha), Some(host)) = (held_script(web), ctx.host.clone().or(fallback)) {
             let hub = format!("https://{host}");
-            let run = if kind == "alpine" { "sh" } else { "sudo sh" };
+            // Alpine: as root, with BusyBox's wget (a stock Alpine machine has neither sudo nor curl)
+            let (fetch, run) = if kind == "alpine" {
+                (format!("wget -q --no-check-certificate -O /tmp/rackhand-install.sh {hub}/install.sh"), "sh")
+            } else {
+                (format!("curl -fsSLk {hub}/install.sh -o /tmp/rackhand-install.sh"), "sudo sh")
+            };
             lines.push((
                 "Offline, from this hub".to_string(),
                 format!(
-                    "curl -fsSLk {hub}/install.sh -o /tmp/rackhand-install.sh && echo '{sha}  /tmp/rackhand-install.sh' | sha256sum -c - && {run} /tmp/rackhand-install.sh {args} --release-url {hub}/release --self-signed"
+                    "{fetch} && echo '{sha}  /tmp/rackhand-install.sh' | sha256sum -c - && {run} /tmp/rackhand-install.sh {args} --release-url {hub}/release --self-signed"
                 ),
             ));
         }

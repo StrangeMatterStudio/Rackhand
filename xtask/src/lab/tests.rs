@@ -129,3 +129,18 @@ fn release_build_with_test_keys_fails() {
     assert_eq!(token.status.code(), Some(2), "a build without lab-build has no lab-token command");
     assert!(!String::from_utf8_lossy(&token.stderr).contains("lab-token"), "nor mentions it");
 }
+
+/// A machine's own provisioning script (`lab/provision/<name>.sh`, plan L3: `snmpd` on `agentless`) runs at its
+/// first boot and is part of its stamp, so changing it provisions the machine again.
+#[test]
+fn machine_script_is_part_of_the_stamp() {
+    let lab = lab();
+    let agentless = lab.machine("agentless").unwrap();
+    let script = super::machine_script(agentless).expect("agentless has its own provisioning script");
+    let text = std::fs::read_to_string(&script).unwrap();
+    assert!(text.contains("snmpd"), "{text}");
+    assert!(super::machine_script(lab.machine("target").unwrap()).is_none(), "target has none");
+    let user_data = super::seed::user_data(&lab, agentless).unwrap();
+    let without = super::stamp(&agentless.image, &[user_data.as_bytes()]);
+    assert_ne!(super::provision_stamp(&lab, agentless).unwrap(), without, "the script counts in the stamp");
+}
