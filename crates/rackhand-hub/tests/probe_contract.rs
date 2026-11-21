@@ -47,6 +47,7 @@ struct Env {
     addr: EndpointAddr,
     relay_url: iroh::RelayUrl,
     dir: std::path::PathBuf,
+    server: ProbeServer,
     _relay: iroh_relay::server::Server,
     _hub: Endpoint,
 }
@@ -73,7 +74,7 @@ async fn env(name: &str, settings: ServerSettings) -> Env {
     tokio::spawn(router.serve());
     let mut addr = hub.addr();
     addr.addrs.insert(TransportAddr::Relay(relay_url.clone()));
-    Env { db, ingest, registry, directory, addr, relay_url, dir, _relay: relay, _hub: hub }
+    Env { db, ingest, registry, directory, addr, relay_url, dir, server, _relay: relay, _hub: hub }
 }
 
 impl Env {
@@ -369,4 +370,56 @@ async fn unsupported_version_keeps_buffering() {
     assert_eq!(stop.retry_after(0, 0.5), Duration::from_secs(3_600), "retried hourly");
     assert_eq!(Stop::Disconnected("x".into()).retry_after(10, 0.0), Duration::from_secs(60), "others back off to 60 s");
     assert_eq!(env.ingest.latest(&text(M1)), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn probe_check_round_trip() {
+    use rackhand_hub::actions::runner::{StepCtx, StepOutcome, StepRunner};
+    use rackhand_probe::link::Incoming;
+    use rackhand_proto::probe::CheckResult;
+    let env = env("probe-check", ServerSettings::default()).await;
+    let checks = env.server.probe_checks();
+    let ctx = StepCtx {
+        job_id: "j1".into(),
+        machine_id: text(M1),
+        machine_kind: "linux".into(),
+        address: None,
+        identity: rackhand_runbook::runbook::Identity::Automation,
+        timeout: Duration::from_secs(5),
+    };
+    let step: rackhand_runbook::runbook::Step = toml::from_str(
+        "id = \"local\"
+kind = \"probe_check\"
+checks = [\"tcp:127.0.0.1:5432\", \"http:http://127.0.0.1:8080/health\"]
+",
+    )
+    .unwrap();
+    // no probe connected for the machine
+    assert_eq!(checks.run(&ctx, &step, None).await.outcome, StepOutcome::Failed("probe_not_connected".into()));
+    let mut link = env.probe("probe-check", M1).await;
+    let mut s = connect(&mut link).await;
+    let run = {
+        let (checks, ctx, step) = (checks.clone(), ctx.clone(), step.clone());
+        tokio::spawn(async move { checks.run(&ctx, &step, None).await })
+    };
+    // the probe answers each RunCheck on stream 0: the TCP check passes, the HTTP one doesn't
+    let mut asked = Vec::new();
+    while asked.len() < 2 {
+        let msg = tokio::time::timeout(WAIT, s.next_message()).await.unwrap().unwrap();
+        if let Incoming::RunCheck(rc) = link.on_message(msg).unwrap() {
+            assert!(rc.timeout_ms > 0 && rc.timeout_ms <= 5000, "{}", rc.timeout_ms);
+            let ok = rc.check.starts_with("tcp:");
+            let detail = if ok { "accepts connections" } else { "status 503, expected 200" };
+            asked.push(rc.check.clone());
+            s.check_result(CheckResult { id: rc.id, ok, detail: detail.into(), latency_ms: 1.5 }).await.unwrap();
+        }
+    }
+    let result = run.await.unwrap();
+    assert_eq!(asked, vec!["tcp:127.0.0.1:5432".to_string(), "http:http://127.0.0.1:8080/health".to_string()]);
+    assert_eq!(result.outcome, StepOutcome::Failed("http:http://127.0.0.1:8080/health".into()));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("status 503"));
+    assert!(
+        String::from_utf8_lossy(&result.stdout).contains("tcp:127.0.0.1:5432 passed"),
+        "the passed ones are listed"
+    );
 }

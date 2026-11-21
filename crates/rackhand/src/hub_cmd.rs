@@ -210,8 +210,14 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         clock: Arc::new(now_ms),
     };
     let mirror_alerts = mirror.spawn(changes);
-    let executor = rackhand_hub::executor::Executor::new(vault.clone(), host_keys.clone())
-        .with_other(Arc::new(steps(&db, &notify, &ingest)));
+    let probe_server =
+        ProbeServer::new(ingest.clone(), Arc::new(MachinesDirectory(db.clone())), probe_server_settings(&db));
+    let executor = rackhand_hub::executor::Executor::new(vault.clone(), host_keys.clone()).with_other(Arc::new(steps(
+        &db,
+        &notify,
+        &ingest,
+        &probe_server,
+    )));
     let actions = rackhand_hub::actions::Actions::new(db.clone(), audit.clone(), bus.clone(), Arc::new(executor))
         .with_gate(Arc::new(ingest.clone()));
     let web_config = rackhand_hub::web::WebConfig {
@@ -248,8 +254,6 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let (ep, quic) = (endpoint.clone(), config.clone());
     let addrs = Arc::new(move || hub_addrs(&quic, &ep.addr().ip_addrs().copied().collect::<Vec<_>>()));
     let join = joins::LazyJoin::new(db.clone(), registry.clone(), setup, addrs, joined_tx);
-    let probe_server =
-        ProbeServer::new(ingest.clone(), Arc::new(MachinesDirectory(db.clone())), probe_server_settings(&db));
     let observations = Arc::new(crate::observations::FromIngest(ingest.clone()));
     let mcp = rackhand_hub::mcp::Mcp::new(db.clone(), audit.clone(), observations)
         .with_actions(actions)
@@ -296,7 +300,12 @@ pub fn probe_server_settings(db: &Db) -> ServerSettings {
 }
 
 /// The systems that run the step kinds other than `ssh` (7.8.7): `notify` by Notify, `wait_report` by Ingest.
-pub fn steps(db: &Arc<Db>, notify: &rackhand_hub::notify::Notify, ingest: &Ingest) -> rackhand_hub::executor::ByKind {
+pub fn steps(
+    db: &Arc<Db>,
+    notify: &rackhand_hub::notify::Notify,
+    ingest: &Ingest,
+    probes: &ProbeServer,
+) -> rackhand_hub::executor::ByKind {
     use rackhand_hub::checks::steps::{Api, Verify};
     use rackhand_runbook::runbook::StepKind;
     rackhand_hub::executor::ByKind::default()
@@ -304,6 +313,7 @@ pub fn steps(db: &Arc<Db>, notify: &rackhand_hub::notify::Notify, ingest: &Inges
         .with(StepKind::WaitReport, Arc::new(ingest.clone()))
         .with(StepKind::Verify, Arc::new(Verify::new(db.clone(), ingest.clone())))
         .with(StepKind::Api, Arc::new(Api::new(db.clone())))
+        .with(StepKind::ProbeCheck, Arc::new(probes.probe_checks()))
 }
 
 /// The public half of one of the hub's SSH identities, as an `authorized_keys` key (made the first time).

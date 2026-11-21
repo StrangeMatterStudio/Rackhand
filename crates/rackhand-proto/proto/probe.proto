@@ -42,10 +42,19 @@ message DataDropped {
   uint64 to_seq = 3;
 }
 
+// the answer to a RunCheck (D115)
+message CheckResult {
+  string id = 1;
+  bool ok = 2;
+  string detail = 3;
+  double latency_ms = 4;
+}
+
 message ProbeToHub {
   oneof msg {
     Hello hello = 1;
     DataDropped data_dropped = 2;
+    CheckResult check_result = 3;
   }
 }
 
@@ -77,6 +86,14 @@ message UpdateAvailable {
 
 message KeysUpdate { rackhand.common.SignedPayload keys = 1; }
 
+// a probe_check step's check, run on the machine (D115): `tcp:<host>:<port>` or `http:<url>`, loopback and the
+// machine's own addresses only
+message RunCheck {
+  string id = 1;
+  string check = 2;
+  uint32 timeout_ms = 3;
+}
+
 message HubToProbe {
   oneof msg {
     Welcome welcome = 1;
@@ -84,6 +101,7 @@ message HubToProbe {
     ConfigUpdate config_update = 3;
     UpdateAvailable update_available = 4;
     KeysUpdate keys_update = 5;
+    RunCheck run_check = 6;
   }
 }
 

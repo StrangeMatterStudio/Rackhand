@@ -1,7 +1,8 @@
 //! The hub side of `rackhand/probe/1` (7.3.2): Hello and Welcome on stream 0, live reports on stream 1, replay
 //! batches on stream 2, acks of every committed range, rate limits and close codes.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use iroh::EndpointId;
@@ -11,7 +12,8 @@ use rackhand_net::{close, frames};
 use rackhand_proto::close::CloseCode;
 use rackhand_proto::common::{ProbeConfig, SemVer};
 use rackhand_proto::probe::{
-    Ack, EpochRanges, HubToProbe, ProbeToHub, ReplayBatch, Report, SeqRange, Welcome, hub_to_probe, probe_to_hub,
+    Ack, CheckResult, EpochRanges, HubToProbe, ProbeToHub, ReplayBatch, Report, SeqRange, Welcome, hub_to_probe,
+    probe_to_hub,
 };
 use rackhand_store::ids::now_ms;
 use tokio::sync::mpsc;
@@ -59,11 +61,36 @@ impl Default for ServerSettings {
     }
 }
 
+/// The connected probes' stream 0, for messages the hub starts (`RunCheck`), and the checks waiting for an answer.
+#[derive(Debug, Default)]
+pub(crate) struct Outbound {
+    pub(crate) probes: Mutex<HashMap<String, mpsc::Sender<HubToProbe>>>,
+    pub(crate) pending: Mutex<HashMap<String, tokio::sync::oneshot::Sender<CheckResult>>>,
+}
+
+impl Outbound {
+    fn probes(&self) -> std::sync::MutexGuard<'_, HashMap<String, mpsc::Sender<HubToProbe>>> {
+        self.probes.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn pending(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<String, tokio::sync::oneshot::Sender<CheckResult>>> {
+        self.pending.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The machine's stream 0, while its probe is connected.
+    pub(crate) fn to(&self, machine: &str) -> Option<mpsc::Sender<HubToProbe>> {
+        self.probes().get(machine).filter(|s| !s.is_closed()).cloned()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ProbeServer {
     ingest: Ingest,
     directory: Arc<dyn ProbeDirectory>,
     settings: ServerSettings,
+    outbound: Arc<Outbound>,
 }
 
 /// How a connection ends.
@@ -74,7 +101,12 @@ enum End {
 
 impl ProbeServer {
     pub fn new(ingest: Ingest, directory: Arc<dyn ProbeDirectory>, settings: ServerSettings) -> ProbeServer {
-        ProbeServer { ingest, directory, settings }
+        ProbeServer { ingest, directory, settings, outbound: Arc::default() }
+    }
+
+    /// The runner of `probe_check` steps (D115), sending them to the machines' connected probes.
+    pub fn probe_checks(&self) -> super::probe_checks::ProbeChecks {
+        super::probe_checks::ProbeChecks::new(self.outbound.clone())
     }
 
     pub fn handler(&self) -> rackhand_net::router::Handler {
@@ -140,19 +172,36 @@ impl ProbeServer {
         if frames::write_msg(&mut ctrl_send, &welcome).await.is_err() {
             return End::Gone;
         }
-        // Acks from every stream go out on stream 0 in the order they are produced.
+        // Acks from every stream go out on stream 0 in the order they are produced, and so does what the hub starts.
         let (acks, mut ack_rx) = mpsc::channel::<Ack>(256);
+        let (out, mut out_rx) = mpsc::channel::<HubToProbe>(16);
+        self.outbound.probes().insert(machine.clone(), out.clone());
         let writer = tokio::spawn(async move {
-            while let Some(ack) = ack_rx.recv().await {
-                let msg = HubToProbe { msg: Some(hub_to_probe::Msg::Ack(ack)) };
+            loop {
+                let msg = tokio::select! {
+                    ack = ack_rx.recv() => match ack {
+                        Some(ack) => HubToProbe { msg: Some(hub_to_probe::Msg::Ack(ack)) },
+                        None => return,
+                    },
+                    msg = out_rx.recv() => match msg {
+                        Some(m) => m,
+                        None => return,
+                    },
+                };
                 if frames::write_msg(&mut ctrl_send, &msg).await.is_err() {
                     return;
                 }
             }
         });
         let (ends, mut end_rx) = mpsc::channel::<End>(4);
-        let control =
-            tokio::spawn(control(self.ingest.clone(), machine.clone(), ctrl_recv, acks.clone(), ends.clone()));
+        let control = tokio::spawn(control(
+            self.ingest.clone(),
+            machine.clone(),
+            ctrl_recv,
+            acks.clone(),
+            ends.clone(),
+            self.outbound.clone(),
+        ));
         let end = loop {
             tokio::select! {
                 end = end_rx.recv() => break end.unwrap_or(End::Gone),
@@ -173,6 +222,12 @@ impl ProbeServer {
         };
         control.abort();
         writer.abort();
+        // a newer connection of the same machine may have replaced this one
+        let mut probes = self.outbound.probes();
+        if probes.get(&machine).is_some_and(|s| s.same_channel(&out)) {
+            probes.remove(&machine);
+        }
+        drop(probes);
         end
     }
 }
@@ -198,24 +253,34 @@ async fn ack(ingest: &Ingest, machine: &str, epoch: u64, receipt: Receipt, acks:
     let _ = acks.send(Ack { epoch, ranges: seq_ranges(&ranges) }).await;
 }
 
-/// Stream 0 after the Welcome: `DataDropped` from the probe.
+/// Stream 0 after the Welcome: `DataDropped` and `CheckResult` from the probe.
 async fn control(
     ingest: Ingest,
     machine: String,
     mut recv: RecvStream,
     acks: mpsc::Sender<Ack>,
     ends: mpsc::Sender<End>,
+    outbound: Arc<Outbound>,
 ) {
     loop {
         let Ok(body) = frames::read(&mut recv).await else {
             let _ = ends.send(End::Gone).await;
             return;
         };
-        if let Some(probe_to_hub::Msg::DataDropped(d)) = ProbeToHub::decode(body.as_slice()).ok().and_then(|m| m.msg) {
-            if ingest.dropped(&machine, d.epoch, d.from_seq, d.to_seq).await.is_ok() {
-                let ranges = ingest.received(&machine, d.epoch);
-                let _ = acks.send(Ack { epoch: d.epoch, ranges: seq_ranges(&ranges) }).await;
+        match ProbeToHub::decode(body.as_slice()).ok().and_then(|m| m.msg) {
+            Some(probe_to_hub::Msg::DataDropped(d)) => {
+                if ingest.dropped(&machine, d.epoch, d.from_seq, d.to_seq).await.is_ok() {
+                    let ranges = ingest.received(&machine, d.epoch);
+                    let _ = acks.send(Ack { epoch: d.epoch, ranges: seq_ranges(&ranges) }).await;
+                }
             }
+            Some(probe_to_hub::Msg::CheckResult(r)) => {
+                // an answer nobody waits for any more (its step timed out) is dropped
+                if let Some(waiting) = outbound.pending().remove(&r.id) {
+                    let _ = waiting.send(r);
+                }
+            }
+            _ => {}
         }
     }
 }

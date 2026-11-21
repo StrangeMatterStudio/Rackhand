@@ -114,3 +114,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-21 | T46a done: the ICMP, TCP, HTTP(S), DNS and TLS-expiry drivers behind `Driver`; T46 split in three (D70) |
 | 2026-11-21 | T46b done: the hub runs `config/checks.toml` at each check's interval, stores results and series, and opens check-failing and certificate incidents from what is stored (D71); AC10 passes in the integration tier |
 | 2026-11-21 | T46c done: `verify` and `api` steps run by Checks (D72) |
+| 2026-11-21 | T46d done: `probe_check` steps run on the probe over stream 0 (D73); next the integration tier for T46 as a whole |

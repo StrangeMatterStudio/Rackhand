@@ -288,7 +288,8 @@ async fn step_kinds_reach_their_systems() {
     let db = Arc::new(Db::open(&dir.join("hub.db")).unwrap());
     let ingest = Ingest::new(db.clone(), rackhand_hub::bus::Bus::new(), Arc::new(Statvfs(dir.clone())));
     let notify = rackhand_hub::notify::Notify::new(db.clone(), ingest.clone(), Vec::new());
-    let steps = steps(&db, &notify, &ingest);
+    let server = ProbeServer::new(ingest.clone(), Arc::new(MachinesDirectory(db.clone())), ServerSettings::default());
+    let steps = steps(&db, &notify, &ingest, &server);
     let ctx = StepCtx {
         job_id: "j1".into(),
         machine_id: "m1".into(),
@@ -313,8 +314,17 @@ async fn step_kinds_reach_their_systems() {
     );
     assert_eq!(
         outcome(steps.run(&ctx, &step("probe_check"), None).await),
-        StepOutcome::Failed("probe_check_unavailable".into())
+        StepOutcome::Succeeded,
+        "the probe server runs it (no checks: nothing to ask the probe)"
     );
+    let one: rackhand_runbook::runbook::Step = toml::from_str(
+        "id = \"s\"
+kind = \"probe_check\"
+checks = [\"tcp:127.0.0.1:5432\"]
+",
+    )
+    .unwrap();
+    assert_eq!(outcome(steps.run(&ctx, &one, None).await), StepOutcome::Failed("probe_not_connected".into()));
     // verify and api go to Checks: a verify with nothing to check passes, an api step without a call says so
     assert_eq!(outcome(steps.run(&ctx, &step("verify"), None).await), StepOutcome::Succeeded, "Checks verifies");
     assert_eq!(

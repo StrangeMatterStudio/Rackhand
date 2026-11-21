@@ -10,7 +10,8 @@ use rackhand_net::frames;
 use rackhand_proto::close::CloseCode;
 use rackhand_proto::common::{IfaceInfo, LabelEntry, OsInfo, ProbeConfig, SemVer};
 use rackhand_proto::probe::{
-    DataDropped, Hello, HubToProbe, ProbeToHub, ReplayBatch, Report, Welcome, hub_to_probe, probe_to_hub,
+    CheckResult, DataDropped, Hello, HubToProbe, ProbeToHub, ReplayBatch, Report, RunCheck, Welcome, hub_to_probe,
+    probe_to_hub,
 };
 use tokio::sync::mpsc;
 
@@ -105,6 +106,14 @@ pub struct Link {
     epoch: EpochState,
     epoch_changed: bool,
     last_ack: Option<(u64, Vec<(u64, u64)>)>,
+}
+
+/// What a message from the hub asks of the daemon.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Incoming {
+    Nothing,
+    Config(ProbeConfig),
+    RunCheck(RunCheck),
 }
 
 /// One connection to the hub.
@@ -232,17 +241,19 @@ impl Link {
         replay(s.conn.clone(), self.backlog(s)).await
     }
 
-    /// Acts on one message from the hub: an `Ack` deletes the buffered reports it covers; a `ConfigUpdate` is returned.
-    pub fn on_message(&mut self, msg: HubToProbe) -> Result<Option<ProbeConfig>, Stop> {
+    /// Acts on one message from the hub: an `Ack` deletes the buffered reports it covers; a `ConfigUpdate` and a
+    /// `RunCheck` are returned for the daemon.
+    pub fn on_message(&mut self, msg: HubToProbe) -> Result<Incoming, Stop> {
         match msg.msg {
             Some(hub_to_probe::Msg::Ack(ack)) => {
                 let ranges: Vec<(u64, u64)> = ack.ranges.iter().map(|r| (r.from, r.to)).collect();
                 self.buffer.ack(ack.epoch, &ranges).map_err(|e| Stop::Buffer(e.to_string()))?;
                 self.last_ack = Some((ack.epoch, ranges));
-                Ok(None)
+                Ok(Incoming::Nothing)
             }
-            Some(hub_to_probe::Msg::ConfigUpdate(u)) => Ok(u.config),
-            _ => Ok(None),
+            Some(hub_to_probe::Msg::ConfigUpdate(u)) => Ok(u.config.map_or(Incoming::Nothing, Incoming::Config)),
+            Some(hub_to_probe::Msg::RunCheck(rc)) => Ok(Incoming::RunCheck(rc)),
+            _ => Ok(Incoming::Nothing),
         }
     }
 
@@ -338,6 +349,15 @@ impl Session {
     /// Closes the connection (the probe is stopping).
     pub fn close(&self) {
         self.conn.close(0u32.into(), b"stopping");
+    }
+
+    /// Answers a `RunCheck` (D115).
+    pub async fn check_result(&mut self, result: CheckResult) -> Result<(), Stop> {
+        let msg = ProbeToHub { msg: Some(probe_to_hub::Msg::CheckResult(result)) };
+        if frames::write_msg(&mut self.ctrl, &msg).await.is_err() {
+            return Err(stop_of(&self.conn).await);
+        }
+        Ok(())
     }
 
     /// Tells the hub that buffered reports were deleted unsent (buffer full).

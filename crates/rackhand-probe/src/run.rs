@@ -20,7 +20,7 @@ use crate::buffer::labels::{LabelSet, LabelTable};
 use crate::buffer::segments::Dropped;
 use crate::collect::{self, Collection, Host, SelfUse, Snapshot, Stamp};
 use crate::helper::client::{HelperClient, HelperData};
-use crate::link::{Link, Session, Stop};
+use crate::link::{Incoming, Link, Session, Stop};
 
 /// The probe interval's range (7.8.1).
 const MIN_INTERVAL: Duration = Duration::from_secs(5);
@@ -238,6 +238,7 @@ impl Daemon {
             let _ = done_tx.send(crate::link::replay(conn, backlog).await);
         }));
         let mut replaying = true;
+        let (checked_tx, mut checked_rx) = tokio::sync::mpsc::channel(16);
         loop {
             tokio::select! {
                 sampled = rx.recv() => {
@@ -254,10 +255,24 @@ impl Daemon {
                     }
                 }
                 msg = s.next_message() => match msg.and_then(|m| self.link.on_message(m)) {
-                    Ok(Some(cfg)) => self.apply(&cfg),
-                    Ok(None) => {}
+                    Ok(Incoming::Config(cfg)) => self.apply(&cfg),
+                    Ok(Incoming::RunCheck(rc)) => {
+                        // checks run on their own, so reports keep flowing; the answer goes out on stream 0
+                        let tx = checked_tx.clone();
+                        tokio::spawn(async move {
+                            let _ = tx.send(crate::probe_check::run(rc).await).await;
+                        });
+                    }
+                    Ok(Incoming::Nothing) => {}
                     Err(stop) => return stop,
                 },
+                result = checked_rx.recv() => {
+                    if let Some(result) = result {
+                        if let Err(stop) = s.check_result(result).await {
+                            return stop;
+                        }
+                    }
+                }
                 done = &mut replayed, if replaying => {
                     replaying = false;
                     if let Ok(Err(stop)) = done {

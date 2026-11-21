@@ -3770,6 +3770,7 @@ dependencies = [
  "sha2 0.10.9",
  "time",
  "tokio",
+ "toml 0.8.23",
  "tower",
  "ulid",
 ]
@@ -3817,6 +3818,7 @@ dependencies = [
  "getrandom 0.3.4",
  "iroh",
  "prost",
+ "rackhand-drivers",
  "rackhand-net",
  "rackhand-proto",
  "regex",
@@ -3829,6 +3831,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ulid",
+ "url",
 ]
 
 [[package]]

@@ -12,6 +12,7 @@ name = "it"
 path = "src/lib.rs"
 
 [dev-dependencies]
+toml = { workspace = true }
 rcgen = { workspace = true }
 time = "0.3"
 serde_json = { workspace = true }
