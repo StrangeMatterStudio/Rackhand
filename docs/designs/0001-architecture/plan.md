@@ -268,7 +268,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T56 | Library and git mirror | T50, T21, T07 | unit + integration | done |
 | T57 | Incident routing to runbooks and attempt limits | T32, T55 | unit | done |
 | T58 | Dashboard: approvals, jobs, library, patching | T55, T56, T37 | unit (HTTP) | done |
-| T59 | Patching | T55, T34, T47, T12 | unit + integration + live (L4, L9) | in progress (T59a done) |
+| T59 | Patching | T55, T34, T47, T12 | unit + integration + live (L4, L9) | in progress (T59a and T59b done) |
 | T60 | Hypervisor and hub-host patching | T59 | unit + integration + live (L4, L9) | todo |
 | T61 | Remaining built-in runbooks and key rotation | T55, T43 | unit + integration | todo |
 | T62 | Access levels and monitor enforcement | T44, T55, T49 | unit + integration | todo |
@@ -2958,6 +2958,9 @@ Only additions to that list are written out below.
   | 2026-11-21 | T59a: cargo nextest run -p rackhand-hub --lib -E 'test(select::)' (before) | failed to build: no `Candidate`, `eligible`, `How`, `Order`, `Run` |
   | 2026-11-21 | T59a: same (after) | 6 passed: managed `auto` machines with updates pending for the window, outside maintenance and quarantine (monitor, maintenance, quarantine and nothing pending each left out); `hold` never; approve-only asks once with the approval expiring at the window's end, starts when approved in the window, a decision after the end starts nothing until the next window, which runs a machine carrying it; 3 per site at once, the hypervisor after every other machine at its site, alone, the hub last; offline at its turn, tried every 15 minutes until the window ends; Alpine only in the full window (one fix to the test's own sequence: it marked a machine finished that hadn't started) |
   | 2026-11-21 | T59a: cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0; fast 471 passed, 1 skipped; no violations |
+  | 2026-11-21 | T59b: cargo nextest run -p rackhand-hub --lib -E 'test(precheck::) \| test(rollback::)' (before) | failed to build: no `Facts`, `Guest`, `precheck`, `Failure`, `Defaults`, `defaults` |
+  | 2026-11-21 | T59b: same, with `select::` (after) | 11 passed: on any machine 1 GB free on `/`, a report, no package lock, no other job and no open critical incident, whatever the snapshot policy; on a guest an unconfirmed binding (`guest_binding_unconfirmed`), storage that can't snapshot (`snapshot_unsupported`) or a datastore under 10% or 5 GB free (`datastore_low`) stop it under `required` and become a "patched without a snapshot" note under `optional`; rollback only with no report 15 min after the reboot, `auto_rollback`, not the hub and a snapshot taken; defaults `snapshot` required, `auto_rollback` off, `auto_reboot` off for `windows`, `desktop`, `hypervisor` and `hub` |
+  | 2026-11-21 | T59b: cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0; fast 476 passed, 1 skipped; no violations |
 
 ### T60: Hypervisor and hub-host patching
 - **Design refs:** 7.5.3 (steps 7 and 8), E13, E14, E62, AC73, S4 finding (upgrade command)
