@@ -117,3 +117,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-21 | T46d done: `probe_check` steps run on the probe over stream 0 (D73); next the integration tier for T46 as a whole |
 | 2026-11-21 | T46 regression: two tier runs at 46 of 47; a lost `job-start` answer failed a running detached step (D74), reproduced 2 of 16 and fixed (16 of 16); the other failure didn't reproduce and is instrumented |
 | 2026-11-21 | T46 done: the integration tier 47 of 47 at 1f55869, after the lost-start fix (D74) and containers waiting out their boot (D75) |
+| 2026-11-21 | T47 done: the Proxmox driver against answers recorded from the lab's PVE 8 and 9 nodes, and snapshot and rollback steps through it (D76); a T42 daemon test timed out once under the fast tier's load and passed on 20 more runs |
