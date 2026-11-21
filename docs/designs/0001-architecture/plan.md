@@ -256,7 +256,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | L2 | Live tier and the M1 pass | T44, T45, L1 | live (local lab) | done (MV12 page walk waits for the owner) |
 | T46 | Service checks and network drivers | T41 | unit + integration | done |
 | T47 | Proxmox driver | T46, T12 | unit (recorded API) | done |
-| T48 | TrueNAS, Redfish and SNMP drivers | T46, T14 | unit (simulators) + integration | todo |
+| T48 | TrueNAS, Redfish and SNMP drivers | T46, T14 | unit (simulators) + integration | done |
 | T49 | Add page, agentless enrollment and guest binding | T47, T48, T39 | unit + integration | todo |
 | L3 | Live pass for M2: agentless and Proxmox | T49, L2 | live (local lab) | todo |
 | T50 | Runbook and playbook model | T01 | unit | done |
@@ -2399,6 +2399,10 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-21 | cargo nextest run -p rackhand-drivers -E 'test(truenas::) \| test(redfish::) \| test(snmp::)' (before) | compile errors (each module absent) |
+  | 2026-11-21 | same (after) | 6 passed. `truenas::pool_disk_smart_alerts_metrics` over JSON-RPC on the WebSocket and over REST (an agent without `/api/current`), each from its own recording: pool health and use, disk temperatures (none for a disk without a reading), SMART status from the latest test (none for a disk never tested; a failed test 0), alerts not dismissed by level, reads only with the API key; `truenas_certificate_fingerprint_mismatch_refused`. `redfish::power_fans_temps_psu_health`: power state, the health rollup, temperatures (an absent sensor's stale 0 left out), fans, a Critical supply 0, GETs only with Basic authentication, a wrong password the reading's failure. `snmp::v2c_and_v3_read_interfaces_and_configured_oids`: `sysUpTime`, `ifInOctets`, `ifOutOctets`, `ifOperStatus` by `ifName` and a configured OID, over v2c and v3 authPriv (scoped PDUs encrypted); a wrong community or v3 password gets nothing. `snmp::no_set_requests_ever_sent`: the agent saw only GET and GET-NEXT; a `write` setting is refused. `snmp::usm_matches_published_vectors`: RFC 3414's localized key, RFC 2202's HMAC-SHA1, NIST SP 800-38A's AES-128-CFB |
+  | 2026-11-21 | mutation checks | each seen failing with its behaviour removed: TrueNAS without its REST fallback, dismissed alerts counted, a no-reading temperature kept, SMART status ignored (survived at first: the recording has only passes; the simulator gained a failed test); Redfish's own health for the rollup, absent sensors read (survived at first: the fixture's absent sensor had no number; it now has a stale 0), supply health ignored; SNMP's IV built wrong, the key not stretched, timeticks not hundredths, a walk leaving its subtree |
+  | 2026-11-21 | cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0; fast 423 passed, 1 skipped; no violations |
 
 ### T49: Add page, agentless enrollment and guest binding
 - **Design refs:** 7.3.12 (agentless form, Proxmox token, guest binding), 7.7.1 (Add, Machine page guest binding),
@@ -2428,6 +2432,10 @@ Only additions to that list are written out below.
   | --- | --- | --- |
   | `it::install::hub_ssh_test_completes_enrollment` (carried in from T44) | after a managed machine's first report the hub logs in as `rackhand` (`true`) and, unless role hub, as `rackhand-ai` (`sudo -n true`) with the pinned host key, and the Add page shows the machine enrolled and healthy; a failed test says which account | 7.3.12, AC35 |
   | `it::install::offline_variant_checks_script_hash` (moved from T44) | the hub serves `install.sh` and the release files it holds; the offline command with a wrong SHA-256 stops before running the script | 7.3.12 |
+  Carried in from T48:
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `it::drivers::form_added_simulators_report_and_silence_after_2_polls` (carried in from T48) | each simulator (Proxmox, TrueNAS, Redfish, SNMP) added through the Add page's form reports its 7.4.2 metrics; stopping it gives a silent warning after 2 polls | AC11, 7.6.3 |
 - **Fails first:** compile errors.
 - **Verification:**
   ```bash
@@ -4793,6 +4801,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D74 | 2026-11-21 | T46 regression | (a bug the integration tier found) | A detached step whose `job-start` call lost its answer (SSH cut as it answered) failed `no_exit_status` while its unit ran on, leaving the machine doing work the hub had given up on (E54). The hub now asks `job-status` whether the step started: `unknown` means it never reached the wrapper and the step fails as before; otherwise it polls the unit to its end. Found with 16 copies of the cut test at once (2 failed), fixed and seen passing 16 of 16 | Found in T46's regression run | plan | - |
 | D75 | 2026-11-21 | T46 regression | `Container::start_systemd` | The integration tier's systemd containers are used only once their boot has finished (up to 60 s, else the test fails naming it), where the helper went on after 10 s regardless; the detached-step tests' messages carry a post-mortem of the machine's job files and journal | Three runs each lost one detached-step test under the tier's load | plan | - |
 | D76 | 2026-11-21 | T47 | Responses recorded in T12; `client.rs, poll.rs, ops.rs, sim.rs`; `it::executor::snapshot_and_rollback_steps_use_proxmox_driver` | T12 recorded none, so `cargo xtask lab record-proxmox` records them first (with `pvesh` on the nodes, redacted). `proxmox/{mod.rs (poll), client.rs, ops.rs, sim.rs}`, the simulator behind a `sim` feature for other crates' tests. Filled in: series `pve.node.cpu_pct`, `pve.node.mem_used_bytes`, `pve.node.mem_used_pct`, `pve.storage.used_bytes`, `.total_bytes`, `.used_pct`, `pve.guest.up`, `.cpu_pct`, `.mem_used_bytes` as labelled points of a reading (a new `points` field); settings `token`, `fingerprint` (SHA-256, hex), `node`; the operations and their arguments (module docs); a firewall read leaves out the digests. The carried test is a hub test against the simulator: the guest's `proxmox_ref.cluster` names its hypervisor machine, whose credentials are the Vault's `driver.<id>` (`{token, fingerprint}`, written by T49's form); a job's snapshot is `rackhand-<job id>` (T60 names patch snapshots) | Fixtures missing; formats the design didn't give | plan | - |
+| D77 | 2026-11-21 | T48 | `src/{truenas.rs, redfish.rs, snmp.rs}` and `src/sim/`; a public Redfish mockup set; the integration test here | One module each with its simulator inside (`truenas/`, `redfish/`, `snmp/`, behind the `sim` feature), the pinned TLS shared by the appliance drivers (`pinned.rs`), and a small WebSocket client (`ws.rs`) rather than a new dependency. The Redfish responses are invented in the DMTF schemas' shapes (nothing downloaded), with one supply unhealthy; the SNMP walk is invented. SNMP is written here: BER, v2c, and v3 user security with SHA (HMAC-SHA-96) and AES-128 only, checked against the published vectors. Series named in each module's documentation (labelled `pool`, `disk`, `sensor`, `ifName`, `oid`). The integration test needs T49's Add form, so it moves there | No crate for SNMPv3 or WebSocket in the tree; downloads need the owner; the form is T49's | plan | - |
 
 ## Follow-ups (out of scope)
 

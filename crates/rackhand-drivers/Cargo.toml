@@ -8,6 +8,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+aes = "0.8"
 async-trait = "0.1"
 base64 = { workspace = true }
 getrandom = { workspace = true }

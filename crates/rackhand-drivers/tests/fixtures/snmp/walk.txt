@@ -1,0 +1,12 @@
+# An invented SNMP walk for the driver's simulator (plan T48): a small switch with two interfaces.
+1.3.6.1.2.1.1.3.0 = Timeticks: 12345600
+1.3.6.1.2.1.1.5.0 = STRING: "switch-lab"
+1.3.6.1.2.1.2.2.1.8.1 = INTEGER: 1
+1.3.6.1.2.1.2.2.1.8.2 = INTEGER: 2
+1.3.6.1.2.1.2.2.1.10.1 = Counter32: 1000000
+1.3.6.1.2.1.2.2.1.10.2 = Counter32: 5000
+1.3.6.1.2.1.2.2.1.16.1 = Counter32: 2000000
+1.3.6.1.2.1.2.2.1.16.2 = Counter32: 7000
+1.3.6.1.2.1.31.1.1.1.1.1 = STRING: "eth0"
+1.3.6.1.2.1.31.1.1.1.1.2 = STRING: "eth1"
+1.3.6.1.4.1.2021.10.1.5.1 = INTEGER: 42
