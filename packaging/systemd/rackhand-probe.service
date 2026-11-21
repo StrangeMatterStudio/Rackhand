@@ -1,7 +1,7 @@
 [Unit]
 Description=Rackhand probe
-After=network-online.target
-Wants=network-online.target
+After=network-online.target rackhand-probe-helper.service
+Wants=network-online.target rackhand-probe-helper.service
 
 [Service]
 Type=simple

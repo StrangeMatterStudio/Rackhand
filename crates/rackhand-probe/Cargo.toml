@@ -34,7 +34,7 @@ blake3 = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # statvfs without unsafe code.
-rustix = { version = "1", default-features = false, features = ["std", "fs", "process"] }
+rustix = { version = "1", default-features = false, features = ["std", "fs", "process", "net"] }
 
 [lints]
 workspace = true

@@ -24,3 +24,11 @@ fn request_lines_parse_and_reject_unknown_fields() {
     let pong = serde_json::to_string(&HelperResponse::Pong { version: "0.1.0".into() }).unwrap();
     assert_eq!(pong, r#"{"kind":"pong","version":"0.1.0"}"#);
 }
+
+#[test]
+fn unit_request_with_extra_field_refused() {
+    assert!(parse_request(r#"{"op":"ping","path":"/etc/shadow"}"#).is_err());
+    assert!(parse_request(r#"{"op":"containers","url":"http://x"}"#).is_err());
+    assert_eq!(parse_request(r#"{"op":"ping"}"#).unwrap(), HelperRequest::Ping);
+    assert!(parse_request(r#"{"op":"auth_events_since","cursor":null}"#).is_ok());
+}

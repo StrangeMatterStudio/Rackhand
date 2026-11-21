@@ -132,6 +132,7 @@ mod probe {
                 version: "0.1.0".into(),
                 clock,
                 jitter: Arc::new(|| 0.0),
+                helper: None,
             }
         }
 

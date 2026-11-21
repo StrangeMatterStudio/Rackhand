@@ -125,7 +125,17 @@ pub enum HelperResponse {
     Error { code: String, message: String },
 }
 
-/// Parses one request line; anything not exactly a known request is an error.
+/// Parses one request line; anything not exactly a known request is an error. Serde doesn't refuse unknown fields
+/// on a unit variant of a tagged enum (`{"op":"ping","path":...}`), so the line's fields must also be exactly the
+/// fields of the request it parses to.
 pub fn parse_request(line: &str) -> Result<HelperRequest, serde_json::Error> {
-    serde_json::from_str(line.trim_end_matches(['\r', '\n']))
+    use serde::de::Error;
+    let value: serde_json::Value = serde_json::from_str(line.trim_end_matches(['\r', '\n']))?;
+    let request: HelperRequest = serde_json::from_value(value.clone())?;
+    let known = serde_json::to_value(&request)?;
+    let expected = known.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
+    if value.as_object().is_some_and(|o| o.keys().any(|k| !expected.contains(k))) {
+        return Err(serde_json::Error::custom("unknown field in request"));
+    }
+    Ok(request)
 }

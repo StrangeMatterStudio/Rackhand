@@ -13,12 +13,13 @@ use std::time::{Duration, Instant};
 
 use rackhand_proto::catalogue;
 use rackhand_proto::common::{LabelEntry, ProbeConfig};
-use rackhand_proto::probe::{ProbeEvent, Report, Sample};
+use rackhand_proto::probe::{ContainerState, ProbeEvent, Report, Sample, UpdateSummary};
 use tokio::sync::{mpsc, watch};
 
 use crate::buffer::labels::{LabelSet, LabelTable};
 use crate::buffer::segments::Dropped;
 use crate::collect::{self, Collection, Host, SelfUse, Snapshot, Stamp};
+use crate::helper::client::{HelperClient, HelperData};
 use crate::link::{Link, Session, Stop};
 
 /// The probe interval's range (7.8.1).
@@ -94,6 +95,8 @@ pub struct Options {
     pub clock: Arc<dyn Clock>,
     /// 0 to 1, for the backoff's jitter.
     pub jitter: Arc<dyn Fn() -> f64 + Send + Sync>,
+    /// The root helper, when the machine has one.
+    pub helper: Option<HelperClient>,
 }
 
 impl std::fmt::Debug for Options {
@@ -114,6 +117,7 @@ pub fn random_jitter() -> f64 {
 struct Sampled {
     collection: Collection,
     sampled_at_ms: i64,
+    helper: HelperData,
 }
 
 /// Aborts the replay task when the session ends.
@@ -135,6 +139,8 @@ pub struct Daemon {
     /// Dropped ranges not yet told to the hub.
     held_drops: Vec<Dropped>,
     attempts: u32,
+    /// `helper_version_mismatch` was reported for the current mismatch.
+    mismatch_reported: bool,
 }
 
 impl std::fmt::Debug for Daemon {
@@ -147,13 +153,23 @@ impl Daemon {
     pub fn new(link: Link, opts: Options) -> std::io::Result<Daemon> {
         let labels = LabelTable::open(&opts.data_dir, link.epoch())?;
         let (settings, _) = watch::channel(opts.settings.clone());
-        Ok(Daemon { link, labels, opts, settings, sent: BTreeSet::new(), held_drops: Vec::new(), attempts: 0 })
+        Ok(Daemon {
+            link,
+            labels,
+            opts,
+            settings,
+            sent: BTreeSet::new(),
+            held_drops: Vec::new(),
+            attempts: 0,
+            mismatch_reported: false,
+        })
     }
 
     /// Runs until the hub revokes this probe (exit code 3) or the collector stops (1).
     pub async fn run(mut self) -> i32 {
         let (tx, mut rx) = mpsc::channel(64);
-        spawn_collector(self.opts.host.clone(), self.opts.clock.clone(), self.settings.subscribe(), tx);
+        let (host, clock, helper) = (self.opts.host.clone(), self.opts.clock.clone(), self.opts.helper.clone());
+        spawn_collector(host, clock, helper, self.settings.subscribe(), tx);
         loop {
             self.state("connecting", None, None);
             let now = self.opts.clock.now_ms();
@@ -296,7 +312,7 @@ impl Daemon {
             }
             vitals.push(Sample { metric: metric.id, labels_id: id, value: series.value });
         }
-        let events = c
+        let mut events: Vec<ProbeEvent> = c
             .events
             .iter()
             .map(|e| ProbeEvent {
@@ -305,6 +321,39 @@ impl Daemon {
                 fields: [("detail".to_string(), e.detail.clone())].into_iter().collect(),
             })
             .collect();
+        let h = &sampled.helper;
+        match &h.mismatch {
+            Some(helper) if !self.mismatch_reported => {
+                self.mismatch_reported = true;
+                let fields = [("helper".to_string(), helper.clone()), ("probe".to_string(), self.opts.version.clone())];
+                events.push(ProbeEvent {
+                    kind: "helper_version_mismatch".into(),
+                    at_ms: sampled.sampled_at_ms,
+                    fields: fields.into_iter().collect(),
+                });
+            }
+            Some(_) => {}
+            None => self.mismatch_reported = false,
+        }
+        let containers = h
+            .containers
+            .iter()
+            .map(|c| ContainerState {
+                id: c.id.clone(),
+                name: c.name.clone(),
+                image: c.image.clone(),
+                state: c.state.clone(),
+                health: c.health.clone().unwrap_or_default(),
+                restart_count: c.restart_count,
+                started_at_ms: c.started_at_ms,
+            })
+            .collect();
+        let updates = h.updates.as_ref().map(|u| UpdateSummary {
+            pending: u.pending,
+            security: u.security,
+            reboot_required: u.reboot_required,
+            packages: u.packages.clone(),
+        });
         Report {
             epoch: self.link.epoch(),
             seq: self.link.next_seq(),
@@ -312,6 +361,8 @@ impl Daemon {
             vitals,
             label_sets,
             services: c.services.clone(),
+            containers,
+            updates,
             events,
             ..Report::default()
         }
@@ -345,6 +396,7 @@ pub fn write_atomically(path: &std::path::Path, data: &[u8]) -> std::io::Result<
 fn spawn_collector(
     host: Arc<dyn Host + Send + Sync>,
     clock: Arc<dyn Clock>,
+    helper: Option<HelperClient>,
     settings: watch::Receiver<Settings>,
     tx: mpsc::Sender<Sampled>,
 ) {
@@ -356,7 +408,11 @@ fn spawn_collector(
             let self_use = SelfUse { rss_bytes: collect::own_rss_bytes(), ..SelfUse::default() };
             let collection = collect::collect_at(host.as_ref(), prev.as_ref(), at, &cfg, self_use);
             prev = Some(collection.snapshot.clone());
-            if tx.send(Sampled { collection, sampled_at_ms: at.wall_ms }).await.is_err() {
+            let helper = match &helper {
+                Some(h) => h.collect().await,
+                None => HelperData::default(),
+            };
+            if tx.send(Sampled { collection, sampled_at_ms: at.wall_ms, helper }).await.is_err() {
                 return;
             }
             clock.sleep(interval).await;
@@ -429,6 +485,7 @@ pub async fn main(paths: Paths) -> Result<i32, String> {
         version: version.into(),
         clock,
         jitter: Arc::new(random_jitter),
+        helper: Some(HelperClient::new(crate::helper::SOCKET, version)),
     };
     let daemon = Daemon::new(link, opts).map_err(|e| e.to_string())?;
     Ok(daemon.run().await)

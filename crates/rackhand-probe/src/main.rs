@@ -7,7 +7,8 @@ use rackhand_probe::collect::{self, Config, RootHost, SelfUse, Stamp};
 
 const USAGE: &str = "usage: rackhand-probe --version
        rackhand-probe collect --once --json [--root <dir>] [--interval-ms <n>]
-       rackhand-probe run [--config <probe.toml>] [--data-dir <dir>] [--state-file <path>] [--root <dir>]";
+       rackhand-probe run [--config <probe.toml>] [--data-dir <dir>] [--state-file <path>] [--root <dir>]
+       rackhand-probe helper [--socket <path>]";
 
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
@@ -28,6 +29,8 @@ fn main() -> ExitCode {
         }
         Some("collect") => collect_once(&args[1..]),
         Some("run") => run(&args[1..]),
+        #[cfg(target_os = "linux")]
+        Some("helper") => helper(&args[1..]),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -97,6 +100,33 @@ fn run(args: &[String]) -> ExitCode {
         Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
         Err(e) => {
             eprintln!("rackhand-probe: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// `helper`: the root helper (7.3.3).
+#[cfg(target_os = "linux")]
+fn helper(args: &[String]) -> ExitCode {
+    let mut paths = rackhand_probe::helper::daemon::Paths::default();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match (a.as_str(), it.next()) {
+            ("--socket", Some(v)) => paths.socket = v.into(),
+            _ => return usage(),
+        }
+    }
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("rackhand-probe helper: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    match runtime.block_on(rackhand_probe::helper::daemon::main(paths, env!("CARGO_PKG_VERSION"))) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("rackhand-probe helper: {e}");
             ExitCode::from(1)
         }
     }

@@ -59,6 +59,7 @@ async fn unreachable(name: &str, clock: Arc<FastClock>, jitter: f64) -> (Daemon,
         version: "0.1.0".into(),
         clock,
         jitter: Arc::new(move || jitter),
+        helper: None,
     };
     (Daemon::new(link, opts).unwrap(), state)
 }
@@ -119,4 +120,84 @@ async fn disconnected_reports_are_buffered() {
     };
     task.abort();
     assert!(buffered >= 5, "collection goes on while the hub is away: {buffered}");
+}
+
+mod helper {
+    use super::*;
+    use crate::helper::client::HelperClient;
+    use crate::helper::server::{Helper, bind, serve};
+    use prost::Message;
+
+    /// A helper of `version` on a socket in `dir`, answering this test's user.
+    async fn helper(dir: &std::path::Path, version: &str) -> (PathBuf, Arc<Helper>) {
+        let path = dir.join("helper.sock");
+        let listener = bind(&path, None).unwrap();
+        let h = Helper::new(version);
+        tokio::spawn(serve(listener, rustix::process::getuid().as_raw(), h.clone()));
+        (path, h)
+    }
+
+    /// The reports the daemon buffered.
+    fn buffered(dir: &std::path::Path) -> Vec<Report> {
+        let b =
+            crate::buffer::segments::Buffer::open(&dir.join("buffer"), Default::default(), 1_700_000_000_000).unwrap();
+        b.pending().map(|r| Report::decode(b.read(r.epoch, r.seq).unwrap().as_slice()).unwrap()).collect()
+    }
+
+    async fn run_until(daemon: Daemon, dir: &std::path::Path, reports: usize) -> Vec<Report> {
+        let task = tokio::spawn(daemon.run());
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while buffered(dir).len() < reports && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        task.abort();
+        buffered(dir)
+    }
+
+    #[tokio::test]
+    async fn version_mismatch_reported_by_probe() {
+        let clock = Arc::new(FastClock::default());
+        let (mut daemon, _) = unreachable("mismatch", clock.clone(), 0.0).await;
+        let dir = daemon.opts.data_dir.parent().unwrap().to_path_buf();
+        let (path, h) = helper(&dir, "9.9.9").await;
+        h.set_updates(
+            rackhand_proto::helper::UpdateSummary { pending: 3, security: 1, reboot_required: false, packages: vec![] },
+            1,
+        );
+        daemon.opts.settings.interval = Duration::from_secs(5);
+        daemon.settings.send_modify(|s| s.interval = Duration::from_secs(5));
+        daemon.opts.helper = Some(HelperClient::new(&path, "0.1.0"));
+        let reports = run_until(daemon, &dir, 3).await;
+        assert!(reports.len() >= 3);
+        let mismatches: Vec<_> =
+            reports.iter().flat_map(|r| &r.events).filter(|e| e.kind == "helper_version_mismatch").collect();
+        assert_eq!(mismatches.len(), 1, "reported once: {mismatches:?}");
+        assert_eq!(mismatches[0].fields.get("helper").map(String::as_str), Some("9.9.9"));
+        assert!(
+            reports.iter().all(|r| r.updates.is_none() && r.containers.is_empty()),
+            "without the helper's features"
+        );
+    }
+
+    #[tokio::test]
+    async fn matching_helper_gives_updates() {
+        let clock = Arc::new(FastClock::default());
+        let (mut daemon, _) = unreachable("matching", clock.clone(), 0.0).await;
+        let dir = daemon.opts.data_dir.parent().unwrap().to_path_buf();
+        let (path, h) = helper(&dir, "0.1.0").await;
+        h.set_updates(
+            rackhand_proto::helper::UpdateSummary {
+                pending: 3,
+                security: 1,
+                reboot_required: true,
+                packages: vec!["openssl".into()],
+            },
+            1,
+        );
+        daemon.opts.helper = Some(HelperClient::new(&path, "0.1.0"));
+        let reports = run_until(daemon, &dir, 2).await;
+        let u = reports[0].updates.clone().expect("the helper's update summary");
+        assert_eq!((u.pending, u.security, u.reboot_required), (3, 1, true));
+        assert!(reports.iter().all(|r| r.events.iter().all(|e| e.kind != "helper_version_mismatch")));
+    }
 }

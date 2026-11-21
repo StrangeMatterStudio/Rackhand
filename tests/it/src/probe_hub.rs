@@ -297,8 +297,9 @@ pub fn probe_machine(hub: &Hub, probe_key: &[u8; 32], extra: &[&str]) -> Contain
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let c = Container::start_systemd_with("systemd", &refs);
     c.copy_in(&musl_binary("rackhand-probe", "rackhand-probe"), "/usr/local/lib/rackhand/rackhand-probe");
-    let unit = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/systemd/rackhand-probe.service");
-    c.copy_in(&unit, "/etc/systemd/system/rackhand-probe.service");
+    let units = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/systemd");
+    c.copy_in(&units.join("rackhand-probe.service"), "/etc/systemd/system/rackhand-probe.service");
+    c.copy_in(&units.join("rackhand-probe-helper.service"), "/etc/systemd/system/rackhand-probe-helper.service");
     let (_, gateway) = c.ip_and_gateway();
     let toml = format!(
         "[hub]\nid = \"{}\"\naddrs = [\"{gateway}:{}\"]\n\n[machine]\nid = \"{MACHINE}\"\naccess = \"managed\"\n",
@@ -318,7 +319,7 @@ pub fn probe_machine(hub: &Hub, probe_key: &[u8; 32], extra: &[&str]) -> Contain
             .status
             .success()
     );
-    let started = c.root("systemctl daemon-reload && systemctl start rackhand-probe");
+    let started = c.root("systemctl daemon-reload && systemctl start rackhand-probe-helper rackhand-probe");
     assert!(started.status.success(), "start: {}", String::from_utf8_lossy(&started.stderr));
     c
 }
@@ -503,4 +504,38 @@ fn stopped_probe_opens_silent_warning_at_60s() {
     let events = hub.events("machine.silent");
     assert!(events.len() > info_before && events.last().unwrap().0 == "info", "an info event: {events:?}");
     assert!(!silent(), "and no warning");
+}
+
+#[test]
+fn containers_listed_within_30s() {
+    let key = [46u8; 32];
+    let mut hub = Hub::init("containers");
+    hub.enroll(MACHINE, &key);
+    hub.start();
+    hub.first_run();
+    // two containers on an engine the machine's helper reads through its socket (read-only calls)
+    let names = [format!("rh-it-web-{}", std::process::id()), format!("rh-it-db-{}", std::process::id())];
+    for n in &names {
+        let out = Command::new("docker")
+            .args(["run", "-d", "--name", n, "rackhand-it-systemd", "sleep", "600"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let _cleanup = Cleanup(names.to_vec());
+    let _machine = probe_machine(&hub, &key, &["-v", "/var/run/docker.sock:/var/run/docker.sock"]);
+    within(Duration::from_secs(30), "both containers on the machine page", || {
+        let page = hub.curl(&[&format!("/machines/{MACHINE}")]);
+        names.iter().all(|n| page.contains(n.as_str()))
+    });
+}
+
+struct Cleanup(Vec<String>);
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        for n in &self.0 {
+            let _ = Command::new("docker").args(["rm", "-f", n]).output();
+        }
+    }
 }
