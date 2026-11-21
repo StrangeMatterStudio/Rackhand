@@ -1,5 +1,4 @@
-//! The pages for monitoring (7.7.1): site, machine (with its vitals refreshed by htmx), incidents, and Settings:
-//! Notifiers with Send test.
+//! The pages for monitoring (7.7.1): site, machine (with its vitals refreshed by htmx) and incidents.
 
 use std::collections::BTreeMap;
 
@@ -8,7 +7,7 @@ use axum::body::Body;
 use axum::http::{Response, StatusCode};
 use rusqlite::OptionalExtension;
 
-use super::{html, html_text, status};
+use super::{html, status};
 use crate::web::{Ctx, Web};
 
 pub(super) fn when(ms: i64) -> String {
@@ -283,35 +282,5 @@ pub(super) fn site(web: &Web, ctx: &Ctx) -> Response<Body> {
         Ok(Some((name, machines))) => html(StatusCode::OK, SitePage { name, machines }.render()),
         Ok(None) => status(StatusCode::NOT_FOUND, "No such site"),
         Err(_) => status(StatusCode::INTERNAL_SERVER_ERROR, "The database couldn't be read"),
-    }
-}
-
-#[derive(Template)]
-#[template(path = "notifiers.html")]
-struct NotifiersPage<'a> {
-    csrf: &'a str,
-    names: Vec<String>,
-}
-
-pub(super) fn notifiers(web: &Web, ctx: &Ctx) -> Response<Body> {
-    let names = web.0.notify.as_ref().map(|n| n.names()).unwrap_or_default();
-    html(StatusCode::OK, NotifiersPage { csrf: &ctx.csrf, names }.render())
-}
-
-/// Settings: Notifiers, Send test: one message through every notifier.
-pub(super) async fn notifier_test(web: &Web, ctx: &Ctx) -> Response<Body> {
-    let Some(notify) = web.0.notify.as_ref() else {
-        return html_text(StatusCode::CONFLICT, "Notifiers", "No notifier is configured.", Some("/settings/notifiers"));
-    };
-    let by = ctx.user.as_ref().map(|u| u.name.clone()).unwrap_or_default();
-    let _ = web.0.audit.append(&format!("user:{by}"), "notifier.test", None, "{}").await;
-    match notify.send_text("Test message from Rackhand", ctx.now_ms).await {
-        Ok(()) => html_text(StatusCode::OK, "Notifiers", "The test message was sent.", Some("/settings/notifiers")),
-        Err(e) => html_text(
-            StatusCode::BAD_GATEWAY,
-            "Notifiers",
-            &format!("The test failed: {e}"),
-            Some("/settings/notifiers"),
-        ),
     }
 }

@@ -1345,6 +1345,131 @@ mod pages {
         assert!(resp.status().is_success() || resp.status() == StatusCode::SEE_OTHER, "{}", resp.status());
         assert_eq!(hits.load(Ordering::Relaxed), 1, "one message");
     }
+
+    fn count(app: &App, sql: &str, arg: &str) -> i64 {
+        app.db.readers().with(|c| c.query_row(sql, [arg], |r| r.get(0))).unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn notifier_added_from_settings_keeps_the_url_in_the_vault() {
+        type Changes = tokio::sync::mpsc::UnboundedReceiver<crate::library::items::Change>;
+        let slot: Arc<std::sync::Mutex<Option<Changes>>> = Arc::default();
+        let keep = slot.clone();
+        let app = app_with("notifier-add", move |web| {
+            let (library, changes) = crate::library::items::Library::new(web.0.db.clone(), web.0.audit.clone());
+            *keep.lock().unwrap() = Some(changes);
+            web.with_library(library)
+        })
+        .await;
+        let mut changes = slot.lock().unwrap().take().unwrap();
+        complete_first_run(&app, SETUP_CODE).await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let url = "https://discord.example.test/api/webhooks/1/do-not-mirror-this-token";
+        let csrf = csrf_of(&app, &admin).await;
+        let discord = [("csrf", csrf.as_str()), ("kind", "discord"), ("name", "ops"), ("webhook", url)];
+        assert_eq!(
+            send(&app.router, post("/settings/notifiers", &admin, &discord)).await.status(),
+            StatusCode::SEE_OTHER
+        );
+        let password = "do-not-mirror-this-password";
+        let csrf = csrf_of(&app, &admin).await;
+        let smtp = [
+            ("csrf", csrf.as_str()),
+            ("kind", "smtp"),
+            ("name", "mail"),
+            ("host", "smtp.example.test"),
+            ("port", "587"),
+            ("security", "starttls"),
+            ("username", "hub@example.test"),
+            ("password", password),
+            ("from", "hub@example.test"),
+            ("to", "ops@example.test, owner@example.test"),
+        ];
+        assert_eq!(send(&app.router, post("/settings/notifiers", &admin, &smtp)).await.status(), StatusCode::SEE_OTHER);
+
+        // The file (mirrored to git) holds only references; the values are sealed in the Vault.
+        let text_now = crate::library::config::current(&app.db, "notifiers").unwrap().expect("config/notifiers saved");
+        let file = crate::notify::config::parse(&text_now).unwrap();
+        assert_eq!(file.discord.len(), 1);
+        assert_eq!(file.discord[0].webhook, "secret:notifier.ops.webhook");
+        assert_eq!(file.smtp.len(), 1);
+        assert_eq!(file.smtp[0].password.as_deref(), Some("secret:notifier.mail.password"));
+        assert_eq!(file.smtp[0].to, vec!["ops@example.test".to_string(), "owner@example.test".to_string()]);
+        assert!(!text_now.contains(url) && !text_now.contains(password), "{text_now}");
+        let vault = Vault::new(MasterKey::from_bytes([3u8; 32]), app.db.clone());
+        let secret = |name: &str| vault.get(name).ok().map(|s| String::from_utf8_lossy(s.expose()).into_owned());
+        assert_eq!(secret("notifier.ops.webhook").as_deref(), Some(url));
+        assert_eq!(secret("notifier.mail.password").as_deref(), Some(password));
+        assert_eq!(crate::notify::config::build(&file, &secret, None).unwrap().len(), 2, "the hub can build both");
+        for leaked in [url, password] {
+            let pattern = format!("%{leaked}%");
+            assert_eq!(count(&app, "SELECT count(*) FROM audit_log WHERE data LIKE ?1", &pattern), 0);
+        }
+        assert_eq!(count(&app, "SELECT count(*) FROM audit_log WHERE action = ?1", "settings.notifier"), 2);
+        let change = changes.try_recv().expect("the change reaches the mirror");
+        assert!(change.summary.contains("config/notifiers"), "{change:?}");
+
+        // The page lists the saved notifiers and says they apply when the hub restarts.
+        let page = text(send(&app.router, get("/settings/notifiers", &admin)).await).await;
+        assert!(page.contains("ops") && page.contains("mail") && page.contains("restart"), "{page}");
+        assert!(!page.contains(url) && !page.contains(password));
+
+        // Saving a name again replaces it; an empty secret keeps the stored one.
+        let csrf = csrf_of(&app, &admin).await;
+        let again = [("csrf", csrf.as_str()), ("kind", "discord"), ("name", "ops"), ("webhook", "")];
+        assert_eq!(
+            send(&app.router, post("/settings/notifiers", &admin, &again)).await.status(),
+            StatusCode::SEE_OTHER
+        );
+        let file =
+            crate::notify::config::parse(&crate::library::config::current(&app.db, "notifiers").unwrap().unwrap())
+                .unwrap();
+        assert_eq!(file.discord.len(), 1, "replaced, not added");
+        assert_eq!(secret("notifier.ops.webhook").as_deref(), Some(url));
+
+        // Refused: a plain http webhook off this host (D113), a bad name, an unknown security, no recipients,
+        // a new notifier without its secret, and a viewer.
+        let bad: [&[(&str, &str)]; 5] = [
+            &[("kind", "discord"), ("name", "plain"), ("webhook", "http://discord.example.test/hook")],
+            &[("kind", "discord"), ("name", "Ops!"), ("webhook", url)],
+            &[
+                ("kind", "smtp"),
+                ("name", "m2"),
+                ("host", "h.example.test"),
+                ("port", "25"),
+                ("security", "none"),
+                ("from", "a@example.test"),
+                ("to", "b@example.test"),
+            ],
+            &[
+                ("kind", "smtp"),
+                ("name", "m3"),
+                ("host", "h.example.test"),
+                ("port", "465"),
+                ("security", "tls"),
+                ("from", "a@example.test"),
+                ("to", " "),
+            ],
+            &[("kind", "discord"), ("name", "new"), ("webhook", "")],
+        ];
+        for fields in bad {
+            let csrf = csrf_of(&app, &admin).await;
+            let mut all = vec![("csrf", csrf.as_str())];
+            all.extend_from_slice(fields);
+            let resp = send(&app.router, post("/settings/notifiers", &admin, &all)).await;
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{fields:?}");
+        }
+        let viewer = session_for(&app.db, Role::Viewer).await;
+        let csrf = csrf_of(&app, &viewer).await;
+        let resp =
+            send(&app.router, post("/settings/notifiers", &viewer, &[("csrf", csrf.as_str()), ("kind", "discord")]))
+                .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let file =
+            crate::notify::config::parse(&crate::library::config::current(&app.db, "notifiers").unwrap().unwrap())
+                .unwrap();
+        assert_eq!((file.discord.len(), file.smtp.len()), (1, 1), "nothing refused was saved");
+    }
 }
 
 mod metrics {

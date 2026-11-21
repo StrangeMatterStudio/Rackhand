@@ -17,6 +17,7 @@ const USAGE: &str = "usage: rackhand hub init [--config-dir <dir>] [--data-dir <
        rackhand hub runbook check <file>
        rackhand hub restore-library <checkout> [--db <path>]
        rackhand hub backup [--config <hub.toml>]
+       rackhand hub metrics-token [--config <hub.toml>]
        rackhand hub restore <file> --master-key <path> [--config-dir <dir>] [--data-dir <dir>]";
 
 fn main() -> ExitCode {
@@ -34,6 +35,7 @@ fn main() -> ExitCode {
         ["hub", "runbook", "check", file] => runbook_check(file),
         ["hub", "restore-library", checkout, rest @ ..] => restore_library(checkout, rest),
         ["hub", "backup", rest @ ..] => hub_backup(rest),
+        ["hub", "metrics-token", rest @ ..] => hub_metrics_token(rest),
         ["hub", "restore", file, rest @ ..] => hub_restore(file, rest),
         #[cfg(feature = "lab-build")]
         ["hub", "lab-token", rest @ ..] => hub_lab_token(rest),
@@ -250,6 +252,25 @@ fn hub_backup(rest: &[&str]) -> ExitCode {
     match result {
         Ok(file) => {
             println!("{}", file.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `hub metrics-token`: prints the bearer token for `/metrics`, for a Prometheus scrape config (7.3.14).
+fn hub_metrics_token(rest: &[&str]) -> ExitCode {
+    let Some(o) = options(rest, &["config"]) else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    let path = PathBuf::from(o.get("config").copied().unwrap_or("/etc/rackhand/hub.toml"));
+    match hub_cmd::HubConfig::load(&path).and_then(|config| hub_cmd::metrics_token(&config)) {
+        Ok(token) => {
+            println!("{token}");
             ExitCode::SUCCESS
         }
         Err(e) => {

@@ -252,6 +252,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T43 | Helper basics and package-list refresh | T42 | integration (containers) | done |
 | T44 | Linux and Alpine installer and enrollment | T35, T43 | integration (containers) | done |
 | T45 | Hub self-watch, integrity and backups | T41 | unit + integration | done |
+| T39b | Settings: add or replace a notifier | T39, T41 | unit (HTTP) | done |
 | L2 | Live tier and the M1 pass | T44, T45, L1 | live (local lab) | todo |
 | T46 | Service checks and network drivers | T41 | unit + integration | todo |
 | T47 | Proxmox driver | T46, T12 | unit (recorded API) | todo |
@@ -2154,6 +2155,35 @@ Only additions to that list are written out below.
   | 2026-11-21 | cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0; fast 387 passed; no violations |
   | 2026-11-21 | cargo xtask ci it | 45 tests: 43 passed on the first run; the two failures were races in the tests under the tier's parallel load: probe_hub::stopped_probe_opens_silent_warning_at_60s measured 60 s from the probe's stop rather than its last report (it fired 54.6 s after the stop, correctly 60 s after the last report; now measured from the last report), and executor::ssh_cut_during_detached_step_recovers cut SSH after a fixed 2 s, before a loaded host had started the step (now it waits for the step's process). Both pass alone and the executor group passes together (8 passed) |
 
+### T39b: Settings: add or replace a notifier
+- **Design refs:** 7.7.1 (Settings: notifiers), 7.3.9, 7.4.3 (`config/notifiers.toml`, secrets as `secret:<name>`), D113,
+  FR-11, FR-26
+- **Goal:** an admin adds a Discord or SMTP notifier from Settings: Notifiers. The webhook URL or SMTP password goes into
+  the Vault, `config/notifiers.toml` gets a new revision holding only `secret:<name>`, the change is audited without the
+  secret and reaches the git mirror. Added before L2 (D60): no step gave the dashboard a way to add a notifier, and
+  the live callout test needs one.
+- **Depends on:** T39, T41
+- **Changes:** `crates/rackhand-hub/src/web/pages/notifiers.rs` (the page, Send test and the save handler, moved out of
+  `monitoring.rs`); `POST /settings/notifiers` (Administer); `notify::config::to_toml`; `templates/notifiers.html`.
+- **Tests to write first:**
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `pages::notifier_added_from_settings_keeps_the_url_in_the_vault` | a Discord and an SMTP notifier saved: the file holds `secret:notifier.<name>.webhook` and `.password`, the Vault the values, the hub can build both; nothing secret in the file, the audit log or the page; two audit rows; the change reaches the mirror; the page lists both as applying when the hub restarts; saving a name again replaces it and an empty secret keeps the stored one; refused with 400 and nothing saved: plain http off this host, a bad name, an unknown security, no recipients, a new notifier without its secret; a viewer gets 403 | 7.7.1, 7.4.3, D113 |
+- **Fails first:** 405 (no such route).
+- **Verification:**
+  ```bash
+  cargo nextest run -p rackhand-hub -E 'test(notifier)'
+  ```
+  Expected: 4 passed, 0 failed.
+- **Risk / rollback:** revert; notifiers can still be written to `config/notifiers.toml` by hand.
+- **Evidence:**
+  | When | Command | Result |
+  | --- | --- | --- |
+  | 2026-11-21 | cargo nextest run -p rackhand-hub -E 'test(notifier_added_from_settings)' (before) | failed: 405 for `POST /settings/notifiers` |
+  | 2026-11-21 | cargo nextest run -p rackhand-hub -E 'test(notifier)' | 4 passed |
+  | 2026-11-21 | mutation checks | each seen failing with its behaviour removed: no replace, the secret written into the file, any webhook URL accepted, no mirror change (1 failed each) |
+  | 2026-11-21 | cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0; fast 390 passed, 1 skipped; no violations |
+
 ### L2: Live tier and the M1 pass
 - **Design refs:** 14 (live tier), D107, 7.3.12, AC1, AC2, AC5, AC8, AC35, AC40, AC47, AC49, AC66
 - **Goal:** the M1 build, deployed to the lab's `hub` machine, enrolls `target` with the dashboard's install command,
@@ -2207,6 +2237,8 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-21 | cargo nextest run -p rackhand -E 'test(metrics_token)' | `hub_cmd::metrics_token_read_with_the_master_key` failed first (`metrics_token` not found), then passed: `rackhand hub metrics-token` prints the token `/metrics` checks, read-only from the Vault with the master key; another master key opens nothing (D61) |
+  | 2026-11-21 | cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0; fast 390 passed, 1 skipped; no violations |
 
 ### M2: Checks and agentless drivers
 
@@ -4246,6 +4278,10 @@ Only additions to that list are written out below.
   | Test | Asserts | Covers |
   | --- | --- | --- |
   | `probe::settings_edit_pushes_config_update` (carried in from T42) | saving `config/hub.toml` with a new `[probe] interval_s` sends `ConfigUpdate` to every connected probe, which reports at the new interval without reconnecting | 7.8.1, D114 |
+  Carried in from T39b:
+  | Test | Asserts | Covers |
+  | --- | --- | --- |
+  | `hub::saved_notifier_applies_without_a_restart` (carried in from T39b) | a notifier saved from Settings sends the next callout without restarting the hub; one removed stops | 7.3.9, 7.7.1 |
 - **Fails first:** the rule table assertion fails for tables registered as fixed-size placeholders.
 - **Verification:**
   ```bash
@@ -4689,6 +4725,8 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D57 | 2026-11-21 | T43 | `packaging/openrc/` in T43; a test image with a fake `apt-get` and `apk`; Docker in the container for AC1's containers | The OpenRC scripts go with the Alpine installer in T44, where they are tested. The fake `apt-get` is copied into the systemd test image by the test (Alpine's `apk` parse is a recorded-output unit test). The containers test mounts the test host's Docker socket into the machine and starts two named containers there, so the helper reads a real engine without Docker-in-Docker. Filled in (7.3.3): the helper refreshes the package lists at start as well as every 6 hours; at start it puts the ownership table right (creates root's and the probe's directories, re-owns root's files as `root 0644`, never follows a symlink); the socket is answered only for the probe user's uid even inside the probe's group. The systemd test image gains D-Bus and socat | Size of the step; no Docker-in-Docker needed | plan | - |
 | D58 | 2026-11-21 | T44 | `offline_variant_checks_script_hash` and the hub's SSH test in T44 | The offline variant needs the hub to serve `install.sh` and the release files, and the SSH test's result belongs on the Add page; both go to T49 with that page. Filled in (7.3.12): the install command's ticket is `rackhand1:<hub endpoint id hex>@<addr>,<addr>[!<relay>,...]`; `install.sh` also takes `--release-url` (a mirror, and the tests); the service files are release files too, signed and checked like the binary; `rackhand-probe enroll` performs the join as root, writes `probe.toml`, installs the first command list through the wrapper's own checks and leaves the accounts' `authorized_keys` lines and sudoers in root-only `/var/lib/rackhand-run/enroll/` for the installer, which deletes it; accounts are key-only (`*` password, not locked). Release keys: until the maintainer creates them (T91), a release build pins none and verifies nothing | Both need the Add page; formats the design didn't give | plan | - |
 | D59 | 2026-11-21 | T45 | `it::backup::restore_on_new_machine_probes_reconnect`; a critical incident on corruption | The restore test is `probe_hub::backup::restore_on_new_machine_probes_reconnect` (it uses the probe-and-hub harness). On a failed `quick_check` the hub writes nothing, so the critical goes straight to the notifiers instead of through an incident (E33's "keeps alerting from memory"). Filled in: the backup file format (chunks sealed with the master key, each bound to its index and whether it is last), `rackhand hub restore <file> --master-key <path>` onto a machine without a hub, the self-watch at 02:30 site time beside the 02:00 backup, the release manifest beside `hub.toml` (`release-manifest.json` and `.minisig`, installed with the release, T93), the config files checked (`master.key` at most 600, `hub.toml` at most 640, root's). Backups to peers are T85's | No database to write the incident into; formats the design didn't give | plan | - |
+| D60 | 2026-11-21 | new T39b | No form to add a notifier | Settings: Notifiers gains a form to add or replace a Discord or SMTP notifier (T39b), because no step let the dashboard add one and L2's callout test needs it. Secrets are named `notifier.<name>.webhook` and `notifier.<name>.password`. A saved notifier applies when the hub restarts, and the page says so; applying it at once is carried into T98. Removing a notifier is by editing the file for now | A gap found while writing L2 | plan | - |
+| D61 | 2026-11-21 | L2 | `/metrics` behind the token in the Vault | `rackhand hub metrics-token [--config]` prints it: `hub init` makes the token but nothing gave it to the owner for a scrape config. It reads the database read-only with the master key, so it needs root and is safe while the hub runs | A gap found while writing L2's metrics test | plan | - |
 
 ## Follow-ups (out of scope)
 

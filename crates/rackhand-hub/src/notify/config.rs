@@ -18,22 +18,22 @@
 
 use std::sync::Arc;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::Transport;
 use super::discord::Discord;
 use super::smtp::{Security, Smtp, SmtpConfig};
 
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct NotifiersFile {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub discord: Vec<DiscordSpec>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub smtp: Vec<SmtpSpec>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DiscordSpec {
     pub name: String,
@@ -41,17 +41,17 @@ pub struct DiscordSpec {
     pub webhook: String,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SmtpSpec {
     pub name: String,
     pub host: String,
     pub port: u16,
     pub security: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
     /// `secret:<name>`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
     pub from: String,
     pub to: Vec<String>,
@@ -71,6 +71,11 @@ pub enum ConfigError {
 
 pub fn parse(text: &str) -> Result<NotifiersFile, ConfigError> {
     toml::from_str(text).map_err(|e| ConfigError::Parse(e.to_string()))
+}
+
+/// The file's text, as `parse` reads it back.
+pub fn to_toml(file: &NotifiersFile) -> Result<String, ConfigError> {
+    toml::to_string(file).map_err(|e| ConfigError::Parse(e.to_string()))
 }
 
 /// Builds the notifiers, resolving each `secret:<name>` through `secret`.

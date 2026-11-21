@@ -441,6 +441,26 @@ pub async fn every_minute(
     }
 }
 
+/// `rackhand hub metrics-token`: the bearer token `/metrics` checks, read from the Vault with the master key, so only
+/// root can read it. The database is opened read-only, so it is safe while the hub runs.
+pub fn metrics_token(config: &HubConfig) -> Result<String, String> {
+    use rackhand_hub::vault::master_key::Sealed;
+    const NAME: &str = "metrics_token";
+    let key = MasterKey::load(Some(&config.master_key))
+        .map_err(|_| format!("the master key {} can't be read", config.master_key.display()))?;
+    let path = config.db_path();
+    let conn = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let (nonce, ciphertext): (Vec<u8>, Vec<u8>) = conn
+        .query_row("SELECT nonce, ciphertext FROM secrets WHERE name = ?1", [NAME], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|_| "no metrics token: run `rackhand hub init` first".to_string())?;
+    let nonce: [u8; 24] = nonce.try_into().map_err(|_| "the stored token is damaged".to_string())?;
+    let token = key
+        .open(NAME, &Sealed { nonce, ciphertext })
+        .map_err(|_| "the token doesn't open with this master key".to_string())?;
+    Ok(String::from_utf8_lossy(token.expose()).into_owned())
+}
+
 /// The notifiers of `config/notifiers.toml`, their secrets from the Vault (none when the file doesn't exist yet).
 pub fn notifiers(
     db: &Db,

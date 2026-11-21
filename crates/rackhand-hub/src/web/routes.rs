@@ -67,6 +67,7 @@ pub enum Page {
     Incident,
     Audit,
     SettingsNotifiers,
+    NotifierSave,
     NotifierTest,
     Metrics,
 }
@@ -132,6 +133,7 @@ pub static ROUTES: &[RouteSpec] = &[
     r(Method::GET, "/incidents/{id}", Access::Perm(Permission::SeeEverything), Page::Incident),
     r(Method::GET, "/audit", Access::Perm(Permission::SeeEverything), Page::Audit),
     r(Method::GET, "/settings/notifiers", Access::Perm(Permission::Administer), Page::SettingsNotifiers),
+    r(Method::POST, "/settings/notifiers", Access::Perm(Permission::Administer), Page::NotifierSave),
     r(Method::POST, "/settings/notifiers/test", Access::Perm(Permission::Administer), Page::NotifierTest),
     r(Method::POST, "/machines/{id}/host-key/accept", Access::Perm(Permission::Administer), Page::AcceptHostKey),
     r(Method::POST, "/settings/users", Access::Perm(Permission::Administer), Page::UserCreate),

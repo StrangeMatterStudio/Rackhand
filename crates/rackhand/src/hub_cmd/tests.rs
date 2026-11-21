@@ -367,3 +367,22 @@ async fn site_minute_in_the_sites_time_zone() {
     // 2026-01-15 01:00 UTC is 02:00 in Berlin (winter)
     assert_eq!(backups::site_minute(&db, 1_768_438_800_000), Some(120));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn metrics_token_read_with_the_master_key() {
+    let dir = temp("metrics-token");
+    let made = init(&dir.join("etc"), &dir.join("lib")).await.unwrap();
+    let config = HubConfig::load(&made.config).unwrap();
+    let stored = {
+        let db = Arc::new(Db::open(&config.db_path()).unwrap());
+        let vault = Vault::new(MasterKey::load(Some(&config.master_key)).unwrap(), db);
+        String::from_utf8(vault.get("metrics_token").unwrap().expose().to_vec()).unwrap()
+    };
+    assert_eq!(metrics_token(&config).unwrap(), stored, "the token /metrics checks");
+    assert_eq!(stored.len(), 48);
+    // another master key opens nothing
+    let other = dir.join("other.key");
+    MasterKey::generate().save(&other).unwrap();
+    let wrong = HubConfig { master_key: other, ..config.clone() };
+    assert!(metrics_token(&wrong).is_err());
+}

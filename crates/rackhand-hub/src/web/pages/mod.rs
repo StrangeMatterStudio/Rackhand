@@ -8,6 +8,7 @@ mod jobs;
 mod library;
 mod machines;
 mod monitoring;
+mod notifiers;
 mod overview;
 mod patching;
 mod settings;
@@ -72,8 +73,9 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
         Page::Incidents => monitoring::incidents(web, ctx),
         Page::Incident => monitoring::incident(web, ctx),
         Page::Audit => audit::page(web, ctx),
-        Page::SettingsNotifiers => monitoring::notifiers(web, ctx),
-        Page::NotifierTest => monitoring::notifier_test(web, ctx).await,
+        Page::SettingsNotifiers => notifiers::page(web, ctx),
+        Page::NotifierSave => notifiers::save(web, ctx).await,
+        Page::NotifierTest => notifiers::test(web, ctx).await,
         // answered before the gate (bearer token, no session)
         Page::Metrics => status(StatusCode::NOT_FOUND, "Not here"),
     }
