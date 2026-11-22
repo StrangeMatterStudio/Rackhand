@@ -19,6 +19,12 @@ struct State {
 pub struct Helper {
     version: String,
     state: Mutex<State>,
+    /// One key update at a time, so an older one can't end after a newer one.
+    keys: Mutex<super::keys::Files>,
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
 fn error(code: &str, message: impl Into<String>) -> HelperResponse {
@@ -27,7 +33,12 @@ fn error(code: &str, message: impl Into<String>) -> HelperResponse {
 
 impl Helper {
     pub fn new(version: &str) -> Arc<Helper> {
-        Arc::new(Helper { version: version.into(), state: Mutex::new(State::default()) })
+        Helper::with_keys(version, super::keys::Files::default())
+    }
+
+    /// The same, with key updates applied to `keys`.
+    pub fn with_keys(version: &str, keys: super::keys::Files) -> Arc<Helper> {
+        Arc::new(Helper { version: version.into(), state: Mutex::new(State::default()), keys: Mutex::new(keys) })
     }
 
     /// The last package-list refresh.
@@ -53,6 +64,19 @@ impl Helper {
                 Ok(items) => HelperResponse::Containers { items },
                 Err(e) => error("containers_unavailable", e),
             },
+            HelperRequest::ApplyKeys { payload, hub_signature } => {
+                let files = self.keys.lock().unwrap_or_else(|e| e.into_inner());
+                match super::keys::apply(&files, &payload, &hub_signature, now_ms()) {
+                    Ok(version) => {
+                        tracing::info!(version, "the hub's keys were replaced");
+                        HelperResponse::KeysApplied
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "a key update was refused");
+                        error(e.code(), e.to_string())
+                    }
+                }
+            }
             _ => error("unsupported", "not provided by this helper version"),
         }
     }

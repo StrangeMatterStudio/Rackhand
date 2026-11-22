@@ -7,6 +7,7 @@ pub mod client;
 pub mod containers;
 #[cfg(target_os = "linux")]
 pub mod daemon;
+pub mod keys;
 #[cfg(unix)]
 pub mod layout;
 pub mod packages;

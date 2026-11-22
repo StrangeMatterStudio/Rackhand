@@ -125,9 +125,13 @@ async fn verify_step_runs_named_checks() {
         verify.run(&ctx(Duration::from_millis(300)), &bound, None).await.outcome,
         StepOutcome::Failed("check:pve-web".into())
     );
-    tokio::time::sleep(Duration::from_millis(5)).await;
-    db.writer().send(WriteCmd::PutCheckResults(vec![result(true)])).await.unwrap();
-    assert_eq!(verify.run(&ctx(Duration::from_secs(1)), &bound, None).await.outcome, StepOutcome::Succeeded);
+    // the check runs while the step waits: a result stamped before it, however late it is written, isn't one
+    let wait = ctx(Duration::from_secs(4));
+    let (passed, ()) = tokio::join!(verify.run(&wait, &bound, None), async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        db.writer().send(WriteCmd::PutCheckResults(vec![result(true)])).await.unwrap();
+    });
+    assert_eq!(passed.outcome, StepOutcome::Succeeded);
     // a pass from before the step started (before an update, say) isn't one: it waits for a newer run
     let api_check = Row::from([
         ("id", t("pve-api")),
