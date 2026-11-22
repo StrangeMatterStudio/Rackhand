@@ -575,10 +575,16 @@ fn stopped_probe_opens_silent_warning_at_60s() {
     // no silence for the hub's first 3 minutes (E44)
     let grace = Duration::from_secs(185).saturating_sub(hub.started.unwrap().elapsed());
     std::thread::sleep(grace);
+    // silence counts from the last report. Staged reports are compacted away every 5 minutes, so the one just before
+    // the stop is remembered.
+    let mut before = None;
+    within(Duration::from_secs(60), "a report under 1 s old", || {
+        before = hub.newest_received_ms().filter(|at| now_ms() - at < 1_000);
+        before.is_some()
+    });
     machine.root("systemctl stop rackhand-probe");
     std::thread::sleep(Duration::from_secs(1));
-    // silence counts from the last report, which came up to one interval before the stop
-    let last_report = hub.newest_received_ms().expect("a report before the stop");
+    let last_report = hub.newest_received_ms().max(before).expect("a report before the stop");
     let silent = || hub.open_incidents().iter().any(|(k, s)| k == "machine.silent" && s == "warning");
     within(Duration::from_secs(100), "a machine.silent warning", silent);
     let opened: i64 = hub

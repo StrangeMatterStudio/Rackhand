@@ -140,3 +140,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-21 | Correction: design rows the owner hadn't been shown were marked confirmed; they are `owner to confirm` again |
 | 2026-11-21 | Integration tier: 49 of 51; the SSH test now retries while a machine reports (D94), and two tests fixed; the tier runs again |
 | 2026-11-21 | T59c3's window driver done, not switched on until the reboot step exists (D95) |
+| 2026-11-21 | Integration tier rerun: 48 of 51; the silence test's staging race fixed, the enrollment login count and the mirror's 60 s still open; the tier runs again with nothing else running |

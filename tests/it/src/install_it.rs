@@ -364,7 +364,9 @@ mod install {
             &c,
             "journalctl --sync; journalctl -u ssh --no-pager | grep -c 'Accepted publickey for rackhand' || true",
         );
-        assert_eq!(logins, "2", "one login per account: {}", sh(&c, "journalctl -u ssh --no-pager"));
+        // every sshd and sudo line whatever unit it is filed under, and what the hub recorded
+        let all = sh(&c, "journalctl --no-pager -o short-precise | grep -E 'sshd|sudo' || true");
+        assert_eq!(logins, "2", "one login per account: events {:?}, unfiltered journal: {all}", ssh_tests(&hub, &id));
     }
 
     #[test]
