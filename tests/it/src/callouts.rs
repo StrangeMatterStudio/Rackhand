@@ -197,7 +197,9 @@ async fn disk_rule_callouts_and_resolution() {
     let count = |c: u32| hook.0.lock().unwrap().iter().filter(|(x, t)| *x == c && t.contains("isk")).count();
     let took = wait(Duration::from_secs(5 * 60 + 90), "a critical on Discord", || count(RED) >= 1).await;
     eprintln!("critical after {took:?}: {:?}", hook.0.lock().unwrap());
-    assert!(took >= Duration::from_secs(4 * 60), "not before the 5 minutes: {took:?}");
+    // A machine with no history: the window matches at 80% of its 20 samples (7.6.1), the 16th, 15 intervals of 15 s
+    // after the first; less the 5 s before the hub's interval reached the probe.
+    assert!(took >= Duration::from_secs(15 * 15 - 5), "not before 16 samples: {took:?}");
     let mail = sink.received().await;
     assert!(mail.tls && mail.data.to_lowercase().contains("critical"), "the critical by mail: {mail:?}");
     // 70% for two samples: a resolution
@@ -212,7 +214,9 @@ async fn disk_rule_callouts_and_resolution() {
     })
     .await;
     eprintln!("warning after {took:?}: {:?}", hook.0.lock().unwrap());
-    assert!(took >= Duration::from_secs(4 * 60), "not before the 5 minutes: {took:?}");
+    // With the samples at 70% before it, every one of the window's has to be over: the whole 5 minutes, less the 15 s a
+    // sample's time is rounded down by.
+    assert!(took >= Duration::from_secs(5 * 60 - 15), "not before the 5 minutes: {took:?}");
     // within 6 minutes of the warning opening (86% held for 5 minutes; a resolved incident reopens with its id)
     let opened: i64 = rusqlite::Connection::open(dir.join("hub.db"))
         .unwrap()
