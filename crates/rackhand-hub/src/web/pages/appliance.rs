@@ -18,6 +18,7 @@ use crate::registry::RegistryError;
 use crate::registry::agentless::{AddAppliance, referenced, vault_name};
 use crate::registry::tokens::Token;
 use crate::vault::Secret;
+use crate::web::ui::Shell;
 use crate::web::forms::{Choices, Form, Groups, Spec};
 use crate::web::{Ctx, Web};
 
@@ -101,17 +102,19 @@ const VERSIONS: Choices = &[("2c", "2c: a community"), ("3", "3: a user, authent
 
 const SNMP_CREDENTIALS: &[Spec] = &[
     Spec::select("version", "Version", VERSIONS),
-    Spec::secret("community", "Community").optional().hint("For version 2c.").attrs(SECRET),
-    Spec::text("user", "User").optional().hint("For version 3.").attrs(PLAIN),
+    Spec::secret("community", "Community").optional().when("version=2c").attrs(SECRET),
+    Spec::text("user", "User").optional().when("version=3").attrs(PLAIN),
     Spec::secret("auth_password", "Authentication password")
         .optional()
-        .hint("For version 3: at least 8 characters.")
+        .hint("At least 8 characters.")
         .length(8, 1024)
+        .when("version=3")
         .attrs(SECRET),
     Spec::secret("priv_password", "Privacy password")
         .optional()
-        .hint("For version 3: at least 8 characters.")
+        .hint("At least 8 characters.")
         .length(8, 1024)
+        .when("version=3")
         .attrs(SECRET),
 ];
 
@@ -157,8 +160,8 @@ fn setting_of(field: &str) -> &str {
 #[derive(Template)]
 #[template(path = "appliance_accept.html")]
 struct Accept<'a> {
+    shell: Shell,
     csrf: &'a str,
-    name: String,
     title: &'static str,
     address: String,
     token: String,
@@ -169,7 +172,7 @@ struct Accept<'a> {
 #[derive(Template)]
 #[template(path = "add_done.html")]
 struct Done {
-    title: String,
+    shell: Shell,
     lines: Vec<(String, String)>,
     note: String,
 }
@@ -278,9 +281,10 @@ pub(super) async fn start(web: &Web, ctx: &Ctx) -> Response<Body> {
             return add::show(web, ctx, StatusCode::INTERNAL_SERVER_ERROR, Some(form));
         }
     };
+    let name = machine_name(web, &id).unwrap_or(name);
     let page = Accept {
+        shell: Shell::at(web, ctx, &format!("Add {name}"), "/add"),
         csrf: &ctx.csrf,
-        name: machine_name(web, &id).unwrap_or(name),
         title: d.title,
         address,
         token: token.as_str().to_string(),
@@ -329,9 +333,10 @@ pub(super) async fn accept(web: &Web, ctx: &Ctx) -> Response<Body> {
             sent.notice(why);
         }
         sent.hold(&web.0.held, ctx);
+        let name = machine_name(web, &form.machine_id).unwrap_or_default();
         let page = Accept {
+            shell: Shell::at(web, ctx, &format!("Add {name}"), "/add"),
             csrf: &ctx.csrf,
-            name: machine_name(web, &form.machine_id).unwrap_or_default(),
             title: d.title,
             address: form.address.clone(),
             token: token.as_str().to_string(),
@@ -406,6 +411,6 @@ pub(super) async fn accept(web: &Web, ctx: &Ctx) -> Response<Body> {
     if let Err(e) = web.0.audit.append(&user.name, action, Some(&form.machine_id), &data.to_string()).await {
         tracing::error!(error = %e, "audit");
     }
-    let page = Done { title, lines: vec![], note: "Rackhand checks it through its API from now on.".into() };
+    let page = Done { shell: Shell::at(web, ctx, &title, "/add"), lines: vec![], note: "Rackhand checks it through its API from now on.".into() };
     html(StatusCode::OK, page.render())
 }

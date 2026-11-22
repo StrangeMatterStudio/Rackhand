@@ -1,34 +1,31 @@
-{% extends "base.html" %}
+{% extends "alone.html" %}
 {% block title %}First run: Rackhand{% endblock %}
-{% block head %}<script src="/static/forms.js" defer></script>{% endblock %}
+{% block width %} wide{% endblock %}
 {% block content %}
 <h1>Set up this hub</h1>
 <ol class="steps"><li aria-current="step">Details</li><li>Authenticator</li><li>Recovery code</li></ol>
+<div class="first-run">
 <form method="post" action="/first-run" novalidate data-check>
 {{ form.hidden(csrf)|safe }}
 {{ form.problems()|safe }}
-<fieldset>
-<legend>This installation</legend>
+<section class="card"><h2>This installation</h2>
 {{ form.field("setup_code")|safe }}
-</fieldset>
-<fieldset>
-<legend>Admin</legend>
+</section>
+<section class="card"><h2>Admin</h2>
 {{ form.field("admin_name")|safe }}
-{{ form.field("password")|safe }}
-<p class="hint">The next step adds an authenticator app; have your phone or password manager ready.</p>
-</fieldset>
-<fieldset>
-<legend>Site</legend>
-{{ form.field("site_name")|safe }}
-{{ form.field("timezone")|safe }}
-</fieldset>
-<fieldset>
-<legend>Outside sources</legend>
-<p class="hint">Downloaded by the hub to score connections. Each can be turned off later in Settings.</p>
+<div class="fields two">{{ form.field("password")|safe }}{{ form.field("password_again")|safe }}</div>
+</section>
+<section class="card"><h2>Site</h2>
+<div class="fields two">{{ form.field("site_name")|safe }}{{ form.field("timezone")|safe }}</div>
+</section>
+<section class="card"><h2>Outside sources</h2>
+<p class="hint">Downloaded by the hub to score connections. Each can be turned off later in System settings.</p>
 {{ form.field("source_feodo")|safe }}
 {{ form.field("source_spamhaus")|safe }}
 {{ form.field("source_dbip")|safe }}
-</fieldset>
-<button type="submit">Continue</button>
+</section>
+<div class="go"><button type="submit" class="primary">Continue</button></div>
 </form>
+<aside class="card guide"><h2>Have ready</h2><ul><li>The setup code the installer printed</li><li>An authenticator app, or a password manager that makes codes</li><li>A safe place, offline, for the recovery code at the end</li></ul></aside>
+</div>
 {% endblock %}

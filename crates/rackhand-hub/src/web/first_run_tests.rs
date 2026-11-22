@@ -60,11 +60,17 @@ fn with(change: &[(&'static str, &'static str)]) -> Vec<(&'static str, &'static 
         ("setup_code", SETUP_CODE),
         ("admin_name", "alex"),
         ("password", PASSWORD),
+        ("password_again", PASSWORD),
         ("site_name", "cabin"),
         ("timezone", "Europe/Berlin"),
         ("source_dbip", "on"),
     ];
     for (k, v) in change {
+        // typed again as it was typed first, unless the test says otherwise
+        if *k == "password" {
+            fields.retain(|(name, _)| *name != "password_again");
+            fields.push(("password_again", v));
+        }
         fields.retain(|(name, _)| name != k);
         fields.push((k, v));
     }
@@ -81,7 +87,7 @@ fn code_for(secret_b32: &str) -> String {
 
 /// Reads the page's QR code back, as an authenticator app would.
 pub(super) fn scan(html: &str) -> String {
-    let svg = &html[html.find("<svg").expect("an inline SVG")..];
+    let svg = &html[html.find("<svg class=\"qr\"").expect("an inline QR code")..];
     let svg = &svg[..svg.find("</svg>").unwrap()];
     let view = &svg[svg.find("viewBox=\"0 0 ").unwrap() + 13..];
     let size: usize = view[..view.find(' ').unwrap()].parse().unwrap();

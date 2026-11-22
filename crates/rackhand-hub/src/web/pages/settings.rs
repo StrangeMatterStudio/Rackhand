@@ -9,22 +9,22 @@ use super::{html, redirect, status};
 use crate::library::config::{self, GitMirror, HubConfig, Sources};
 use crate::library::mirror::DEPLOY_KEY;
 use crate::vault::Secret;
+use crate::web::ui::Shell;
 use crate::web::forms::{self, Form, Spec};
 use crate::web::{Ctx, Web, auth};
 
 #[derive(Template)]
 #[template(path = "settings.html")]
 struct Settings<'a> {
+    shell: Shell,
     csrf: &'a str,
     sources: Sources,
     /// What went wrong with a button on the page.
     notice: Option<&'a str>,
     mirror: Form,
     oidc: Form,
-    user: Form,
     deploy_key: Option<String>,
-    users: Vec<UserLine>,
-    devices: Vec<crate::registry::devices::DeviceRow>,
+    notifiers: usize,
 }
 
 const MIRROR: &[Spec] = &[Spec::text("url", "Repository")
@@ -49,28 +49,6 @@ const OIDC: &[Spec] = &[
 ];
 const ISSUER_RULE: &str = "The issuer is an https:// URL (http:// only on this host)";
 
-struct UserLine {
-    id: String,
-    name: String,
-    role: String,
-    auth: String,
-    disabled: bool,
-}
-
-fn users(web: &Web) -> Vec<UserLine> {
-    web.0
-        .db
-        .readers()
-        .with(|c| {
-            let mut s = c.prepare("SELECT id, name, role, auth, disabled_at IS NOT NULL FROM users ORDER BY name")?;
-            let rows = s.query_map([], |r| {
-                Ok(UserLine { id: r.get(0)?, name: r.get(1)?, role: r.get(2)?, auth: r.get(3)?, disabled: r.get(4)? })
-            })?;
-            rows.collect()
-        })
-        .unwrap_or_default()
-}
-
 fn deploy_public_key(web: &Web) -> Option<String> {
     let pem = web.0.vault.get(DEPLOY_KEY).ok()?;
     let key = PrivateKey::from_openssh(String::from_utf8_lossy(pem.expose()).as_ref()).ok()?;
@@ -82,7 +60,7 @@ pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
 }
 
 /// The page, with the form that was refused as it was sent, or what went wrong with one of its buttons.
-pub(super) fn show(
+fn show(
     web: &Web,
     ctx: &Ctx,
     code: StatusCode,
@@ -104,15 +82,14 @@ pub(super) fn show(
     html(
         code,
         Settings {
+            shell: Shell::at(web, ctx, "System settings", "/settings"),
             csrf: &ctx.csrf,
             sources: current.sources,
             notice,
             mirror: Form::blank("mirror", MIRROR).with("url", url).or_sent(&mut sent),
             oidc: oidc_form.or_sent(&mut sent),
-            user: super::users::blank().or_sent(&mut sent),
             deploy_key: deploy_public_key(web),
-            users: users(web),
-            devices: web.0.registry.as_ref().and_then(|r| r.devices().ok()).unwrap_or_default(),
+            notifiers: super::notifiers::count(web),
         }
         .render(),
     )

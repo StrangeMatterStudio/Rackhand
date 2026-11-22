@@ -1,15 +1,17 @@
-{% extends "base.html" %}
+{% extends "alone.html" %}
 {% block title %}Set up: Rackhand{% endblock %}
-{% block head %}<script src="/static/forms.js" defer></script>{% endblock %}
+{% block width %} wide{% endblock %}
 {% block content %}
 <h1>{{ site }} is set up</h1>
 <ol class="steps"><li class="done">Details</li><li class="done">Authenticator</li><li aria-current="step">Recovery code</li></ol>
-<p>The admin {{ admin }} can now sign in.</p>
-<h2>Master-key recovery code</h2>
+<section class="card"><h2>Master-key recovery code</h2>
 <p><strong>This is shown once.</strong> Store it somewhere safe and offline before you leave this page: with it, the Vault
 can be opened on a new machine if the master key file is lost.</p>
 <p><code class="recovery" id="recovery-code">{{ recovery_code }}</code></p>
 <p><button type="button" data-copy="recovery-code" hidden>Copy the recovery code</button></p>
-<p><a href="/sign-in">I have stored it; sign in</a></p>
-<p class="hint">The authenticator code you just used works once. To sign in, wait for the app's next one.</p>
+</section>
+<section class="card"><h2>Next</h2>
+<p>The admin {{ admin }} can now sign in. The authenticator code you just used works once; wait for the app's next one.</p>
+<p><a class="btn primary" href="/sign-in">I have stored it; sign in</a></p>
+</section>
 {% endblock %}

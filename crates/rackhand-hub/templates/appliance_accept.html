@@ -1,24 +1,24 @@
 {% extends "base.html" %}
-{% block title %}Add {{ name }}: Rackhand{% endblock %}
-{% block head %}<script src="/static/forms.js" defer></script>{% endblock %}
-{% block nav %}<nav><a href="/">Overview</a> <a href="/add">Add</a></nav>{% endblock %}
 {% block content %}
-<h1>Add {{ name }}</h1>
+<div class="page-head"><div><h1>{{ shell.title }}</h1></div></div>
+<section class="card read">
 <p>{{ title }} at <code>{{ address }}</code>.</p>
 <form method="post" action="/add/appliance/accept" novalidate data-check>
 {{ form.hidden(csrf)|safe }}
 <input type="hidden" name="token" value="{{ token }}">
 {% if !fingerprint.is_empty() %}
+<h2>Its certificate</h2>
 <p>It presented a certificate with this SHA-256 fingerprint. Check it against the one the appliance shows (its web
 interface, or <code>openssl x509 -noout -fingerprint -sha256</code> on it) before you accept it. From now on Rackhand
 talks to this certificate only.</p>
-<pre><code>{{ fingerprint }}</code></pre>
+<pre>{{ fingerprint }}</pre>
 <input type="hidden" name="fingerprint" value="{{ fingerprint }}">
 {% endif %}
 {{ form.problems()|safe }}
 {{ form.all_fields()|safe }}
 <p>The credentials go into the Vault. Rackhand polls the appliance once with them; only a poll that works adds it.</p>
-<button type="submit">{% if !fingerprint.is_empty() %}Accept the certificate and add it{% else %}Add it{% endif %}</button>
+<button type="submit" class="primary">{% if !fingerprint.is_empty() %}Accept the certificate and add it{% else %}Add it{% endif %}</button>
 </form>
 <p>This form adds it once, within 60 minutes; until then it can be tried again.</p>
+</section>
 {% endblock %}

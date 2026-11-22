@@ -283,7 +283,7 @@ pub(crate) async fn step_up(web: &Web, ctx: &Ctx) -> Response<Body> {
         tracing::error!(error = %e, "step-up");
         return status(StatusCode::INTERNAL_SERVER_ERROR, "The step-up couldn't be recorded");
     }
-    redirect("/")
+    flow::onward(ctx)
 }
 
 #[cfg(test)]

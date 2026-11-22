@@ -1,13 +1,14 @@
-{% extends "base.html" %}
+{% extends "alone.html" %}
 {% block title %}Sign in: Rackhand{% endblock %}
-{% block head %}<script src="/static/forms.js" defer></script>{% endblock %}
 {% block content %}
+<section class="card">
 <h1>Sign in</h1>
 <form method="post" action="/sign-in" novalidate data-check>
 {{ form.hidden(csrf)|safe }}
 {{ form.problems()|safe }}
 {{ form.all_fields()|safe }}
-<button type="submit">Continue</button>
+<p><button type="submit" class="primary">Continue</button></p>
 </form>
-{% if oidc %}<p><a href="/sign-in/oidc">Sign in with your identity provider</a></p>{% endif %}
+{% if oidc %}<p><a class="btn" href="/sign-in/oidc">Sign in with your identity provider</a></p>{% endif %}
+</section>
 {% endblock %}

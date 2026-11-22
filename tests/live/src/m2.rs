@@ -222,7 +222,7 @@ fn alpine_installs_and_reports() {
     assert!(ok_on("alpine", "sudo rc-service rackhand-probe status"), "the probe runs under OpenRC");
     let healthy = || {
         let page = unescape(&dash.get("/add").1);
-        page.find("<td>alpine</td>")
+        page.find("<b>alpine</b>")
             .map(|at| &page[at..at + page[at..].find("</tr>").unwrap_or(0)])
             .is_some_and(|row| row.contains("Enrolled and healthy"))
     };

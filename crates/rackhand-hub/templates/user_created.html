@@ -1,11 +1,9 @@
 {% extends "base.html" %}
-{% block title %}Account created: Rackhand{% endblock %}
-{% block head %}<script src="/static/forms.js" defer></script>{% endblock %}
-{% block nav %}<nav><a href="/">Overview</a> <a href="/settings">Settings</a></nav>{% endblock %}
 {% block content %}
-<h1>Account created</h1>
-<p>{{ name }} can sign in as {{ role }}, with the next code from their authenticator app. Have them scan this now;
-it isn't shown again.</p>
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">{{ name }} can sign in as {{ role }}, with the next code from their authenticator app.</p></div></div>
+<section class="card read"><h2>{{ name }}'s authenticator key</h2>
+<p><strong>This is shown once.</strong> Have {{ name }} scan it now; it can't be shown again after you leave this page.</p>
 {% include "key.html" %}
-<p><a href="/settings">Back to settings</a></p>
+</section>
+<p><a class="btn" href="/users">Back to users</a></p>
 {% endblock %}

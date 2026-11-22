@@ -1,12 +1,10 @@
 {% extends "base.html" %}
-{% block title %}{{ title }}: Rackhand{% endblock %}
-{% block head %}<script src="/static/forms.js" defer></script>{% endblock %}
-{% block nav %}<nav><a href="/">Overview</a> <a href="/add">Add</a></nav>{% endblock %}
 {% block content %}
-<h1>{{ title }}</h1>
-{% for l in lines %}<h2>{{ l.0 }}</h2>
+<div class="page-head"><div><h1>{{ shell.title }}</h1></div></div>
+{% for l in lines %}<section class="card"><h2>{{ l.0 }}</h2>
 <pre><code id="line-{{ loop.index }}">{{ l.1 }}</code></pre>
-<p><button type="button" data-copy="line-{{ loop.index }}" hidden>Copy</button></p>
+<p><button type="button" data-copy="line-{{ loop.index }}" hidden>Copy</button></p></section>
 {% endfor %}
 <p>{{ note }}</p>
+<p><a class="btn" href="/add">Back to Add</a></p>
 {% endblock %}

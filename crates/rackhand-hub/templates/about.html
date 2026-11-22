@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head"><div><h1>About</h1></div></div>
+<section class="card read">
+<p class="brand">{{ crate::web::ui::MARK|safe }}<span>Rackhand</span></p>
+{% include "about_body.html" %}
+</section>
+<template data-as-dialog>{{ crate::web::ui::dialog("About", "")|safe }}<div class="d-b">{% include "about_body.html" %}</div></dialog></template>
+{% endblock %}

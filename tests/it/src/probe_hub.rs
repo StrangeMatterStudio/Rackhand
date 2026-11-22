@@ -215,6 +215,7 @@ impl Hub {
             ("setup_code", self.setup_code.as_str()),
             ("admin_name", "admin"),
             ("password", "correct horse battery staple"),
+            ("password_again", "correct horse battery staple"),
             ("site_name", "home"),
             ("timezone", "UTC"),
         ];

@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 
 use super::{html, redirect, status};
 use crate::registry::machines::AddMachine;
+use crate::web::ui::{self, Shell};
 use crate::web::forms::{self, Choices, Form, Spec};
 use crate::web::{Ctx, Web};
 
@@ -22,6 +23,9 @@ fn release_url() -> String {
 #[derive(Template)]
 #[template(path = "add.html")]
 struct AddPage<'a> {
+    shell: Shell,
+    /// The dialog that is open, by its form.
+    open: String,
     csrf: &'a str,
     machine: Form,
     /// The appliance forms: driver, title, form.
@@ -89,7 +93,7 @@ const RECENT_MS: i64 = 86_400_000;
 #[derive(Template)]
 #[template(path = "add_done.html")]
 struct AddDone {
-    title: String,
+    shell: Shell,
     lines: Vec<(String, String)>,
     note: String,
 }
@@ -101,7 +105,15 @@ pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
 /// The page, with the form that was refused as it was sent.
 pub(super) fn show(web: &Web, ctx: &Ctx, code: StatusCode, mut sent: Option<Form>) -> Response<Body> {
     let url = release_url();
+    let open = match sent.as_ref().map(|f| f.id()) {
+        Some("add-machine") => "machine".to_string(),
+        Some("invite-device") => "device".to_string(),
+        Some(id) => id.trim_start_matches("add-").to_string(),
+        None => ui::asked(ctx, "add").unwrap_or("").to_string(),
+    };
     let page = AddPage {
+        shell: Shell::at(web, ctx, "Add", "/add"),
+        open,
         csrf: &ctx.csrf,
         machine: Form::blank("add-machine", MACHINE).or_sent(&mut sent),
         appliances: super::appliance::forms(web, &mut sent),
@@ -266,7 +278,7 @@ pub(super) async fn machine(web: &Web, ctx: &Ctx) -> Response<Body> {
         tracing::error!(error = %e, "audit");
     }
     let page = AddDone {
-        title: format!("Install the probe on {name}"),
+        shell: Shell::at(web, ctx, &format!("Install the probe on {name}"), "/add"),
         lines,
         note: "The command works once, for 60 minutes. Run it on the machine.".into(),
     };
@@ -313,7 +325,7 @@ pub(super) async fn invite(web: &Web, ctx: &Ctx) -> Response<Body> {
         tracing::error!(error = %e, "audit");
     }
     let page = AddDone {
-        title: format!("Invite a {kind}"),
+        shell: Shell::at(web, ctx, &format!("Invite a {kind}"), "/add"),
         lines: vec![line],
         note: "The invite works once, for 24 hours.".into(),
     };

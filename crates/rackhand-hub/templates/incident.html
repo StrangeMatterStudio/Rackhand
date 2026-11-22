@@ -1,11 +1,8 @@
 {% extends "base.html" %}
-{% block title %}Incident: Rackhand{% endblock %}
-{% block nav %}<nav><a href="/">Overview</a> <a href="/incidents">Incidents</a> <a href="/approvals">Approvals</a> <a href="/jobs">Jobs</a> <a href="/library">Library</a> <a href="/patching">Patching</a> <a href="/audit">Audit</a></nav>{% endblock %}
 {% block content %}
-<h1>{{ incident.title }}</h1>
-<p>Machine: {{ incident.machine }}. Severity: {{ incident.severity }}. State: {{ incident.state }}. Opened {{ incident.opened }}.</p>
-<h2>Timeline</h2>
-<table><tr><th>When</th><th>What</th><th>Details</th></tr>
-{% for e in events %}<tr><td>{{ e.0 }}</td><td>{{ e.1 }}</td><td><code>{{ e.2 }}</code></td></tr>
-{% endfor %}</table>
+<div class="page-head"><div><h1>{{ incident.title }}</h1></div>{{ crate::web::ui::badge(incident.severity)|safe }}</div>
+<div class="cols facts"><section class="card"><h2>Incident</h2><dl class="kv"><dt>Machine</dt><dd>{{ incident.machine }}</dd><dt>Severity</dt><dd>{{ incident.severity }}</dd><dt>State</dt><dd>{{ incident.state }}</dd><dt>Opened</dt><dd>{{ incident.opened|safe }}</dd></dl></section>
+<section class="card list"><div class="bar"><h2>Timeline</h2></div>{% if events.is_empty() %}<p class="empty">Nothing recorded yet.</p>{% else %}<table><thead><tr><th scope="col">What</th><th scope="col">When</th><th scope="col">Details</th></tr></thead><tbody>
+{% for e in events %}<tr><td class="t"><b>{{ crate::web::ui::word(e.1) }}</b></td><td data-label="When">{{ e.0|safe }}</td><td data-label="Details"><code>{{ e.2 }}</code></td></tr>
+{% endfor %}</tbody></table>{% endif %}</section></div>
 {% endblock %}

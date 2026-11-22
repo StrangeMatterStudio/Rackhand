@@ -1,82 +1,36 @@
 {% extends "base.html" %}
-{% block title %}Settings: Rackhand{% endblock %}
-{% block head %}<script src="/static/forms.js" defer></script>{% endblock %}
-{% block nav %}<nav><a href="/">Overview</a> <a href="/settings">Settings</a></nav>{% endblock %}
 {% block content %}
-<h1>Settings</h1>
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">How this hub behaves. Each card saves on its own; every change is a revision of its configuration.</p></div></div>
 {% if let Some(n) = notice %}{% include "notice.html" %}{% endif %}
-<form method="post" action="/settings/sources">
+<div class="cols pair trio">
+<section class="card"><h2>Outside sources</h2>
+<p class="hint">Downloaded by the hub to score connections.</p>
+<form method="post" action="/settings/sources" data-check data-edit novalidate>
 <input type="hidden" name="csrf" value="{{ csrf }}">
-<fieldset>
-<legend>Outside sources</legend>
-<label><input type="checkbox" name="source_feodo"{% if sources.feodo %} checked{% endif %}> abuse.ch Feodo Tracker</label>
-<label><input type="checkbox" name="source_spamhaus"{% if sources.spamhaus %} checked{% endif %}> Spamhaus DROP</label>
-<label><input type="checkbox" name="source_dbip"{% if sources.dbip %} checked{% endif %}> DB-IP Lite</label>
-</fieldset>
-<button type="submit">Save</button>
-</form>
-<form method="post" action="/settings/git-mirror" novalidate data-check>
+<div class="field check"><label><input type="checkbox" name="source_feodo"{% if sources.feodo %} checked{% endif %}> abuse.ch Feodo Tracker</label></div>
+<div class="field check"><label><input type="checkbox" name="source_spamhaus"{% if sources.spamhaus %} checked{% endif %}> Spamhaus DROP</label></div>
+<div class="field check"><label><input type="checkbox" name="source_dbip"{% if sources.dbip %} checked{% endif %}> DB-IP Lite</label></div>
+<div class="actions"><button type="submit" class="primary">Save</button><button type="button" data-undo hidden>Undo changes</button></div>
+</form></section>
+<section class="card"><h2>Notifiers</h2><p class="hint">Where callouts go: {{ notifiers }} saved.</p><p><a class="btn" href="/settings/notifiers">Open notifiers</a></p></section>
+<section class="card"><h2>Git mirror</h2>
+<form method="post" action="/settings/git-mirror" novalidate data-check data-edit>
 {{ mirror.hidden(csrf)|safe }}
-<fieldset>
-<legend>Git mirror</legend>
 {{ mirror.problems()|safe }}
 {{ mirror.field("url")|safe }}
 {% if let Some(key) = deploy_key %}
 <p>Add this deploy key, with write access, to the repository:</p>
-<p><code class="secret" id="deploy-key">{{ key }}</code></p>
+<pre id="deploy-key">{{ key }}</pre>
 <p><button type="button" data-copy="deploy-key" hidden>Copy the key</button></p>
 {% endif %}
-<button type="submit">Save the mirror</button>
-</fieldset>
-</form>
-<form method="post" action="/settings/oidc" novalidate data-check>
+<div class="actions"><button type="submit" class="primary">Save</button><button type="button" data-undo hidden>Undo changes</button></div>
+</form></section>
+<section class="card"><h2>Sign-in with an identity provider (OIDC)</h2>
+<form method="post" action="/settings/oidc" novalidate data-check data-edit>
 {{ oidc.hidden(csrf)|safe }}
-<fieldset>
-<legend>OIDC sign-in</legend>
 {{ oidc.problems()|safe }}
-{{ oidc.field("issuer")|safe }}
-{{ oidc.field("client_id")|safe }}
-{{ oidc.field("client_secret")|safe }}
-{{ oidc.field("redirect_url")|safe }}
-<button type="submit">Save OIDC sign-in</button>
-</fieldset>
-</form>
-<h2>Users</h2>
-<table>
-<tr><th>Name</th><th>Role</th><th>Sign-in</th><th></th></tr>
-{% for u in users %}
-<tr><td>{{ u.name }}</td><td>{{ u.role }}</td><td>{{ u.auth }}</td><td>
-{% if u.disabled %}disabled{% else %}
-<form method="post" action="/settings/users/{{ u.id }}/role"><input type="hidden" name="csrf" value="{{ csrf }}">
-<select name="role" aria-label="Role of {{ u.name }}">{% for r in ["viewer", "responder", "admin"] %}<option value="{{ r }}"{% if u.role == *r %} selected{% endif %}>{{ r }}</option>{% endfor %}</select>
-<button type="submit">Change role</button></form>
-<form method="post" action="/settings/users/{{ u.id }}/disable"><input type="hidden" name="csrf" value="{{ csrf }}">
-<button type="submit">Disable</button></form>
-{% endif %}</td></tr>
-{% endfor %}
-</table>
-<form method="post" action="/settings/users" novalidate data-check>
-{{ user.hidden(csrf)|safe }}
-<fieldset>
-<legend>Add a user</legend>
-{{ user.problems()|safe }}
-{{ user.field("name")|safe }}
-{{ user.field("role")|safe }}
-{{ user.field("auth")|safe }}
-{{ user.field("password")|safe }}
-{{ user.field("subject")|safe }}
-<button type="submit">Add the user</button>
-</fieldset>
-</form>
-<h2>Devices</h2>
-<table>
-<tr><th>Device</th><th>User</th><th></th></tr>
-{% for d in devices %}
-<tr><td>{{ d.name }}</td><td>{{ d.user }}</td><td>
-{% if d.revoked_at.is_some() %}revoked{% else %}
-<form method="post" action="/settings/devices/{{ d.id }}/revoke"><input type="hidden" name="csrf" value="{{ csrf }}">
-<button type="submit">Revoke</button></form>
-{% endif %}</td></tr>
-{% endfor %}
-</table>
+{{ oidc.all_fields()|safe }}
+<div class="actions"><button type="submit" class="primary">Save</button><button type="button" data-undo hidden>Undo changes</button></div>
+</form></section>
+</div>
 {% endblock %}

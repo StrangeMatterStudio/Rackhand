@@ -257,6 +257,7 @@ fn first_run(m: &Machine, setup_code: &str) -> Result<()> {
         ("setup_code", setup_code),
         ("admin_name", "admin"),
         ("password", password.as_str()),
+        ("password_again", password.as_str()),
         ("site_name", "lab"),
         ("timezone", "UTC"),
     ];

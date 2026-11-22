@@ -1,5 +1,5 @@
 <div class="problems" role="alert" tabindex="-1" data-focus>
-{% if let Some(n) = notice %}<p class="error">{{ n }}</p>{% endif %}
+{% if let Some(n) = notice %}<p>{{ n }}</p>{% endif %}
 {% if errors.len() == 1 %}<p>One thing needs fixing:</p>{% else if !errors.is_empty() %}<p>{{ errors.len() }} things need fixing:</p>{% endif %}
 {% if !errors.is_empty() %}<ul>
 {% for (id, label, error) in errors %}<li><a href="#{{ id }}">{{ label }}</a>: {{ error }}</li>

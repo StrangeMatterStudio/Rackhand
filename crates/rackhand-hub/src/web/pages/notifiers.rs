@@ -10,7 +10,8 @@ use super::{html, redirect, status};
 use crate::library::config;
 use crate::notify::config::{self as file, DiscordSpec, NotifiersFile, SmtpSpec};
 use crate::vault::Secret;
-use crate::web::forms::{Choices, Form, Spec};
+use crate::web::ui::{self, Shell};
+use crate::web::forms::{self, Choices, Form, Spec};
 use crate::web::{Ctx, Web, auth};
 
 const FILE: &str = "notifiers";
@@ -18,6 +19,9 @@ const FILE: &str = "notifiers";
 #[derive(Template)]
 #[template(path = "notifiers.html")]
 struct NotifiersPage<'a> {
+    shell: Shell,
+    /// The dialog that is open: `discord` or `smtp`.
+    open: &'static str,
     csrf: &'a str,
     running: Vec<String>,
     saved: Vec<Saved>,
@@ -86,6 +90,11 @@ fn saved(web: &Web) -> Result<NotifiersFile, String> {
     }
 }
 
+/// How many are saved.
+pub(super) fn count(web: &Web) -> usize {
+    saved(web).map(|s| s.discord.len() + s.smtp.len()).unwrap_or_default()
+}
+
 pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
     show(web, ctx, StatusCode::OK, None, None)
 }
@@ -106,14 +115,46 @@ fn show(web: &Web, ctx: &Ctx, code: StatusCode, mut sent: Option<Form>, notice: 
         kind: "Email",
         target: format!("{} to {}", s.host, s.to.join(", ")),
     }));
+    let mut discord = Form::blank("discord", DISCORD);
+    let mut smtp = Form::blank("smtp", SMTP).with("port", "587");
+    let mut open = match sent.as_ref().map(|f| f.id()) {
+        Some(id) => id,
+        None => match ui::asked(ctx, "add") {
+            Some("discord") => "discord",
+            Some("smtp") => "smtp",
+            _ => "",
+        },
+    };
+    if let Some(name) = ui::asked(ctx, "edit").filter(|_| open.is_empty()) {
+        if current.discord.iter().any(|d| d.name == name) {
+            open = "discord";
+            discord = discord.with("name", name);
+            discord.keep("webhook", forms::STORED);
+        } else if let Some(s) = current.smtp.iter().find(|s| s.name == name) {
+            open = "smtp";
+            smtp = smtp
+                .with("name", &s.name)
+                .with("host", &s.host)
+                .with("port", &s.port.to_string())
+                .with("security", &s.security)
+                .with("username", s.username.as_deref().unwrap_or(""))
+                .with("from", &s.from)
+                .with("to", &s.to.join(", "));
+            if s.password.is_some() {
+                smtp.keep("password", forms::STORED);
+            }
+        }
+    }
     let page = NotifiersPage {
+        shell: Shell::at(web, ctx, "Notifiers", "/settings/notifiers"),
+        open,
         csrf: &ctx.csrf,
         running,
         saved: list,
         notice,
         sent_ok: code.is_success(),
-        discord: Form::blank("discord", DISCORD).or_sent(&mut sent),
-        smtp: Form::blank("smtp", SMTP).with("port", "587").or_sent(&mut sent),
+        discord: discord.or_sent(&mut sent),
+        smtp: smtp.or_sent(&mut sent),
     };
     html(code, page.render())
 }

@@ -1,17 +1,24 @@
-{% extends "base.html" %}
+{% extends "alone.html" %}
 {% block title %}Authenticator: Rackhand{% endblock %}
-{% block head %}<script src="/static/forms.js" defer></script>{% endblock %}
+{% block width %} wide{% endblock %}
 {% block content %}
 <h1>Add your authenticator</h1>
 <ol class="steps"><li class="done"><a href="/first-run">Details</a></li><li aria-current="step">Authenticator</li><li>Recovery code</li></ol>
-<p>Signing in as {{ admin }} takes the password and a code from an authenticator app. Scan this with the app:</p>
-{% include "key.html" %}
+<div class="first-run">
 <form method="post" action="/first-run/second-factor" novalidate data-check>
 {{ form.hidden(csrf)|safe }}
 {% for (name, value) in carried %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
 {{ form.problems()|safe }}
+<section class="card"><h2>The key</h2>
+<p class="hint">Signing in as {{ admin }} takes the password and a code from an authenticator app.</p>
+{% include "key.html" %}
+</section>
+<section class="card"><h2>Check it</h2>
 {{ form.field("totp_code")|safe }}
-<button type="submit">Create the admin and the site</button>
+<p><a class="btn" href="/first-run">Change the details</a></p>
+</section>
+<div class="go"><button type="submit" class="primary">Create the admin and the site</button></div>
 </form>
-<p><a href="/first-run">Change the details</a> (they are kept, and so is this key)</p>
+<aside class="card guide"><h2>Nothing is lost</h2><p>A late or wrong code can be tried again with the same key, and the details are kept.</p></aside>
+</div>
 {% endblock %}

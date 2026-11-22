@@ -9,7 +9,9 @@ use rackhand_runbook::runbook::Risk;
 
 use super::{html, redirect, status};
 use crate::policy::approvals::{ApprovalError, Approvals, Decider, can_approve};
+use crate::web::auth::flow::to_step_up;
 use crate::web::auth::step_up;
+use crate::web::ui::{self, Confirm, Shell};
 use crate::web::{Ctx, Web};
 
 struct Waiting {
@@ -26,12 +28,16 @@ struct Waiting {
     can_decide: bool,
     /// For an `exec`, the line that runs on the machine.
     runs: Option<String>,
+    expires: String,
 }
 
 #[derive(Template)]
 #[template(path = "approvals.html")]
 struct Page<'a> {
     csrf: &'a str,
+    shell: Shell,
+    q: String,
+    confirm: String,
     waiting: Vec<Waiting>,
     /// Why a decision wasn't taken.
     notice: Option<&'a str>,
@@ -53,7 +59,7 @@ fn show(web: &Web, ctx: &Ctx, code: StatusCode, notice: Option<&str>) -> Respons
     let Some(user) = &ctx.user else { return redirect("/sign-in") };
     let rows: Result<Vec<Waiting>, _> = web.0.db.readers().with(|c| {
         let mut s = c.prepare(
-            "SELECT id, tool, target, args, runbook_rev, args_hash, risk, step_up, requested_by, reason
+            "SELECT id, tool, target, args, runbook_rev, args_hash, risk, step_up, requested_by, reason, expires_at
              FROM approvals WHERE state = 'pending' AND expires_at > ?1 ORDER BY expires_at",
         )?;
         let rows = s.query_map([ctx.now_ms], |r| {
@@ -82,12 +88,34 @@ fn show(web: &Web, ctx: &Ctx, code: StatusCode, notice: Option<&str>) -> Respons
                 step_up: r.get(7)?,
                 requested_by: r.get(8)?,
                 reason: r.get(9)?,
+                expires: ui::time(r.get(10)?),
             })
         })?;
         rows.collect()
     });
     match rows {
-        Ok(waiting) => html(code, Page { csrf: &ctx.csrf, waiting, notice }.render()),
+        Ok(all) => {
+            let confirm = ui::asked(ctx, "confirm")
+                .and_then(|c| c.strip_prefix("reject:"))
+                .and_then(|id| all.iter().find(|a| a.id == id && a.can_decide))
+                .map(|a| {
+                    let ask = Confirm {
+                        title: format!("Reject {} on {}?", a.tool, a.target),
+                        body: "It won't run. Whoever asked is told and can ask again.".into(),
+                        action: format!("/approvals/{}/reject", a.id),
+                        keep: "Keep it waiting",
+                        does: "Reject".into(),
+                        back: "/approvals",
+                    };
+                    ask.html(&ctx.csrf)
+                })
+                .unwrap_or_default();
+            let q = ui::query(ctx);
+            let fits = |a: &Waiting| ui::found(&q, &[&a.tool, &a.target, &a.requested_by, &a.reason, &a.risk]);
+            let waiting = all.into_iter().filter(fits).collect();
+            let shell = Shell::at(web, ctx, "Approvals", "/approvals");
+            html(code, Page { shell, q: q.clone(), confirm, csrf: &ctx.csrf, waiting, notice }.render())
+        }
         Err(e) => {
             tracing::error!(error = %e, "approvals");
             status(StatusCode::INTERNAL_SERVER_ERROR, "Approvals unreadable")
@@ -121,7 +149,7 @@ pub(super) async fn decide(web: &Web, ctx: &Ctx, approve: bool) -> Response<Body
             }
             redirect("/approvals")
         }
-        Err(ApprovalError::StepUpRequired) => redirect("/step-up"),
+        Err(ApprovalError::StepUpRequired) => to_step_up("/approvals"),
         Err(ApprovalError::NotPermitted) => {
             show(web, ctx, StatusCode::FORBIDDEN, Some("Your role can't decide an approval at this risk."))
         }

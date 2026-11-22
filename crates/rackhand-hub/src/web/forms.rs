@@ -48,6 +48,12 @@ pub(crate) struct Spec {
     pub min: usize,
     pub max: usize,
     pub choices: Choices,
+    /// Only for this choice of another field, as `field=value`: shown with it, hidden without.
+    pub when: &'static str,
+    /// The same as another field, typed again.
+    pub same: &'static str,
+    /// The input's type: `text`, `time`.
+    pub input: &'static str,
     /// Extra attributes, always fixed text: `autocomplete`, `inputmode`, `placeholder`.
     pub attrs: &'static str,
 }
@@ -65,6 +71,9 @@ impl Spec {
             min: 0,
             max: 1024,
             choices: &[],
+            when: "",
+            same: "",
+            input: "text",
             attrs: "autocomplete=\"off\"",
         }
     }
@@ -110,6 +119,21 @@ impl Spec {
     pub const fn length(mut self, min: usize, max: usize) -> Spec {
         self.min = min;
         self.max = max;
+        self
+    }
+
+    pub const fn when(mut self, when: &'static str) -> Spec {
+        self.when = when;
+        self
+    }
+
+    pub const fn same(mut self, same: &'static str) -> Spec {
+        self.same = same;
+        self
+    }
+
+    pub const fn input(mut self, input: &'static str) -> Spec {
+        self.input = input;
         self
     }
 
@@ -160,6 +184,8 @@ pub(crate) struct Form {
     kept: HashMap<&'static str, &'static str>,
     /// What's said of a field instead of asking for it.
     settled: HashMap<&'static str, &'static str>,
+    /// Secrets taken from the last try: what was typed again then needn't be now.
+    recalled: Vec<&'static str>,
     held: Option<String>,
 }
 
@@ -201,6 +227,7 @@ impl Form {
             options: HashMap::new(),
             kept: HashMap::new(),
             settled: HashMap::new(),
+            recalled: Vec::new(),
             held: None,
         }
     }
@@ -217,6 +244,7 @@ impl Form {
         for s in specs.iter().filter(|s| s.kind == Kind::Secret) {
             if let (true, Some(v)) = (form.value(s.name).is_empty(), secrets.get(s.name)) {
                 form.values.insert(s.name, v.clone());
+                form.recalled.push(s.name);
             }
         }
         form
@@ -236,6 +264,10 @@ impl Form {
             }
             None => self,
         }
+    }
+
+    pub fn id(&self) -> &'static str {
+        self.id
     }
 
     pub fn set(&mut self, name: &'static str, value: &str) {
@@ -283,7 +315,23 @@ impl Form {
             if self.settled.contains_key(s.name) || self.has_error(s.name) {
                 continue;
             }
+            if !self.wanted(s) {
+                continue;
+            }
             let value = self.value(s.name);
+            // typed again: needed whenever the first one was typed
+            if !s.same.is_empty() {
+                let first = self.value(s.same).to_string();
+                if value.is_empty() && (self.kept.contains_key(s.same) && first.is_empty() || self.recalled.contains(&s.same)) {
+                    continue;
+                }
+                if !first.is_empty() && value.is_empty() {
+                    self.errors.push((s.name, "Type it again".into()));
+                } else if value != first {
+                    self.errors.push((s.name, "It isn't the same as the first".into()));
+                }
+                continue;
+            }
             if value.is_empty() && self.kept.contains_key(s.name) {
                 continue;
             }
@@ -293,6 +341,14 @@ impl Form {
         }
         if self.specs.iter().any(|s| s.name == ZONE) {
             self.check_timezone();
+        }
+    }
+
+    /// Whether the choice a field depends on is the one made.
+    fn wanted(&self, s: &Spec) -> bool {
+        match s.when.split_once('=') {
+            Some((field, value)) => self.value(field) == value,
+            None => true,
         }
     }
 
@@ -351,7 +407,9 @@ impl Form {
         let secrets: HeldSecrets = self
             .specs
             .iter()
-            .filter(|s| s.kind == Kind::Secret && !self.has_error(s.name))
+            .filter(|s| s.kind == Kind::Secret && !self.has_error(s.name) && s.same.is_empty())
+            // the first of two that differ isn't known to be the right one
+            .filter(|s| !self.specs.iter().any(|o| o.same == s.name && self.has_error(o.name)))
             .filter_map(|s| self.values.get(s.name).filter(|v| !v.is_empty()).map(|v| (s.name, v.clone())))
             .collect();
         if secrets.is_empty() {

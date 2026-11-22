@@ -8,10 +8,13 @@ use axum::http::{Response, StatusCode};
 use rusqlite::OptionalExtension;
 
 use super::{html, status};
+use crate::web::perms::{Permission, allowed};
+use crate::web::ui::{self, Shell};
 use crate::web::{Ctx, Web};
 
+/// A moment as the pages show it, with its exact time in the element.
 pub(super) fn when(ms: i64) -> String {
-    jiff::Timestamp::from_millisecond(ms).map(|t| t.to_string()).unwrap_or_default()
+    ui::time(ms)
 }
 
 pub(super) struct IncidentView {
@@ -39,9 +42,14 @@ fn incident_view(r: &rusqlite::Row<'_>) -> rusqlite::Result<IncidentView> {
 #[derive(Template)]
 #[template(path = "machine.html")]
 struct MachinePage {
+    shell: Shell,
+    health: String,
+    last_seen: String,
+    policy: String,
+    confirm: String,
+    can_confirm: bool,
     /// What went wrong with one of its buttons.
     notice: Option<String>,
-    csrf: String,
     id: String,
     name: String,
     site: String,
@@ -62,6 +70,21 @@ struct MachinePage {
 struct BindingView {
     state: String,
     guests: Vec<(String, String)>,
+}
+
+/// The question before a guest is confirmed as the machine's.
+fn binding_dialog(csrf: &str, id: &str, guest: &(String, String)) -> String {
+    let back = format!("/machines/{id}");
+    format!(
+        "{}<div class=\"d-b\"><p>{} becomes this machine's guest: its snapshots and rollbacks act on it.</p></div>\
+         <form class=\"d-f\" method=\"post\" action=\"{back}/binding/confirm\"><input type=\"hidden\" name=\"csrf\" value=\"{}\">\
+         <input type=\"hidden\" name=\"guest\" value=\"{}\"><button type=\"submit\" class=\"primary\">Confirm this guest</button>\
+         <a class=\"btn\" href=\"{back}\" data-close>Cancel</a></form></dialog>",
+        ui::dialog("Confirm the guest", &back),
+        ui::escape(&guest.0),
+        ui::escape(csrf),
+        ui::escape(&guest.1),
+    )
 }
 
 /// `pve8 lxc vmid 100` for a `proxmox_ref`.
@@ -183,8 +206,24 @@ pub(super) fn show_machine(web: &Web, ctx: &Ctx, id: &str, code: StatusCode, not
         }
         BindingView { state: binding_state.clone(), guests }
     });
+    let row = super::overview::machines(web, ctx.now_ms, None)
+        .ok()
+        .and_then(|all| all.into_iter().find(|m| m.id == id));
+    let can_confirm = ctx.user.as_ref().is_some_and(|u| allowed(u.role, Permission::ConfirmBinding));
+    let asked = ui::asked(ctx, "confirm").and_then(|c| c.strip_prefix("guest:"));
+    let confirm = binding
+        .as_ref()
+        .filter(|_| can_confirm)
+        .and_then(|b| b.guests.iter().find(|g| Some(g.1.as_str()) == asked))
+        .map(|g| binding_dialog(&ctx.csrf, &id, g))
+        .unwrap_or_default();
     let page = MachinePage {
-        csrf: ctx.csrf.clone(),
+        shell: Shell::at(web, ctx, &name, &format!("/machines/{id}")),
+        health: row.as_ref().map(|r| r.health.clone()).unwrap_or_else(|| "ok".into()),
+        last_seen: row.as_ref().map(|r| r.last_seen.clone()).unwrap_or_default(),
+        policy: row.as_ref().map(|r| r.policy.clone()).unwrap_or_default(),
+        confirm,
+        can_confirm,
         notice: notice.map(str::to_string),
         silent_since: silent_since(web, &id),
         id,
@@ -206,6 +245,7 @@ pub(super) fn show_machine(web: &Web, ctx: &Ctx, id: &str, code: StatusCode, not
 
 pub(super) struct VitalRow {
     pub metric: &'static str,
+    pub name: &'static str,
     pub last: String,
     pub min: String,
     pub max: String,
@@ -235,6 +275,16 @@ struct Vitals {
 
 const CHARTED: [&str; 4] = ["cpu.busy_pct", "mem.used_pct", "load.1m", "swap.used_pct"];
 
+/// What a metric is called, and its unit.
+fn metric_name(metric: &str) -> (&'static str, &'static str) {
+    match metric {
+        "cpu.busy_pct" => ("CPU", " %"),
+        "mem.used_pct" => ("Memory", " %"),
+        "load.1m" => ("Load, 1 min", ""),
+        _ => ("Swap", " %"),
+    }
+}
+
 /// The machine's last hour of vitals: the htmx partial its page refreshes.
 pub(super) fn vitals(web: &Web, ctx: &Ctx) -> Response<Body> {
     let id = ctx.path.strip_prefix("/machines/").and_then(|p| p.strip_suffix("/vitals")).unwrap_or("");
@@ -249,9 +299,10 @@ pub(super) fn vitals(web: &Web, ctx: &Ctx) -> Response<Body> {
             let max = points.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
             Some(VitalRow {
                 metric,
-                last: format!("{last:.2}"),
+                name: metric_name(metric).0,
+                last: format!("{last:.2}{}", metric_name(metric).1),
                 min: format!("{min:.2}"),
-                max: format!("{max:.2}"),
+                max: format!("{max:.2}{}", metric_name(metric).1),
                 line: polyline(&points),
             })
         })
@@ -262,12 +313,31 @@ pub(super) fn vitals(web: &Web, ctx: &Ctx) -> Response<Body> {
 #[derive(Template)]
 #[template(path = "incidents.html")]
 struct IncidentsPage {
+    shell: Shell,
+    q: String,
     open: Vec<IncidentView>,
     resolved: Vec<IncidentView>,
 }
 
+/// Every open incident, worst and newest first.
+pub(super) fn open_incidents(web: &Web) -> Vec<IncidentView> {
+    web.0
+        .db
+        .readers()
+        .with(|c| {
+            let sql = format!(
+                "SELECT {INCIDENT_COLUMNS} FROM incidents i LEFT JOIN machines m ON m.id = i.machine_id
+                 WHERE i.state != 'resolved'
+                 ORDER BY CASE i.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, i.opened_at DESC"
+            );
+            let mut s = c.prepare(&sql)?;
+            s.query_map([], incident_view)?.collect()
+        })
+        .unwrap_or_default()
+}
+
 pub(super) fn incidents(web: &Web, ctx: &Ctx) -> Response<Body> {
-    let list = |unresolved: bool| {
+    let list = |unresolved: bool| -> Vec<IncidentView> {
         web.0
             .db
             .readers()
@@ -282,12 +352,17 @@ pub(super) fn incidents(web: &Web, ctx: &Ctx) -> Response<Body> {
             })
             .unwrap_or_default()
     };
-    html(StatusCode::OK, IncidentsPage { open: list(true), resolved: list(false) }.render())
+    let q = ui::query(ctx);
+    let fits = |i: &IncidentView| ui::found(&q, &[&i.title, &i.machine, &i.severity, &i.state]);
+    let open = list(true).into_iter().filter(fits).collect();
+    let resolved = list(false).into_iter().filter(fits).collect();
+    html(StatusCode::OK, IncidentsPage { shell: Shell::new(web, ctx, "Incidents"), q: q.clone(), open, resolved }.render())
 }
 
 #[derive(Template)]
 #[template(path = "incident.html")]
 struct IncidentPage {
+    shell: Shell,
     incident: IncidentView,
     events: Vec<(String, String, String)>,
 }
@@ -307,7 +382,7 @@ pub(super) fn incident(web: &Web, ctx: &Ctx) -> Response<Body> {
         Ok(Some((incident, events)))
     });
     match found {
-        Ok(Some((incident, events))) => html(StatusCode::OK, IncidentPage { incident, events }.render()),
+        Ok(Some((incident, events))) => html(StatusCode::OK, IncidentPage { shell: Shell::new(web, ctx, &incident.title), incident, events }.render()),
         Ok(None) => status(StatusCode::NOT_FOUND, "No such incident"),
         Err(_) => status(StatusCode::INTERNAL_SERVER_ERROR, "The database couldn't be read"),
     }
@@ -316,8 +391,9 @@ pub(super) fn incident(web: &Web, ctx: &Ctx) -> Response<Body> {
 #[derive(Template)]
 #[template(path = "site.html")]
 struct SitePage {
-    name: String,
-    machines: Vec<(String, String, String)>,
+    shell: Shell,
+    q: String,
+    machines: Vec<super::overview::MachineRow>,
 }
 
 pub(super) fn site(web: &Web, ctx: &Ctx) -> Response<Body> {
@@ -325,19 +401,22 @@ pub(super) fn site(web: &Web, ctx: &Ctx) -> Response<Body> {
     let found = web.0.db.readers().with(|c| {
         let Some((id, name)) = c
             .query_row("SELECT id, name FROM sites WHERE id = ?1 OR name = ?1", [key], |r| {
-                Ok((r.get::<_, String>(0)?, r.get(1)?))
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
             })
             .optional()?
         else {
             return Ok(None);
         };
-        let mut s = c.prepare("SELECT id, name, state FROM machines WHERE site_id = ?1 ORDER BY name")?;
-        let machines =
-            s.query_map([&id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(Some((name, machines)))
+        Ok(Some((id, name)))
     });
     match found {
-        Ok(Some((name, machines))) => html(StatusCode::OK, SitePage { name, machines }.render()),
+        Ok(Some((id, name))) => {
+            let q = ui::query(ctx);
+            let machines = super::overview::machines(web, ctx.now_ms, Some(&id)).unwrap_or_default();
+            let machines = machines.into_iter().filter(|m| m.matches(&q)).collect();
+            let shell = Shell::at(web, ctx, &name, &format!("/sites/{name}"));
+            html(StatusCode::OK, SitePage { shell, q, machines }.render())
+        }
         Ok(None) => status(StatusCode::NOT_FOUND, "No such site"),
         Err(_) => status(StatusCode::INTERNAL_SERVER_ERROR, "The database couldn't be read"),
     }

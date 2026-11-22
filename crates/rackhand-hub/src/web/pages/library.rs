@@ -3,11 +3,12 @@
 
 use askama::Template;
 use axum::body::Body;
-use axum::http::{HeaderValue, Response, StatusCode, header};
+use axum::http::{Response, StatusCode};
 
-use super::{html, redirect, status};
+use super::{html, redirect, see_other, status};
 use crate::library::items::{HistoryEntry, Kind, Library, SaveError};
 use crate::web::perms::{Permission, allowed};
+use crate::web::ui::{self, Shell};
 use crate::web::{Ctx, Web};
 
 /// The longest file a diff is computed for, in lines.
@@ -30,6 +31,8 @@ struct Draft {
 #[derive(Template)]
 #[template(path = "library.html")]
 struct List<'a> {
+    shell: Shell,
+    q: String,
     csrf: &'a str,
     items: Vec<Item>,
     drafts: Vec<Draft>,
@@ -63,6 +66,9 @@ impl Line {
 #[derive(Template)]
 #[template(path = "library_item.html")]
 struct ItemPage<'a> {
+    shell: Shell,
+    /// The editor is open; otherwise the item is read.
+    writing: bool,
     csrf: &'a str,
     kind: &'a str,
     name: &'a str,
@@ -145,7 +151,11 @@ fn show(web: &Web, ctx: &Ctx, code: StatusCode, notice: Option<&str>) -> Respons
     });
     match found {
         Ok((items, drafts)) => {
-            html(code, List { csrf: &ctx.csrf, items, drafts, can_edit: can_edit(ctx), notice }.render())
+            let q = ui::query(ctx);
+            let items = items.into_iter().filter(|i| ui::found(&q, &[&i.name, &i.kind])).collect();
+            let shell = Shell::at(web, ctx, "Library", "/library");
+            let page = List { shell, q, csrf: &ctx.csrf, items, drafts, can_edit: can_edit(ctx), notice };
+            html(code, page.render())
         }
         Err(e) => {
             tracing::error!(error = %e, "library");
@@ -171,8 +181,11 @@ fn item_page(web: &Web, ctx: &Ctx, code: StatusCode, typed: Option<&str>, error:
         (a.lines().count() <= MAX_DIFF_LINES && b.lines().count() <= MAX_DIFF_LINES)
             .then(|| (from, from + 1, diff(&a, &b)))
     });
+    let writing = can_edit(ctx) && (typed.is_some() || current.is_none() || ctx.query.contains_key("write"));
     let content = typed.map(str::to_string).or(current.map(|(_, c)| c)).unwrap_or_default();
     let page = ItemPage {
+        shell: Shell::at(web, ctx, &format!("{kind_name} {name}"), &format!("/library/{kind_name}/{name}")),
+        writing,
         csrf: &ctx.csrf,
         kind: kind_name,
         name,
@@ -187,15 +200,6 @@ fn item_page(web: &Web, ctx: &Ctx, code: StatusCode, typed: Option<&str>, error:
 
 pub(super) fn item(web: &Web, ctx: &Ctx) -> Response<Body> {
     item_page(web, ctx, StatusCode::OK, None, None)
-}
-
-fn see_other(to: &str) -> Response<Body> {
-    let mut resp = Response::new(Body::empty());
-    *resp.status_mut() = StatusCode::SEE_OTHER;
-    if let Ok(v) = HeaderValue::from_str(to) {
-        resp.headers_mut().insert(header::LOCATION, v);
-    }
-    resp
 }
 
 /// Saves a new revision, or shows why it doesn't validate with the text kept.

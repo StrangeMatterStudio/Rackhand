@@ -1,63 +1,48 @@
 {% extends "base.html" %}
-{% block title %}Patching: Rackhand{% endblock %}
-{% block head %}<script src="/static/forms.js" defer></script>{% endblock %}
-{% block nav %}<nav><a href="/">Overview</a> <a href="/approvals">Approvals</a> <a href="/jobs">Jobs</a> <a href="/library">Library</a> <a href="/patching">Patching</a></nav>{% endblock %}
 {% block content %}
-<h1>Patching</h1>
-<h2>Pending updates</h2>
-{% if machines.is_empty() %}<p>No machines yet.</p>{% else %}
-<table>
-<tr><th>Machine</th><th>Policy</th><th>Patch</th><th>Pending</th><th>Security</th><th>Reboot required</th></tr>
-{% for m in machines %}
-<tr><td><a href="/machines/{{ m.id }}">{{ m.name }}</a></td><td>{{ m.policy }}</td><td>{{ m.patch }}</td>{% if let Some((pending, security)) = m.counts %}<td>{{ pending }}</td><td>{{ security }}</td><td>{% if m.reboot_required %}yes{% else %}no{% endif %}</td>{% else %}<td colspan="3">not reported yet</td>{% endif %}</tr>
-{% endfor %}
-</table>
-{% endif %}
-<h2>Policies</h2>
-<table>
-<tr><th>Policy</th><th>Patch</th><th>Reboot</th><th>Rollback</th><th>Snapshot</th></tr>
-{% for p in policies %}
-<tr><td>{{ p.name }}</td><td>{% if p.patch == "hold" %}hold{% else %}{{ p.patch }}{% endif %}</td><td>{{ p.auto_reboot }}</td><td>{{ p.auto_rollback }}</td><td>{{ p.snapshot }}</td></tr>
-{% endfor %}
-</table>
-<h2>Maintenance windows</h2>
-<table>
-<tr><th>For</th><th>When</th><th>Timezone</th></tr>
-{% for w in windows %}
-<tr><td>{% if let Some(m) = w.machine_id %}{{ m }}{% endif %}{% if let Some(t) = w.tag %}tag {{ t }}{% endif %}</td><td>{{ w.rrule }}</td><td>{{ w.timezone }}</td></tr>
-{% endfor %}
-</table>
-<h2>Last patch jobs</h2>
-{% if runs.is_empty() %}<p>No patch jobs yet.</p>{% endif %}
-<ul>{% for r in runs %}<li><a href="/jobs/{{ r.id }}">{{ r.name }}</a> on {{ r.target }}: {{ r.state }}</li>{% endfor %}</ul>
-{% if can_edit %}
+{% if open == "policy" %}{{ crate::web::ui::dialog("Add a policy", "/patching")|safe }}
 <form method="post" action="/policies" novalidate data-check>
+<div class="d-b">
 {{ policy.hidden(csrf)|safe }}
-<fieldset>
-<legend>Add or change a policy</legend>
 {{ policy.problems()|safe }}
-{{ policy.field("name")|safe }}
-{{ policy.field("patch")|safe }}
-{{ policy.field("auto_reboot")|safe }}
-{{ policy.field("auto_rollback")|safe }}
-{{ policy.field("snapshot")|safe }}
-{{ policy.field("quarantine")|safe }}
-{{ policy.field("peer_requests")|safe }}
-<button type="submit">Save the policy</button>
-</fieldset>
-</form>
+{{ policy.all_fields()|safe }}
+</div>
+<div class="d-f"><button type="submit" class="primary">Add the policy</button><a class="btn" href="/patching" data-close>Cancel</a></div>
+</form></dialog>{% endif %}
+{% if open == "edit" %}{{ crate::web::ui::dialog("Edit a policy", "/patching")|safe }}
+<form method="post" action="/policies" novalidate data-check data-edit>
+<div class="d-b">
+{{ policy.hidden(csrf)|safe }}
+{{ policy.problems()|safe }}
+{{ policy.all_fields()|safe }}
+</div>
+<div class="d-f"><button type="submit" class="primary">Save</button><button type="button" data-undo hidden>Undo changes</button><a class="btn" href="/patching" data-close>Cancel</a></div>
+</form></dialog>{% endif %}
+{% if open == "window" %}{{ crate::web::ui::dialog("Add a maintenance window", "/patching")|safe }}
 <form method="post" action="/windows" novalidate data-check>
+<div class="d-b">
 {{ window.hidden(csrf)|safe }}
-<fieldset>
-<legend>Add a maintenance window</legend>
 {{ window.problems()|safe }}
-{{ window.field("machine")|safe }}
-{{ window.field("tag")|safe }}
-{{ window.field("rrule")|safe }}
-{{ window.field("timezone")|safe }}
-<button type="submit">Add the window</button>
-</fieldset>
-</form>
-{% endif %}
-<form method="post" action="/sign-out"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Sign out</button></form>
+{{ window.all_fields()|safe }}
+</div>
+<div class="d-f"><button type="submit" class="primary">Add the window</button><a class="btn" href="/patching" data-close>Cancel</a></div>
+</form></dialog>{% endif %}
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">What waits to be installed, and when it may be.</p></div>{% if can_edit %}<a class="btn primary" href="/patching?add=window">{{ crate::web::ui::icon("add")|safe }}Add a maintenance window</a>{% endif %}</div>
+<div class="cols sided">
+<section class="card list"><div class="bar"><h2>Pending updates</h2>{{ crate::web::ui::search("/patching", q, "machines")|safe }}</div>
+{% if machines.is_empty() %}{{ crate::web::ui::none(q, "machines", "No machines yet.")|safe }}{% else %}
+<table><thead><tr><th scope="col">Machine</th><th scope="col">Pending</th><th scope="col">Security</th><th scope="col">Reboot required</th><th scope="col">Policy</th><th scope="col">Patch</th></tr></thead><tbody>
+{% for m in machines %}<tr><td class="t"><a href="/machines/{{ m.id }}">{{ m.name }}</a></td>{% if let Some((pending, security)) = m.counts %}<td class="num" data-label="Pending">{{ pending }}</td><td class="num" data-label="Security">{{ security }}</td><td data-label="Reboot required">{% if m.reboot_required %}yes{% else %}no{% endif %}</td>{% else %}<td colspan="3">not reported yet</td>{% endif %}<td data-label="Policy">{{ m.policy }}</td><td data-label="Patch">{{ m.patch }}</td></tr>
+{% endfor %}</tbody></table>{% endif %}</section>
+<div class="stack">
+<section class="card list"><div class="bar"><h2>Policies</h2>{% if can_edit %}<a class="btn" href="/patching?add=policy">Add a policy</a>{% endif %}</div>{% if policies.is_empty() %}<p class="empty">No policies yet. Machines without one aren't patched.</p>{% else %}
+<table><thead><tr><th scope="col">Policy</th><th scope="col">Patch</th><th scope="col">Reboot</th><th scope="col">Snapshot</th><th scope="col"><span class="sr">Edit</span></th></tr></thead><tbody>
+{% for p in policies %}<tr><td class="t"><b>{{ p.name }}</b></td><td data-label="Patch">{{ patch_said(p.patch) }}</td><td data-label="Reboot">{% if p.auto_reboot %}When needed{% else %}Never{% endif %}</td><td data-label="Snapshot">{{ crate::web::ui::word(p.snapshot) }}</td><td class="act">{% if can_edit %}<a class="btn" href="/patching?edit={{ p.name|urlencode }}" aria-label="Edit {{ p.name }}">Edit</a>{% endif %}</td></tr>
+{% endfor %}</tbody></table>{% endif %}</section>
+<section class="card list"><div class="bar"><h2>Maintenance windows</h2></div>{% if windows.is_empty() %}<p class="empty">No windows yet. Nothing is patched by itself without one.</p>{% else %}
+<table><thead><tr><th scope="col">For</th><th scope="col">When</th><th scope="col">Timezone</th></tr></thead><tbody>
+{% for w in windows %}<tr><td class="t"><b>{% if let Some(m) = w.machine_id %}{{ m }}{% endif %}{% if let Some(t) = w.tag %}tag {{ t }}{% endif %}</b></td><td data-label="When" title="{{ w.rrule }}">{{ said(w.rrule) }}</td><td data-label="Timezone">{{ w.timezone }}</td></tr>
+{% endfor %}</tbody></table>{% endif %}</section>
+<section class="card list"><div class="bar"><h2>Last patch jobs</h2></div>{% if runs.is_empty() %}<p class="empty">No patch jobs yet.</p>{% else %}<div class="rows">{% for r in runs %}<a class="row" href="/jobs/{{ r.id }}"><span><b>{{ r.name }}</b><small>On {{ r.target }}</small></span>{{ crate::web::ui::badge(r.state)|safe }}</a>{% endfor %}</div>{% endif %}</section>
+</div></div>
 {% endblock %}

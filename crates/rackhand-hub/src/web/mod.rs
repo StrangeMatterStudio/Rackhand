@@ -5,6 +5,7 @@ pub mod auth;
 pub mod csp;
 pub mod csrf;
 mod forms;
+mod icons;
 mod metrics;
 pub(crate) mod pages;
 pub mod perms;
@@ -12,6 +13,7 @@ pub mod routes;
 pub mod session;
 pub mod tls;
 pub mod totp;
+mod ui;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -243,7 +245,9 @@ impl Web {
             router = router
                 .route(spec.path, on(filter, move |req: Request<Body>| async move { web.handle(spec, req).await }));
         }
-        router.fallback(|| async { pages::status(StatusCode::NOT_FOUND, "Not found") }).layer(
+        let web = self.clone();
+        let other = move |req: Request<Body>| async move { web.handle(&routes::NOT_FOUND, req).await };
+        router.fallback(other).layer(
             axum::middleware::map_response(|mut resp: Response<Body>| async move {
                 csp::apply(resp.headers_mut());
                 resp
@@ -319,12 +323,19 @@ impl Web {
                 Binding::Anonymous(anon)
             }
         };
+        let mut refused = false;
         if let Access::Perm(p) = spec.access {
             match &user {
-                None => return pages::redirect("/sign-in"),
-                Some(u) if !allowed(u.role, p) => {
-                    return pages::status(StatusCode::FORBIDDEN, "Your role can't do this");
+                None => {
+                    // signing in leads back to the page that was asked for
+                    let asked = req.uri().path_and_query().map_or("/", |p| p.as_str());
+                    let mut resp = pages::redirect("/sign-in");
+                    if spec.method == Method::GET && asked != "/" && ui::local(asked) == asked {
+                        remember_next(&mut resp, asked);
+                    }
+                    return resp;
                 }
+                Some(u) if !allowed(u.role, p) => refused = true,
                 Some(_) => {}
             }
         }
@@ -333,25 +344,42 @@ impl Web {
         let query: HashMap<String, String> =
             form_urlencoded::parse(req.uri().query().unwrap_or("").as_bytes()).into_owned().collect();
         let mut form = HashMap::new();
-        if spec.method == Method::POST {
+        let mut expired = false;
+        if spec.method == Method::POST && !refused {
             let Ok(bytes) = axum::body::to_bytes(req.into_body(), MAX_FORM).await else {
                 return pages::status(StatusCode::PAYLOAD_TOO_LARGE, "Form too large");
             };
             form = form_urlencoded::parse(&bytes).into_owned().collect();
             let token = form.get("csrf").map(String::as_str).unwrap_or("");
             if !csrf::verify(&self.0.config.csrf_key, &binding, token) {
-                return pages::status(StatusCode::FORBIDDEN, "The form expired; reload the page and try again");
+                expired = true;
             }
         }
         let csrf = csrf::token(&self.0.config.csrf_key, &binding);
         let ctx = Ctx { now_ms: now, user, binding, csrf, form, query, path, source, cookies, host };
-        let mut resp = pages::render(self, spec.page, &ctx).await;
+        let mut resp = if refused {
+            pages::status(StatusCode::FORBIDDEN, "Your role can't do this.")
+        } else if expired {
+            pages::status(StatusCode::FORBIDDEN, "The form expired. Go back, reload the page and try again.")
+        } else {
+            pages::render(self, spec.page, &ctx).await
+        };
+        if let Some(said) = resp.extensions_mut().remove::<pages::Said>() {
+            resp = pages::said(self, &ctx, resp.status(), &said);
+        }
         for c in set_cookies {
             if let Ok(v) = HeaderValue::from_str(&c) {
                 resp.headers_mut().append(header::SET_COOKIE, v);
             }
         }
         resp
+    }
+}
+
+/// Remembers where signing in or stepping up returns to, for ten minutes.
+pub(crate) fn remember_next(resp: &mut Response<Body>, path: &str) {
+    if let Ok(v) = HeaderValue::from_str(&session::cookie(ui::NEXT_COOKIE, ui::local(path), 600)) {
+        resp.headers_mut().append(header::SET_COOKIE, v);
     }
 }
 

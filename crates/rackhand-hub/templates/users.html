@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+{% if let Some(form) = add %}{{ crate::web::ui::dialog("Add a user", "/users")|safe }}
+<form method="post" action="/settings/users" novalidate data-check><div class="d-b">
+{{ form.hidden(csrf)|safe }}
+{{ form.problems()|safe }}
+{{ form.all_fields()|safe }}
+</div><div class="d-f"><button type="submit" class="primary">Add the user</button><a class="btn" href="/users" data-close>Cancel</a></div></form></dialog>{% endif %}
+{% if let Some((id, name, disabled, form)) = edit %}{{ crate::web::ui::dialog(format!("Edit {name}"), "/users")|safe }}
+<form method="post" action="/settings/users/{{ id }}/role" novalidate data-check data-edit><div class="d-b">
+{{ form.hidden(csrf)|safe }}
+{{ form.all_fields()|safe }}
+{% if !disabled %}<div class="zone"><h3>Disable {{ name }}</h3><p>Signs them out at once. Their history stays.</p><a class="btn danger" href="/users?confirm=disable:{{ id }}">Disable</a></div>{% else %}<p class="hint">This account is disabled.</p>{% endif %}
+</div><div class="d-f"><button type="submit" class="primary">Save</button><button type="button" data-undo hidden>Undo changes</button><a class="btn" href="/users" data-close>Cancel</a></div></form></dialog>{% endif %}
+{{ confirm|safe }}
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">Who can sign in to this hub, what they may do, and their devices.</p></div><a class="btn primary" href="/users?add=user">{{ crate::web::ui::icon("add")|safe }}Add a user</a></div>
+{% if let Some(n) = notice %}{% include "notice.html" %}{% endif %}
+<div class="cols sided">
+<section class="card list"><div class="bar"><h2>Accounts</h2>{{ crate::web::ui::search("/users", q, "users")|safe }}</div>
+{% if users.is_empty() %}{{ crate::web::ui::none(q, "users", "No users yet.")|safe }}{% else %}<table><thead><tr><th scope="col">Name</th><th scope="col">Role</th><th scope="col">Signs in</th><th scope="col">Second factor</th><th scope="col"><span class="sr">Edit</span></th></tr></thead><tbody>
+{% for u in users %}<tr><td class="t"><b>{{ u.name }}</b>{% if u.you %} <span class="badge acc">You</span>{% endif %}{% if u.disabled %} <span class="badge">Disabled</span>{% endif %}</td><td data-label="Role">{{ crate::web::ui::word(u.role) }}</td><td data-label="Signs in">{% if u.auth == "oidc" %}Identity provider{% else %}Password{% endif %}</td><td data-label="Second factor">{{ u.factor }}</td><td class="act"><a class="btn" href="/users?edit={{ u.id }}" aria-label="Edit {{ u.name }}">Edit</a></td></tr>
+{% endfor %}</tbody></table>{% endif %}</section>
+<section class="card list"><div class="bar"><h2>Devices</h2><a class="btn" href="/add?add=device">Invite a device</a></div>
+{% if devices.is_empty() %}<p class="empty">No devices yet. Invite one to use the command line from it.</p>{% else %}<table><thead><tr><th scope="col">Device</th><th scope="col">Person</th><th scope="col"><span class="sr">Revoke</span></th></tr></thead><tbody>
+{% for d in devices %}<tr><td class="t"><b>{{ d.name }}</b></td><td data-label="Person">{{ d.user }}</td><td class="act">{% if d.revoked_at.is_some() %}<span class="badge">Revoked</span>{% else %}<a class="btn" href="/users?confirm=revoke:{{ d.id }}" aria-label="Revoke {{ d.name }}">Revoke</a>{% endif %}</td></tr>
+{% endfor %}</tbody></table>{% endif %}</section>
+</div>
+{% endblock %}

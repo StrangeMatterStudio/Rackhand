@@ -5,7 +5,8 @@ use axum::body::Body;
 use axum::http::{Response, StatusCode};
 
 use super::monitoring::show_machine;
-use super::{redirect, status};
+use super::{redirect, see_other, status};
+use crate::web::auth::flow::to_step_up;
 use crate::web::auth::step_up;
 use crate::web::{Ctx, Web};
 
@@ -14,10 +15,15 @@ fn machine_id(path: &str) -> Option<&str> {
     (!id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')).then_some(id)
 }
 
+/// The machine's page, for a path under it.
+fn here(path: &str) -> String {
+    machine_id(path).map_or("/".into(), |id| format!("/machines/{id}"))
+}
+
 pub(super) async fn accept_host_key(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some(user) = &ctx.user else { return redirect("/sign-in") };
     if !step_up::fresh(user.step_up_at, ctx.now_ms) {
-        return redirect("/step-up");
+        return to_step_up(&here(&ctx.path));
     }
     let Some(id) = machine_id(&ctx.path) else { return status(StatusCode::NOT_FOUND, "No such machine") };
     let Some(keys) = web.0.host_keys.as_ref() else { return status(StatusCode::NOT_FOUND, "No such machine") };
@@ -48,14 +54,14 @@ pub(super) async fn accept_host_key(web: &Web, ctx: &Ctx) -> Response<Body> {
     if let Err(e) = web.0.audit.append(&user.name, "ssh.host_key_accepted", Some(id), &data).await {
         tracing::error!(error = %e, "audit");
     }
-    redirect("/")
+    see_other(&here(&ctx.path))
 }
 
 /// Confirms the guest the form names as the machine's (its proposal or binding, or the guest it now looks like).
 pub(super) async fn confirm_binding(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some(user) = &ctx.user else { return redirect("/sign-in") };
     if !step_up::fresh(user.step_up_at, ctx.now_ms) {
-        return redirect("/step-up");
+        return to_step_up(&here(&ctx.path));
     }
     let Some(id) = machine_id(&ctx.path) else { return status(StatusCode::NOT_FOUND, "No such machine") };
     let Some(bindings) = web.0.bindings.as_ref() else { return status(StatusCode::NOT_FOUND, "No such machine") };
@@ -87,5 +93,5 @@ pub(super) async fn confirm_binding(web: &Web, ctx: &Ctx) -> Response<Body> {
     if let Err(e) = web.0.audit.append(&user.name, "machine.binding_confirmed", Some(id), &guest).await {
         tracing::error!(error = %e, "audit");
     }
-    redirect("/")
+    see_other(&here(&ctx.path))
 }

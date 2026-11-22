@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"{% if !theme.is_empty() %} data-theme="{{ theme }}"{% endif %}>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>{% block title %}Rackhand{% endblock %}</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/forms.js" defer></script>
+{% block head %}{% endblock %}
+</head>
+<body class="alone-page">
+<main class="alone{% block width %}{% endblock %}" id="main">
+<a class="brand" href="/">{{ crate::web::ui::MARK|safe }}<span>Rackhand</span></a>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

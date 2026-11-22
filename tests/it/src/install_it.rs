@@ -358,7 +358,7 @@ mod install {
         within(Duration::from_secs(90), "the SSH test passed while the machine reports", passed);
         within(Duration::from_secs(20), "the pass enrolls it", || machine_column(&hub, &id, "state") == "enrolled");
         let page = add(&hub);
-        let row = page.find("<td>web1</td>").map(|at| &page[at..at + page[at..].find("</tr>").unwrap()]);
+        let row = page.find("<b>web1</b>").map(|at| &page[at..at + page[at..].find("</tr>").unwrap()]);
         assert!(row.is_some_and(|r| r.contains("Enrolled and healthy")), "{page}");
         let logins = sh(
             &c,

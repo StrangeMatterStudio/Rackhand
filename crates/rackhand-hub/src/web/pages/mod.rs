@@ -5,6 +5,7 @@ mod add;
 mod appliance;
 mod approvals;
 mod audit;
+mod find;
 mod first_run;
 mod jobs;
 mod library;
@@ -23,6 +24,7 @@ use axum::http::{HeaderValue, Response, StatusCode, header};
 pub(crate) use first_run::Drafts as FirstRunDrafts;
 
 use super::routes::Page;
+use super::ui::{self, Shell};
 use super::{Ctx, Web, auth};
 
 pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
@@ -31,9 +33,18 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
         Page::Vendor => vendor(ctx.path.strip_prefix("/static/vendor/").unwrap_or("")),
         Page::InstallScript => add::release_file(web, "install.sh"),
         Page::ReleaseFile => add::release_file(web, ctx.path.strip_prefix("/release/").unwrap_or("")),
-        Page::AppCss => asset("text/css", APP_CSS),
-        Page::FormsJs => asset("text/javascript", FORMS_JS),
-        Page::PasskeyJs => asset("text/javascript", PASSKEY_JS),
+        Page::AppCss => own("text/css", ui::APP_CSS),
+        Page::AppJs => own("text/javascript", ui::APP_JS),
+        Page::Icon => own("image/svg+xml", ui::MARK.as_bytes()),
+        Page::Version => version(),
+        Page::Theme => theme(ctx),
+        Page::Find => find::page(web, ctx),
+        Page::About => about(web, ctx),
+        Page::Shortcuts => shortcuts(web, ctx),
+        Page::Users => users::page(web, ctx),
+        Page::NotFound => status(StatusCode::NOT_FOUND, "Not found. The address may be old, or mistyped."),
+        Page::FormsJs => own("text/javascript", ui::FORMS_JS),
+        Page::PasskeyJs => own("text/javascript", PASSKEY_JS),
         Page::SignIn => auth::flow::password_page(web, ctx),
         Page::SignInSubmit => auth::flow::password_step(web, ctx).await,
         Page::SignInCode => auth::flow::code_page(web, ctx),
@@ -96,11 +107,91 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
     }
 }
 
+/// What a page that is only a message says; the gate draws it in the shell of whoever is signed in.
+#[derive(Debug, Clone)]
+pub(crate) struct Said {
+    title: &'static str,
+    text: String,
+}
+
 #[derive(Template)]
 #[template(path = "message.html")]
 struct Message<'a> {
+    shell: Shell,
+    text: &'a str,
+}
+
+#[derive(Template)]
+#[template(path = "message_alone.html")]
+struct MessageAlone<'a> {
+    theme: &'a str,
     title: &'a str,
     text: &'a str,
+}
+
+/// A message, drawn for the person who gets it.
+pub(crate) fn said(web: &Web, ctx: &Ctx, code: StatusCode, said: &Said) -> Response<Body> {
+    if ctx.user.is_some() {
+        return html(code, Message { shell: Shell::new(web, ctx, said.title), text: &said.text }.render());
+    }
+    html(code, MessageAlone { theme: ui::theme(ctx), title: said.title, text: &said.text }.render())
+}
+
+#[derive(Template)]
+#[template(path = "about.html")]
+struct About {
+    shell: Shell,
+}
+
+fn about(web: &Web, ctx: &Ctx) -> Response<Body> {
+    html(StatusCode::OK, About { shell: Shell::new(web, ctx, "About") }.render())
+}
+
+#[derive(Template)]
+#[template(path = "shortcuts.html")]
+struct Shortcuts {
+    shell: Shell,
+}
+
+fn shortcuts(web: &Web, ctx: &Ctx) -> Response<Body> {
+    html(StatusCode::OK, Shortcuts { shell: Shell::new(web, ctx, "Keyboard shortcuts") }.render())
+}
+
+/// Which hub this is: a page that was open while it was updated notices by it.
+fn version() -> Response<Body> {
+    let mut resp = Response::new(Body::from(
+        serde_json::json!({ "version": ui::VERSION, "build": ui::build() }).to_string(),
+    ));
+    resp.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    resp
+}
+
+/// The theme, kept in the browser: the system's when nothing is chosen.
+fn theme(ctx: &Ctx) -> Response<Body> {
+    let chosen = match ctx.form.get("theme").map(String::as_str) {
+        Some("light") => super::session::cookie(ui::THEME_COOKIE, "light", 31_536_000),
+        Some("dark") => super::session::cookie(ui::THEME_COOKIE, "dark", 31_536_000),
+        _ => super::session::cookie(ui::THEME_COOKIE, "", 0),
+    };
+    let mut resp = see_other(ui::local(ctx.form.get("back").map(String::as_str).unwrap_or("/")));
+    if let Ok(v) = HeaderValue::from_str(&chosen) {
+        resp.headers_mut().append(header::SET_COOKIE, v);
+    }
+    resp
+}
+
+pub(crate) fn see_other(to: &str) -> Response<Body> {
+    let mut resp = Response::new(Body::empty());
+    *resp.status_mut() = StatusCode::SEE_OTHER;
+    if let Ok(v) = HeaderValue::from_str(to) {
+        resp.headers_mut().insert(header::LOCATION, v);
+    }
+    resp
+}
+
+/// What's said where nothing was reported.
+pub(crate) fn shown(text: &str) -> &str {
+    if text.is_empty() { "Not reported" } else { text }
 }
 
 pub(crate) fn html(status: StatusCode, rendered: askama::Result<String>) -> Response<Body> {
@@ -121,6 +212,7 @@ pub(crate) fn html(status: StatusCode, rendered: askama::Result<String>) -> Resp
 #[derive(Template)]
 #[template(path = "continue.html")]
 struct Continue<'a> {
+    theme: &'a str,
     title: &'a str,
     text: &'a str,
     to: &'a str,
@@ -129,14 +221,22 @@ struct Continue<'a> {
 /// A short page that moves on to `to` by itself (a same-site navigation, unlike a redirect from another site).
 pub(crate) fn html_text(code: StatusCode, title: &str, text: &str, to: Option<&str>) -> Response<Body> {
     match to {
-        Some(to) => html(code, Continue { title, text, to }.render()),
-        None => html(code, Message { title, text }.render()),
+        Some(to) => html(code, Continue { theme: "", title, text, to }.render()),
+        None => html(code, MessageAlone { theme: "", title, text }.render()),
     }
 }
 
 pub(crate) fn status(code: StatusCode, text: &str) -> Response<Body> {
-    let title = code.canonical_reason().unwrap_or("Error");
-    html(code, Message { title, text }.render())
+    let title = match code {
+        StatusCode::NOT_FOUND => "Not found",
+        StatusCode::FORBIDDEN => "Not allowed",
+        StatusCode::TOO_MANY_REQUESTS => "Too many attempts",
+        c if c.is_server_error() => "Something went wrong",
+        _ => "That didn't work",
+    };
+    let mut resp = html(code, MessageAlone { theme: "", title, text }.render());
+    resp.extensions_mut().insert(Said { title, text: text.to_string() });
+    resp
 }
 
 pub(crate) fn plain(code: StatusCode, text: &'static str) -> Response<Body> {
@@ -153,12 +253,8 @@ pub(crate) fn redirect(to: &'static str) -> Response<Body> {
     resp
 }
 
-const APP_CSS: &[u8] = include_bytes!("../../../static/app.css");
 /// The browser half of passkeys: no inline script, so it is a static file (the CSP allows `'self'` only).
 const PASSKEY_JS: &[u8] = include_bytes!("../../../static/passkey.js");
-/// Forms checking themselves as they are filled in, on the pages that have one.
-const FORMS_JS: &[u8] = include_bytes!("../../../static/forms.js");
-
 /// The vendored files (D9), embedded at build time.
 const VENDOR: &[(&str, &str, &[u8])] = &[
     ("htmx-2.0.11.min.js", "text/javascript", include_bytes!("../../../static/vendor/htmx-2.0.11.min.js")),
@@ -170,6 +266,13 @@ fn asset(content_type: &'static str, bytes: &'static [u8]) -> Response<Body> {
     let mut resp = Response::new(Body::from(bytes));
     resp.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
     resp.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=86400"));
+    resp
+}
+
+/// One of the hub's own files: short-lived in a cache, so an updated hub's pages don't wait a day for their styles.
+fn own(content_type: &'static str, bytes: &'static [u8]) -> Response<Body> {
+    let mut resp = asset(content_type, bytes);
+    resp.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=300"));
     resp
 }
 

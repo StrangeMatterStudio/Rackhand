@@ -6,11 +6,14 @@ use axum::http::{Response, StatusCode};
 
 use super::{html, redirect, status};
 use crate::web::auth::{step_up, users};
+use crate::web::ui::Shell;
 use crate::web::{Ctx, Web};
 
 #[derive(Template)]
 #[template(path = "account.html")]
 struct Account<'a> {
+    shell: Shell,
+    role: String,
     csrf: &'a str,
     name: &'a str,
     totp: bool,
@@ -34,6 +37,8 @@ pub(crate) fn show(web: &Web, ctx: &Ctx, code: StatusCode, notice: Option<&str>)
     html(
         code,
         Account {
+            shell: Shell::at(web, ctx, "Account", "/account"),
+            role: crate::web::ui::word(crate::web::perms::role_name(account.role)),
             csrf: &ctx.csrf,
             name: &account.name,
             totp: account.totp.is_some(),

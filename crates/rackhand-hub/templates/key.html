@@ -1,9 +1,11 @@
 <div class="key">
-{{ qr|safe }}
+<div class="code desk-only">{{ qr|safe }}<span class="hint">Scan it with the app.</span></div>
 <div class="key-text">
-<label for="totp-key">Can't scan it? Add this key by hand:</label>
+<a class="btn primary phone-only" href="{{ uri }}">{{ crate::web::ui::icon("devices")|safe }}Open in your authenticator</a>
+<label for="totp-key">Or add this key by hand</label>
 <input id="totp-key" type="text" name="totp_secret" value="{{ secret }}" readonly spellcheck="false">
 <button type="button" data-copy="totp-key" hidden>Copy the key</button>
-<p><a href="{{ uri }}">Open it in an app on this device</a></p>
+<a class="desk-only" href="{{ uri }}">Open it in an app on this device</a>
+<details class="phone-only-block"><summary>App on another device? Show the QR code</summary>{{ qr|safe }}</details>
 </div>
 </div>

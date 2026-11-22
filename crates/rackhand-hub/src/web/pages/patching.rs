@@ -8,6 +8,7 @@ use axum::http::{Response, StatusCode};
 use super::{html, redirect, status};
 use crate::policy::store::{self, PolicyError, PolicyRow, WindowRow};
 use crate::scheduler::rrule::Recurrence;
+use crate::web::ui::{self, Shell};
 use crate::web::forms::{self, Choices, Form, Spec};
 use crate::web::perms::{Permission, allowed};
 use crate::web::{Ctx, Web};
@@ -33,6 +34,10 @@ struct MachineUpdates {
 #[derive(Template)]
 #[template(path = "patching.html")]
 struct Page<'a> {
+    shell: Shell,
+    q: String,
+    /// The dialog that is open: `policy`, `edit` or `window`.
+    open: &'static str,
     csrf: &'a str,
     machines: Vec<MachineUpdates>,
     policies: Vec<PolicyRow>,
@@ -59,18 +64,86 @@ const POLICY: &[Spec] = &[
     Spec::select("peer_requests", "Peer requests", PEER_REQUESTS).hint("What a linked hub's requests need."),
 ];
 
-const RULE: &str =
-    "Write `daily HH:MM <minutes>m` or `weekly <mon..sun> HH:MM <minutes>m`, such as `weekly sun 03:00 120m`";
+impl Page<'_> {
+    fn said(&self, rule: &str) -> String {
+        said(rule)
+    }
+
+    fn patch_said(&self, patch: &str) -> &'static str {
+        PATCH.iter().find(|(v, _)| *v == patch).map_or("Unknown", |(_, l)| *l)
+    }
+}
+
+const FOR: Choices = &[("tag", "Every machine with a tag"), ("machine", "One machine")];
+const REPEAT: Choices = &[
+    ("daily", "Every day"),
+    ("mon", "Mondays"),
+    ("tue", "Tuesdays"),
+    ("wed", "Wednesdays"),
+    ("thu", "Thursdays"),
+    ("fri", "Fridays"),
+    ("sat", "Saturdays"),
+    ("sun", "Sundays"),
+];
+const LASTS: Choices = &[
+    ("30", "30 minutes"),
+    ("60", "1 hour"),
+    ("90", "1 hour 30 minutes"),
+    ("120", "2 hours"),
+    ("180", "3 hours"),
+    ("240", "4 hours"),
+    ("360", "6 hours"),
+    ("480", "8 hours"),
+    ("720", "12 hours"),
+];
 
 const WINDOW: &[Spec] = &[
-    Spec::select("machine", "Machine", &[]).optional().hint("The window is for one machine, or for a tag."),
-    Spec::text("tag", "Tag").optional().hint("Every machine with this tag, when no machine is chosen.").length(0, 64),
-    Spec::text("rrule", "When")
-        .hint("`daily HH:MM <minutes>m` or `weekly <mon..sun> HH:MM <minutes>m`, such as `weekly sun 03:00 120m`.")
-        .pattern("(daily|weekly (mon|tue|wed|thu|fri|sat|sun)) [0-2][0-9]:[0-5][0-9] [0-9]{1,5}m", RULE)
+    Spec::select("for", "For", FOR),
+    Spec::text("tag", "Tag")
+        .hint("As the machines have it.")
+        .length(1, 64)
+        .when("for=tag")
         .attrs("autocomplete=\"off\" autocapitalize=\"none\" spellcheck=\"false\""),
+    Spec::select("machine", "Machine", &[]).when("for=machine"),
+    Spec::select("repeat", "Every", REPEAT),
+    Spec::text("start", "Starts")
+        .input("time")
+        .pattern("([01][0-9]|2[0-3]):[0-5][0-9]", "A time of day, such as 03:00")
+        .attrs("autocomplete=\"off\""),
+    Spec::select("lasts", "Lasts", LASTS),
     forms::TIMEZONE,
 ];
+
+/// The window as its rule is stored (7.5.3).
+fn rule_of(form: &Form) -> String {
+    let (repeat, start, lasts) = (form.value("repeat"), form.value("start"), form.value("lasts"));
+    match repeat {
+        "daily" => format!("daily {start} {lasts}m"),
+        day => format!("weekly {day} {start} {lasts}m"),
+    }
+}
+
+/// A stored rule, as a person says it: `Sundays, 03:00 to 05:00`.
+fn said(rule: &str) -> String {
+    let parts: Vec<&str> = rule.split(' ').collect();
+    let (day, start, lasts) = match parts[..] {
+        ["daily", start, lasts] => ("daily", start, lasts),
+        ["weekly", day, start, lasts] => (day, start, lasts),
+        _ => return rule.to_string(),
+    };
+    let when = REPEAT.iter().find(|(v, _)| *v == day).map_or(day, |(_, l)| *l);
+    let minutes = |t: &str| t.split_once(':').and_then(|(h, m)| Some(h.parse::<u32>().ok()? * 60 + m.parse::<u32>().ok()?));
+    let (Some(from), Some(long)) = (minutes(start), lasts.trim_end_matches('m').parse::<u32>().ok()) else {
+        return rule.to_string();
+    };
+    let to = from + long;
+    let end = format!("{:02}:{:02}", to / 60 % 24, to % 60);
+    match to / 1440 {
+        0 => format!("{when}, {start} to {end}"),
+        1 => format!("{when}, {start} to {end} the next day"),
+        n => format!("{when}, {start} to {end}, {n} days later"),
+    }
+}
 
 /// The machines a window can be for.
 fn machine_options(web: &Web) -> forms::Groups {
@@ -83,7 +156,7 @@ fn machine_options(web: &Web) -> forms::Groups {
             s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
         })
         .unwrap_or_default();
-    vec![(String::new(), vec![(String::new(), "None: use the tag".to_string())]), ("Machines".into(), machines)]
+    vec![(String::new(), machines)]
 }
 
 fn window_form(web: &Web) -> Form {
@@ -147,9 +220,36 @@ fn show(web: &Web, ctx: &Ctx, code: StatusCode, mut sent: Option<Form>) -> Respo
         return status(StatusCode::INTERNAL_SERVER_ERROR, "Policies unreadable");
     };
     let can_edit = ctx.user.as_ref().is_some_and(|u| allowed(u.role, Permission::EditLibrary));
-    let policy = Form::blank("policy", POLICY).or_sent(&mut sent);
+    let mut open = match sent.as_ref().map(|f| f.id()) {
+        Some(id) => id,
+        None => match ui::asked(ctx, "add") {
+            Some("policy") => "policy",
+            Some("window") => "window",
+            _ => "",
+        },
+    };
+    let editing = ui::asked(ctx, "edit").and_then(|name| policies.iter().find(|p| p.name == name));
+    let mut blank = Form::blank("policy", POLICY);
+    if let Some(p) = editing.filter(|_| open.is_empty()) {
+        open = "edit";
+        let on = |b: bool| if b { "on" } else { "" };
+        blank = blank
+            .with("name", &p.name)
+            .with("patch", &p.patch)
+            .with("auto_reboot", on(p.auto_reboot))
+            .with("auto_rollback", on(p.auto_rollback))
+            .with("snapshot", &p.snapshot)
+            .with("quarantine", &p.quarantine)
+            .with("peer_requests", &p.peer_requests);
+    }
+    if !can_edit {
+        open = "";
+    }
+    let q = ui::query(ctx);
+    let machines = machines.into_iter().filter(|m| ui::found(&q, &[&m.name, &m.policy, &m.patch])).collect();
+    let policy = blank.or_sent(&mut sent);
     let window = window_form(web).or_sent(&mut sent);
-    html(code, Page { csrf: &ctx.csrf, machines, policies, windows, runs, can_edit, policy, window }.render())
+    html(code, Page { shell: Shell::at(web, ctx, "Patching", "/patching"), q, open, csrf: &ctx.csrf, machines, policies, windows, runs, can_edit, policy, window }.render())
 }
 
 /// The outcome of a policy or window change; a stored change also goes to the git mirror (7.3.13). A refused one shows
@@ -208,25 +308,42 @@ pub(super) async fn save_policy(web: &Web, ctx: &Ctx) -> Response<Body> {
 pub(super) async fn save_window(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some(user) = &ctx.user else { return redirect("/sign-in") };
     let mut form = Form::sent("window", WINDOW, ctx, &web.0.held).options("machine", machine_options(web));
+    // a rule given as it is stored is taken as it is
+    let typed = ctx.form.get("rrule").map(|r| r.trim().to_string());
+    if let Some(rule) = &typed {
+        return save_rule(web, ctx, form, rule, &user.name).await;
+    }
     form.check();
-    let fits = form.value("rrule").parse::<Recurrence>().is_ok();
-    form.require("rrule", fits, RULE);
-    match (form.value("machine").is_empty(), form.value("tag").is_empty()) {
-        (true, true) => form.refuse("machine", "Choose a machine, or give a tag"),
-        (false, false) => form.refuse("machine", "Choose a machine or give a tag, not both"),
-        _ => {}
+    let rule = rule_of(&form);
+    if form.ok() && rule.parse::<Recurrence>().is_err() {
+        form.refuse("start", "That time and length don't make a window");
     }
     if !form.ok() {
         return show(web, ctx, StatusCode::BAD_REQUEST, Some(form));
     }
     let f = |k: &str| Some(form.value(k).to_string()).filter(|v| !v.is_empty());
-    let (machine, tag) = (f("machine"), f("tag"));
-    let (rule, tz) = (f("rrule").unwrap_or_default(), f(forms::ZONE).unwrap_or_default());
+    let one = form.value("for") == "machine";
+    let (machine, tag) = if one { (f("machine"), None) } else { (None, f("tag")) };
+    let tz = f(forms::ZONE).unwrap_or_default();
     let result =
         store::put_window(&web.0.db, machine.as_deref(), tag.as_deref(), &rule, &tz, &user.name, ctx.now_ms).await;
     if result.is_ok() {
         let data = serde_json::json!({ "machine": machine, "tag": tag, "rrule": rule, "timezone": tz });
         audit(web, ctx, "window.saved", data).await;
     }
+    answer(web, ctx, form, result)
+}
+
+/// A window whose rule was sent as text, as it is stored (for what posts to the form without its fields).
+async fn save_rule(web: &Web, ctx: &Ctx, mut form: Form, rule: &str, by: &str) -> Response<Body> {
+    let f = |k: &str| ctx.form.get(k).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let (machine, tag, tz) = (f("machine"), f("tag"), f(forms::ZONE).unwrap_or_default());
+    let result =
+        store::put_window(&web.0.db, machine.as_deref(), tag.as_deref(), rule, &tz, by, ctx.now_ms).await;
+    if result.is_ok() {
+        let data = serde_json::json!({ "machine": machine, "tag": tag, "rrule": rule, "timezone": tz });
+        audit(web, ctx, "window.saved", data).await;
+    }
+    form.set("for", if machine.is_some() { "machine" } else { "tag" });
     answer(web, ctx, form, result)
 }

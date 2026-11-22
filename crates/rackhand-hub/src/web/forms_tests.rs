@@ -57,7 +57,17 @@ fn held(html: &str) -> String {
 #[tokio::test(flavor = "multi_thread")]
 async fn no_form_relies_on_the_browsers_one_at_a_time_bubbles() {
     let (app, admin) = admin_app("forms-bubbles").await;
-    for path in ["/add", "/settings", "/settings/notifiers", "/patching", "/account", "/step-up"] {
+    for path in [
+        "/add?add=machine",
+        "/add?add=proxmox",
+        "/settings",
+        "/settings/notifiers?add=smtp",
+        "/patching?add=policy",
+        "/patching?add=window",
+        "/users?add=user",
+        "/account",
+        "/step-up",
+    ] {
         let html = text(send(&app.router, get(path, &admin)).await).await;
         no_inline(&html);
         let mut rules = 0;
@@ -109,7 +119,7 @@ async fn add_appliance_shows_every_problem_on_the_form_of_its_driver() {
     assert_eq!(code, StatusCode::BAD_REQUEST);
     wrong(&html, "add-truenas", &["name", "address"]);
     kept(&html, "add-truenas", "address", "ftp://nas");
-    right(&html, "add-snmp", &["name", "address"]);
+    assert!(html.contains("<dialog open") && html.contains("Add TrueNAS"), "in its own dialog: {html}");
     // an appliance that can't be reached: on its address
     let gone = [("driver", "truenas"), ("name", "nas1"), ("address", "https://127.0.0.1:9")];
     let (code, html) = submit(&app, &admin, "/add/appliance", &gone).await;
@@ -183,7 +193,7 @@ async fn add_user_shows_every_problem_and_the_new_key_has_a_qr_code() {
     let bad = [("name", "al ice"), ("role", "owner"), ("auth", "local"), ("password", "tooshort")];
     let (code, html) = submit(&app, &admin, "/settings/users", &bad).await;
     assert_eq!(code, StatusCode::BAD_REQUEST);
-    wrong(&html, "user", &["name", "role", "password"]);
+    wrong(&html, "user", &["name", "role", "password", "password_again"]);
     right(&html, "user", &["auth", "subject"]);
     kept(&html, "user", "name", "al ice");
     assert!(!html.contains("tooshort"));
@@ -194,7 +204,8 @@ async fn add_user_shows_every_problem_and_the_new_key_has_a_qr_code() {
     right(&html, "user", &["password"]);
     // the password is held while the name is put right
     let typed = "a long enough secret";
-    let bad = [("name", "al ice"), ("role", "viewer"), ("auth", "local"), ("password", typed)];
+    let bad =
+        [("name", "al ice"), ("role", "viewer"), ("auth", "local"), ("password", typed), ("password_again", typed)];
     let (_, html) = submit(&app, &admin, "/settings/users", &bad).await;
     assert!(!html.contains(typed));
     let token = held(&html);
@@ -208,7 +219,8 @@ async fn add_user_shows_every_problem_and_the_new_key_has_a_qr_code() {
     let account = crate::web::auth::users::find(&app.db, "alice").unwrap().unwrap();
     assert!(crate::web::auth::password::verify(account.password_hash.as_deref().unwrap(), typed));
     // the name is taken now
-    let again = [("name", "alice"), ("role", "viewer"), ("auth", "local"), ("password", typed)];
+    let again =
+        [("name", "alice"), ("role", "viewer"), ("auth", "local"), ("password", typed), ("password_again", typed)];
     let (code, html) = submit(&app, &admin, "/settings/users", &again).await;
     assert_eq!(code, StatusCode::CONFLICT);
     assert!(error_of(&html, "user", "name").contains("taken"), "{html}");
@@ -222,10 +234,10 @@ async fn the_last_admin_is_explained_on_the_settings_page() {
     let cookie = format!("{}={}", session::COOKIE, session::create(&app.db, &id, now_ms()).await.unwrap());
     let (code, html) = submit(&app, &cookie, &format!("/settings/users/{id}/disable"), &[]).await;
     assert_eq!(code, StatusCode::CONFLICT);
-    assert!(html.contains("at least one enabled admin") && html.contains("Outside sources"), "{html}");
+    assert!(html.contains("at least one enabled admin") && html.contains("<h1>Users</h1>"), "on the users page: {html}");
     // each user's own role is the one shown
-    let html = text(send(&app.router, get("/settings", &cookie)).await).await;
-    assert!(html.contains("<option value=\"admin\" selected>"), "{html}");
+    let html = text(send(&app.router, get(&format!("/users?edit={id}"), &cookie)).await).await;
+    assert_eq!(selected(&html, "role", "role").as_deref(), Some("admin"), "{html}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -245,7 +257,7 @@ async fn notifiers_show_every_problem_on_the_form_that_was_sent() {
     let (code, html) = submit(&app, &admin, "/settings/notifiers", &bad).await;
     assert_eq!(code, StatusCode::BAD_REQUEST);
     wrong(&html, "smtp", &["name", "host", "port", "security", "from", "to"]);
-    right(&html, "discord", &["name", "webhook"]);
+    assert!(!html.contains("id=\"discord-name\""), "only the form that was sent");
     kept(&html, "smtp", "host", "bad host");
     kept(&html, "smtp", "port", "99999");
     kept(&html, "smtp", "username", "hub@example.test");
@@ -270,7 +282,6 @@ async fn notifiers_show_every_problem_on_the_form_that_was_sent() {
     let (code, html) = submit(&app, &admin, "/settings/notifiers", &bad).await;
     assert_eq!(code, StatusCode::BAD_REQUEST);
     wrong(&html, "discord", &["name", "webhook"]);
-    right(&html, "smtp", &["name", "host"]);
     assert!(!html.contains("do-not-echo"));
     let (code, html) = submit(&app, &admin, "/settings/notifiers", &[("kind", "discord"), ("name", "new")]).await;
     assert_eq!(code, StatusCode::BAD_REQUEST);
@@ -300,22 +311,15 @@ async fn policies_and_windows_show_every_problem() {
     right(&html, "policy", &["quarantine", "peer_requests"]);
     assert!(control(&html, "policy", "auto_reboot").contains(" checked"));
     assert_eq!(selected(&html, "policy", "quarantine").as_deref(), Some("never"));
-    let bad = [("machine", ""), ("tag", ""), ("rrule", "every sunday"), ("timezone", "Mars-Olympus")];
+    // (a window's fields are in `a_window_is_picked_from_day_time_and_length`)
+    let bad = [("for", "machine"), ("machine", "nobody"), ("repeat", "sun"), ("start", "03:00"), ("lasts", "60")];
     let (code, html) = submit(&app, &admin, "/windows", &bad).await;
     assert_eq!(code, StatusCode::BAD_REQUEST);
-    wrong(&html, "window", &["machine", "rrule", "timezone"]);
-    kept(&html, "window", "rrule", "every sunday");
-    assert!(error_of(&html, "window", "rrule").contains("weekly"), "{html}");
-    let both = [("machine", "nobody"), ("tag", "lab"), ("rrule", "daily 03:00 60m"), ("timezone", "UTC")];
-    let (code, html) = submit(&app, &admin, "/windows", &both).await;
-    assert_eq!(code, StatusCode::BAD_REQUEST);
-    wrong(&html, "window", &["machine"]);
-    kept(&html, "window", "tag", "lab");
-    assert_eq!(selected(&html, "window", "timezone").as_deref(), Some("UTC"));
-    let good = [("machine", ""), ("tag", "lab"), ("rrule", "daily 03:00 60m"), ("timezone", "Europe/Berlin")];
-    assert_eq!(submit(&app, &admin, "/windows", &good).await.0, StatusCode::SEE_OTHER);
+    wrong(&html, "window", &["machine", "timezone"]);
+    kept(&html, "window", "start", "03:00");
+    assert_eq!(selected(&html, "window", "repeat").as_deref(), Some("sun"));
     // the form picks the machine and the timezone, rather than asking for an id
-    let html = text(send(&app.router, get("/patching", &admin)).await).await;
+    let html = text(send(&app.router, get("/patching?add=window", &admin)).await).await;
     assert!(control(&html, "window", "machine").starts_with("<select"));
     assert!(control(&html, "window", "timezone").contains("data-browser-timezone"));
 }
@@ -458,7 +462,13 @@ async fn held_secrets_expire_and_work_once() {
     .await;
     complete_first_run(&app, SETUP_CODE).await;
     let admin = session_for(&app.db, Role::Admin).await;
-    let bad = [("name", "al ice"), ("role", "viewer"), ("auth", "local"), ("password", "a long enough secret")];
+    let bad = [
+        ("name", "al ice"),
+        ("role", "viewer"),
+        ("auth", "local"),
+        ("password", "a long enough secret"),
+        ("password_again", "a long enough secret"),
+    ];
     let again = |token: String| {
         let (app, admin) = (&app, &admin);
         async move {

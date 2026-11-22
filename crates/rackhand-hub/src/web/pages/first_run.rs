@@ -25,7 +25,7 @@ use crate::web::auth::limits::Attempt;
 use crate::web::auth::password;
 use crate::web::csrf::Binding;
 use crate::web::forms::{self, Form, Spec};
-use crate::web::{Ctx, Web, totp};
+use crate::web::{Ctx, Web, totp, ui};
 
 const SECOND_FACTOR: &str = "/first-run/second-factor";
 /// A draft is kept this long after it was last used.
@@ -47,6 +47,11 @@ const DETAILS: &[Spec] = &[
         .hint("At least 12 characters. A few unrelated words work well.")
         .length(password::MIN_LENGTH, 1024)
         .attrs("autocomplete=\"new-password\""),
+    Spec::secret("password_again", "Password, again")
+        .optional()
+        .hint("So a typing mistake can't lock you out.")
+        .same("password")
+        .attrs("autocomplete=\"new-password\""),
     Spec::text("site_name", "Site name")
         .hint("What this place is called here and to other hubs: 1 to 32 lower-case letters (a-z), digits and dashes.")
         .pattern(r"[a-z0-9\-]{1,32}", "Use 1 to 32 of a-z, 0-9 and dash, with no capitals or spaces")
@@ -65,6 +70,7 @@ const CODE: &[Spec] = &[Spec::text("totp_code", "Code from the app")
 #[derive(Template)]
 #[template(path = "first_run.html")]
 struct DetailsPage<'a> {
+    theme: &'a str,
     csrf: &'a str,
     form: Form,
 }
@@ -72,6 +78,7 @@ struct DetailsPage<'a> {
 #[derive(Template)]
 #[template(path = "first_run_factor.html")]
 struct FactorPage<'a> {
+    theme: &'a str,
     csrf: &'a str,
     form: Form,
     admin: &'a str,
@@ -84,6 +91,7 @@ struct FactorPage<'a> {
 #[derive(Template)]
 #[template(path = "first_run_done.html")]
 struct Done<'a> {
+    theme: &'a str,
     admin: &'a str,
     site: &'a str,
     recovery_code: &'a str,
@@ -150,7 +158,7 @@ fn key(ctx: &Ctx) -> String {
 }
 
 fn details_page(ctx: &Ctx, code: StatusCode, form: Form) -> Response<Body> {
-    html(code, DetailsPage { csrf: &ctx.csrf, form: form.options(forms::ZONE, forms::timezones()) }.render())
+    html(code, DetailsPage { theme: ui::theme(ctx), csrf: &ctx.csrf, form: form.options(forms::ZONE, forms::timezones()) }.render())
 }
 
 pub(super) fn form(web: &Web, ctx: &Ctx) -> Response<Body> {
@@ -242,7 +250,7 @@ pub(super) async fn submit(web: &Web, ctx: &Ctx) -> Response<Body> {
     form.check();
     if typed_password {
         draft.password_hash = None;
-        if !form.has_error("password") {
+        if !form.has_error("password") && !form.has_error("password_again") {
             let Ok(hash) = password::hash(form.value("password")) else {
                 return status(StatusCode::INTERNAL_SERVER_ERROR, "Password hashing failed");
             };
@@ -264,6 +272,7 @@ fn factor_page(ctx: &Ctx, code: StatusCode, draft: &Draft, form: Form) -> Respon
     let admin = draft.value("admin_name");
     let uri = totp::uri("Rackhand", admin, draft.secret.as_slice());
     let page = FactorPage {
+        theme: ui::theme(ctx),
         csrf: &ctx.csrf,
         form,
         admin,
@@ -383,5 +392,5 @@ pub(super) async fn factor_submit(web: &Web, ctx: &Ctx) -> Response<Body> {
     if let Err(e) = web.0.audit.append(name, "first_run.completed", Some(site), &data).await {
         tracing::error!(error = %e, "audit");
     }
-    html(StatusCode::OK, Done { admin: name, site, recovery_code: &web.0.recovery_code }.render())
+    html(StatusCode::OK, Done { theme: ui::theme(ctx), admin: name, site, recovery_code: &web.0.recovery_code }.render())
 }
