@@ -168,7 +168,7 @@ impl Env {
 }
 
 /// FR-13: a window starts the runbook of each machine's kind, and leaves out `hold`, another policy's machines, machines
-/// in maintenance, pending or quarantined ones, and kinds and roles whose runbooks don't exist yet (T60, T90).
+/// in maintenance, pending or quarantined ones, and the kind whose runbook doesn't exist yet (T90).
 #[tokio::test(flavor = "multi_thread")]
 async fn window_starts_the_runbook_of_each_kind() {
     let e = env("starts").await;
@@ -178,7 +178,6 @@ async fn window_starts_the_runbook_of_each_kind() {
     e.machine("other", "linux", "auto2", "[]").await;
     e.machine("maint", "linux", "auto", "[]").await;
     e.machine("win", "windows", "auto", "[]").await;
-    e.machine("pve", "linux", "auto", "[\"hypervisor\"]").await;
     e.machine("new", "linux", "auto", "[]").await;
     e.machine("quar", "linux", "auto", "[]").await;
     for (id, col, v) in [("new", "state", "pending"), ("quar", "quarantine", "active")] {
@@ -241,6 +240,27 @@ async fn once_per_window_also_after_a_restart() {
     e.end("db").await;
     e.tick(vec![e.window("auto", Window::Security)], e.now + MIN).await;
     assert_eq!(e.jobs.started().len(), 1, "once per window");
+}
+
+/// 7.5.3 steps 2 and 7: hypervisors, by role or by kind, have a runbook of their own and go after every other machine,
+/// one at a time.
+#[tokio::test(flavor = "multi_thread")]
+async fn hypervisors_go_last_with_their_own_runbook() {
+    let e = env("hosts").await;
+    e.machine("pve1", "linux", "auto", "[\"hypervisor\"]").await;
+    e.machine("pve2", "hypervisor", "auto", "[]").await;
+    e.machine("web", "linux", "auto", "[]").await;
+    let open = || vec![e.window("auto", Window::Security)];
+    for (i, (runbook, machine)) in
+        [("patch-debian", "web"), ("patch-proxmox-host", "pve1"), ("patch-proxmox-host", "pve2")]
+            .into_iter()
+            .enumerate()
+    {
+        e.tick(open(), e.now + i as i64 * MIN).await;
+        assert_eq!(e.jobs.started().last(), Some(&(runbook.to_string(), machine.to_string())));
+        assert_eq!(e.jobs.started().len(), i + 1, "one at a time");
+        e.end(machine).await;
+    }
 }
 
 /// 7.5.3 step 2: a machine offline at its turn is tried again every 15 minutes.

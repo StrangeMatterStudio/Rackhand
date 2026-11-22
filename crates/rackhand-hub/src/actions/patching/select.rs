@@ -96,7 +96,7 @@ pub fn eligible(c: &Candidate, window: Window) -> Option<How> {
 
 /// Hypervisors and the hub go after every other machine at their site, one at a time.
 fn last(c: &Candidate) -> bool {
-    c.roles.iter().any(|r| r == "hypervisor" || r == "hub")
+    c.kind == "hypervisor" || c.roles.iter().any(|r| r == "hypervisor" || r == "hub")
 }
 
 /// One window's run: what is still to patch, what runs, and when an offline machine is tried again.

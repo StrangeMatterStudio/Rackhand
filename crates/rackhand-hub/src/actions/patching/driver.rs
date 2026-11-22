@@ -10,7 +10,7 @@
 //! A machine that never reported after its patch's reboot is rolled back to the snapshot the job took under D45
 //! (`rollback`), by the `rollback` runbook; the machine stays the window's until that ends.
 //!
-//! Until their runbooks exist, roles `hypervisor` and `hub` (T60) and kind `windows` (T90) are left out.
+//! Until its scheduled reboot exists (T60) the role `hub` is left out, and until its runbook does (T90) the kind `windows`.
 
 use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
@@ -105,8 +105,11 @@ impl std::fmt::Debug for Driver {
 
 /// The patch runbook of a machine, if there is one for it.
 fn runbook_for(kind: &str, roles: &[String]) -> Option<&'static str> {
-    if roles.iter().any(|r| r == "hypervisor" || r == "hub") {
+    if roles.iter().any(|r| r == "hub") {
         return None;
+    }
+    if kind == "hypervisor" || roles.iter().any(|r| r == "hypervisor") {
+        return Some("patch-proxmox-host");
     }
     match kind {
         "linux" => Some("patch-debian"),

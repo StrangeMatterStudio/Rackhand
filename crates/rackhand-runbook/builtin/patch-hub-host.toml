@@ -1,0 +1,72 @@
+name = "patch-hub-host"
+description = "Install every pending update on the machine the hub runs on, reboot it if needed, and check it came back as it was"
+targets = { kinds = ["linux"] }
+identity = "automation"
+risk = "normal"
+autonomy = 2
+
+# 1 GB free on /, a report to judge by, no open critical incident on the machine (7.5.3).
+[[step]]
+id = "precheck"
+kind = "verify"
+checks = ["patch_precheck"]
+timeout = "1m"
+
+# Proxmox guests only; named rackhand-patch-<YYYYMMDD-HHMM>, the last 3 kept.
+[[step]]
+id = "snapshot"
+kind = "snapshot"
+timeout = "10m"
+
+# The active services and running containers, kept in the job log for the verify step.
+[[step]]
+id = "record"
+kind = "verify"
+checks = ["record_state"]
+timeout = "1m"
+
+# The package lists' lock is waited on for up to 10 minutes (E9). `apt-get update` doesn't wait for it itself (its
+# DPkg::Lock::Timeout is for dpkg's locks), so it is tried again while the lock is held; any other result ends the step.
+[[step]]
+id = "update"
+kind = "ssh"
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/bin/env", "DEBIAN_FRONTEND=noninteractive", "/bin/sh", "-c", '''
+WAIT_S=600
+end=$(($(date +%s) + WAIT_S))
+while :; do
+  out=$(/usr/bin/apt-get -q -o DPkg::Lock::Timeout=600 update 2>&1)
+  rc=$?
+  printf "%s\n" "$out"
+  case "$out" in *"Unable to lock directory"*) ;; *) exit $rc ;; esac
+  [ "$(date +%s)" -lt "$end" ] || exit $rc
+  echo "the package lists are locked, trying again"
+  sleep 2
+done
+''']
+detached = true
+timeout = "20m"
+
+# Every pending update (owner review: no security-only selection); a changed config file keeps the machine's version.
+# apt waits up to 10 minutes for dpkg's locks.
+[[step]]
+id = "install"
+kind = "ssh"
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/bin/env", "DEBIAN_FRONTEND=noninteractive", "/usr/bin/apt-get", "-q", "-y", "-o", "DPkg::Lock::Timeout=600", "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold", "upgrade", "--with-new-pkgs"]
+detached = true
+timeout = "60m"
+
+[[step]]
+id = "reboot"
+kind = "reboot_if_required"
+timeout = "20m"
+
+[[step]]
+id = "report"
+kind = "wait_report"
+timeout = "15m"
+
+[[step]]
+id = "verify"
+kind = "verify"
+checks = ["as_recorded", "required_mounts", "bound_checks"]
+timeout = "5m"

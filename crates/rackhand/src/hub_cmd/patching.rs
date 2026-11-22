@@ -81,10 +81,12 @@ impl RebootFacts for Machines {
             )
         });
         let Ok((policy, kind, roles)) = row else { return false };
-        policy.unwrap_or_else(|| {
-            let roles: Vec<String> = serde_json::from_str(&roles).unwrap_or_default();
-            defaults(&kind, &roles.iter().map(String::as_str).collect::<Vec<_>>()).auto_reboot
-        })
+        let roles: Vec<String> = serde_json::from_str(&roles).unwrap_or_default();
+        // E13: whatever its policy says
+        if kind == "hypervisor" || roles.iter().any(|r| r == "hypervisor") {
+            return false;
+        }
+        policy.unwrap_or_else(|| defaults(&kind, &roles.iter().map(String::as_str).collect::<Vec<_>>()).auto_reboot)
     }
 
     fn back_since(&self, machine: &str, since_ms: i64) -> bool {

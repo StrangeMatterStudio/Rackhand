@@ -39,6 +39,36 @@ fn patch_runbooks_follow_the_designed_steps() {
     }
 }
 
+/// 7.5.3 steps 7 and 8: a Proxmox host takes a full upgrade (S4: never a plain one) and has no snapshot, being no guest;
+/// the hub's own host is patched as any Debian machine, its reboot step being the one that differs when it runs.
+#[test]
+fn host_runbooks_follow_the_designed_steps() {
+    let parsed = |name: &str| {
+        let source = builtin::runbook(name).unwrap_or_else(|| panic!("{name} is built in"));
+        let r = Runbook::parse(source).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!((r.name.as_str(), r.risk), (name, crate::runbook::Risk::Normal));
+        r
+    };
+    let pve = parsed("patch-proxmox-host");
+    assert_eq!(ids(&pve), ["precheck", "record", "update", "install", "reboot", "report", "verify"]);
+    let install = pve.steps.iter().find(|s| s.id == "install").unwrap().cmd.clone().unwrap().join(" ");
+    assert!(install.ends_with("dist-upgrade") && install.contains("DPkg::Lock::Timeout=600"), "{install}");
+    assert!(install.contains("--force-confold") && install.contains("DEBIAN_FRONTEND=noninteractive"), "{install}");
+    let hub = parsed("patch-hub-host");
+    assert_eq!(ids(&hub), ["precheck", "snapshot", "record", "update", "install", "reboot", "report", "verify"]);
+    let debian = Runbook::parse(builtin::runbook("patch-debian").unwrap()).unwrap();
+    let cmds = |r: &Runbook, id: &str| r.steps.iter().find(|s| s.id == id).unwrap().cmd.clone();
+    for id in ["update", "install"] {
+        assert_eq!(cmds(&hub, id), cmds(&debian, id), "patched as any Debian machine: {id}");
+    }
+    assert_eq!(cmds(&pve, "update"), cmds(&debian, "update"), "the same wait for the lists' lock");
+    for r in [&pve, &hub] {
+        for s in r.steps.iter().filter(|s| s.kind == StepKind::Ssh) {
+            assert!(s.detached && s.cmd.as_ref().unwrap()[1] == WRAPPER, "{}/{}", r.name, s.id);
+        }
+    }
+}
+
 /// Owner review (B6): Debian and Ubuntu take every pending update, and the package manager waits up to 10 minutes for
 /// a lock held by someone else (E9). Nothing else on the machine is changed: no sources, no settings files.
 #[test]

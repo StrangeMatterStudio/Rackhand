@@ -63,6 +63,8 @@ async fn machines(name: &str) -> Machines {
             machine("held", "linux", "[]", Some("no")),
             machine("plain", "linux", "[]", None),
             machine("desk", "linux", "[\"desktop\"]", None),
+            machine("pve", "linux", "[\"hypervisor\"]", Some("yes")),
+            machine("pve2", "hypervisor", "[]", Some("yes")),
             RowWrite::insert("windows", window),
         ]))
         .await
@@ -108,6 +110,7 @@ async fn reboot_facts_from_the_policy_and_uptime() {
     assert!(m.auto_reboot(M) && !m.auto_reboot("held"), "the policy decides");
     assert!(m.auto_reboot("plain") && !m.auto_reboot("desk"), "the defaults without one");
     assert!(!m.auto_reboot("nope"));
+    assert!(!m.auto_reboot("pve") && !m.auto_reboot("pve2"), "a hypervisor's reboot is never automatic (E13)");
     let asked = now_ms() - 300_000;
     assert!(!m.reported_since(M, asked));
     report(&m, 1, asked + 10_000, 86_400.0, None).await;

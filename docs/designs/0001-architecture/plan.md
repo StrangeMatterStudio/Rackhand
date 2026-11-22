@@ -270,7 +270,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T57 | Incident routing to runbooks and attempt limits | T32, T55 | unit | done |
 | T58 | Dashboard: approvals, jobs, library, patching | T55, T56, T37 | unit (HTTP) | done |
 | T59 | Patching | T55, T34, T47, T12 | unit + integration + live (L4, L9) | done |
-| T60 | Hypervisor and hub-host patching | T59 | unit + integration + live (L4, L9) | todo |
+| T60 | Hypervisor and hub-host patching | T59 | unit + integration + live (L4, L9) | in progress (T60a done) |
 | T61 | Remaining built-in runbooks and key rotation | T55, T43 | unit + integration | todo |
 | T62 | Access levels and monitor enforcement | T44, T55, T49 | unit + integration | todo |
 | T63 | Diagnostics allow-list | T55 | unit + integration | done |
@@ -3046,6 +3046,9 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-22 | T60a: cargo nextest run -p rackhand-runbook -p rackhand-hub -E 'test(host_runbooks) | test(hypervisors_and_the_hub_host)' (before) | 2 failed: `patch-proxmox-host is built in`; no job for the hypervisor |
+  | 2026-11-22 | T60a: cargo nextest run -p rackhand-runbook -p rackhand-hub -p rackhand -E 'test(builtin) | test(driver) | test(select) | test(patching) | test(library)' (after) | 48 passed, among them `host_runbooks_follow_the_designed_steps`, `driver::hypervisors_go_last_with_their_own_runbook` and the hypervisor lines of `reboot_facts_from_the_policy_and_uptime` |
+  | 2026-11-22 | T60a: cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | exit 0; fast 520 passed, 1 skipped; no violations |
 
 ### T61: Remaining built-in runbooks and key rotation
 - **Design refs:** 7.8.7 (built-in list), 7.3.3 (`ApplyKeys`), 7.3.7 (`sudoers-refresh`), 7.3.12 (unenroll), D73, D92
@@ -4953,6 +4956,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D99 | 2026-11-22 | T59e | `it::patch::no_patch_or_silence_alert_during_maintenance_window`; maintenance asked when a window selects its machines | The test is a fast one (`hub_cmd::patching::`, the hub's own driver, Actions, Incidents and windows with a stand-in for SSH, the machine outside a maintenance window as the control): AC20 is a unit criterion in the design and a container adds nothing. A machine whose maintenance window starts while it waits its turn was still patched; it now waits as an offline one does (15 minutes, within the window). Incidents asks through a trait (`Quiet`), so it still reaches Actions only by `StartJob`. A silence already open is neither raised, worsened nor resolved by a maintenance window; its repeated callouts go on. The reboot wait is kept in memory, from the job's start, and a `rollback` step counts as a reboot | Found by the test; gaps in 7.6.3 | plan | - |
 | D100 | 2026-11-22 | T59 | Integration tests copy the binaries cargo builds into their containers | They copy them stripped, as a release ships them (`support::container_binary`): with symbols they filled the disk's write queue and stalled every container for minutes. No test changed. Measured on one pair of runs of 33 tests; the full tier, with the disk sampled, has to agree before it counts as the cause of the boots that took over 60 s. The clock faults were real, and stay recorded, but a sound clock didn't end those failures | Measured | plan | - |
 | D101 | 2026-11-22 | T43, T59 | `disk_rule_callouts_and_resolution`: no critical before 4 minutes, no warning before 4 minutes | On a machine with no history the design's 80% rule (7.6.1; unit test: 16 of 20 samples) matches at the 16th sample, 225 s after the first: the bound is 220 s. The warning, with history, needs the whole 5 minutes: its bound goes from 240 s to 285 s. The rule itself is unchanged; that "for 5 min" can fire after 3 min 45 s on a machine that just began to report was confirmed by the owner (2026-11-22) | Found by the full tier | plan | - |
+| D102 | 2026-11-22 | T60 | One step | Split: T60a the two runbooks, hypervisors in the windows, and a hypervisor (by role or kind) never rebooted by its policy's `auto_reboot` (E13); T60b the reboot's approval listing the guests, and one reboot per cluster and window; T60c the reboot 60 s out and the resume at verify, for the hub's host and the hypervisor it runs on, with as much of T65's start-up resume as that needs. The role `hub` stays out of the windows until T60c: rebooting it at once would end the job. Until T60b a hypervisor that needs a reboot only says so in the job log | Size, and nothing unsafe in between | plan | - |
 
 ## Follow-ups (out of scope)
 

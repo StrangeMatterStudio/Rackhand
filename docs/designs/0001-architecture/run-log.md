@@ -153,3 +153,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-22 | Integration tier 55 of 56 on da8df7a, no disk stall; the one left asked for 4 minutes where the design's 80% rule gives 3 min 45 s on a machine without history (D101) |
 | 2026-11-22 | Owner: a rule's duration can be met by 80% of its samples on a machine without history (D101), confirmed; the design stays |
 | 2026-11-22 | T59 done: integration tier 56 of 56 on 14520f2. T60 started |
+| 2026-11-22 | T60a done: the Proxmox host and hub host runbooks; hypervisors patched last and never rebooted automatically (D102) |
