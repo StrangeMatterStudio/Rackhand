@@ -231,7 +231,8 @@ async fn machine_managed_join_returns_managed_setup() {
     assert_eq!(event.ssh_host_keys, host_keys(), "host keys go to the SSH system");
     assert_eq!(
         hub.query(&format!("SELECT state || ' ' || probe_endpoint_id FROM machines WHERE id = '{id}'")),
-        [format!("enrolled {}", client.id())]
+        [format!("pending {}", client.id())],
+        "a managed machine is pending until the hub's SSH test passes (D84)"
     );
     assert_eq!(hub.registry.admission(alpn::PROBE, &client.id()), Admission::Allowed);
     let reloaded = Registry::load(hub.db.clone()).unwrap();
@@ -241,11 +242,16 @@ async fn machine_managed_join_returns_managed_setup() {
 #[tokio::test(flavor = "multi_thread")]
 async fn machine_monitor_join_has_no_managed_setup_or_host_keys() {
     let mut hub = hub("monitor").await;
-    let (_, token) = hub.add_machine("cam", Access::Monitor, &[]).await;
+    let (id, token) = hub.add_machine("cam", Access::Monitor, &[]).await;
     let m = joined(hub.join(&hub.client().await, machine_req(&token, Access::Monitor)).await);
     assert_eq!(m.access, Access::Monitor as i32);
     assert!(m.managed.is_none(), "monitor gets no accounts");
     assert!(hub.joined.recv().await.unwrap().ssh_host_keys.is_empty(), "the hub keeps no host keys for monitor");
+    assert_eq!(
+        hub.query(&format!("SELECT state FROM machines WHERE id = '{id}'")),
+        ["enrolled"],
+        "no SSH test for monitor, so the join enrolls it"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

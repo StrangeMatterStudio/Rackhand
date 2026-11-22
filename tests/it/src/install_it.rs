@@ -349,13 +349,15 @@ mod install {
         let (_, account) = ssh_tests(&hub, &id).into_iter().find(|(k, _)| k == "machine.ssh_test_failed").unwrap();
         assert_eq!(account, "rackhand", "the failure names the account");
         let add = |hub: &Hub| super::unescape(&hub.curl(&["/add"]));
-        assert!(add(&hub).contains("SSH test failed as rackhand"), "{}", add(&hub));
+        assert!(add(&hub).contains("Pending: SSH test failed as rackhand"), "{}", add(&hub));
+        assert_eq!(machine_column(&hub, &id, "state"), "pending", "pending until the SSH test passes (D84)");
 
         ok(&c.root("systemctl start ssh"));
         within(Duration::from_secs(20), "sshd up", || sh(&c, "systemctl is-active ssh") == "active");
         ok(&c.root("systemctl restart rackhand-probe"));
         let passed = || ssh_tests(&hub, &id).last().is_some_and(|(k, _)| k == "machine.ssh_test_passed");
         within(Duration::from_secs(60), "the SSH test passed at the next report", passed);
+        within(Duration::from_secs(20), "the pass enrolls it", || machine_column(&hub, &id, "state") == "enrolled");
         let page = add(&hub);
         let row = page.find("<td>web1</td>").map(|at| &page[at..at + page[at..].find("</tr>").unwrap()]);
         assert!(row.is_some_and(|r| r.contains("Enrolled and healthy")), "{page}");

@@ -1960,12 +1960,13 @@ mod add {
         let now = rackhand_store::ids::now_ms();
         let day = 86_400_000;
         let mut writes = Vec::new();
-        for (id, access, enrolled_at) in [
-            ("web1", "managed", now - 60_000),
-            ("web2", "managed", now - 120_000),
-            ("web3", "managed", now - 1_000),
-            ("mon1", "monitor", now - 5_000),
-            ("old1", "managed", now - 2 * day),
+        // D84: a managed machine is pending until its SSH test passes, and listed while it is.
+        for (id, access, state, enrolled_at) in [
+            ("web1", "managed", "enrolled", now - 60_000),
+            ("web2", "managed", "pending", now - 120_000),
+            ("web3", "managed", "pending", now - 1_000),
+            ("mon1", "monitor", "enrolled", now - 5_000),
+            ("old1", "managed", "enrolled", now - 2 * day),
         ] {
             writes.push(RowWrite::insert(
                 "machines",
@@ -1975,7 +1976,7 @@ mod add {
                     ("name", Value::Text(id.into())),
                     ("kind", Value::Text("linux".into())),
                     ("access", Value::Text(access.into())),
-                    ("state", Value::Text("enrolled".into())),
+                    ("state", Value::Text(state.into())),
                     ("enrolled_at", Value::Integer(enrolled_at)),
                 ]),
             ));
@@ -2018,10 +2019,10 @@ mod add {
         assert!(row("web1").contains("Enrolled and healthy"), "{}", row("web1"));
         let failed = row("web2");
         assert!(
-            failed.contains("SSH test failed as rackhand-ai") && failed.contains("exit 1"),
+            failed.contains("Pending: SSH test failed as rackhand-ai") && failed.contains("exit 1"),
             "the latest test: {failed}"
         );
-        assert!(row("web3").contains("Waiting for the hub's SSH test"), "{}", row("web3"));
+        assert!(row("web3").contains("Pending: waiting for the hub's SSH test"), "{}", row("web3"));
         assert!(row("mon1").contains("Waiting for its first report"), "{}", row("mon1"));
         assert!(!list.contains("old1"), "only the last day: {list}");
         assert!(list.find("web3").unwrap() < list.find("web1").unwrap(), "newest first: {list}");

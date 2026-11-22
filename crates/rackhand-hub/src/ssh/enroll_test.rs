@@ -1,7 +1,7 @@
 //! The hub's SSH test after a managed machine's first report (7.3.12, AC35): it logs in as `rackhand` and runs `true`
 //! and, unless the machine has role hub (D62), as `rackhand-ai` and runs `sudo -n true`, with the host key pinned from
 //! the join. A failure names the account. A machine is tested on its first report after each join, and on every
-//! report after that until a test passes.
+//! report after that until a test passes. A managed machine stays `pending` from its join until a test passes (D84).
 
 use std::collections::HashSet;
 use std::future::Future;
@@ -134,7 +134,7 @@ impl EnrollTest {
             .with(|c| {
                 c.query_row(
                     "SELECT access = 'managed', EXISTS (SELECT 1 FROM json_each(roles) WHERE value = 'hub'), address
-                     FROM machines WHERE id = ?1 AND state = 'enrolled'",
+                     FROM machines WHERE id = ?1 AND state IN ('pending', 'enrolled')",
                     [machine_id],
                     |r| Ok(Target { managed: r.get(0)?, hub_role: r.get(1)?, address: r.get(2)? }),
                 )
@@ -170,6 +170,26 @@ impl EnrollTest {
         }
         let just_joined = self.joined.lock().map(|mut j| j.remove(machine_id)).unwrap_or(false);
         just_joined || !self.last_passed(machine_id)
+    }
+
+    /// The machine passed its test: a pending machine is enrolled (D84).
+    pub async fn passed(&self, machine_id: &str) -> Result<(), rackhand_store::StoreError> {
+        use rusqlite::OptionalExtension;
+        let state: Option<String> = self
+            .db
+            .readers()
+            .with(|c| c.query_row("SELECT state FROM machines WHERE id = ?1", [machine_id], |r| r.get(0)).optional())?;
+        if state.as_deref() != Some("pending") {
+            return Ok(());
+        }
+        let update = rackhand_store::RowUpdate {
+            table: "machines",
+            key: ("id", rusqlite::types::Value::Text(machine_id.into())),
+            set: [("state", rusqlite::types::Value::Text("enrolled".into()))].into_iter().collect(),
+        };
+        let change = rackhand_store::RegistryChange { updates: vec![update], ..Default::default() };
+        self.db.writer().send(rackhand_store::WriteCmd::RegistryChange(change)).await?;
+        Ok(())
     }
 
     /// Tests the machine; none for a machine that isn't managed.

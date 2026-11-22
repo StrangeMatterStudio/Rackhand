@@ -83,7 +83,7 @@ pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
 /// The machines enrolled in the last day (7.3.12): a managed one is enrolled and healthy once the hub's SSH test
 /// passed, and shows the latest failure with its account until then; a monitor one once it reports.
 fn recent(web: &Web) -> Vec<(String, String, String)> {
-    type Row = (String, String, String, Option<String>, Option<String>, Option<String>);
+    type Row = (String, String, String, String, Option<String>, Option<String>, Option<String>);
     let since = rackhand_store::ids::now_ms() - RECENT_MS;
     let rows: Vec<Row> = web
         .0
@@ -91,30 +91,37 @@ fn recent(web: &Web) -> Vec<(String, String, String)> {
         .readers()
         .with(|c| {
             let mut s = c.prepare(
-                "SELECT m.id, m.name, m.access, e.kind, json_extract(e.data, '$.account'), json_extract(e.data, '$.reason')
+                "SELECT m.id, m.name, m.access, m.state, e.kind, json_extract(e.data, '$.account'), json_extract(e.data, '$.reason')
                  FROM machines m
                  LEFT JOIN events e ON e.id = (
                    SELECT id FROM events WHERE machine_id = m.id
                      AND kind IN ('machine.ssh_test_passed', 'machine.ssh_test_failed')
                    ORDER BY at_ms DESC LIMIT 1)
-                 WHERE m.state = 'enrolled' AND m.enrolled_at >= ?1 AND m.driver IS NULL
+                 WHERE m.state IN ('pending', 'enrolled') AND m.enrolled_at >= ?1 AND m.driver IS NULL
                  ORDER BY m.enrolled_at DESC LIMIT 50",
             )?;
-            s.query_map([since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
+            s.query_map([since], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+            })?
                 .collect()
         })
         .unwrap_or_default();
     let reporting = |id: &str| web.0.ingest.as_ref().and_then(|i| i.last_seen(id)).is_some();
     rows.into_iter()
-        .map(|(id, name, access, test, account, reason)| {
+        .map(|(id, name, access, machine_state, test, account, reason)| {
+            // D84: a managed machine is pending until its SSH test passes.
+            let pending = if machine_state == "pending" { "Pending: " } else { "" };
             let state = match (access.as_str(), test.as_deref()) {
-                ("managed", Some(crate::ssh::enroll_test::PASSED)) => "Enrolled and healthy".to_string(),
-                ("managed", Some(_)) => format!(
-                    "SSH test failed as {}: {}",
+                ("managed", Some(crate::ssh::enroll_test::PASSED)) if machine_state != "pending" => {
+                    "Enrolled and healthy".to_string()
+                }
+                ("managed", Some(crate::ssh::enroll_test::FAILED)) => format!(
+                    "{pending}SSH test failed as {}: {}",
                     account.unwrap_or_else(|| "rackhand".into()),
                     reason.unwrap_or_default()
                 ),
-                ("managed", None) => "Waiting for the hub's SSH test".to_string(),
+                ("managed", _) if machine_state == "pending" => "Pending: waiting for the hub's SSH test".to_string(),
+                ("managed", _) => "Waiting for the hub's SSH test".to_string(),
                 _ if reporting(&id) => "Enrolled and healthy".to_string(),
                 _ => "Waiting for its first report".to_string(),
             };

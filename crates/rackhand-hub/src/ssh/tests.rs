@@ -188,6 +188,10 @@ mod enroll_test {
     }
 
     async fn machine(db: &Db, id: &str, access: &str, roles: &str, address: Option<&str>) {
+        machine_in(db, id, access, roles, address, "enrolled").await;
+    }
+
+    async fn machine_in(db: &Db, id: &str, access: &str, roles: &str, address: Option<&str>, state: &str) {
         let mut row = Row::from([
             ("id", Value::Text(id.into())),
             ("site_id", Value::Text("s".into())),
@@ -195,7 +199,7 @@ mod enroll_test {
             ("kind", Value::Text("linux".into())),
             ("access", Value::Text(access.into())),
             ("roles", Value::Text(roles.into())),
-            ("state", Value::Text("enrolled".into())),
+            ("state", Value::Text(state.into())),
         ]);
         if let Some(a) = address {
             row.insert("address", Value::Text(a.into()));
@@ -276,6 +280,33 @@ mod enroll_test {
         assert_eq!((account, reason.contains("no address")), ("rackhand", true), "{reason}");
         assert_eq!(test.run("mon1").await, None, "no SSH test for a monitor machine");
         assert!(login.calls().is_empty());
+    }
+
+    /// D84: a managed machine that joined is `pending` until the hub's SSH test passes; the pass enrolls it, a failure
+    /// leaves it pending, and nothing else is moved.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pending_machine_is_tested_and_enrolled_by_a_pass() {
+        let db = db("pending");
+        machine_in(&db, "web1", "managed", "[]", Some("192.0.2.5"), "pending").await;
+        machine_in(&db, "web2", "managed", "[]", Some("192.0.2.6"), "revoked").await;
+        let state = |id: &str| -> String {
+            db.readers().with(|c| c.query_row("SELECT state FROM machines WHERE id = ?1", [id], |r| r.get(0))).unwrap()
+        };
+        let refused = Arc::new(Scripted { refuse: Some(Identity::Automation), ..Scripted::default() });
+        let failing = EnrollTest::new(db.clone(), refused);
+        assert!(failing.due("web1"), "a joined pending machine is tested");
+        assert!(matches!(failing.run("web1").await, Some(Outcome::Failed { .. })));
+        assert_eq!(state("web1"), "pending", "a failed test leaves it pending");
+
+        let test = EnrollTest::new(db.clone(), Arc::new(Scripted::default()));
+        assert_eq!(test.run("web1").await, Some(Outcome::Passed));
+        test.passed("web1").await.unwrap();
+        assert_eq!(state("web1"), "enrolled", "the pass enrolls it");
+        test.passed("web1").await.unwrap();
+        assert_eq!(state("web1"), "enrolled", "again changes nothing");
+        assert!(!test.due("web2") && test.run("web2").await.is_none(), "a revoked machine isn't tested");
+        test.passed("web2").await.unwrap();
+        assert_eq!(state("web2"), "revoked", "a revoked machine stays revoked");
     }
 
     #[tokio::test(flavor = "multi_thread")]

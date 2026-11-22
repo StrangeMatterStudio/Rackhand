@@ -474,7 +474,7 @@ async fn ssh_test_after_first_report_wired() {
     let enrolled = RowUpdate {
         table: "machines",
         key: ("id", Value::Text(M.into())),
-        set: Row::from([("state", Value::Text("enrolled".into())), ("address", Value::Text("192.0.2.5".into()))]),
+        set: Row::from([("state", Value::Text("pending".into())), ("address", Value::Text("192.0.2.5".into()))]),
     };
     db.writer()
         .send(WriteCmd::RegistryChange(rackhand_store::RegistryChange {
@@ -530,11 +530,20 @@ async fn ssh_test_after_first_report_wired() {
         std::slice::from_ref(&failed),
         "the first report is followed by the test; the failure names the account"
     );
+    let state = |db: &Db| -> String {
+        db.readers().with(|c| c.query_row("SELECT state FROM machines WHERE id = ?1", [M], |r| r.get(0))).unwrap()
+    };
+    assert_eq!(state(&db), "pending", "a failed test leaves the machine pending (D84)");
 
     login.works.store(true, Ordering::SeqCst);
     greeted.send(M.to_string()).unwrap();
     let passed = ("machine.ssh_test_passed".to_string(), "info".to_string(), String::new());
     assert_eq!(wait(2).await, [failed.clone(), passed.clone()], "tested again at the next report until it passes");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while state(&db) != "enrolled" && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(state(&db), "enrolled", "the pass enrolls it");
 
     let before = login.logins.load(Ordering::SeqCst);
     greeted.send(M.to_string()).unwrap();

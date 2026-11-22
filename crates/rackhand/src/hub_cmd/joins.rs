@@ -118,6 +118,11 @@ pub fn spawn_enroll_tests(ingest: Ingest, test: Arc<EnrollTest>, mut greeted: Un
                     if let Err(e) = ingest.raise_event(ssh_test_event(&machine, &outcome)).await {
                         tracing::error!(error = %e, %machine, "SSH test event");
                     }
+                    if outcome == Outcome::Passed {
+                        if let Err(e) = test.passed(&machine).await {
+                            tracing::error!(error = %e, %machine, "enrolling after the SSH test");
+                        }
+                    }
                 }
             });
         }

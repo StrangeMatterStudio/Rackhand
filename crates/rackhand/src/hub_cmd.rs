@@ -140,7 +140,8 @@ impl DiskSpace for Statvfs {
     }
 }
 
-/// The probe server's directory: the Registry's machines and their probe endpoints (7.3.2).
+/// The probe server's directory: the Registry's machines and their probe endpoints (7.3.2). A joined machine reports
+/// while it is pending the hub's SSH test (D84).
 #[derive(Debug)]
 pub struct MachinesDirectory(pub Arc<Db>);
 
@@ -151,7 +152,7 @@ impl ProbeDirectory for MachinesDirectory {
             .readers()
             .with(|c| {
                 c.query_row(
-                    "SELECT id FROM machines WHERE probe_endpoint_id = ?1 AND state = 'enrolled'",
+                    "SELECT id FROM machines WHERE probe_endpoint_id = ?1 AND state IN ('pending', 'enrolled')",
                     [endpoint.to_string()],
                     |r| r.get(0),
                 )

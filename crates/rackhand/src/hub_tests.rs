@@ -239,6 +239,17 @@ async fn probe_directory_from_registry() {
     assert_eq!(directory.machine_of(&probe_endpoint.id()), Some(machine_id.to_bytes()));
     let stranger = rackhand_net::testing::endpoint(&relay_url, &[]).await;
     assert_eq!(directory.machine_of(&stranger.id()), None);
+    // D84: a managed machine reports while pending its SSH test; a revoked one doesn't
+    let set_state = |state: &str| rackhand_store::RowUpdate {
+        table: "machines",
+        key: ("id", t(&machine_id.to_string())),
+        set: Row::from([("state", t(state))]),
+    };
+    for (state, known) in [("pending", true), ("revoked", false), ("enrolled", true)] {
+        let change = rackhand_store::RegistryChange { updates: vec![set_state(state)], ..Default::default() };
+        db.writer().send(WriteCmd::RegistryChange(change)).await.unwrap();
+        assert_eq!(directory.machine_of(&probe_endpoint.id()).is_some(), known, "{state}");
+    }
     // and with the Registry's admission, an enrolled probe's report reaches Ingest
     let registry = rackhand_hub::registry::Registry::load(db.clone()).unwrap();
     let ingest = Ingest::new(db.clone(), Bus::new(), Arc::new(Roomy));

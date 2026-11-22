@@ -410,11 +410,13 @@ pub const VITALS: &[&str] =
 /// when an old probe is pinned to another hub) and records how long each part took to appear.
 pub fn ensure_target(dash: &Dash, token: &str) -> String {
     if let Some(id) = machine_id(dash, "target") {
-        let state = machine_state(dash, "target").unwrap_or_default();
+        // D84: a joined managed machine is pending until the hub's SSH test passes, which it retries at each report.
+        let enrolled = || machine_state(dash, "target").is_some_and(|s| s != "pending");
         assert!(
-            state != "pending",
-            "the hub has target pending from an install that never joined: `cargo xtask lab reset hub`, deploy again"
+            eventually(Duration::from_secs(120), enrolled),
+            "the hub has target pending: its install never joined (`cargo xtask lab reset hub`, deploy again) or the              hub's SSH test fails (the Add page says why)"
         );
+        let state = machine_state(dash, "target").unwrap_or_default();
         assert!(
             eventually(Duration::from_secs(120), || live(token, "target", 45.0)),
             "the hub knows target ({state}) but it doesn't report: if its join never finished,              `cargo xtask lab reset hub` and `lab reset target`, then run again"
@@ -451,6 +453,10 @@ pub fn ensure_target(dash: &Dash, token: &str) -> String {
         std::thread::sleep(Duration::from_secs(1));
     }
     on("target", "sudo systemctl reset-failed rackhand-live-boot");
+    assert!(
+        eventually(Duration::from_secs(120), || machine_state(dash, "target").is_some_and(|s| s != "pending")),
+        "target stayed pending: the hub's SSH test didn't pass (the Add page says why)"
+    );
     let (_, page) = dash.get(&format!("/machines/{id}"));
     let access = if page.contains("Access: managed") { "managed" } else { "other" };
     let never = f64::INFINITY;

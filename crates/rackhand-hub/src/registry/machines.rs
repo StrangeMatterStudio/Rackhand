@@ -99,7 +99,8 @@ impl Registry {
     }
 
     /// The enrolling update of a machine's join-owned columns. Everything else on the row (policy, tags, roles,
-    /// guest binding) is left as it is.
+    /// guest binding) is left as it is. A managed machine's first join leaves it `pending` until the hub's SSH test
+    /// passes (D84); a monitor machine, or a machine joining again, is `enrolled`.
     pub(crate) fn enroll_change(
         machine_id: &str,
         endpoint: EndpointId,
@@ -109,12 +110,13 @@ impl Registry {
         first_enrollment: bool,
         now_ms: i64,
     ) -> RowUpdate {
+        let state = if first_enrollment && access == "managed" { "pending" } else { "enrolled" };
         let mut set: Row = [
             ("probe_endpoint_id", Value::Text(endpoint.to_string())),
             ("access", Value::Text(access.into())),
             ("mode", Value::Text(mode.into())),
             ("os", Value::Text(os.into())),
-            ("state", Value::Text("enrolled".into())),
+            ("state", Value::Text(state.into())),
         ]
         .into_iter()
         .collect();
