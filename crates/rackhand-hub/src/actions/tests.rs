@@ -643,3 +643,25 @@ async fn scheduled_reboot_goes_on_when_the_hub_stays() {
     assert_eq!((r.outcome, r.reason.as_deref()), (JobOutcome::Failed, Some("did_not_reboot")));
     assert_eq!(*lost.ran.lock().unwrap(), ["pre", "boot"]);
 }
+
+/// 7.3.12: a hub step that needs an account fails `monitor_only` before anything is sent; revoking doesn't need one.
+#[tokio::test(flavor = "multi_thread")]
+async fn monitor_machine_hub_step_needs_an_account_only_to_send() {
+    let runner = Arc::new(Fake::default());
+    let (db, actions, _) = setup("monitor-hub", "monitor", runner.clone()).await;
+    let (lib, _) = Library::new(db.clone(), Audit::new(db.writer()));
+    let hub = |name: &str, call: &str| {
+        format!(
+            "name = \"{name}\"\ndescription = \"d\"\nidentity = \"automation\"\nrisk = \"high\"\nautonomy = 1\n\
+             [[step]]\nid = \"s\"\nkind = \"hub\"\ncall = \"{call}\"\ntimeout = \"1m\"\n"
+        )
+    };
+    lib.save(Kind::Runbook, "sending", &hub("sending", "send_commands"), "admin", 1).await.unwrap();
+    lib.save(Kind::Runbook, "revoking", &hub("revoking", "revoke"), "admin", 1).await.unwrap();
+    let sent = actions.run(StartJob::runbook("sending", "m1", "test")).await.unwrap();
+    assert_eq!((sent.outcome, sent.reason.as_deref()), (JobOutcome::Failed, Some("monitor_only")));
+    assert_eq!(runner.calls.load(Ordering::SeqCst), 0, "nothing was run");
+    let revoked = actions.run(StartJob::runbook("revoking", "m1", "test")).await.unwrap();
+    assert_eq!(revoked.outcome, JobOutcome::Succeeded, "{revoked:?}");
+    assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
+}

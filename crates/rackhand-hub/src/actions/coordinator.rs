@@ -68,11 +68,6 @@ fn with_params(step: &Step, params: &BTreeMap<String, String>) -> Step {
     s.dest = s.dest.map(|m| substitute_text(&m, params));
     s
 }
-
-fn needs_account(kind: StepKind) -> bool {
-    matches!(kind, StepKind::Ssh | StepKind::Transfer)
-}
-
 enum StepEndState {
     Done(StepResult),
     TimedOut,
@@ -240,7 +235,7 @@ impl Actions {
             let argv = step.cmd.as_deref().map(|c| substitute_argv(c, params));
             let command = argv.as_deref().map(display);
             jobs::step_started(db, job_id, &step.id, command.as_deref(), now_ms()).await?;
-            if machine.monitor_only() && needs_account(step.kind) {
+            if machine.monitor_only() && step.needs_account() {
                 let end = StepEnd {
                     state: "failed",
                     exit_code: None,

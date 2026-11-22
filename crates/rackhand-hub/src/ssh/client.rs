@@ -84,6 +84,21 @@ pub async fn run(
     command: &str,
     timeout: Duration,
 ) -> Result<Output, SshError> {
+    run_with_input(addr, machine_id, keys, identity, key, command, None, timeout).await
+}
+
+/// The same, giving the command `input` on its standard input and then closing it.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_with_input(
+    addr: SocketAddr,
+    machine_id: &str,
+    keys: Arc<HostKeys>,
+    identity: Identity,
+    key: &PrivateKey,
+    command: &str,
+    input: Option<&[u8]>,
+    timeout: Duration,
+) -> Result<Output, SshError> {
     let verdict = Arc::new(std::sync::Mutex::new(None));
     let checker = Checker { machine_id: machine_id.into(), keys, verdict: verdict.clone() };
     let config = Arc::new(client::Config { inactivity_timeout: Some(timeout), ..client::Config::default() });
@@ -108,6 +123,10 @@ pub async fn run(
     }
     let mut channel = session.channel_open_session().await.map_err(|e| SshError::Transport(e.to_string()))?;
     channel.exec(true, command).await.map_err(|e| SshError::Transport(e.to_string()))?;
+    if let Some(bytes) = input {
+        channel.data(bytes).await.map_err(|e| SshError::Transport(e.to_string()))?;
+        channel.eof().await.map_err(|e| SshError::Transport(e.to_string()))?;
+    }
     let mut out = Output { exit_code: None, stdout: Vec::new(), stderr: Vec::new() };
     let (mut cut_out, mut cut_err) = (false, false);
     let collect = async {

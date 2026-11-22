@@ -128,6 +128,22 @@ timeout = "{timeout}"
         facts: Arc<Facts>,
         vault: Arc<Vault>,
         host_keys: Arc<HostKeys>,
+        pub(super) signer: Arc<Signer>,
+    }
+
+    /// The hub's side of `sudoers-refresh`: its node key and the runbooks whose commands it lists.
+    pub(super) struct Signer {
+        key: SigningKey,
+        pub(super) runbooks: std::sync::Mutex<Vec<Runbook>>,
+        /// The version to sign with instead of the time.
+        pub(super) version: std::sync::Mutex<Option<u64>>,
+    }
+
+    impl rackhand_hub::executor::HubSide for Signer {
+        fn signed_commands(&self, now_ms: i64) -> Vec<u8> {
+            let version = self.version.lock().unwrap().unwrap_or(now_ms as u64);
+            signed_command_list(&self.key, &self.runbooks.lock().unwrap(), version, now_ms, 600_000)
+        }
     }
 
     pub(super) fn sh(c: &Container, script: &str) {
@@ -196,7 +212,13 @@ timeout = "{timeout}"
         library.save(Kind::Runbook, "reboot-asked", &always, "admin", 1).await.unwrap();
         let runbooks = [PLAIN, slow.as_str(), WRAPPED, REBOOT].map(|r| Runbook::parse(r).unwrap());
         let now = rackhand_store::ids::now_ms();
-        let payload = signed_command_list(&node, &runbooks, 1, now, 3_600_000);
+        // versioned by the signing time in milliseconds, as the join's list is
+        let payload = signed_command_list(&node, &runbooks, now as u64, now, 3_600_000);
+        let signer = Arc::new(Signer {
+            key: node.clone(),
+            runbooks: std::sync::Mutex::new(runbooks.to_vec()),
+            version: Default::default(),
+        });
         let install = machine.exec(Some("rackhand"), &["sudo", "-n", WRAPPER, "install-commands"], Some(&payload));
         assert!(install.status.success(), "install-commands: {}", String::from_utf8_lossy(&install.stderr));
         // The host key from the join (T35), pinned.
@@ -210,9 +232,10 @@ timeout = "{timeout}"
         let facts = Arc::new(Facts::default());
         let executor = Executor::new(vault.clone(), host_keys.clone())
             .with_poll(Duration::from_millis(500))
+            .with_hub(signer.clone())
             .with_reboot(facts.clone(), Duration::from_secs(6));
         let actions = Actions::new(db.clone(), audit, bus, Arc::new(executor)).with_lock_wait(lock_wait);
-        Lab { db, machine, actions, events, facts, vault, host_keys }
+        Lab { db, machine, actions, events, facts, vault, host_keys, signer }
     }
 
     async fn wait_listening(addr: &str) {
@@ -568,6 +591,86 @@ timeout = "{timeout}"
         sh(&lab.machine, "rm -f /run/reboot-required /etc/kernel/proxmox-boot-pin");
         lab.facts.hypervisor.store(false, SeqCst);
         assert_eq!(said("an ordinary machine").await, "not_required");
+    }
+
+    /// `sudoers-refresh` (7.3.7): the hub sends a newer signed command list through the wrapper.
+    mod commands {
+        use super::*;
+
+        const EXTRA: &str = r#"name = "extra"
+description = "A root command the first list doesn't have"
+identity = "automation"
+risk = "low"
+autonomy = 1
+[[step]]
+id = "who"
+kind = "ssh"
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/bin/id", "-un"]
+timeout = "20s"
+"#;
+
+        fn list(lab: &Lab) -> serde_json::Value {
+            let out = lab.machine.root("cat /etc/rackhand/commands.json");
+            serde_json::from_slice(&out.stdout).unwrap_or_default()
+        }
+
+        async fn refresh(lab: &Lab) -> rackhand_hub::actions::JobResult {
+            lab.actions.run(StartJob::runbook("sudoers-refresh", "m1", "user:admin")).await.unwrap()
+        }
+
+        async fn save(lab: &Lab) {
+            let (library, _) = Library::new(lab.db.clone(), Audit::new(lab.db.writer()));
+            let refresh = rackhand_runbook::builtin::runbook("sudoers-refresh").unwrap();
+            library.save(Kind::Runbook, "sudoers-refresh", refresh, "admin", 1).await.unwrap();
+            library.save(Kind::Runbook, "extra", EXTRA, "admin", 1).await.unwrap();
+        }
+
+        /// A machine whose first list came with its join (versioned by the signing time) takes the refresh's list, which
+        /// is versioned the same way, and is newer.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn sudoers_refresh_after_join_list() {
+            let lab = lab("refresh-join", "60s", Duration::from_secs(5)).await;
+            save(&lab).await;
+            let joined = list(&lab)["version"].as_u64().unwrap();
+            assert!(joined > 1_000_000_000_000, "the join's version is a time in ms: {joined}");
+            let r = refresh(&lab).await;
+            assert_eq!(r.outcome, JobOutcome::Succeeded, "{r:?}");
+            let version = list(&lab)["version"].as_u64().unwrap();
+            assert!(version > joined, "{version} after {joined}");
+            let said = String::from_utf8_lossy(&step(&lab.db, &r.job_id).stdout).to_string();
+            assert!(said.contains(&format!("installed command list version {version}")), "{said}");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn sudoers_refresh_installs_newer_list() {
+            let lab = lab("refresh-new", "60s", Duration::from_secs(5)).await;
+            save(&lab).await;
+            let extra = Runbook::parse(EXTRA).unwrap();
+            let run_extra = || lab.actions.run(StartJob::runbook("extra", "m1", "user:admin"));
+            // before: the wrapper refuses a command the list doesn't have
+            let before = run_extra().await.unwrap();
+            assert_eq!(before.outcome, JobOutcome::Failed, "{before:?}");
+            lab.signer.runbooks.lock().unwrap().push(extra);
+            let r = refresh(&lab).await;
+            assert_eq!(r.outcome, JobOutcome::Succeeded, "{r:?}");
+            let after = run_extra().await.unwrap();
+            assert_eq!(after.outcome, JobOutcome::Succeeded, "{after:?}");
+            assert_eq!(String::from_utf8_lossy(&step(&lab.db, &after.job_id).stdout).trim(), "root");
+            // the list the hub sends is the machine's whole list: what it no longer has is gone
+            lab.signer.runbooks.lock().unwrap().retain(|r| r.name == "extra");
+            assert_eq!(refresh(&lab).await.outcome, JobOutcome::Succeeded);
+            let commands = list(&lab);
+            let steps: Vec<&str> =
+                commands["commands"].as_array().unwrap().iter().filter_map(|c| c["runbook"].as_str()).collect();
+            assert!(steps.contains(&"extra") && !steps.contains(&"wrapped"), "{steps:?}");
+            // a list that isn't newer is refused and the machine keeps its own
+            let kept = list(&lab);
+            *lab.signer.version.lock().unwrap() = Some(1);
+            let old = refresh(&lab).await;
+            assert_eq!((old.outcome, old.reason.as_deref()), (JobOutcome::Failed, Some("exit_code 1")), "{old:?}");
+            assert!(String::from_utf8_lossy(&step(&lab.db, &old.job_id).stderr).contains("newer"));
+            assert_eq!(list(&lab), kept);
+        }
     }
 
     /// The machine the hub runs on (7.5.3 step 8).

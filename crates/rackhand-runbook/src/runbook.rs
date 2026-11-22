@@ -37,7 +37,13 @@ pub enum StepKind {
     Transfer,
     Tunnel,
     Notify,
+    /// Something the hub does itself, from a short fixed list (`call`).
+    Hub,
 }
+
+/// What a `hub` step may ask the hub to do: send a machine its signed command list, replace its hub keys, or revoke its
+/// endpoint.
+pub const HUB_CALLS: [&str; 3] = ["send_commands", "rotate_keys", "revoke"];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -116,6 +122,16 @@ pub struct Step {
 }
 
 impl Step {
+    /// Whether the step needs an account on the machine, which a machine at access level `monitor` doesn't have: one that
+    /// runs over SSH, sends a file, or sends the machine something over SSH. Revoking an endpoint is the hub's alone.
+    pub fn needs_account(&self) -> bool {
+        match self.kind {
+            StepKind::Ssh | StepKind::Transfer => true,
+            StepKind::Hub => self.call.as_deref() != Some("revoke"),
+            _ => false,
+        }
+    }
+
     pub fn timeout_s(&self) -> Option<u64> {
         self.timeout.as_deref().and_then(parse_duration)
     }

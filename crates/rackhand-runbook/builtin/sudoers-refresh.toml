@@ -1,0 +1,15 @@
+name = "sudoers-refresh"
+description = "Send a machine the hub's current command list, which is what the machine's command wrapper may run"
+targets = { kinds = ["linux", "alpine"] }
+identity = "automation"
+risk = "high"
+autonomy = 1
+
+# The hub signs the list of every runbook's root commands with its node key and sends it through the wrapper's own
+# `install-commands`, which installs it only if that signature verifies against the hub pinned on the machine, the version
+# is newer than the installed one, and it hasn't expired. The automation key alone can't widen what it may run.
+[[step]]
+id = "send"
+kind = "hub"
+call = "send_commands"
+timeout = "2m"

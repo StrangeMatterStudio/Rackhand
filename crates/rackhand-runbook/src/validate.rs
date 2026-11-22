@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use regex::Regex;
 
 use crate::error::ModelError;
-use crate::runbook::{Runbook, Step, StepKind};
+use crate::runbook::{HUB_CALLS, Runbook, Step, StepKind};
 
 const MAX_AUTONOMY: u8 = 3;
 
@@ -68,6 +68,14 @@ fn step_rules(rb: &Runbook, step: &Step) -> Result<(), String> {
     }
     if step.detached && step.kind != StepKind::Ssh {
         return Err("only `ssh` steps can be `detached`".into());
+    }
+    if step.kind == StepKind::Hub {
+        if !step.call.as_deref().is_some_and(|c| HUB_CALLS.contains(&c)) {
+            return Err(format!("a `hub` step needs `call` to be one of {}", HUB_CALLS.join(", ")));
+        }
+        if step.cmd.is_some() || step.windows_script.is_some() {
+            return Err("a `hub` step carries no command: the hub does what its `call` names".into());
+        }
     }
     if step.always && step.kind != StepKind::RebootIfRequired {
         return Err("only `reboot_if_required` steps can be `always`".into());

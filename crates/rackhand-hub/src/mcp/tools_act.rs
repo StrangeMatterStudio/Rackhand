@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use rackhand_runbook::runbook::{Identity, Runbook, StepKind};
+use rackhand_runbook::runbook::{Identity, Runbook};
 use serde_json::{Value, json};
 
 use super::auth::Caller;
@@ -247,7 +247,7 @@ impl Mcp {
             Action::Runbook {
                 risk: runbook.risk,
                 level: gate::level(&self.inner.db, caller).min(runbook.autonomy),
-                needs_account: runbook.steps.iter().any(|s| matches!(s.kind, StepKind::Ssh | StepKind::Transfer)),
+                needs_account: runbook.steps.iter().any(|s| s.needs_account()),
                 assistant_commands: &commands,
             }
         };

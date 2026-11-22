@@ -566,3 +566,38 @@ async fn ssh_test_after_first_report_wired() {
     assert_eq!(login.logins.load(Ordering::SeqCst), before, "a passed machine isn't tested at every report");
     assert_eq!(ssh_events(&db), [failed, passed]);
 }
+
+/// 7.3.7: what `sudoers-refresh` sends is the enabled runbooks' command list, signed by the node key and versioned by
+/// the time in milliseconds, so that a machine whose list came with its join finds it newer.
+#[tokio::test(flavor = "multi_thread")]
+async fn refresh_sends_the_enabled_runbooks_signed_and_newer() {
+    use prost::Message;
+    use rackhand_hub::executor::HubSide;
+    let dir = std::env::temp_dir().join(format!("rackhand-signer-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = Arc::new(Db::open(&dir.join("hub.db")).unwrap());
+    let (library, _) =
+        rackhand_hub::library::items::Library::new(db.clone(), rackhand_hub::audit::Audit::new(db.writer()));
+    library.seed(rackhand_runbook::builtin::runbooks(), 1).await.unwrap();
+    let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+    let signer = joins::CommandSigner { db, signing: key.clone() };
+    let (now, later) = (1_795_000_000_000i64, 1_795_000_500_000i64);
+    let bytes = signer.signed_commands(now);
+    let signed = rackhand_proto::common::SignedPayload::decode(bytes.as_slice()).unwrap();
+    let env =
+        rackhand_proto::signed::verify(&signed, &key.verifying_key(), "commands", now as u64 - 1, now + 1).unwrap();
+    assert_eq!(env.version, now as u64);
+    assert_eq!(env.expires_at_ms - env.signed_at_ms, 600_000, "installed at once");
+    let list: serde_json::Value = serde_json::from_slice(&env.body).unwrap();
+    let runbooks: Vec<&str> =
+        list["commands"].as_array().unwrap().iter().filter_map(|c| c["runbook"].as_str()).collect();
+    assert!(runbooks.contains(&"patch-debian") && runbooks.contains(&"compose-restart"), "{runbooks:?}");
+    let next = rackhand_proto::common::SignedPayload::decode(signer.signed_commands(later).as_slice()).unwrap();
+    let other = ed25519_dalek::SigningKey::from_bytes(&[8u8; 32]).verifying_key();
+    assert!(rackhand_proto::signed::verify(&next, &other, "commands", 0, later).is_err(), "only the node key's");
+    assert!(
+        rackhand_proto::signed::verify(&next, &key.verifying_key(), "commands", now as u64, later).is_ok(),
+        "newer"
+    );
+}

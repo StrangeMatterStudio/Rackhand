@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rackhand_detect::rules::Severity;
-use rackhand_runbook::runbook::{Identity, Runbook, StepKind};
+use rackhand_runbook::runbook::{Identity, Runbook};
 use rackhand_store::Db;
 use rusqlite::OptionalExtension;
 
@@ -195,7 +195,7 @@ impl Routing {
             return self.to_person(incident_id, &why, now_ms).await;
         }
         let rev = Library::current_in(self.db(), Kind::Runbook, &rb.name).ok().flatten().map(|(rev, _)| rev);
-        let needs_account = rb.steps.iter().any(|s| matches!(s.kind, StepKind::Ssh | StepKind::Transfer));
+        let needs_account = rb.steps.iter().any(|s| s.needs_account());
         let commands: Vec<String> = if rb.identity == Identity::Assistant {
             rb.steps.iter().filter_map(|s| s.cmd.as_ref()).map(|c| c.join(" ")).collect()
         } else {

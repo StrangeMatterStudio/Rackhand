@@ -4,6 +4,7 @@
 
 pub mod commands;
 mod detached;
+mod hub;
 mod reboot;
 
 use std::net::{IpAddr, SocketAddr};
@@ -13,13 +14,14 @@ use std::time::Duration;
 use rackhand_runbook::runbook::{Identity as RunbookIdentity, Step, StepKind};
 
 use crate::actions::runner::{BoxFuture, StepCtx, StepOutcome, StepResult, StepRunner, display};
-use crate::ssh::client::{Output, SshError, run};
+use crate::ssh::client::{Output, SshError, run_with_input};
 use crate::ssh::hostkeys::HostKeys;
 use crate::ssh::keys::{Identity, load_or_create};
 use crate::ssh::quote;
 use crate::vault::Vault;
 
 pub use detached::POLL;
+pub use hub::HubSide;
 pub use reboot::{NO_REPORT, RebootFacts};
 
 /// Step kinds whose systems aren't wired to the Executor yet fail with `<kind>_unavailable`.
@@ -39,6 +41,7 @@ fn kind_name(kind: StepKind) -> &'static str {
         StepKind::Transfer => "transfer",
         StepKind::Tunnel => "tunnel",
         StepKind::Notify => "notify",
+        StepKind::Hub => "hub",
     }
 }
 
@@ -79,6 +82,7 @@ pub struct Executor {
     host_keys: Arc<HostKeys>,
     other: Arc<dyn StepRunner>,
     reboot: Option<(Arc<dyn RebootFacts>, Duration)>,
+    hub: Option<Arc<dyn HubSide>>,
     poll: Duration,
     port: u16,
 }
@@ -111,12 +115,18 @@ fn from_output(command: String, out: Output) -> StepResult {
 
 impl Executor {
     pub fn new(vault: Arc<Vault>, host_keys: Arc<HostKeys>) -> Executor {
-        Executor { vault, host_keys, other: Arc::new(Unavailable), reboot: None, poll: POLL, port: 22 }
+        Executor { vault, host_keys, other: Arc::new(Unavailable), reboot: None, hub: None, poll: POLL, port: 22 }
     }
 
     /// Runs `reboot_if_required` steps; a rebooted machine has `wait` to report again.
     pub fn with_reboot(mut self, facts: Arc<dyn RebootFacts>, wait: Duration) -> Executor {
         self.reboot = Some((facts, wait));
+        self
+    }
+
+    /// What `hub` steps ask of the hub itself.
+    pub fn with_hub(mut self, hub: Arc<dyn HubSide>) -> Executor {
+        self.hub = Some(hub);
         self
     }
 
@@ -138,9 +148,32 @@ impl Executor {
 
     /// One command over SSH, already quoted.
     async fn ssh(&self, ctx: &StepCtx, id: Identity, line: &str, timeout: Duration) -> Result<Output, SshError> {
+        self.ssh_with(ctx, id, line, None, timeout).await
+    }
+
+    /// The same, with `input` on the command's standard input.
+    async fn ssh_input(
+        &self,
+        ctx: &StepCtx,
+        id: Identity,
+        line: &str,
+        input: &[u8],
+        timeout: Duration,
+    ) -> Result<Output, SshError> {
+        self.ssh_with(ctx, id, line, Some(input), timeout).await
+    }
+
+    async fn ssh_with(
+        &self,
+        ctx: &StepCtx,
+        id: Identity,
+        line: &str,
+        input: Option<&[u8]>,
+        timeout: Duration,
+    ) -> Result<Output, SshError> {
         let addr = self.addr(ctx).ok_or_else(|| SshError::Transport("the machine has no address".into()))?;
         let key = load_or_create(&self.vault, id).await.map_err(|e| SshError::Transport(e.to_string()))?;
-        run(addr, &ctx.machine_id, self.host_keys.clone(), id, &key, line, timeout).await
+        run_with_input(addr, &ctx.machine_id, self.host_keys.clone(), id, &key, line, input, timeout).await
     }
 
     async fn plain(&self, ctx: &StepCtx, id: Identity, argv: &[String]) -> StepResult {
@@ -236,6 +269,7 @@ impl StepRunner for Executor {
                 (StepKind::Ssh, Some(argv)) => self.plain(ctx, identity(ctx.identity), argv).await,
                 // `windows_script` steps go through the dispatcher (T90).
                 (StepKind::Ssh, None) => StepResult::failed("windows_unavailable"),
+                (StepKind::Hub, _) => self.hub_step(ctx, step).await,
                 (StepKind::RebootIfRequired, _) if self.reboot.is_some() => {
                     self.reboot_if_required(ctx, step.always).await
                 }

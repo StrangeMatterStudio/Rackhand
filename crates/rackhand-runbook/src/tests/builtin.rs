@@ -132,6 +132,7 @@ fn all_parse_and_have_design_risk() {
         ("service-restart", Low),
         ("compose-restart", Low),
         ("compose-update", Normal),
+        ("sudoers-refresh", High),
     ];
     for (name, source) in builtin::runbooks() {
         let r = Runbook::parse(source).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -190,4 +191,40 @@ fn restart_runbooks_judge_a_fresh_report() {
     ] {
         assert_eq!(check_value(&update.params["file"], value).is_ok(), ok, "file {value:?}");
     }
+}
+
+/// 7.8.7: a `hub` step is something the hub does itself, from a short fixed list; it carries no command.
+#[test]
+fn hub_steps_name_a_known_call() {
+    let source = |extra: &str| {
+        format!(
+            "name = \"r\"\ndescription = \"d\"\nidentity = \"automation\"\nrisk = \"high\"\nautonomy = 1\n\
+             [[step]]\nid = \"s\"\nkind = \"hub\"\n{extra}"
+        )
+    };
+    for call in ["send_commands", "rotate_keys", "revoke"] {
+        let r = Runbook::parse(&source(&format!("call = \"{call}\"\n"))).unwrap_or_else(|e| panic!("{call}: {e}"));
+        assert_eq!(r.steps[0].kind, StepKind::Hub);
+    }
+    for bad in ["", "call = \"format_disk\"\n", "call = \"send_commands\"\ncmd = [\"/bin/sh\"]\n", "call = \"\"\n"] {
+        let err = Runbook::parse(&source(bad)).unwrap_err().to_string();
+        assert!(err.contains("hub") || err.contains("call"), "{bad:?}: {err}");
+    }
+    // sending the list or rotating the keys needs an account on the machine; revoking is the hub's alone (7.3.12)
+    let needs = |call: &str| Runbook::parse(&source(&format!("call = \"{call}\"\n"))).unwrap().steps[0].needs_account();
+    assert_eq!((needs("send_commands"), needs("rotate_keys"), needs("revoke")), (true, true, false));
+    let ssh = Runbook::parse(
+        &source("call = \"send_commands\"\n").replace("kind = \"hub\"", "kind = \"ssh\"\ncmd = [\"x\"]"),
+    );
+    assert!(ssh.unwrap().steps[0].needs_account());
+}
+
+/// `sudoers-refresh`: one hub step, high risk, no parameter (what it sends is the hub's own list).
+#[test]
+fn sudoers_refresh_sends_the_hubs_list() {
+    let r = Runbook::parse(builtin::runbook("sudoers-refresh").expect("built in")).unwrap();
+    assert_eq!((r.risk, r.autonomy), (crate::runbook::Risk::High, 1));
+    assert_eq!(r.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), [StepKind::Hub]);
+    assert_eq!(r.steps[0].call.as_deref(), Some("send_commands"));
+    assert!(r.params.is_empty() && r.triggers.is_none());
 }

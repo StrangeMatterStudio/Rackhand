@@ -44,14 +44,47 @@ impl std::fmt::Debug for HubSetup {
     }
 }
 
+/// The runbooks enabled now: every runbook in the Library that parses.
+pub fn enabled_runbooks(db: &Db) -> Vec<rackhand_runbook::runbook::Runbook> {
+    Library::all_current(db)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(kind, _, _)| *kind == Kind::Runbook)
+        .filter_map(|(_, _, text)| rackhand_runbook::runbook::Runbook::parse(&text).ok())
+        .collect()
+}
+
+/// How long a command list sent by `sudoers-refresh` stays valid: it is installed at once.
+const REFRESH_COMMANDS_TTL_MS: i64 = 600_000;
+
+/// What `sudoers-refresh` sends: the command list of the enabled runbooks, signed with the node key.
+pub struct CommandSigner {
+    pub db: Arc<Db>,
+    pub signing: ed25519_dalek::SigningKey,
+}
+
+impl std::fmt::Debug for CommandSigner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CommandSigner").finish_non_exhaustive()
+    }
+}
+
+impl rackhand_hub::executor::HubSide for CommandSigner {
+    fn signed_commands(&self, now_ms: i64) -> Vec<u8> {
+        // versioned by the time in milliseconds, as the list in a join is, so the machine finds it newer
+        rackhand_hub::executor::commands::signed_command_list(
+            &self.signing,
+            &enabled_runbooks(&self.db),
+            now_ms.max(0) as u64,
+            now_ms,
+            REFRESH_COMMANDS_TTL_MS,
+        )
+    }
+}
+
 impl ManagedSetupSource for HubSetup {
     fn managed_setup(&self, _machine_id: ulid::Ulid, with_assistant: bool) -> ManagedSetup {
-        let runbooks: Vec<_> = Library::all_current(&self.db)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|(kind, _, _)| *kind == Kind::Runbook)
-            .filter_map(|(_, _, text)| rackhand_runbook::runbook::Runbook::parse(&text).ok())
-            .collect();
+        let runbooks = enabled_runbooks(&self.db);
         let now = now_ms();
         let bytes = rackhand_hub::executor::commands::signed_command_list(
             &self.signing,

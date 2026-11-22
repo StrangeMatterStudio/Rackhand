@@ -569,3 +569,19 @@ async fn hypervisor_view_from_its_api() {
     let ct = v.guests.iter().find(|g| g.vmid == 100).unwrap();
     assert_eq!((ct.kind.as_str(), ct.name.as_str(), ct.running), ("lxc", "ct-test", true));
 }
+
+/// A `hub` step is the hub's own: without the part of the hub that does it, it fails like any unwired kind.
+#[tokio::test(flavor = "multi_thread")]
+async fn hub_step_unavailable_until_wired() {
+    use crate::executor::Executor;
+    use crate::ssh::hostkeys::HostKeys;
+    use crate::vault::Vault;
+    use crate::vault::master_key::MasterKey;
+    let db = db("hubstep").await;
+    let vault = Arc::new(Vault::new(MasterKey::from_bytes([4u8; 32]), db.clone()));
+    let (host_keys, _) = HostKeys::new(db.clone());
+    let executor = Executor::new(vault, host_keys);
+    let result =
+        executor.run(&ctx(Duration::from_secs(2)), &step("kind = \"hub\"\ncall = \"send_commands\"\n"), None).await;
+    assert_eq!(result.outcome, StepOutcome::Failed("hub_unavailable".into()));
+}

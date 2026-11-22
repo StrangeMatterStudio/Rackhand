@@ -232,8 +232,13 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let enroll_test = Arc::new(rackhand_hub::ssh::enroll_test::EnrollTest::new(db.clone(), Arc::new(pinned)));
     joins::spawn_enroll_tests(ingest.clone(), enroll_test.clone(), greeted_rx, joins::SSH_RETRY);
     let machines = Arc::new(patching::Machines { db: db.clone(), ingest: ingest.clone() });
+    let node_key = rackhand_net::key::load_or_create(&config.node_key)
+        .map_err(|e| format!("{}: {e}", config.node_key.display()))?;
+    let signer =
+        joins::CommandSigner { db: db.clone(), signing: ed25519_dalek::SigningKey::from_bytes(&node_key.to_bytes()) };
     let executor = rackhand_hub::executor::Executor::new(vault.clone(), host_keys.clone())
         .with_other(Arc::new(steps(&db, &vault, &notify, &ingest, &probe_server)))
+        .with_hub(Arc::new(signer))
         .with_reboot(machines.clone(), REBOOT_WAIT);
     let actions = rackhand_hub::actions::Actions::new(db.clone(), audit.clone(), bus.clone(), Arc::new(executor))
         .with_gate(Arc::new(ingest.clone()));
@@ -279,8 +284,6 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         .with_notify(notify.clone())
         .with_bus(bus.clone());
     // the mesh: probes and MCP clients
-    let node_key = rackhand_net::key::load_or_create(&config.node_key)
-        .map_err(|e| format!("{}: {e}", config.node_key.display()))?;
     let setup = Arc::new(joins::HubSetup {
         db: db.clone(),
         automation: ssh_public(&vault, rackhand_hub::ssh::keys::Identity::Automation).await?,
