@@ -104,6 +104,21 @@ fn max_3_per_site_hypervisors_and_hub_last_one_at_a_time() {
     assert_eq!(starts(&run.step(START + 6 * MIN, online)), ["hub"], "the hub last");
 }
 
+/// The limit and the order are the site's, across the windows of its policies: what other runs have running counts, and
+/// a hypervisor or the hub waits while another run still has machines to patch there.
+#[test]
+fn other_runs_at_the_site_count() {
+    let mut run = Run::new(Window::Security, START, END, vec![machine("a", "s"), machine("b", "s")], 3);
+    let two = Others { running: [("s".to_string(), 2)].into(), waiting: Default::default() };
+    assert_eq!(starts(&run.step_with(START, |_| true, &two)).len(), 1, "2 of 3 places are taken");
+    let hub = with("hub", "s", |c| c.roles = vec!["hub".into()]);
+    let mut last = Run::new(Window::Security, START, END, vec![hub], 3);
+    let waiting = Others { running: Default::default(), waiting: ["s".to_string()].into() };
+    assert!(starts(&last.step_with(START, |_| true, &waiting)).is_empty(), "another run has machines left at the site");
+    assert!(starts(&last.step_with(START, |_| true, &two)).is_empty(), "another run's jobs are running at the site");
+    assert_eq!(starts(&last.step_with(START, |_| true, &Others::default())), ["hub"]);
+}
+
 /// `hold` machines are never patched (E10, AC20).
 #[test]
 fn hold_never_patched() {

@@ -66,6 +66,15 @@ pub enum Order {
     AskApproval { id: String, expires_at_ms: i64 },
 }
 
+/// What the other windows' runs are doing, by site.
+#[derive(Debug, Clone, Default)]
+pub struct Others {
+    /// Jobs running.
+    pub running: BTreeMap<String, usize>,
+    /// Sites with ordinary machines still to patch.
+    pub waiting: HashSet<String>,
+}
+
 /// Whether the window takes the machine, and how.
 pub fn eligible(c: &Candidate, window: Window) -> Option<How> {
     if !c.managed || c.in_maintenance || c.quarantined || c.patch == PatchMode::Hold {
@@ -148,6 +157,25 @@ impl Run {
         true
     }
 
+    /// The machines whose approval hasn't been given.
+    pub fn waiting_approval(&self) -> Vec<String> {
+        self.waiting_approval.iter().filter(|id| !self.approved.contains(*id)).cloned().collect()
+    }
+
+    /// The jobs running, by site.
+    pub fn running_by_site(&self) -> BTreeMap<String, usize> {
+        let mut by_site = BTreeMap::new();
+        for site in self.running.values() {
+            *by_site.entry(site.clone()).or_default() += 1;
+        }
+        by_site
+    }
+
+    /// The sites with ordinary machines still to patch.
+    pub fn waiting_sites(&self) -> HashSet<String> {
+        self.todo.iter().filter(|c| !last(c)).map(|c| c.site.clone()).collect()
+    }
+
     /// The machine's job ended (whatever its outcome).
     pub fn finished(&mut self, id: &str) {
         self.running.remove(id);
@@ -155,6 +183,11 @@ impl Run {
 
     /// What to do at `now_ms`: approvals to ask for and jobs to start, the per-site limit and the order kept.
     pub fn step(&mut self, now_ms: i64, online: impl Fn(&str) -> bool) -> Vec<Order> {
+        self.step_with(now_ms, online, &Others::default())
+    }
+
+    /// `step`, counting what the other windows' runs are doing at each site.
+    pub fn step_with(&mut self, now_ms: i64, online: impl Fn(&str) -> bool, others: &Others) -> Vec<Order> {
         let mut orders = Vec::new();
         if self.ended(now_ms) || now_ms < self.starts_ms {
             return orders;
@@ -163,7 +196,7 @@ impl Run {
             orders.push(Order::AskApproval { id: id.clone(), expires_at_ms: self.ends_ms });
             self.asked.insert(id);
         }
-        let mut per_site: BTreeMap<String, usize> = BTreeMap::new();
+        let mut per_site: BTreeMap<String, usize> = others.running.clone();
         for site in self.running.values() {
             *per_site.entry(site.clone()).or_default() += 1;
         }
@@ -178,9 +211,10 @@ impl Run {
             let busy = per_site.get(&c.site).copied().unwrap_or(0);
             if last(c) {
                 // only once nothing else at the site is left to patch or running
-                let others = self.todo.iter().any(|o| o.site == c.site && o.id != c.id && !last(o))
+                let before = others.waiting.contains(&c.site)
+                    || self.todo.iter().any(|o| o.site == c.site && o.id != c.id && !last(o))
                     || self.todo[..i].iter().any(|o| o.site == c.site && last(o));
-                if busy > 0 || others {
+                if busy > 0 || before {
                     continue;
                 }
             } else if busy >= self.per_site {
