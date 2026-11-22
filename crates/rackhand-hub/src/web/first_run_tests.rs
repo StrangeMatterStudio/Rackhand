@@ -442,3 +442,19 @@ async fn a_page_left_open_for_hours_can_still_be_sent() {
     let age: i64 = cookie.split("Max-Age=").nth(1).unwrap().split(';').next().unwrap().parse().unwrap();
     assert!(age >= 12 * 3600, "the form's cookie outlives a working day: {cookie}");
 }
+
+/// Hashing a password is work, so nobody without the setup code gets it done without a limit.
+#[tokio::test(flavor = "multi_thread")]
+async fn attempts_without_a_setup_code_are_limited_too() {
+    let app = app("fr-no-code").await;
+    for i in 0..6 {
+        let opened = open_first_run(&app).await;
+        let (code, html) = step_one(&app, &opened, &with(&[("setup_code", "")])).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST, "attempt {i}");
+        assert_ne!(error_of(&html, "first-run", "setup_code"), "");
+    }
+    let opened = open_first_run(&app).await;
+    let (code, html) = step_one(&app, &opened, &with(&[("setup_code", "")])).await;
+    assert_eq!(code, StatusCode::TOO_MANY_REQUESTS);
+    assert_ne!(error_of(&html, "first-run", "password"), "", "it wasn't looked at, and says so");
+}

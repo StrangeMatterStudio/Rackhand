@@ -224,14 +224,16 @@ pub(super) async fn submit(web: &Web, ctx: &Ctx) -> Response<Body> {
     }
     let mut code = StatusCode::BAD_REQUEST;
     let setup = form.value("setup_code");
-    if !draft.setup_ok && !setup.is_empty() {
+    if !draft.setup_ok {
         let given: [u8; 32] = Sha256::digest(setup.as_bytes()).into();
-        if same(&given, &web.0.config.setup_code_hash) {
-            draft.setup_ok = true;
-        } else {
-            if let Ok(mut l) = web.0.limits.lock() {
-                l.fail(&attempt, ctx.now_ms);
-            }
+        draft.setup_ok = same(&given, &web.0.config.setup_code_hash);
+    }
+    if !draft.setup_ok {
+        // a missing code counts too: what follows hashes a password
+        if let Ok(mut l) = web.0.limits.lock() {
+            l.fail(&attempt, ctx.now_ms);
+        }
+        if !setup.is_empty() {
             form.refuse("setup_code", "That isn't the setup code the installer printed");
             code = StatusCode::FORBIDDEN;
         }

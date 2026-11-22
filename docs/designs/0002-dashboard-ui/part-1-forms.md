@@ -90,7 +90,7 @@ hashed."
 
 | Test | Failed before | Passes |
 | --- | --- | --- |
-| `web::tests::first_run::*` (13) and the 4 existing first-run tests, moved to two steps | 2026-11-22, 17 of 17 | 2026-11-22 |
+| `web::tests::first_run::*` (14) and the 4 existing first-run tests, moved to two steps | 2026-11-22, 17 of 17, then `attempts_without_a_setup_code_are_limited_too` | 2026-11-22 |
 | `web::tests::forms::*` (12) | 2026-11-22, 12 of 12 | 2026-11-22 |
 | `a_failed_test_message_stays_on_the_notifiers_page`, `wrong_codes_keep_the_step_and_the_last_one_says_why_it_ends`, `held_secrets_expire_and_work_once`, `the_rules_shown_are_the_rules_kept` | Written after their change; each failed with its change broken on purpose | 2026-11-22 |
 
@@ -104,4 +104,5 @@ browsers on the second step.
 - Step-up still returns to the overview, not to what asked for it.
 - An appliance or machine whose form was abandoned keeps its name (a `pending` row), so the same name is refused until
   that row is gone. That is the Registry's; it isn't changed here.
+- A missing setup code counts as a failed attempt, as a wrong one does: what follows it hashes a password.
 - The integration and live tiers' first-run clients are updated and compile; they haven't been run in this branch.
