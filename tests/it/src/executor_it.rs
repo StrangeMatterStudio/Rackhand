@@ -56,6 +56,38 @@ cmd = ["sudo", "/usr/local/lib/rackhand/run", "/bin/sleep", "601"]
 timeout = "5s"
 "#;
 
+    /// A reboot if the machine asks for one; `wait` is how long it may take to come back.
+    const REBOOT: &str = r#"name = "reboot-now"
+description = "Reboot if required"
+identity = "automation"
+risk = "normal"
+autonomy = 2
+[[step]]
+id = "reboot"
+kind = "reboot_if_required"
+timeout = "60s"
+"#;
+
+    /// The machine's policy and whether it is back, as a test sets them.
+    #[derive(Debug, Default)]
+    pub(super) struct Facts {
+        auto: std::sync::atomic::AtomicBool,
+        back: std::sync::atomic::AtomicBool,
+        reporting: std::sync::atomic::AtomicBool,
+    }
+
+    impl rackhand_hub::executor::RebootFacts for Facts {
+        fn auto_reboot(&self, _machine: &str) -> bool {
+            self.auto.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn back_since(&self, _machine: &str, _since_ms: i64) -> bool {
+            self.back.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn reported_since(&self, _machine: &str, _since_ms: i64) -> bool {
+            self.reporting.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
     fn slow(timeout: &str) -> String {
         format!(
             r#"name = "slow"
@@ -81,6 +113,7 @@ timeout = "{timeout}"
         pub(super) machine: Container,
         pub(super) actions: Actions,
         pub(super) events: Subscription,
+        facts: Arc<Facts>,
     }
 
     pub(super) fn sh(c: &Container, script: &str) {
@@ -144,8 +177,8 @@ timeout = "{timeout}"
         library.save(Kind::Runbook, "plain", PLAIN, "admin", 1).await.unwrap();
         library.save(Kind::Runbook, "slow", &slow, "admin", 1).await.unwrap();
         library.save(Kind::Runbook, "wrapped", WRAPPED, "admin", 1).await.unwrap();
-        let runbooks =
-            [Runbook::parse(PLAIN).unwrap(), Runbook::parse(&slow).unwrap(), Runbook::parse(WRAPPED).unwrap()];
+        library.save(Kind::Runbook, "reboot-now", REBOOT, "admin", 1).await.unwrap();
+        let runbooks = [PLAIN, slow.as_str(), WRAPPED, REBOOT].map(|r| Runbook::parse(r).unwrap());
         let now = rackhand_store::ids::now_ms();
         let payload = signed_command_list(&node, &runbooks, 1, now, 3_600_000);
         let install = machine.exec(Some("rackhand"), &["sudo", "-n", WRAPPER, "install-commands"], Some(&payload));
@@ -158,9 +191,12 @@ timeout = "{timeout}"
         wait_listening(&format!("{ip}:22")).await;
         let bus = Bus::new();
         let events = bus.subscribe("test");
-        let executor = Executor::new(vault, host_keys).with_poll(Duration::from_millis(500));
+        let facts = Arc::new(Facts::default());
+        let executor = Executor::new(vault, host_keys)
+            .with_poll(Duration::from_millis(500))
+            .with_reboot(facts.clone(), Duration::from_secs(6));
         let actions = Actions::new(db.clone(), audit, bus, Arc::new(executor)).with_lock_wait(lock_wait);
-        Lab { db, machine, actions, events }
+        Lab { db, machine, actions, events, facts }
     }
 
     async fn wait_listening(addr: &str) {
@@ -391,6 +427,59 @@ timeout = "{timeout}"
             lab.actions.exec(&assistant, "m1", "echo \"$(id -un)\"; exit 4", Duration::from_secs(30)).await.unwrap();
         assert_eq!((String::from_utf8_lossy(&ok.stdout).trim(), ok.exit_code), ("rackhand-ai", Some(4)));
         assert!(ok.command.as_deref().is_some_and(|c| c.starts_with("timeout -k 5 30 sh -c ")), "{:?}", ok.command);
+    }
+
+    /// 7.8.7 and 7.5.3: the step reboots only when the machine asks for it (`/run/reboot-required`) and its policy has
+    /// `auto_reboot`, through the wrapper, and waits until the machine reports again; a machine that doesn't come back
+    /// fails `no_report_after_reboot` (E11, D45). `/sbin/reboot` is a stand-in: a container can't reboot.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reboot_if_required_reboots_only_when_flagged() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let lab = lab("reboot", "60s", Duration::from_secs(5)).await;
+        sh(
+            &lab.machine,
+            "rm -f /sbin/reboot; printf '#!/bin/sh\\nid -un >> /root/rebooted\\n' > /sbin/reboot; chmod 755 /sbin/reboot",
+        );
+        let reboots = |lab: &Lab| {
+            let out = lab.machine.root("cat /root/rebooted 2>/dev/null | wc -l; head -1 /root/rebooted 2>/dev/null");
+            String::from_utf8_lossy(&out.stdout).split_whitespace().map(str::to_string).collect::<Vec<_>>()
+        };
+        let run = |lab: &Lab| {
+            let a = lab.actions.clone();
+            async move { a.run(StartJob { params: BTreeMap::new(), ..start("reboot-now", ("unused", "")) }).await.unwrap() }
+        };
+        let said = |lab: &Lab, job: &str| -> serde_json::Value {
+            serde_json::from_slice(&step(&lab.db, job).stdout).unwrap_or_default()
+        };
+        lab.facts.auto.store(true, SeqCst);
+        lab.facts.back.store(true, SeqCst);
+        let none = run(&lab).await;
+        assert_eq!(none.outcome, JobOutcome::Succeeded, "{none:?}");
+        assert_eq!(said(&lab, &none.job_id)["reboot"], "not_required");
+        assert_eq!(reboots(&lab), ["0"]);
+
+        sh(&lab.machine, "touch /run/reboot-required");
+        lab.facts.auto.store(false, SeqCst);
+        let held = run(&lab).await;
+        assert_eq!(held.outcome, JobOutcome::Succeeded, "{held:?}");
+        assert_eq!(said(&lab, &held.job_id)["reboot"], "required_not_allowed");
+        assert_eq!(reboots(&lab), ["0"], "the policy doesn't reboot");
+
+        lab.facts.auto.store(true, SeqCst);
+        let done = run(&lab).await;
+        assert_eq!(done.outcome, JobOutcome::Succeeded, "{done:?}");
+        assert_eq!(said(&lab, &done.job_id)["reboot"], "done");
+        assert_eq!(reboots(&lab), ["1", "root"], "once, as root through the wrapper");
+
+        lab.facts.back.store(false, SeqCst);
+        let lost = run(&lab).await;
+        assert_eq!((lost.outcome, lost.reason.as_deref()), (JobOutcome::Failed, Some("no_report_after_reboot")));
+        assert_eq!(said(&lab, &lost.job_id)["reboot"], "done", "the job log says it rebooted");
+
+        // a machine that goes on reporting hasn't rebooted: not the silence that rolls a guest back
+        lab.facts.reporting.store(true, SeqCst);
+        let up = run(&lab).await;
+        assert_eq!((up.outcome, up.reason.as_deref()), (JobOutcome::Failed, Some("did_not_reboot")));
     }
 
     /// A notifier that records messages, or fails every send.

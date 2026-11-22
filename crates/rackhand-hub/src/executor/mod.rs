@@ -4,6 +4,7 @@
 
 pub mod commands;
 mod detached;
+mod reboot;
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -19,6 +20,7 @@ use crate::ssh::quote;
 use crate::vault::Vault;
 
 pub use detached::POLL;
+pub use reboot::{NO_REPORT, RebootFacts};
 
 /// Step kinds whose systems aren't wired to the Executor yet fail with `<kind>_unavailable`.
 #[derive(Debug, Default)]
@@ -76,6 +78,7 @@ pub struct Executor {
     vault: Arc<Vault>,
     host_keys: Arc<HostKeys>,
     other: Arc<dyn StepRunner>,
+    reboot: Option<(Arc<dyn RebootFacts>, Duration)>,
     poll: Duration,
     port: u16,
 }
@@ -108,7 +111,13 @@ fn from_output(command: String, out: Output) -> StepResult {
 
 impl Executor {
     pub fn new(vault: Arc<Vault>, host_keys: Arc<HostKeys>) -> Executor {
-        Executor { vault, host_keys, other: Arc::new(Unavailable), poll: POLL, port: 22 }
+        Executor { vault, host_keys, other: Arc::new(Unavailable), reboot: None, poll: POLL, port: 22 }
+    }
+
+    /// Runs `reboot_if_required` steps; a rebooted machine has `wait` to report again.
+    pub fn with_reboot(mut self, facts: Arc<dyn RebootFacts>, wait: Duration) -> Executor {
+        self.reboot = Some((facts, wait));
+        self
     }
 
     /// The runner for step kinds other than `ssh`.
@@ -227,6 +236,7 @@ impl StepRunner for Executor {
                 (StepKind::Ssh, Some(argv)) => self.plain(ctx, identity(ctx.identity), argv).await,
                 // `windows_script` steps go through the dispatcher (T90).
                 (StepKind::Ssh, None) => StepResult::failed("windows_unavailable"),
+                (StepKind::RebootIfRequired, _) if self.reboot.is_some() => self.reboot_if_required(ctx).await,
                 _ => self.other.run(ctx, step, argv).await,
             }
         })

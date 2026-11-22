@@ -45,3 +45,14 @@ checks = ["service_active:{{unit}}"]
     assert_eq!(json["commands"][1]["args"][2]["param"], "unit");
     assert_eq!(json["commands"][1]["args"][0]["literal"], "/usr/bin/systemctl");
 }
+
+/// A `reboot_if_required` step has no `cmd`: its fixed reboot command is in the list for the runbooks that have one.
+#[test]
+fn reboot_step_adds_its_fixed_command() {
+    let patch = crate::runbook::Runbook::parse(crate::builtin::runbook("patch-debian").unwrap()).unwrap();
+    let list = command_list(&[patch]);
+    let reboot: Vec<_> = list.commands.iter().filter(|t| t.step == "reboot").collect();
+    assert_eq!(reboot.len(), 1);
+    assert_eq!(reboot[0].args, [Arg::Literal("/sbin/reboot".into())]);
+    assert!(list.commands.iter().all(|t| t.step == "reboot" || !t.args.contains(&Arg::Literal("/sbin/reboot".into()))));
+}

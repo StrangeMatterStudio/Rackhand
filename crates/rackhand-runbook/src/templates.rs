@@ -6,6 +6,9 @@ use serde::ser::{SerializeMap, Serializer};
 
 use crate::runbook::{Runbook, StepKind};
 
+/// What a `reboot_if_required` step runs through the wrapper, on systemd and OpenRC alike.
+pub const REBOOT: &str = "/sbin/reboot";
+
 /// The automation user's only sudo entry.
 pub const WRAPPER: &str = "/usr/local/lib/rackhand/run";
 
@@ -55,7 +58,7 @@ pub(crate) fn wrapped(cmd: &[String]) -> Option<&[String]> {
     }
 }
 
-/// The command list for the enabled runbooks.
+/// The command list for the enabled runbooks: their wrapped `ssh` steps, and the reboot of those that may reboot.
 pub fn command_list(runbooks: &[Runbook]) -> CommandList {
     let mut commands = Vec::new();
     for rb in runbooks {
@@ -75,6 +78,10 @@ pub fn command_list(runbooks: &[Runbook]) -> CommandList {
                     }
                 })
                 .collect();
+            commands.push(Template { runbook: rb.name.clone(), step: step.id.clone(), args });
+        }
+        for step in rb.steps.iter().filter(|s| s.kind == StepKind::RebootIfRequired) {
+            let args = vec![Arg::Literal(REBOOT.into())];
             commands.push(Template { runbook: rb.name.clone(), step: step.id.clone(), args });
         }
     }
