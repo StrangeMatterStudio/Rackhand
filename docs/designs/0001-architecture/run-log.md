@@ -146,3 +146,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-22 | T59c3 done: `patch_failed` and the D45 rollback (D97) |
 | 2026-11-22 | Integration tier 52 of 52 on 388c641; the reboot step wired in the hub, the window loop still off |
 | 2026-11-22 | T59d done: patch integration tests with real apt; `apt-get update` didn't wait for its lock, fixed (D98) |
+| 2026-11-22 | Environment blocker: WSL's clock runs 10% fast and is stepped back 4.5 s every 30 s; the integration tier failed 3 of 56 on 5dff0bd. Integration, live and timed work waits for a sound clock (owner: restart WSL) |
