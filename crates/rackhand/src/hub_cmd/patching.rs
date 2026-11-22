@@ -1,16 +1,24 @@
 //! What patching asks about machines, from the hub's own systems (7.5.3): whether one is heard from, what it has
 //! pending, whether a maintenance window covers it, and, for the reboot step, its policy and whether it started again.
+//! Also the loop that takes up patch windows, and what tells Incidents that a machine's silence is expected.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use jiff::tz::TimeZone;
-use rackhand_hub::actions::patching::driver::World;
+use rackhand_hub::actions::Actions;
+use rackhand_hub::actions::patching::driver::{self, Driver, World};
 use rackhand_hub::actions::patching::rollback::defaults;
 use rackhand_hub::executor::RebootFacts;
+use rackhand_hub::incidents::machine_silence::Quiet;
 use rackhand_hub::ingest::Ingest;
 use rackhand_hub::policy::store;
 use rackhand_hub::scheduler::windows::{Target, Window, maintenance_active};
 use rackhand_store::Db;
+use rackhand_store::ids::now_ms;
+
+/// How often the hub looks for patch windows that opened and for what their runs need next.
+pub const WINDOW_POLL: Duration = Duration::from_secs(30);
 
 /// A machine is heard from while its last report is younger than this, or 4 of its intervals if that is longer, as its
 /// silence is judged (7.6.3).
@@ -89,6 +97,55 @@ impl RebootFacts for Machines {
     fn reported_since(&self, machine: &str, since_ms: i64) -> bool {
         self.ingest.last_seen(machine).is_some_and(|seen| seen >= since_ms)
     }
+}
+
+/// What Incidents asks before it calls a machine silent (7.6.3).
+#[derive(Debug, Clone)]
+pub struct Expected {
+    pub machines: Arc<Machines>,
+    pub actions: Actions,
+}
+
+impl Quiet for Expected {
+    fn in_maintenance(&self, machine: &str, tags: &[String], now_ms: i64) -> bool {
+        World::in_maintenance(&*self.machines, machine, tags, now_ms)
+    }
+
+    fn awaiting_reboot(&self, machine: &str) -> bool {
+        self.actions.awaiting_reboot(machine)
+    }
+}
+
+/// Tells the driver which patch windows are open.
+pub async fn tick(db: &Db, driver: &Arc<Driver>, now_ms: i64) {
+    let open = match rackhand_hub::scheduler::patching::open(db, now_ms) {
+        Ok(open) => open,
+        Err(e) => return tracing::warn!(error = %e, "patch windows"),
+    };
+    let open = open
+        .into_iter()
+        .map(|w| driver::OpenWindow {
+            policy: w.policy,
+            site: w.site,
+            window: if w.full { driver::Window::Full } else { driver::Window::Security },
+            starts_ms: w.starts_ms,
+            ends_ms: w.ends_ms,
+            next_ends_ms: w.next_ends_ms,
+        })
+        .collect();
+    driver.tick(open, now_ms).await;
+}
+
+/// Takes up patch windows as they open (7.5.3), every `every`.
+pub fn spawn(db: Arc<Db>, driver: Arc<Driver>, every: Duration) {
+    tokio::spawn(async move {
+        let mut poll = tokio::time::interval(every);
+        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            poll.tick().await;
+            tick(&db, &driver, now_ms()).await;
+        }
+    });
 }
 
 #[cfg(test)]

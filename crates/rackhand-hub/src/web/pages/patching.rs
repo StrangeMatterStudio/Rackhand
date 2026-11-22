@@ -17,14 +17,52 @@ struct PatchRun {
     state: String,
 }
 
+/// A machine's updates as its latest report gave them, and what its policy does with them.
+struct MachineUpdates {
+    id: String,
+    name: String,
+    policy: String,
+    patch: String,
+    /// Pending, and the security ones among them.
+    counts: Option<(u32, u32)>,
+    reboot_required: bool,
+}
+
 #[derive(Template)]
 #[template(path = "patching.html")]
 struct Page<'a> {
     csrf: &'a str,
+    machines: Vec<MachineUpdates>,
     policies: Vec<PolicyRow>,
     windows: Vec<WindowRow>,
     runs: Vec<PatchRun>,
     can_edit: bool,
+}
+
+fn machine_updates(web: &Web) -> rusqlite::Result<Vec<MachineUpdates>> {
+    type Listed = (String, String, Option<String>, Option<String>);
+    let rows: Vec<Listed> = web.0.db.readers().with(|c| {
+        let mut s = c.prepare(
+            "SELECT m.id, m.name, p.name, p.patch FROM machines m LEFT JOIN policies p ON p.id = m.policy_id
+             WHERE m.state = 'enrolled' ORDER BY m.name, m.id",
+        )?;
+        s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect()
+    })?;
+    let updates = |id: &str| web.0.ingest.as_ref().and_then(|i| i.latest(id)).and_then(|l| l.updates);
+    Ok(rows
+        .into_iter()
+        .map(|(id, name, policy, patch)| {
+            let u = updates(&id);
+            MachineUpdates {
+                name,
+                policy: policy.unwrap_or_else(|| "no policy".into()),
+                patch: patch.unwrap_or_else(|| "never".into()),
+                counts: u.as_ref().map(|u| (u.pending, u.security)),
+                reboot_required: u.is_some_and(|u| u.reboot_required),
+                id,
+            }
+        })
+        .collect())
 }
 
 pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
@@ -47,11 +85,13 @@ pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
             rows.collect()
         })
         .unwrap_or_default();
-    let (Ok(policies), Ok(windows)) = (store::policies(&web.0.db), store::windows(&web.0.db)) else {
+    let (Ok(policies), Ok(windows), Ok(machines)) =
+        (store::policies(&web.0.db), store::windows(&web.0.db), machine_updates(web))
+    else {
         return status(StatusCode::INTERNAL_SERVER_ERROR, "Policies unreadable");
     };
     let can_edit = ctx.user.as_ref().is_some_and(|u| allowed(u.role, Permission::EditLibrary));
-    html(StatusCode::OK, Page { csrf: &ctx.csrf, policies, windows, runs, can_edit }.render())
+    html(StatusCode::OK, Page { csrf: &ctx.csrf, machines, policies, windows, runs, can_edit }.render())
 }
 
 /// The outcome of a policy or window change; a stored change also goes to the git mirror (7.3.13).

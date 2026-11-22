@@ -74,8 +74,14 @@ impl OpenWindow {
 struct Active {
     open: OpenWindow,
     run: Run,
-    /// Each selected machine's runbook, and whether its policy asks for approval.
-    machines: BTreeMap<String, (&'static str, bool)>,
+    machines: BTreeMap<String, Selected>,
+}
+
+struct Selected {
+    runbook: &'static str,
+    /// Its policy asks for approval.
+    ask: bool,
+    tags: Vec<String>,
 }
 
 #[derive(Default)]
@@ -201,7 +207,6 @@ impl Driver {
             let patch = PatchMode::parse(&patch);
             let (pending_security, pending_total) = self.world.pending(&id);
             let ask = patch == PatchMode::ApproveOnly;
-            machines.insert(id.clone(), (runbook, ask));
             candidates.push(Candidate {
                 approved: ask && self.approved(runbook, &id, now_ms).is_some(),
                 site: open.site.clone(),
@@ -213,8 +218,9 @@ impl Driver {
                 pending_total,
                 in_maintenance: self.world.in_maintenance(&id, &tags, now_ms),
                 quarantined: quarantine != "none",
-                id,
+                id: id.clone(),
             });
+            machines.insert(id, Selected { runbook, ask, tags });
         }
         let run = Run::new(open.window, open.starts_ms, open.ends_ms, candidates, DEFAULT_PER_SITE);
         Ok(Active { open: open.clone(), run, machines })
@@ -236,8 +242,8 @@ impl Driver {
         for i in 0..state.runs.len() {
             let a = &mut state.runs[i];
             for id in a.run.waiting_approval() {
-                if let Some((runbook, _)) = a.machines.get(&id) {
-                    if self.approved(runbook, &id, now_ms).is_some() {
+                if let Some(m) = a.machines.get(&id) {
+                    if self.approved(m.runbook, &id, now_ms).is_some() {
                         a.run.approved(&id, now_ms);
                     }
                 }
@@ -251,14 +257,19 @@ impl Driver {
                     others.waiting.extend(o.run.waiting_sites());
                 }
             }
+            // A machine whose maintenance window started since the selection waits as an offline one does (AC20).
             let world = self.world.clone();
-            let orders = state.runs[i].run.step_with(now_ms, |id| world.online(id, now_ms), &others);
+            let Active { run, machines, .. } = &mut state.runs[i];
+            let available = |id: &str| {
+                world.online(id, now_ms) && !machines.get(id).is_some_and(|m| world.in_maintenance(id, &m.tags, now_ms))
+            };
+            let orders = run.step_with(now_ms, available, &others);
             for order in orders {
                 match order {
                     Order::AskApproval { id, .. } => {
                         let a = &state.runs[i];
-                        if let Some((runbook, _)) = a.machines.get(&id) {
-                            self.ask(runbook, &id, &a.open, now_ms).await;
+                        if let Some(m) = a.machines.get(&id) {
+                            self.ask(m.runbook, &id, &a.open, now_ms).await;
                         }
                     }
                     Order::Start(id) => self.start(&mut state, i, id, now_ms),
@@ -326,7 +337,7 @@ impl Driver {
 
     fn start(self: &Arc<Driver>, state: &mut State, run: usize, machine: String, now_ms: i64) {
         let a = &mut state.runs[run];
-        let Some((runbook, ask)) = a.machines.get(&machine).copied() else { return };
+        let Some((runbook, ask)) = a.machines.get(&machine).map(|m| (m.runbook, m.ask)) else { return };
         // another window's run has it already
         if !state.inflight.insert(machine.clone()) {
             a.run.finished(&machine);

@@ -9,7 +9,7 @@ mod dedupe;
 mod evaluate;
 mod forecasts;
 mod lifecycle;
-mod machine_silence;
+pub mod machine_silence;
 pub mod notes;
 mod reconcile;
 pub mod replay;
@@ -17,7 +17,7 @@ pub mod routing;
 mod silences;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use rackhand_detect::rules::Rule;
 use rackhand_detect::threshold::RuleState;
@@ -81,6 +81,7 @@ struct Inner {
     bus: Bus,
     rules: Vec<Rule>,
     eval: Mutex<Eval>,
+    quiet: OnceLock<Arc<dyn machine_silence::Quiet>>,
 }
 
 impl Incidents {
@@ -102,7 +103,7 @@ impl Incidents {
             last_forecast_ms: i64::MIN / 2,
             ..Eval::default()
         };
-        Incidents { inner: Arc::new(Inner { db, ingest, bus, rules, eval: Mutex::new(eval) }) }
+        Incidents { inner: Arc::new(Inner { db, ingest, bus, rules, eval: Mutex::new(eval), quiet: OnceLock::new() }) }
     }
 
     fn eval(&self) -> MutexGuard<'_, Eval> {

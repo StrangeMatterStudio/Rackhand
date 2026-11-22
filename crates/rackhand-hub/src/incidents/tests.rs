@@ -564,6 +564,109 @@ async fn expected_offline_is_info_only() {
     assert!(env.incidents().iter().all(|i| !i.3.starts_with(M2)), "no incident for the sleeping machine");
 }
 
+/// What the hub would say about a machine's maintenance window and reboot job.
+#[derive(Debug, Default)]
+struct FakeQuiet {
+    /// Machines in a maintenance window, by id or tag.
+    maintenance: std::sync::Mutex<std::collections::HashSet<String>>,
+    rebooting: std::sync::Mutex<std::collections::HashSet<String>>,
+}
+
+impl machine_silence::Quiet for FakeQuiet {
+    fn in_maintenance(&self, machine: &str, tags: &[String], _now_ms: i64) -> bool {
+        let m = self.maintenance.lock().unwrap();
+        m.contains(machine) || tags.iter().any(|t| m.contains(t))
+    }
+    fn awaiting_reboot(&self, machine: &str) -> bool {
+        self.rebooting.lock().unwrap().contains(machine)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn no_silence_during_maintenance_or_reboot_wait() {
+    // M1 has the tag `web`; a window for the tag, one for the machine, and a job that reboots it
+    for (name, maintenance, set) in [("tag", true, "web"), ("machine", true, M1), ("reboot", false, M1)] {
+        let mut env = Env::new(&format!("quiet-{name}")).await;
+        let quiet = Arc::new(FakeQuiet::default());
+        env.incidents.set_quiet(quiet.clone());
+        env.incidents.set_started(T0 - 10 * MIN);
+        let held = if maintenance { &quiet.maintenance } else { &quiet.rebooting };
+        held.lock().unwrap().insert(set.to_string());
+        env.sample(M1, CPU, T0, 1.0, Stream::Live, T0).await;
+        env.incidents.evaluate(T0 + MIN).await.unwrap();
+        env.incidents.evaluate(T0 + 20 * MIN).await.unwrap();
+        assert!(env.incidents().is_empty(), "{name}: {:?}", env.incidents());
+        // once it is over, a machine that never came back is silent for as long as it has been
+        held.lock().unwrap().clear();
+        env.incidents.evaluate(T0 + 21 * MIN).await.unwrap();
+        let inc = env.incidents();
+        assert_eq!((inc.len(), inc[0].1.as_str(), inc[0].2.as_str()), (1, "open", "critical"), "{name}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn silence_open_before_maintenance_stays_until_a_report() {
+    // the window says nothing about a machine already silent: it isn't back, and it isn't alerted about again
+    let mut env = Env::new("quiet-open").await;
+    let quiet = Arc::new(FakeQuiet::default());
+    env.incidents.set_quiet(quiet.clone());
+    env.incidents.set_started(T0 - 10 * MIN);
+    env.sample(M1, CPU, T0, 1.0, Stream::Live, T0).await;
+    env.incidents.evaluate(T0 + MIN).await.unwrap();
+    assert_eq!((env.incidents()[0].1.as_str(), env.incidents()[0].2.as_str()), ("open", "warning"));
+    quiet.maintenance.lock().unwrap().insert(M1.into());
+    env.incidents.evaluate(T0 + 30 * MIN).await.unwrap();
+    assert_eq!((env.incidents()[0].1.as_str(), env.incidents()[0].2.as_str()), ("open", "warning"), "held as it was");
+    env.sample(M1, CPU, T0 + 31 * MIN, 1.0, Stream::Live, T0 + 31 * MIN).await;
+    env.incidents.evaluate(T0 + 31 * MIN).await.unwrap();
+    assert_eq!(env.incidents()[0].1, "resolved", "its report resolves it, window or not");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn no_silence_event_or_agentless_silence_in_maintenance() {
+    const NAS: &str = "01JD0000000000000000000003";
+    let env = Env::new("quiet-other").await;
+    let quiet = Arc::new(FakeQuiet::default());
+    env.incidents.set_quiet(quiet.clone());
+    let row = Row::from([
+        ("id", t(NAS)),
+        ("site_id", t("s1")),
+        ("name", t("truenas")),
+        ("kind", t("appliance")),
+        ("driver", t("truenas")),
+        ("state", t("enrolled")),
+    ]);
+    let check = crate::checks::agentless::check_id(NAS);
+    let check_row = Row::from([
+        ("id", t(&check)),
+        ("kind", t("driver")),
+        ("target", t(NAS)),
+        ("interval_s", Value::Integer(60)),
+        ("machine_id", t(NAS)),
+    ]);
+    let mut writes = vec![RowWrite::insert("machines", row), RowWrite::insert("checks", check_row)];
+    for i in 0..5 {
+        writes.push(RowWrite::insert(
+            "check_results",
+            Row::from([("check_id", t(&check)), ("at_ms", Value::Integer(T0 + i * MIN)), ("ok", Value::Integer(0))]),
+        ));
+    }
+    env.db.writer().send(WriteCmd::Batch(writes)).await.unwrap();
+    quiet.maintenance.lock().unwrap().extend([NAS.to_string(), M1.to_string(), M2.to_string()]);
+    env.incidents.set_started(T0 - 10 * MIN);
+    env.incidents.evaluate(T0 + 10 * MIN).await.unwrap();
+    let events = |env: &Env| -> i64 {
+        let sql = "SELECT count(*) FROM events WHERE kind = 'machine.silent'";
+        env.db.readers().with(|c| c.query_row(sql, [], |r| r.get(0))).unwrap()
+    };
+    assert!(env.incidents().is_empty(), "{:?}", env.incidents());
+    assert_eq!(events(&env), 0, "no event for the machine that expects to be offline");
+    quiet.maintenance.lock().unwrap().clear();
+    env.incidents.evaluate(T0 + 11 * MIN).await.unwrap();
+    assert!(env.incidents().iter().any(|i| i.3 == format!("{NAS}:machine.silent:{{}}") && i.2 == "critical"));
+    assert_eq!(events(&env), 1);
+}
+
 impl Env {
     async fn report(&mut self, machine: &str, at: i64, f: impl FnOnce(&mut Report)) {
         self.seq += 1;

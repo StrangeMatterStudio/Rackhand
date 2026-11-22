@@ -7,6 +7,7 @@ pub mod diagnostics;
 pub mod jobs;
 mod locks;
 pub mod patching;
+mod reboots;
 pub mod runner;
 
 use std::collections::BTreeMap;
@@ -135,6 +136,7 @@ struct Inner {
     bus: Bus,
     runner: Arc<dyn StepRunner>,
     locks: locks::MachineLocks,
+    reboots: reboots::Reboots,
 }
 
 #[derive(Clone)]
@@ -153,7 +155,7 @@ impl std::fmt::Debug for Actions {
 impl Actions {
     pub fn new(db: Arc<Db>, audit: Audit, bus: Bus, runner: Arc<dyn StepRunner>) -> Actions {
         Actions {
-            inner: Arc::new(Inner { db, audit, bus, runner, locks: locks::MachineLocks::default() }),
+            inner: Arc::new(Inner { db, audit, bus, runner, locks: Default::default(), reboots: Default::default() }),
             lock_wait: DEFAULT_LOCK_WAIT,
             gate: None,
         }
@@ -163,6 +165,12 @@ impl Actions {
     pub fn with_lock_wait(mut self, wait: Duration) -> Actions {
         self.lock_wait = wait;
         self
+    }
+
+    /// Whether a job that reboots the machine is running and its wait step hasn't ended: the machine's silence is
+    /// expected (7.6.3).
+    pub fn awaiting_reboot(&self, machine_id: &str) -> bool {
+        self.inner.reboots.awaiting(machine_id)
     }
 
     /// What says whether new jobs may start (Ingest, from the hub's free disk).

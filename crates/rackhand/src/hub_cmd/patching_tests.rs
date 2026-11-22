@@ -1,9 +1,14 @@
 use std::collections::BTreeMap;
+use std::time::Duration;
 
+use rackhand_hub::actions::runner::{BoxFuture, StepCtx, StepOutcome, StepResult, StepRunner};
+use rackhand_hub::audit::Audit;
 use rackhand_hub::bus::Bus;
+use rackhand_hub::incidents::machine_silence::Quiet;
 use rackhand_hub::ingest::{DiskSpace, Stream};
 use rackhand_proto::common::LabelEntry;
 use rackhand_proto::probe::{Report, Sample, UpdateSummary};
+use rackhand_runbook::runbook::Step;
 use rackhand_store::ids::now_ms;
 use rackhand_store::{Row, RowWrite, WriteCmd};
 use rusqlite::types::Value;
@@ -111,4 +116,100 @@ async fn reboot_facts_from_the_policy_and_uptime() {
     report(&m, 2, asked + 90_000, 25.0, None).await;
     assert!(m.back_since(M, asked), "up 25 s, 90 s after the reboot was asked for");
     assert!(!m.back_since(M, asked + 120_000), "no report since");
+}
+
+/// Every step succeeds.
+struct Succeeds;
+
+impl StepRunner for Succeeds {
+    fn run<'a>(&'a self, _ctx: &'a StepCtx, _step: &'a Step, _argv: Option<&'a [String]>) -> BoxFuture<'a, StepResult> {
+        Box::pin(async {
+            StepResult {
+                outcome: StepOutcome::Succeeded,
+                command: None,
+                exit_code: Some(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            }
+        })
+    }
+}
+
+/// The hub's systems around patching, the machine's patch window open all day; its maintenance window too when
+/// `maintained` (by its tag).
+async fn patched(name: &str, maintained: bool) -> (Machines, Actions, Arc<Driver>) {
+    let m = machines(name).await;
+    let update = |table, id: &str, set: Row| rackhand_store::RowUpdate { table, key: ("id", t(id)), set };
+    let auto = Row::from([
+        ("patch", t("auto")),
+        ("security_window", t("daily 00:00")),
+        ("full_window", t("daily 00:00")),
+        ("window_length_min", Value::Integer(1440)),
+    ]);
+    let tags = Row::from([("tags", t(if maintained { "[\"db\"]" } else { "[]" }))]);
+    let updates = vec![update("policies", "yes", auto), update("machines", M, tags)];
+    let change = rackhand_store::RegistryChange { updates, ..Default::default() };
+    m.db.writer().send(WriteCmd::RegistryChange(change)).await.unwrap();
+    let audit = Audit::new(m.db.writer());
+    let (library, _) = rackhand_hub::library::items::Library::new(m.db.clone(), audit.clone());
+    library.seed(rackhand_runbook::builtin::runbooks(), 1).await.unwrap();
+    let actions = Actions::new(m.db.clone(), audit, Bus::new(), Arc::new(Succeeds));
+    let driver = Driver::new(m.db.clone(), Arc::new(m.clone()), Arc::new(actions.clone()));
+    (m, actions, driver)
+}
+
+fn count(m: &Machines, sql: &str) -> i64 {
+    m.db.readers().with(|c| c.query_row(sql, [], |r| r.get(0))).unwrap()
+}
+
+const PATCH_JOBS: &str = "SELECT count(*) FROM jobs WHERE name = 'patch-debian' AND requested_by = 'schedule:patch'";
+
+/// AC20, with the same machine outside a maintenance window to show that the window is what holds it.
+#[tokio::test(flavor = "multi_thread")]
+async fn no_patch_or_silence_alert_during_maintenance_window() {
+    for maintained in [true, false] {
+        let (m, actions, driver) = patched(&format!("ac20-{maintained}"), maintained).await;
+        let now = now_ms();
+        report(&m, 1, now, 1000.0, Some((1, 3))).await;
+        tick(&m.db, &driver, now).await;
+        let started = i64::from(!maintained);
+        for _ in 0..200 {
+            if !driver.busy(M).await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(count(&m, PATCH_JOBS), started, "in maintenance: {maintained}");
+        let incidents = rackhand_hub::incidents::Incidents::new(m.db.clone(), m.ingest.clone(), Bus::new());
+        incidents.set_quiet(Arc::new(Expected { machines: Arc::new(m.clone()), actions }));
+        incidents.set_started(now - 3_600_000);
+        incidents.evaluate(now + 600_000).await.unwrap();
+        let silent = format!("SELECT count(*) FROM incidents WHERE kind = 'machine.silent' AND machine_id = '{M}'");
+        assert_eq!(count(&m, &silent), started, "in maintenance: {maintained}");
+    }
+}
+
+/// The hub's loop takes up a window that is open and starts its job without anyone asking.
+#[tokio::test(flavor = "multi_thread")]
+async fn window_loop_starts_the_patch_job() {
+    let (m, _actions, driver) = patched("loop", false).await;
+    report(&m, 1, now_ms(), 1000.0, Some((1, 3))).await;
+    spawn(m.db.clone(), driver, Duration::from_millis(20));
+    for _ in 0..500 {
+        if count(&m, "SELECT count(*) FROM jobs WHERE state = 'succeeded'") > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(count(&m, PATCH_JOBS), 1, "once in the window, however often the loop runs");
+}
+
+/// What Incidents asks, answered from the maintenance windows.
+#[tokio::test(flavor = "multi_thread")]
+async fn expected_silence_from_the_windows() {
+    let (m, actions, _driver) = patched("expected", true).await;
+    let e = Expected { machines: Arc::new(m), actions };
+    assert!(e.in_maintenance(M, &["db".into()], now_ms()));
+    assert!(!e.in_maintenance(M, &["web".into()], now_ms()));
+    assert!(!e.awaiting_reboot(M));
 }

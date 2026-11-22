@@ -1291,6 +1291,81 @@ mod pages {
     const M: &str = "01JD0000000000000000000001";
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn patching_shows_pending_updates_per_machine() {
+        let (app, ingest) = monitored("patching-pending").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let site = site_id(&app.db);
+        let policy = |id: &str, patch: &str| {
+            let row = Row::from([
+                ("id", Value::Text(id.into())),
+                ("name", Value::Text(format!("{id}-policy"))),
+                ("patch", Value::Text(patch.into())),
+            ]);
+            RowWrite::insert("policies", row)
+        };
+        let machine = |id: &str, name: &str, policy: Option<&str>, state: &str| {
+            let mut row = Row::from([
+                ("id", Value::Text(id.into())),
+                ("site_id", Value::Text(site.clone())),
+                ("name", Value::Text(name.into())),
+                ("kind", Value::Text("linux".into())),
+                ("state", Value::Text(state.into())),
+            ]);
+            if let Some(p) = policy {
+                row.insert("policy_id", Value::Text(p.into()));
+            }
+            RowWrite::insert("machines", row)
+        };
+        let ids: Vec<String> = (1..=5).map(|i| format!("01JD000000000000000000000{i}")).collect();
+        app.db
+            .writer()
+            .send(WriteCmd::Batch(vec![
+                policy("auto", "auto"),
+                policy("held", "hold"),
+                machine(&ids[0], "web<1>", Some("auto"), "enrolled"),
+                machine(&ids[1], "db", Some("held"), "enrolled"),
+                machine(&ids[2], "quiet", None, "enrolled"),
+                machine(&ids[3], "current", Some("auto"), "enrolled"),
+                machine(&ids[4], "gone", Some("auto"), "revoked"),
+            ]))
+            .await
+            .unwrap();
+        for (id, pending, security, reboot) in [(&ids[0], 7, 2, true), (&ids[1], 4, 1, false), (&ids[3], 0, 0, false)] {
+            ingest.hello(id, 1, &[rackhand_proto::common::LabelEntry::default()]).await.unwrap();
+            let updates = rackhand_proto::probe::UpdateSummary {
+                pending,
+                security,
+                reboot_required: reboot,
+                packages: vec!["openssl".into()],
+            };
+            let now = now_ms();
+            let r = rackhand_proto::probe::Report {
+                epoch: 1,
+                seq: 1,
+                sampled_at_ms: now,
+                updates: Some(updates),
+                ..Default::default()
+            };
+            ingest.receive(id, crate::ingest::Stream::Live, vec![r], 100, now).await.unwrap();
+        }
+        let viewer = session_for(&app.db, Role::Viewer).await;
+        let html = text(send(&app.router, get("/patching", &viewer)).await).await;
+        let row = |id: &str| {
+            let from = html.find(&format!("/machines/{id}")).unwrap_or_else(|| panic!("no row for {id}: {html}"));
+            html[from..].split("</tr>").next().unwrap().to_string()
+        };
+        let web = row(&ids[0]);
+        assert!(web.contains("web&#60;1&#62;") && web.contains("auto-policy"), "{web}");
+        assert!(web.contains("<td>7</td><td>2</td><td>yes</td>"), "{web}");
+        let db = row(&ids[1]);
+        assert!(db.contains("<td>4</td><td>1</td><td>no</td>"), "held updates are still shown (E10): {db}");
+        assert!(db.contains("hold") && !web.contains("hold"), "the hold: {db}");
+        assert!(row(&ids[2]).contains("not reported yet") && row(&ids[2]).contains("no policy"), "{}", row(&ids[2]));
+        assert!(row(&ids[3]).contains("<td>0</td><td>0</td><td>no</td>"));
+        assert!(!html.contains("gone"), "a revoked machine isn't patched");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn machine_page_shows_capture_method_and_access_level() {
         let (app, ingest) = monitored("machine-page").await;
         complete_first_run(&app, SETUP_CODE).await;

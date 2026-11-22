@@ -374,3 +374,104 @@ async fn new_job_refused_while_disk_low() {
     let ran = actions.run(job("admin")).await.unwrap();
     assert_eq!(ran.outcome, JobOutcome::Succeeded, "jobs start again once there is space");
 }
+
+/// Steps that wait for the test: `went` says which began, `go` lets it end as told.
+struct Stepwise {
+    went: tokio::sync::mpsc::UnboundedSender<String>,
+    go: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<bool>>,
+}
+
+impl StepRunner for Stepwise {
+    fn run<'a>(&'a self, _ctx: &'a StepCtx, step: &'a Step, _argv: Option<&'a [String]>) -> BoxFuture<'a, StepResult> {
+        Box::pin(async move {
+            let _ = self.went.send(step.id.clone());
+            match self.go.lock().await.recv().await {
+                Some(true) => StepResult {
+                    outcome: StepOutcome::Succeeded,
+                    command: None,
+                    exit_code: Some(0),
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                },
+                _ => StepResult::failed("no_report"),
+            }
+        })
+    }
+}
+
+/// 7.6.3: silence is suppressed during a job that includes a reboot, until its wait step ends.
+#[tokio::test(flavor = "multi_thread")]
+async fn awaiting_reboot_until_the_wait_step_ends() {
+    let (db, _, bus) = setup("awaiting", "managed", Arc::new(Fake::default())).await;
+    let audit = Audit::new(db.writer());
+    let (lib, _) = Library::new(db.clone(), audit.clone());
+    let step = |id: &str, kind: &str| format!("[[step]]\nid = \"{id}\"\nkind = \"{kind}\"\ntimeout = \"1m\"\n");
+    let head = |name: &str| {
+        format!("name = \"{name}\"\ndescription = \"d\"\nidentity = \"automation\"\nrisk = \"low\"\nautonomy = 2\n")
+    };
+    let verify = "[[step]]\nid = \"check\"\nkind = \"verify\"\nchecks = [\"as_recorded\"]\ntimeout = \"1m\"\n";
+    let sources = [
+        (
+            "reboots",
+            [
+                step("snap", "snapshot"),
+                step("boot", "reboot_if_required"),
+                step("wait", "wait_report"),
+                verify.to_string(),
+            ]
+            .concat(),
+        ),
+        ("plain", [step("snap", "snapshot"), step("wait", "wait_report")].concat()),
+        ("restores", step("back", "rollback")),
+    ];
+    for (name, steps) in &sources {
+        lib.save(Kind::Runbook, name, &format!("{}{steps}", head(name)), "admin", 1).await.unwrap();
+    }
+    let (went, mut began) = tokio::sync::mpsc::unbounded_channel();
+    let (go, goes) = tokio::sync::mpsc::unbounded_channel();
+    let runner = Stepwise { went, go: tokio::sync::Mutex::new(goes) };
+    let actions = Actions::new(db, audit, bus, Arc::new(runner));
+    let start = |name: &str| {
+        let (a, j) = (actions.clone(), StartJob::runbook(name, "m1", "test"));
+        tokio::spawn(async move { a.run(j).await.unwrap() })
+    };
+
+    assert!(!actions.awaiting_reboot("m1"));
+    let job = start("reboots");
+    for (id, waiting) in [("snap", true), ("boot", true), ("wait", true), ("check", false)] {
+        assert_eq!(began.recv().await.as_deref(), Some(id));
+        assert_eq!(actions.awaiting_reboot("m1"), waiting, "during {id}");
+        assert!(!actions.awaiting_reboot("m2"), "that machine only");
+        go.send(true).unwrap();
+    }
+    assert_eq!(job.await.unwrap().outcome, JobOutcome::Succeeded);
+    assert!(!actions.awaiting_reboot("m1"));
+
+    // a wait step that fails has ended too, and so has a job that stopped before it
+    for fails_at in [2, 0] {
+        let job = start("reboots");
+        for i in 0..=fails_at {
+            began.recv().await.unwrap();
+            assert!(actions.awaiting_reboot("m1"));
+            go.send(i != fails_at).unwrap();
+        }
+        assert_eq!(job.await.unwrap().outcome, JobOutcome::Failed);
+        assert!(!actions.awaiting_reboot("m1"), "failed at step {fails_at}");
+    }
+
+    let job = start("plain");
+    for _ in 0..2 {
+        began.recv().await.unwrap();
+        assert!(!actions.awaiting_reboot("m1"), "nothing in it reboots");
+        go.send(true).unwrap();
+    }
+    job.await.unwrap();
+
+    // a rollback restarts the guest, and has no wait step: until the job ends
+    let job = start("restores");
+    began.recv().await.unwrap();
+    assert!(actions.awaiting_reboot("m1"));
+    go.send(true).unwrap();
+    job.await.unwrap();
+    assert!(!actions.awaiting_reboot("m1"));
+}

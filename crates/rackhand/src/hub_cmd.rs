@@ -234,9 +234,11 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let machines = Arc::new(patching::Machines { db: db.clone(), ingest: ingest.clone() });
     let executor = rackhand_hub::executor::Executor::new(vault.clone(), host_keys.clone())
         .with_other(Arc::new(steps(&db, &vault, &notify, &ingest, &probe_server)))
-        .with_reboot(machines, REBOOT_WAIT);
+        .with_reboot(machines.clone(), REBOOT_WAIT);
     let actions = rackhand_hub::actions::Actions::new(db.clone(), audit.clone(), bus.clone(), Arc::new(executor))
         .with_gate(Arc::new(ingest.clone()));
+    incidents.set_quiet(Arc::new(patching::Expected { machines: machines.clone(), actions: actions.clone() }));
+    let windows = rackhand_hub::actions::patching::driver::Driver::new(db.clone(), machines, Arc::new(actions.clone()));
     // incidents start runbooks through StartJob and hear back on the bus (7.5.2)
     let starter = Arc::new(ActionsStarter(actions.clone()));
     rackhand_hub::incidents::routing::Routing::new(incidents.clone(), starter).spawn(bus.subscribe("routing"));
@@ -300,6 +302,7 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     tokio::spawn(router.serve());
     let watch = Arc::new(self_watch(config, &db, &ingest, &notify));
     spawn_loops(ingest.clone(), incidents, notify, db.clone(), Nightly { config: config.clone(), watch });
+    patching::spawn(db.clone(), windows, patching::WINDOW_POLL);
     // the service checks of config/checks.toml, each at its interval (FR-9), and the agentless machines' polls (FR-10)
     rackhand_hub::checks::Checks::new(db.clone(), ingest.clone())
         .with_agentless(vault.clone(), api_drivers())

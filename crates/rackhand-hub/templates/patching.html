@@ -3,6 +3,15 @@
 {% block nav %}<nav><a href="/">Overview</a> <a href="/approvals">Approvals</a> <a href="/jobs">Jobs</a> <a href="/library">Library</a> <a href="/patching">Patching</a></nav>{% endblock %}
 {% block content %}
 <h1>Patching</h1>
+<h2>Pending updates</h2>
+{% if machines.is_empty() %}<p>No machines yet.</p>{% else %}
+<table>
+<tr><th>Machine</th><th>Policy</th><th>Patch</th><th>Pending</th><th>Security</th><th>Reboot required</th></tr>
+{% for m in machines %}
+<tr><td><a href="/machines/{{ m.id }}">{{ m.name }}</a></td><td>{{ m.policy }}</td><td>{{ m.patch }}</td>{% if let Some((pending, security)) = m.counts %}<td>{{ pending }}</td><td>{{ security }}</td><td>{% if m.reboot_required %}yes{% else %}no{% endif %}</td>{% else %}<td colspan="3">not reported yet</td>{% endif %}</tr>
+{% endfor %}
+</table>
+{% endif %}
 <h2>Policies</h2>
 <table>
 <tr><th>Policy</th><th>Patch</th><th>Reboot</th><th>Rollback</th><th>Snapshot</th></tr>

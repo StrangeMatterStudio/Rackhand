@@ -258,6 +258,25 @@ async fn offline_machine_tried_again() {
     assert_eq!(e.jobs.started().len(), 1);
 }
 
+/// AC20: nothing patches during a maintenance window, also one that starts while the machine waits its turn.
+#[tokio::test(flavor = "multi_thread")]
+async fn maintenance_after_selection_holds_the_machine_back() {
+    let e = env("late-maintenance").await;
+    for id in ["a", "b", "c", "d"] {
+        e.machine(id, "linux", "auto", "[]").await;
+    }
+    let open = || vec![e.window("auto", Window::Security)];
+    e.tick(open(), e.now).await;
+    assert_eq!(e.jobs.started().len(), 3, "3 at a time per site");
+    e.world.maintenance.lock().unwrap().insert("d".into());
+    e.end("a").await;
+    e.tick(open(), e.now + MIN).await;
+    assert_eq!(e.jobs.started().len(), 3, "d's maintenance window has started");
+    e.world.maintenance.lock().unwrap().clear();
+    e.tick(open(), e.now + 16 * MIN).await;
+    assert_eq!(e.jobs.started().last().map(|j| j.1.as_str()), Some("d"), "over before the patch window is");
+}
+
 /// 7.5.3 step 3 (D89): an approve-only machine's approval is asked for once, bound to the runbook's revision, and its
 /// job starts with it; a rejected one starts nothing.
 #[tokio::test(flavor = "multi_thread")]

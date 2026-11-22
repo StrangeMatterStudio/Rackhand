@@ -215,7 +215,8 @@ impl Actions {
         guard: MachineGuard,
     ) -> Result<(JobOutcome, Option<String>), ActionsError> {
         let db = &self.inner.db;
-        for step in &runbook.steps {
+        let mut awaiting = self.inner.reboots.hold(&machine.id, runbook);
+        for (i, step) in runbook.steps.iter().enumerate() {
             let step = with_params(step, params);
             let argv = step.cmd.as_deref().map(|c| substitute_argv(c, params));
             let command = argv.as_deref().map(display);
@@ -286,6 +287,9 @@ impl Actions {
                 StepOutcome::Failed(reason) => Some(reason.clone()),
             };
             self.record_step(job_id, &step.id, result).await?;
+            if awaiting.as_ref().is_some_and(|a| a.wait == Some(i)) {
+                awaiting = None;
+            }
             if let Some(reason) = failed {
                 return Ok((JobOutcome::Failed, Some(reason)));
             }
