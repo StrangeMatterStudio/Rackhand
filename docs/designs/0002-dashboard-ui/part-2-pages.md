@@ -40,7 +40,7 @@ recommended answers). Built in this branch.
 
 | Test | Failed before | Passes |
 | --- | --- | --- |
-| `web::tests::shell::*` (16) | 2026-11-22, 16 of 16 | 2026-11-22 |
+| `web::tests::shell::*` (16, then 2 more and additions to 2) | 2026-11-22, 16 of 16, then each | 2026-11-22 |
 | In `a_window_is_picked_from_day_time_and_length`, the machine's name | 2026-11-22 | 2026-11-22 |
 | `pages_for_measuring` | Not a rule of its own: it draws every page and dialog for the checks below | 2026-11-22 |
 
@@ -57,14 +57,14 @@ Chromium, the real pages with real styles and scripts, written out by `pages_for
 
 | Check | Result |
 | --- | --- |
-| [measure.js](measure.js): 44 pages and dialogs (and the account menu and drawer) at 19 widths from 320 to 2560px, 865 screens, 14,345 controls: nothing past an edge, cut off, unlabeled, taller than the screen, under 44px on a phone or 40px otherwise, or under 16px in a phone's field | 0 |
+| [measure.js](measure.js): 44 pages and dialogs (and the account menu and drawer) at 19 widths from 320 to 2560px, 865 screens, 14,345 controls: nothing past an edge, cut off, unlabeled, taller than the screen, under 44px on a phone or 40px otherwise, under 16px in a phone's field, or a short word split over lines | 0 |
 | The same with scripts off | 0 |
 | axe-core 4.13 ([axe.js](axe.js)), WCAG 2.2 A and AA and best practices, 44 pages, light and dark, 1280 and 390px | 0 |
 | Contrast of every token pair in both themes | a Rust test, 4.5:1 or better |
 | Save off until a change, Undo, Esc on unsaved changes asking with the safe choice focused, focus on open | as designed |
 
 The first runs found, and the fixes are in: lists in narrow columns of wide screens that didn't fold (they fold by their
-own width now), a brand link too narrow to touch, a 13px field, and a search link without a name on phones.
+own width now), a brand link too narrow to touch, a 13px field, short words split in narrow columns, and a search link without a name on phones.
 
 ## Deviations and limits
 

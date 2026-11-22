@@ -88,3 +88,11 @@ FAIL [   0.130s] (15/16) rackhand-hub web::tests::shell::lists_inform_and_dialog
 FAIL [   0.133s] (16/16) rackhand-hub web::tests::shell::new_passwords_are_typed_twice
 Summary [   0.139s] 16 tests run: 0 passed, 16 failed, 335 skipped
 ```
+
+## Part 2, after
+
+| Check | Result |
+| --- | --- |
+| `cargo xtask ci fast` | 569 passed, 1 skipped (as above) |
+| `cargo xtask arch-check` | no violations |
+| Measured and checked in a browser | see part-2-pages.md |

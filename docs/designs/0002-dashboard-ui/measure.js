@@ -24,6 +24,20 @@ window.measure = async function (widths, only, noScript) {
       var m = modal.getBoundingClientRect();
       if (m.top < -0.5 || m.bottom > win.innerHeight + 0.5) { say("the dialog is taller than the screen"); }
     }
+    // a word short enough for its place isn't split over lines
+    var walk = doc.createTreeWalker(doc.querySelector("main"), 4), node;
+    while ((node = walk.nextNode())) {
+      var at = node.parentElement;
+      if (!node.data.trim() || at.closest("pre, code, script, template, option, .sr, thead, [hidden]") || !at.getClientRects().length) { continue; }
+      var word = /\S+/g, m2;
+      while ((m2 = word.exec(node.data))) {
+        // (a break after a hyphen is a break between words)
+        if (m2[0].length > 14 || m2[0].length < 2 || m2[0].indexOf("-") >= 0) { continue; }
+        var range = doc.createRange();
+        range.setStart(node, m2.index); range.setEnd(node, m2.index + m2[0].length);
+        if (range.getClientRects().length > 1) { say("a word is split: " + m2[0] + " in <" + at.tagName.toLowerCase() + ">"); }
+      }
+    }
     doc.querySelectorAll("h1,h2,h3,p,dt,dd,td,b,small,pre,code,label,legend,summary,button,a,input,select,textarea,.badge,.card,dialog").forEach(function (e) {
       var r = e.getBoundingClientRect(), st = win.getComputedStyle(e);
       if (!r.width || st.display === "none" || st.visibility === "hidden" || e.closest(".sr, .skip, thead")) { return; }

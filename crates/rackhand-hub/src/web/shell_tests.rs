@@ -580,6 +580,8 @@ async fn new_passwords_are_typed_twice() {
     let (code, html) = submit(&app, &admin, "/settings/users", &fields).await;
     assert_eq!(code, StatusCode::BAD_REQUEST);
     assert_ne!(error_of(&html, "user", "password_again"), "");
+    let label = block(&html, "for=\"user-password_again\"", "</label>");
+    assert!(!label.contains("optional"), "it isn't: {label}");
     differ[4].1 = "a long enough secret";
     assert_eq!(submit(&app, &admin, "/settings/users", &differ).await.0, StatusCode::OK);
     // first run as well

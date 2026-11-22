@@ -33,7 +33,7 @@ struct NotifiersPage<'a> {
 }
 
 const NAME: Spec = Spec::text("name", "Name")
-    .hint("1 to 64 lower-case letters (a-z), digits and dashes.")
+    .hint("1 to 64 lowercase letters (a to z), digits and dashes.")
     .pattern(r"[a-z0-9\-]{1,64}", "Use 1 to 64 of a-z, 0-9 and dash, with no capitals or spaces")
     .attrs(PLAIN);
 const PLAIN: &str = "autocomplete=\"off\" autocapitalize=\"none\" spellcheck=\"false\"";

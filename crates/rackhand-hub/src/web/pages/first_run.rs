@@ -40,7 +40,7 @@ const DETAILS: &[Spec] = &[
         .hint("The code the installer printed when it finished. It starts with SETUP- and has three groups of four.")
         .attrs("autocomplete=\"off\" autocapitalize=\"characters\" spellcheck=\"false\""),
     Spec::text("admin_name", "Admin name")
-        .hint("The name you sign in with: 1 to 64 lower-case letters (a-z), digits, dots, dashes and underscores.")
+        .hint("The name you sign in with: 1 to 64 lowercase letters (a to z), digits, dots, dashes and underscores.")
         .pattern(r"[a-z0-9._\-]{1,64}", "Use 1 to 64 of a-z, 0-9, dot, dash and underscore, with no capitals or spaces")
         .attrs("autocomplete=\"username\" autocapitalize=\"none\" spellcheck=\"false\""),
     Spec::secret("password", "Password")
@@ -53,7 +53,9 @@ const DETAILS: &[Spec] = &[
         .same("password")
         .attrs("autocomplete=\"new-password\""),
     Spec::text("site_name", "Site name")
-        .hint("What this place is called here and to other hubs: 1 to 32 lower-case letters (a-z), digits and dashes.")
+        .hint(
+            "What this place is called here and to other hubs: 1 to 32 lowercase letters (a to z), digits and dashes.",
+        )
         .pattern(r"[a-z0-9\-]{1,32}", "Use 1 to 32 of a-z, 0-9 and dash, with no capitals or spaces")
         .attrs("autocomplete=\"off\" autocapitalize=\"none\" spellcheck=\"false\""),
     forms::TIMEZONE,

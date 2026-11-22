@@ -7,7 +7,7 @@
 {% if !spec.hint.is_empty() %}<p class="hint" id="{{ id }}-hint">{{ spec.hint }}</p>{% endif %}
 </div>
 {% else %}<div class="field{% if !error.is_empty() %} bad{% endif %}"{% if !spec.when.is_empty() %} data-when="{{ spec.when }}"{% endif %}>
-<label for="{{ id }}">{{ spec.label }}{% if !spec.required %} <span class="optional">(optional)</span>{% endif %}</label>
+<label for="{{ id }}">{{ spec.label }}{% if !spec.required && spec.same.is_empty() %} <span class="optional">(optional)</span>{% endif %}</label>
 {% if !spec.hint.is_empty() %}<p class="hint" id="{{ id }}-hint">{{ spec.hint }}</p>{% endif %}
 {% if let Some(k) = kept %}<p class="hint kept">{{ k }}</p>{% endif %}
 {% if select() %}<select id="{{ id }}" name="{{ spec.name }}" aria-describedby="{% if !spec.hint.is_empty() %}{{ id }}-hint {% endif %}{{ id }}-error"{% if !error.is_empty() %} aria-invalid="true"{% endif %}{% if needed() %} required{% endif %}{% if zones %} data-browser-timezone{% endif %}>
