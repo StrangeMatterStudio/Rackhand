@@ -138,3 +138,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-21 | T59c1 done: built-in patch-debian and patch-alpine, seeded into the Library, and the patch verify names (D92) |
 | 2026-11-21 | T59c2 done: patch snapshots judged, named and kept to 3 (D93) |
 | 2026-11-21 | Correction: design rows the owner hadn't been shown were marked confirmed; they are `owner to confirm` again |
+| 2026-11-21 | Integration tier: 49 of 51; the SSH test now retries while a machine reports (D94), and two tests fixed; the tier runs again |

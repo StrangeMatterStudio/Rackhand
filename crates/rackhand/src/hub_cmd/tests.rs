@@ -492,7 +492,8 @@ async fn ssh_test_after_first_report_wired() {
     let (_mirror_alerts, mirror_alerts_rx) = tokio::sync::mpsc::unbounded_channel();
     let (greeted, greeted_rx) = tokio::sync::mpsc::unbounded_channel();
     joins::spawn_events(ingest.clone(), host_keys, joined_rx, host_alerts_rx, mirror_alerts_rx, test.clone());
-    joins::spawn_enroll_tests(ingest, test, greeted_rx);
+    const RETRY: Duration = Duration::from_millis(200);
+    joins::spawn_enroll_tests(ingest.clone(), test, greeted_rx, RETRY);
 
     let (_, key) = rackhand_hub::ssh::keys::generate_ed25519("host").unwrap();
     let openssh = key.to_openssh().unwrap();
@@ -534,11 +535,25 @@ async fn ssh_test_after_first_report_wired() {
         db.readers().with(|c| c.query_row("SELECT state FROM machines WHERE id = ?1", [M], |r| r.get(0))).unwrap()
     };
     assert_eq!(state(&db), "pending", "a failed test leaves the machine pending (D84)");
+    // a machine that doesn't report isn't tried again
+    let tried = login.logins.load(Ordering::SeqCst);
+    tokio::time::sleep(RETRY * 4).await;
+    assert_eq!(login.logins.load(Ordering::SeqCst), tried, "no report, no retry");
+    // while it reports it is tried again, with no new connection; the same failure isn't recorded twice
+    let now = rackhand_store::ids::now_ms();
+    let report = rackhand_proto::probe::Report { epoch: 1, seq: 1, sampled_at_ms: now, ..Default::default() };
+    ingest.receive(M, rackhand_hub::ingest::Stream::Live, vec![report], 100, now).await.unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while login.logins.load(Ordering::SeqCst) == tried && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(login.logins.load(Ordering::SeqCst) > tried, "retried while the machine reports");
+    assert_eq!(ssh_events(&db), std::slice::from_ref(&failed), "an unchanged failure is recorded once");
 
+    // SSH fixed on the machine: it enrolls without the probe reconnecting
     login.works.store(true, Ordering::SeqCst);
-    greeted.send(M.to_string()).unwrap();
     let passed = ("machine.ssh_test_passed".to_string(), "info".to_string(), String::new());
-    assert_eq!(wait(2).await, [failed.clone(), passed.clone()], "tested again at the next report until it passes");
+    assert_eq!(wait(2).await, [failed.clone(), passed.clone()], "tried again while it reports until it passes");
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while state(&db) != "enrolled" && std::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(20)).await;

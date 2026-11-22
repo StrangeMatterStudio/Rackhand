@@ -105,26 +105,53 @@ pub fn ssh_test_event(machine_id: &str, outcome: &Outcome) -> Event {
     }
 }
 
-/// Runs until `greeted` closes: a report from a machine that is due an SSH test is followed by one (7.3.12).
-pub fn spawn_enroll_tests(ingest: Ingest, test: Arc<EnrollTest>, mut greeted: UnboundedReceiver<String>) {
-    tokio::spawn(async move {
-        while let Some(machine) = greeted.recv().await {
-            if !test.due(&machine) {
-                continue;
+/// How often a machine whose SSH test hasn't passed is tried again while it reports.
+pub const SSH_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// A machine that reported this recently can be tried again.
+const REPORTING: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Runs until `greeted` closes: a machine due an SSH test is tested when its probe connects, and every `retry` while
+/// it reports until a test passes (7.3.12). A failure the last test already recorded isn't recorded again.
+pub fn spawn_enroll_tests(
+    ingest: Ingest,
+    test: Arc<EnrollTest>,
+    mut greeted: UnboundedReceiver<String>,
+    retry: std::time::Duration,
+) {
+    let one = move |ingest: Ingest, test: Arc<EnrollTest>, machine: String| async move {
+        let Some(outcome) = test.run(&machine).await else { return };
+        if !test.already_recorded(&machine, &outcome) {
+            if let Err(e) = ingest.raise_event(ssh_test_event(&machine, &outcome)).await {
+                tracing::error!(error = %e, %machine, "SSH test event");
             }
-            let (test, ingest) = (test.clone(), ingest.clone());
-            tokio::spawn(async move {
-                if let Some(outcome) = test.run(&machine).await {
-                    if let Err(e) = ingest.raise_event(ssh_test_event(&machine, &outcome)).await {
-                        tracing::error!(error = %e, %machine, "SSH test event");
+        }
+        if outcome == Outcome::Passed {
+            if let Err(e) = test.passed(&machine).await {
+                tracing::error!(error = %e, %machine, "enrolling after the SSH test");
+            }
+        }
+    };
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + retry, retry);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                machine = greeted.recv() => {
+                    let Some(machine) = machine else { return };
+                    if test.due(&machine) {
+                        tokio::spawn(one(ingest.clone(), test.clone(), machine));
                     }
-                    if outcome == Outcome::Passed {
-                        if let Err(e) = test.passed(&machine).await {
-                            tracing::error!(error = %e, %machine, "enrolling after the SSH test");
+                }
+                _ = tick.tick() => {
+                    let since = rackhand_store::ids::now_ms() - REPORTING.as_millis() as i64;
+                    for machine in test.waiting() {
+                        if ingest.last_seen(&machine).is_some_and(|seen| seen >= since) {
+                            tokio::spawn(one(ingest.clone(), test.clone(), machine));
                         }
                     }
                 }
-            });
+            }
         }
     });
 }

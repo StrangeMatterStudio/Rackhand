@@ -354,14 +354,16 @@ mod install {
 
         ok(&c.root("systemctl start ssh"));
         within(Duration::from_secs(20), "sshd up", || sh(&c, "systemctl is-active ssh") == "active");
-        ok(&c.root("systemctl restart rackhand-probe"));
         let passed = || ssh_tests(&hub, &id).last().is_some_and(|(k, _)| k == "machine.ssh_test_passed");
-        within(Duration::from_secs(60), "the SSH test passed at the next report", passed);
+        within(Duration::from_secs(90), "the SSH test passed while the machine reports", passed);
         within(Duration::from_secs(20), "the pass enrolls it", || machine_column(&hub, &id, "state") == "enrolled");
         let page = add(&hub);
         let row = page.find("<td>web1</td>").map(|at| &page[at..at + page[at..].find("</tr>").unwrap()]);
         assert!(row.is_some_and(|r| r.contains("Enrolled and healthy")), "{page}");
-        let logins = sh(&c, "journalctl -u ssh --no-pager | grep -c 'Accepted publickey for rackhand' || true");
+        let logins = sh(
+            &c,
+            "journalctl --sync; journalctl -u ssh --no-pager | grep -c 'Accepted publickey for rackhand' || true",
+        );
         assert_eq!(logins, "2", "one login per account: {}", sh(&c, "journalctl -u ssh --no-pager"));
     }
 

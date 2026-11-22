@@ -132,8 +132,8 @@ impl Hub {
         let db = self.db();
         db.execute("INSERT OR IGNORE INTO sites (id, name, timezone) VALUES ('lab-site', 'lab', 'UTC')", []).unwrap();
         db.execute(
-            "INSERT INTO machines (id, site_id, name, kind, probe_endpoint_id, state) \
-             VALUES (?1, 'lab-site', 'web1', 'linux', ?2, 'enrolled')",
+            "INSERT INTO machines (id, site_id, name, kind, access, probe_endpoint_id, state) \
+             VALUES (?1, 'lab-site', 'web1', 'linux', 'monitor', ?2, 'enrolled')",
             [machine, endpoint.as_str()],
         )
         .unwrap();

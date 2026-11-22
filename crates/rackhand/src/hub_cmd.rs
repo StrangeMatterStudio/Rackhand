@@ -227,7 +227,7 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
             .with_greeted(greeted);
     let pinned = rackhand_hub::ssh::enroll_test::Pinned { vault: vault.clone(), host_keys: host_keys.clone() };
     let enroll_test = Arc::new(rackhand_hub::ssh::enroll_test::EnrollTest::new(db.clone(), Arc::new(pinned)));
-    joins::spawn_enroll_tests(ingest.clone(), enroll_test.clone(), greeted_rx);
+    joins::spawn_enroll_tests(ingest.clone(), enroll_test.clone(), greeted_rx, joins::SSH_RETRY);
     let executor = rackhand_hub::executor::Executor::new(vault.clone(), host_keys.clone()).with_other(Arc::new(steps(
         &db,
         &vault,

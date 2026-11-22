@@ -1,7 +1,7 @@
 //! The hub's SSH test after a managed machine's first report (7.3.12, AC35): it logs in as `rackhand` and runs `true`
 //! and, unless the machine has role hub (D62), as `rackhand-ai` and runs `sudo -n true`, with the host key pinned from
-//! the join. A failure names the account. A machine is tested on its first report after each join, and on every
-//! report after that until a test passes. A managed machine stays `pending` from its join until a test passes (D84).
+//! the join. A failure names the account. A machine is tested when its probe connects after a join, and from then on
+//! about once a minute while it reports, until a test passes. A managed machine stays `pending` from its join until a test passes (D84).
 
 use std::collections::HashSet;
 use std::future::Future;
@@ -78,6 +78,20 @@ pub struct EnrollTest {
     login: Arc<dyn Login>,
     /// Machines that joined since their last test.
     joined: Mutex<HashSet<String>>,
+    /// Machines being tested now.
+    testing: Mutex<HashSet<String>>,
+}
+
+/// A machine's test in progress; the machine can be tested again once it is dropped.
+struct Testing<'a> {
+    set: &'a Mutex<HashSet<String>>,
+    machine: &'a str,
+}
+
+impl Drop for Testing<'_> {
+    fn drop(&mut self) {
+        self.set.lock().unwrap_or_else(|e| e.into_inner()).remove(self.machine);
+    }
 }
 
 impl std::fmt::Debug for EnrollTest {
@@ -117,7 +131,7 @@ fn judged(id: Identity, command: &str, result: Result<Output, SshError>) -> Opti
 
 impl EnrollTest {
     pub fn new(db: Arc<Db>, login: Arc<dyn Login>) -> EnrollTest {
-        EnrollTest { db, login, joined: Mutex::default() }
+        EnrollTest { db, login, joined: Mutex::default(), testing: Mutex::default() }
     }
 
     /// A machine joined (or joined again): its next report is tested.
@@ -172,6 +186,43 @@ impl EnrollTest {
         just_joined || !self.last_passed(machine_id)
     }
 
+    /// The managed machines whose last test didn't pass (or that were never tested), to try again while they report.
+    pub fn waiting(&self) -> Vec<String> {
+        let all: Vec<String> = self
+            .db
+            .readers()
+            .with(|c| {
+                let mut s = c.prepare(
+                    "SELECT id FROM machines WHERE access = 'managed' AND state IN ('pending', 'enrolled')
+                       AND (driver IS NULL OR probe_endpoint_id IS NOT NULL)",
+                )?;
+                s.query_map([], |r| r.get(0))?.collect()
+            })
+            .unwrap_or_default();
+        all.into_iter().filter(|m| !self.last_passed(m)).collect()
+    }
+
+    /// Whether `outcome` is the failure the machine's last test already recorded.
+    pub fn already_recorded(&self, machine_id: &str, outcome: &Outcome) -> bool {
+        use rusqlite::OptionalExtension;
+        let Outcome::Failed { account, reason } = outcome else { return false };
+        let last: Option<(String, Option<String>, Option<String>)> = self
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row(
+                    "SELECT kind, json_extract(data, '$.account'), json_extract(data, '$.reason') FROM events
+                     WHERE machine_id = ?1 AND kind IN (?2, ?3) ORDER BY at_ms DESC LIMIT 1",
+                    [machine_id, PASSED, FAILED],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()
+            })
+            .ok()
+            .flatten();
+        last.is_some_and(|(k, a, r)| k == FAILED && a.as_deref() == Some(*account) && r.as_deref() == Some(reason))
+    }
+
     /// The machine passed its test: a pending machine is enrolled (D84).
     pub async fn passed(&self, machine_id: &str) -> Result<(), rackhand_store::StoreError> {
         use rusqlite::OptionalExtension;
@@ -192,8 +243,14 @@ impl EnrollTest {
         Ok(())
     }
 
-    /// Tests the machine; none for a machine that isn't managed.
+    /// Tests the machine; none for a machine that isn't managed, or that is being tested already.
     pub async fn run(&self, machine_id: &str) -> Option<Outcome> {
+        if !self.testing.lock().unwrap_or_else(|e| e.into_inner()).insert(machine_id.to_string()) {
+            return None;
+        }
+        let _testing = Testing { set: &self.testing, machine: machine_id };
+        // this is the test that follows the join
+        self.joined.lock().unwrap_or_else(|e| e.into_inner()).remove(machine_id);
         let target = self.target(machine_id).filter(|t| t.managed)?;
         let Some(addr) = target.address.as_deref().and_then(addr) else {
             let reason = "the machine has no address the hub can reach (it joined through a relay)".to_string();
