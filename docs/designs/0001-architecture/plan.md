@@ -270,7 +270,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T57 | Incident routing to runbooks and attempt limits | T32, T55 | unit | done |
 | T58 | Dashboard: approvals, jobs, library, patching | T55, T56, T37 | unit (HTTP) | done |
 | T59 | Patching | T55, T34, T47, T12 | unit + integration + live (L4, L9) | done |
-| T60 | Hypervisor and hub-host patching | T59 | unit + integration + live (L4, L9) | in progress (T60a to T60c built; the integration tier next) |
+| T60 | Hypervisor and hub-host patching | T59 | unit + integration + live (L4, L9) | done |
 | T61 | Remaining built-in runbooks and key rotation | T55, T43 | unit + integration | todo |
 | T62 | Access levels and monitor enforcement | T44, T55, T49 | unit + integration | todo |
 | T63 | Diagnostics allow-list | T55 | unit + integration | done |
@@ -3059,6 +3059,7 @@ Only additions to that list are written out below.
   | 2026-11-22 | T60c: each behaviour broken in turn in a copy of the tree | ten faults. Nine failed a test at once (never marked, going on at once, resuming at the next step instead of verify, not waiting for the machine, taking up any job, the silence hold kept after it, an unconfirmed binding, the hub's host not asked about, the command list without the scheduled reboot); a job taken up twice did once the test asked while it was still waiting |
   | 2026-11-22 | T60c: cargo xtask it-images; cargo nextest run -p rackhand-it --profile it -E 'test(hubhost::) | test(hypervisor_rebooted) | test(reboot_if_required)' | 3 passed; `hubhost::reboot_scheduled_60s_job_resumes_at_verify` with the machine's own timer, its restart 60 s later and a new hub over the same database (79 s) |
   | 2026-11-22 | T60c: cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | first run, with another build filling the disk (load 22, 2.5 GB waiting to be written): 532 passed, 2 failed, both probe tests with 60 s limits (backoff_from_1s_to_60s_with_jitter, unsupported_version_retries_hourly); on a calm disk the whole tier again: exit 0; fast 534 passed, 1 skipped; no violations |
+  | 2026-11-22 | cargo xtask ci it on a clean clone of ac88ee9, on a calm machine | exit 0: 58 tests, 58 passed (2294 s), `hubhost::reboot_scheduled_60s_job_resumes_at_verify` among them. Live: L4; a real hypervisor hosting the hub: MV8 |
 
 ### T61: Remaining built-in runbooks and key rotation
 - **Design refs:** 7.8.7 (built-in list), 7.3.3 (`ApplyKeys`), 7.3.7 (`sudoers-refresh`), 7.3.12 (unenroll), D73, D92
