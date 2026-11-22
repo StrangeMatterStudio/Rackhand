@@ -25,15 +25,29 @@ kind = "verify"
 checks = ["record_state"]
 timeout = "1m"
 
-# apt waits up to 10 minutes for a lock someone else holds (E9).
+# The package lists' lock is waited on for up to 10 minutes (E9). `apt-get update` doesn't wait for it itself (its
+# DPkg::Lock::Timeout is for dpkg's locks), so it is tried again while the lock is held; any other result ends the step.
 [[step]]
 id = "update"
 kind = "ssh"
-cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/bin/env", "DEBIAN_FRONTEND=noninteractive", "/usr/bin/apt-get", "-q", "-o", "DPkg::Lock::Timeout=600", "update"]
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/bin/env", "DEBIAN_FRONTEND=noninteractive", "/bin/sh", "-c", '''
+WAIT_S=600
+end=$(($(date +%s) + WAIT_S))
+while :; do
+  out=$(/usr/bin/apt-get -q -o DPkg::Lock::Timeout=600 update 2>&1)
+  rc=$?
+  printf "%s\n" "$out"
+  case "$out" in *"Unable to lock directory"*) ;; *) exit $rc ;; esac
+  [ "$(date +%s)" -lt "$end" ] || exit $rc
+  echo "the package lists are locked, trying again"
+  sleep 2
+done
+''']
 detached = true
 timeout = "20m"
 
 # Every pending update (owner review: no security-only selection); a changed config file keeps the machine's version.
+# apt waits up to 10 minutes for dpkg's locks.
 [[step]]
 id = "install"
 kind = "ssh"

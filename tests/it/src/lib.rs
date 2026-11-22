@@ -18,6 +18,8 @@ mod jobs;
 #[cfg(test)]
 mod mirror_it;
 #[cfg(test)]
+mod patch_it;
+#[cfg(test)]
 mod probe_hub;
 #[cfg(test)]
 mod smoke;

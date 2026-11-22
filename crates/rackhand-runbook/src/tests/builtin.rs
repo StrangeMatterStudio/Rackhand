@@ -54,6 +54,8 @@ fn patch_commands_wait_for_the_lock_and_take_full_updates() {
         let apk = cmd("patch-alpine", id);
         assert!(apk.contains("/sbin/apk") && apk.contains("--wait 600"), "{apk}");
     }
+    let update = cmd("patch-debian", "update");
+    assert!(update.contains("WAIT_S=600") && update.contains("Unable to lock directory"), "the lists' lock: {update}");
     let install = cmd("patch-debian", "install");
     assert!(install.ends_with("upgrade --with-new-pkgs"), "every pending update, nothing removed: {install}");
     assert!(install.contains("--force-confold"), "a changed config file keeps the machine's version: {install}");
