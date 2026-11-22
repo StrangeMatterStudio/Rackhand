@@ -151,3 +151,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-22 | WSL restarted: its clock's rate is right again; its wall clock is still stepped, because the Windows host's clock is 5.22 s ahead (owner: set it) |
 | 2026-11-22 | Host clock set by the owner. Integration tier 51 of 56 on ebdd86f: the 5 were a disk stall from unstripped binaries in the containers, not the clock; stripped (D100), full rerun next |
 | 2026-11-22 | Integration tier 55 of 56 on da8df7a, no disk stall; the one left asked for 4 minutes where the design's 80% rule gives 3 min 45 s on a machine without history (D101) |
+| 2026-11-22 | Owner: a rule's duration can be met by 80% of its samples on a machine without history (D101), confirmed; the design stays |
