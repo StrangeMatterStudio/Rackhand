@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::body::Body;
-use axum::http::{HeaderValue, Method, Request, Response, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode, header};
 use axum::routing::{MethodFilter, on};
 use rackhand_store::Db;
 use rackhand_store::ids::now_ms;
@@ -328,7 +328,11 @@ impl Web {
                     // signing in leads back to the page that was asked for
                     let asked = req.uri().path_and_query().map_or("/", |p| p.as_str());
                     let mut resp = pages::redirect("/sign-in");
-                    if spec.method == Method::GET && asked != "/" && ui::local(asked) == asked {
+                    if spec.method == Method::GET
+                        && a_page(spec, req.headers())
+                        && asked != "/"
+                        && ui::local(asked) == asked
+                    {
                         remember_next(&mut resp, asked);
                     }
                     return resp;
@@ -372,6 +376,14 @@ impl Web {
         }
         resp
     }
+}
+
+/// Whether a person is looking at what they asked for: not a fragment, and not something a script fetches.
+fn a_page(spec: &RouteSpec, headers: &HeaderMap) -> bool {
+    let sent = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    !matches!(spec.page, routes::Page::MachineVitals)
+        && sent("hx-request").is_none()
+        && sent("sec-fetch-dest").is_none_or(|d| d == "document")
 }
 
 /// Remembers where signing in or stepping up returns to, for ten minutes.

@@ -523,6 +523,16 @@ async fn stepping_up_returns_to_what_asked_for_it() {
     assert_eq!(location(&resp).as_deref(), Some("/sign-in"));
     let next = set_cookie(&resp, "rh_next").expect("the page is remembered");
     assert!(next.contains("HttpOnly") && next.contains("SameSite=Strict"), "{next}");
+    // but not a fragment a page left open keeps asking for, nor anything the page's script asks for
+    let resp = send(&app.router, get("/machines/01JD0000000000000000000001/vitals", &anon)).await;
+    assert_eq!(location(&resp).as_deref(), Some("/sign-in"));
+    assert_eq!(set_cookie(&resp, "rh_next"), None, "a fragment isn't a page to return to");
+    for (header_name, value) in [("hx-request", "true"), ("sec-fetch-dest", "empty")] {
+        let mut asked = get("/audit", &anon);
+        asked.headers_mut().insert(header_name, value.parse().unwrap());
+        let resp = send(&app.router, asked).await;
+        assert_eq!(set_cookie(&resp, "rh_next"), None, "{header_name}");
+    }
     let (id, name): (String, String) = app
         .db
         .readers()
@@ -876,4 +886,39 @@ async fn pages_for_measuring() {
     }
     let names: Vec<&String> = out.iter().map(|(n, _)| n).collect();
     std::fs::write(dir.join("pages.json"), serde_json::to_string(&names).unwrap()).unwrap();
+}
+
+/// The integration and live tiers read a command from the page between `<code>` and `</code>`; they aren't run with
+/// these tests, so what they read is checked here.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_is_read_by_the_other_tiers() {
+    let (app, admin) = ready("shell-command").await;
+    let fields = [("name", "web9"), ("os", "linux"), ("access", "managed"), ("mode", "local")];
+    let (code, html) = submit(&app, &admin, "/add/machine", &fields).await;
+    assert_eq!(code, StatusCode::OK);
+    let at = html.find("<h2>As a user with sudo</h2>").expect("the heading they look for");
+    let command = &html[at..];
+    let start = command.find("<code>").expect("a bare <code>") + 6;
+    let command = &command[start..start + command[start..].find("</code>").unwrap()];
+    assert!(command.contains("install.sh") && command.contains("--token "), "{command}");
+}
+
+/// A question over an editor is announced by its own name.
+#[tokio::test(flavor = "multi_thread")]
+async fn each_dialog_is_named_by_its_own_heading() {
+    let (app, admin) = ready("shell-names").await;
+    let id: String =
+        app.db.readers().with(|c| c.query_row("SELECT id FROM users WHERE name = 'admin'", [], |r| r.get(0))).unwrap();
+    let mut names = Vec::new();
+    for path in [format!("/users?edit={id}"), format!("/users?confirm=disable:{id}"), "/users?add=user".into()] {
+        let html = see(&app, &path, &admin).await;
+        let open = block(&html, "<dialog", ">");
+        let at = open.find("aria-labelledby=\"").expect("named") + 17;
+        let name = open[at..at + open[at..].find('"').unwrap()].to_string();
+        assert!(block(&html, "<dialog", "</dialog>").contains(&format!("<h2 id=\"{name}\"")), "{path}: {name}");
+        names.push(name);
+    }
+    names.sort();
+    names.dedup();
+    assert_eq!(names.len(), 3, "{names:?}");
 }

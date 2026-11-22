@@ -2,7 +2,7 @@
 {% block content %}
 <div class="page-head"><div><h1>{{ shell.title }}</h1></div></div>
 {% for l in lines %}<section class="card"><h2>{{ l.0 }}</h2>
-<pre><code id="line-{{ loop.index }}">{{ l.1 }}</code></pre>
+<pre id="line-{{ loop.index }}"><code>{{ l.1 }}</code></pre>
 <p><button type="button" data-copy="line-{{ loop.index }}" hidden>Copy</button></p></section>
 {% endfor %}
 <p>{{ note }}</p>

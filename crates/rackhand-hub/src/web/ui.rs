@@ -301,12 +301,19 @@ pub(crate) fn none(q: &str, what: &str, next: &str) -> String {
     format!("<p class=\"empty\">No {what} match \u{201c}{}\u{201d}.</p>", escape(q))
 }
 
+/// The id of a dialog's heading: its own, so a question over an editor is announced by its own name.
+fn heading_id(title: &str) -> String {
+    let word = |c: char| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' };
+    format!("dialog-{}", title.chars().map(word).collect::<String>().trim_matches('-'))
+}
+
 /// A dialog's opening, drawn open: a card in the page, which the script makes modal. Its way out is a link.
 pub(crate) fn dialog(title: impl AsRef<str>, back: impl AsRef<str>) -> String {
+    let id = heading_id(title.as_ref());
     let (title, back) = (escape(title.as_ref()), escape(back.as_ref()));
     format!(
-        "<dialog open data-modal data-back=\"{back}\" aria-labelledby=\"dialog-title\"><div class=\"d-h\">\
-         <h2 id=\"dialog-title\">{title}</h2><a class=\"btn ghost\" href=\"{back}\" data-close aria-label=\"Close\">{}</a></div>",
+        "<dialog open data-modal data-back=\"{back}\" aria-labelledby=\"{id}\"><div class=\"d-h\">\
+         <h2 id=\"{id}\">{title}</h2><a class=\"btn ghost\" href=\"{back}\" data-close aria-label=\"Close\">{}</a></div>",
         icon("close")
     )
 }
@@ -324,11 +331,12 @@ pub(crate) struct Confirm {
 impl Confirm {
     pub fn html(&self, csrf: &str) -> String {
         format!(
-            "<dialog open data-modal data-back=\"{back}\" class=\"small\" role=\"alertdialog\" aria-labelledby=\"dialog-title\" \
-             aria-describedby=\"dialog-body\"><div class=\"d-h\"><h2 id=\"dialog-title\">{title}</h2></div>\
-             <div class=\"d-b\"><p id=\"dialog-body\">{body}</p></div><form class=\"d-f\" method=\"post\" action=\"{action}\">\
+            "<dialog open data-modal data-back=\"{back}\" class=\"small\" role=\"alertdialog\" aria-labelledby=\"{id}\" \
+             aria-describedby=\"{id}-body\"><div class=\"d-h\"><h2 id=\"{id}\">{title}</h2></div>\
+             <div class=\"d-b\"><p id=\"{id}-body\">{body}</p></div><form class=\"d-f\" method=\"post\" action=\"{action}\">\
              <input type=\"hidden\" name=\"csrf\" value=\"{csrf}\"><a class=\"btn\" href=\"{back}\" data-close autofocus>{keep}</a>\
              <button type=\"submit\" class=\"danger\">{does}</button></form></dialog>",
+            id = heading_id(&self.title),
             back = escape(self.back),
             title = escape(&self.title),
             body = escape(&self.body),
