@@ -4,6 +4,7 @@
 pub mod auth;
 pub mod csp;
 pub mod csrf;
+mod forms;
 mod metrics;
 pub(crate) mod pages;
 pub mod perms;
@@ -37,7 +38,7 @@ const MAX_FORM: usize = 1 << 20;
 pub struct WebConfig {
     /// SHA-256 of the one-time setup code the installer printed (7.7.4).
     pub setup_code_hash: [u8; 32],
-    /// The key CSRF tokens and signed form values are made with.
+    /// The key CSRF tokens are made with.
     pub csrf_key: [u8; 32],
     /// `trusted_proxies` from `hub.toml`: networks whose `X-Forwarded-For` is believed (7.7.2).
     pub trusted_proxies: Vec<(IpAddr, u8)>,
@@ -77,6 +78,8 @@ struct Inner {
     ingest: Option<crate::ingest::Ingest>,
     notify: Option<crate::notify::Notify>,
     bus: Option<crate::bus::Bus>,
+    first_run: pages::FirstRunDrafts,
+    held: forms::HeldForms,
 }
 
 #[derive(Clone)]
@@ -129,6 +132,8 @@ impl Web {
             ingest: None,
             notify: None,
             bus: None,
+            first_run: pages::FirstRunDrafts::default(),
+            held: forms::HeldForms::default(),
         }))
     }
 
@@ -307,7 +312,7 @@ impl Web {
                         let Ok(a) = session::random_token() else {
                             return pages::status(StatusCode::INTERNAL_SERVER_ERROR, "No randomness");
                         };
-                        set_cookies.push(session::cookie(session::ANON_COOKIE, &a, 3600));
+                        set_cookies.push(session::cookie(session::ANON_COOKIE, &a, session::ABSOLUTE_MS / 1000));
                         a
                     }
                 };

@@ -27,19 +27,6 @@ pub fn verify(key: &[u8; 32], binding: &Binding, presented: &str) -> bool {
     hmac::verify(&hmac::Key::new(hmac::HMAC_SHA256, key), &message(binding), &bytes).is_ok()
 }
 
-/// A signature over a value the page carries for the browser (the first-run TOTP secret).
-pub fn sign(key: &[u8; 32], purpose: &str, binding: &Binding, value: &str) -> String {
-    let msg = [purpose.as_bytes(), b"\0", &message(binding), b"\0", value.as_bytes()].concat();
-    let tag = hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, key), &msg);
-    tag.as_ref().iter().map(|b| format!("{b:02x}")).collect()
-}
-
-pub fn verify_signed(key: &[u8; 32], purpose: &str, binding: &Binding, value: &str, sig: &str) -> bool {
-    let Some(bytes) = decode_hex(sig) else { return false };
-    let msg = [purpose.as_bytes(), b"\0", &message(binding), b"\0", value.as_bytes()].concat();
-    hmac::verify(&hmac::Key::new(hmac::HMAC_SHA256, key), &msg, &bytes).is_ok()
-}
-
 fn decode_hex(s: &str) -> Option<Vec<u8>> {
     if s.len() % 2 != 0 {
         return None;

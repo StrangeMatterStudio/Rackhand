@@ -97,13 +97,13 @@ fn field(html: &str, name: &str) -> String {
     html[start..start + html[start..].find('"').unwrap()].to_string()
 }
 
-/// Opens the first-run page: the anonymous cookie, the CSRF token and the TOTP secret with its signature.
-async fn open_first_run(app: &App) -> (String, String, String, String) {
+/// Opens the first-run page: the anonymous cookie and the CSRF token.
+async fn open_first_run(app: &App) -> (String, String) {
     let resp = send(&app.router, get("/first-run", "")).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let cookie = set_cookie(&resp, "rh_anon").expect("anonymous cookie").split(';').next().unwrap().to_string();
     let html = text(resp).await;
-    (cookie, field(&html, "csrf"), field(&html, "totp_secret"), field(&html, "totp_sig"))
+    (cookie, field(&html, "csrf"))
 }
 
 async fn complete_first_run(app: &App, setup_code: &str) -> Response<Body> {
@@ -111,30 +111,21 @@ async fn complete_first_run(app: &App, setup_code: &str) -> Response<Body> {
     submit_first_run(app, opened, setup_code).await
 }
 
-async fn submit_first_run(app: &App, opened: (String, String, String, String), setup_code: &str) -> Response<Body> {
+async fn submit_first_run(app: &App, opened: (String, String), setup_code: &str) -> Response<Body> {
     submit_first_run_at(app, opened, setup_code, now_ms()).await
 }
 
-/// The same, with the authenticator code for the hub's clock at `at_ms`.
-async fn submit_first_run_at(
-    app: &App,
-    opened: (String, String, String, String),
-    setup_code: &str,
-    at_ms: i64,
-) -> Response<Body> {
-    let (cookie, csrf, secret, sig) = opened;
-    let code = totp::code(&totp::decode_base32(&secret).unwrap(), at_ms / 1000);
+/// The first step: the details.
+async fn submit_details(app: &App, opened: &(String, String), setup_code: &str) -> Response<Body> {
+    let (cookie, csrf) = opened;
     let req = post(
         "/first-run",
-        &cookie,
+        cookie,
         &[
             ("csrf", csrf.as_str()),
             ("setup_code", setup_code),
             ("admin_name", "admin"),
             ("password", "correct horse battery staple"),
-            ("totp_secret", secret.as_str()),
-            ("totp_sig", sig.as_str()),
-            ("totp_code", code.as_str()),
             ("site_name", "home"),
             ("timezone", "Europe/Berlin"),
             ("source_spamhaus", "on"),
@@ -142,6 +133,28 @@ async fn submit_first_run_at(
         ],
     );
     send(&app.router, req).await
+}
+
+/// The second step: the authenticator code for the hub's clock at `at_ms`.
+async fn submit_second_factor(app: &App, opened: &(String, String), secret: &str, at_ms: i64) -> Response<Body> {
+    let code = totp::code(&totp::decode_base32(secret).unwrap(), at_ms / 1000);
+    let fields = [("csrf", opened.1.as_str()), ("totp_code", code.as_str())];
+    send(&app.router, post("/first-run/second-factor", &opened.0, &fields)).await
+}
+
+/// The key the second step shows.
+async fn second_factor_key(app: &App, opened: &(String, String)) -> String {
+    field(&text(send(&app.router, get("/first-run/second-factor", &opened.0)).await).await, "totp_secret")
+}
+
+/// Both steps, at `at_ms` by the hub's clock; the first step's answer when it isn't accepted.
+async fn submit_first_run_at(app: &App, opened: (String, String), setup_code: &str, at_ms: i64) -> Response<Body> {
+    let details = submit_details(app, &opened, setup_code).await;
+    if location(&details).as_deref() != Some("/first-run/second-factor") {
+        return details;
+    }
+    let secret = second_factor_key(app, &opened).await;
+    submit_second_factor(app, &opened, &secret, at_ms).await
 }
 
 async fn user_count(db: &Db) -> i64 {
@@ -231,10 +244,20 @@ async fn first_run_shows_recovery_code_once() {
     let wrong = complete_first_run(&app, "SETUP-WRONG").await;
     assert_eq!(wrong.status(), StatusCode::FORBIDDEN, "the installer's setup code is required");
     assert_eq!(user_count(&app.db).await, 0);
-    // Two first runs at once (both forms opened before either is sent) make one admin.
+    // Two first runs at once (both second steps reached before either is sent) make one admin.
     let (one, two) = (open_first_run(&app).await, open_first_run(&app).await);
     let late = open_first_run(&app).await;
-    let (a, b) = tokio::join!(submit_first_run(&app, one, SETUP_CODE), submit_first_run(&app, two, SETUP_CODE));
+    let late_second = open_first_run(&app).await;
+    for opened in [&one, &two, &late_second] {
+        assert_eq!(submit_details(&app, opened, SETUP_CODE).await.status(), StatusCode::SEE_OTHER);
+    }
+    let (key_one, key_two) = (second_factor_key(&app, &one).await, second_factor_key(&app, &two).await);
+    assert_ne!(key_one, key_two, "a key of its own each");
+    let late_key = second_factor_key(&app, &late_second).await;
+    let (a, b) = tokio::join!(
+        submit_second_factor(&app, &one, &key_one, now_ms()),
+        submit_second_factor(&app, &two, &key_two, now_ms())
+    );
     let pages = [text(a).await, text(b).await];
     let shown = pages.iter().filter(|p| p.contains(&app.recovery)).count();
     assert_eq!(shown, 1, "the recovery code is shown to the one first run that created the admin");
@@ -244,6 +267,9 @@ async fn first_run_shows_recovery_code_once() {
     // A form opened before the admin existed, sent after: refused, no code.
     let again = submit_first_run(&app, late, SETUP_CODE).await;
     assert_eq!(again.status(), StatusCode::SEE_OTHER);
+    assert!(!text(again).await.contains(&app.recovery));
+    let again = submit_second_factor(&app, &late_second, &late_key, now_ms()).await;
+    assert_eq!(again.status(), StatusCode::SEE_OTHER, "nor a second step reached before and sent after");
     assert!(!text(again).await.contains(&app.recovery));
     let roles: Vec<String> = app
         .db
@@ -266,9 +292,12 @@ async fn first_run_shows_recovery_code_once() {
 #[tokio::test(flavor = "multi_thread")]
 async fn post_without_csrf_token_is_403() {
     let app = app("csrf").await;
-    let (cookie, _, _, _) = open_first_run(&app).await;
+    let (cookie, _) = open_first_run(&app).await;
     let no_token = send(&app.router, post("/first-run", &cookie, &[("setup_code", SETUP_CODE)])).await;
     assert_eq!(no_token.status(), StatusCode::FORBIDDEN, "first run");
+    let no_token = send(&app.router, post("/first-run/second-factor", &cookie, &[("totp_code", "000000")])).await;
+    assert_eq!(no_token.status(), StatusCode::FORBIDDEN, "its second step");
+    assert!(!text(no_token).await.contains("totp_secret"));
     complete_first_run(&app, SETUP_CODE).await;
     let admin = session_for(&app.db, Role::Admin).await;
     let good = csrf_of(&app, &admin).await;
@@ -529,6 +558,9 @@ fn totp_matches_rfc6238_vectors() {
     assert_eq!(b32, "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
     assert_eq!(totp::decode_base32(&b32).unwrap(), secret);
 }
+
+#[path = "first_run_tests.rs"]
+mod first_run;
 
 mod settings {
     use super::*;

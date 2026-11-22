@@ -1,0 +1,21 @@
+{% if let Some(says) = settled %}<div class="field settled" id="{{ id }}">
+<span class="label">{{ spec.label }}</span>
+<p class="ok">{{ says }}</p>
+</div>
+{% else if checkbox() %}<div class="field check">
+<label for="{{ id }}"><input type="checkbox" id="{{ id }}" name="{{ spec.name }}"{% if value == "on" %} checked{% endif %}> {{ spec.label }}</label>
+{% if !spec.hint.is_empty() %}<p class="hint" id="{{ id }}-hint">{{ spec.hint }}</p>{% endif %}
+</div>
+{% else %}<div class="field{% if !error.is_empty() %} bad{% endif %}">
+<label for="{{ id }}">{{ spec.label }}{% if !spec.required %} <span class="optional">(optional)</span>{% endif %}</label>
+{% if !spec.hint.is_empty() %}<p class="hint" id="{{ id }}-hint">{{ spec.hint }}</p>{% endif %}
+{% if kept %}<p class="hint kept">Kept from your last try. Leave it empty to use that one, or type a new one.</p>{% endif %}
+{% if select() %}<select id="{{ id }}" name="{{ spec.name }}" aria-describedby="{% if !spec.hint.is_empty() %}{{ id }}-hint {% endif %}{{ id }}-error"{% if !error.is_empty() %} aria-invalid="true"{% endif %}{% if needed() %} required{% endif %}{% if zones %} data-browser-timezone{% endif %}>
+{% if unchosen() %}<option value="">Choose one</option>{% endif %}
+{% if unlisted() %}<option value="{{ value }}" selected>{{ value }}</option>{% endif %}
+{% for (group, options) in groups %}{% if !group.is_empty() %}<optgroup label="{{ group }}">{% endif %}{% for (v, l) in options %}<option value="{{ v }}"{% if *v == value %} selected{% endif %}>{{ l }}</option>{% endfor %}{% if !group.is_empty() %}</optgroup>{% endif %}
+{% endfor %}</select>
+{% else %}<input id="{{ id }}" name="{{ spec.name }}" {% if text() %}type="text" value="{{ value }}"{% else %}type="password" value=""{% endif %} aria-describedby="{% if !spec.hint.is_empty() %}{{ id }}-hint {% endif %}{{ id }}-error"{% if !error.is_empty() %} aria-invalid="true"{% endif %}{% if needed() %} required{% endif %}{% if !spec.pattern.is_empty() %} pattern="{{ spec.pattern }}" data-rule="{{ spec.rule }}"{% endif %}{% if spec.min > 0 %} minlength="{{ spec.min }}"{% endif %} {{ spec.attrs|safe }}>
+{% endif %}<p class="field-error" id="{{ id }}-error"{% if error.is_empty() %} hidden{% endif %}>{{ error }}</p>
+</div>
+{% endif %}

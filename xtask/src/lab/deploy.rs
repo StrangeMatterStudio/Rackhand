@@ -250,21 +250,13 @@ fn first_run(m: &Machine, setup_code: &str) -> Result<()> {
     let jar = super::lab_dir().join("deploy-cookies");
     let _ = std::fs::remove_file(&jar);
     let page = curl(m, &jar, &[], "/first-run")?;
-    let (csrf, secret, sig) = (field(&page, "csrf"), field(&page, "totp_secret"), field(&page, "totp_sig"));
-    let (Some(csrf), Some(secret), Some(sig)) = (csrf, secret, sig) else {
-        bail!("the hub's first-run page has no form")
-    };
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
-    let code = totp(&secret, now).context("the TOTP secret isn't base32")?;
+    let csrf = field(&page, "csrf").context("the hub's first-run page has no form")?;
     let password = random_password()?;
     let form = [
         ("csrf", csrf.as_str()),
         ("setup_code", setup_code),
         ("admin_name", "admin"),
         ("password", password.as_str()),
-        ("totp_secret", secret.as_str()),
-        ("totp_sig", sig.as_str()),
-        ("totp_code", code.as_str()),
         ("site_name", "lab"),
         ("timezone", "UTC"),
     ];
@@ -274,7 +266,14 @@ fn first_run(m: &Machine, setup_code: &str) -> Result<()> {
         args.push(format!("{k}={v}"));
     }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let answer = curl(m, &jar, &refs, "/first-run")?;
+    curl(m, &jar, &refs, "/first-run")?;
+    // the second step, open once the details are accepted
+    let page = curl(m, &jar, &[], "/first-run/second-factor")?;
+    let secret = field(&page, "totp_secret").context("first run's details weren't accepted")?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+    let code = totp(&secret, now).context("the TOTP secret isn't base32")?;
+    let (csrf, code) = (format!("csrf={csrf}"), format!("totp_code={code}"));
+    let answer = curl(m, &jar, &["--data-urlencode", &csrf, "--data-urlencode", &code], "/first-run/second-factor")?;
     if !answer.contains("is set up") {
         bail!("first run didn't complete");
     }

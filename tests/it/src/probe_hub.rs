@@ -209,17 +209,12 @@ impl Hub {
     /// First run over HTTPS: the admin and the local site; the cookie jar then holds the admin's session.
     pub fn first_run(&self) {
         let page = self.curl(&["/first-run"]);
-        let (csrf, secret, sig) = (field(&page, "csrf"), field(&page, "totp_secret"), field(&page, "totp_sig"));
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
-        let totp = rackhand_hub::web::totp::code(&rackhand_hub::web::totp::decode_base32(&secret).unwrap(), now);
+        let csrf = field(&page, "csrf");
         let form = [
             ("csrf", csrf.as_str()),
             ("setup_code", self.setup_code.as_str()),
             ("admin_name", "admin"),
             ("password", "correct horse battery staple"),
-            ("totp_secret", secret.as_str()),
-            ("totp_sig", sig.as_str()),
-            ("totp_code", totp.as_str()),
             ("site_name", "home"),
             ("timezone", "UTC"),
         ];
@@ -230,7 +225,14 @@ impl Hub {
         }
         args.push("/first-run".into());
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let answer = self.curl(&refs);
+        let refused = self.curl(&refs);
+        // the second step, open once the details are accepted
+        let page = self.curl(&["/first-run/second-factor"]);
+        assert!(page.contains("totp_secret"), "first run's details: {refused}");
+        let secret = field(&page, "totp_secret");
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let code = rackhand_hub::web::totp::code(&rackhand_hub::web::totp::decode_base32(&secret).unwrap(), now);
+        let answer = self.curl(&["--data", &format!("csrf={csrf}&totp_code={code}"), "/first-run/second-factor"]);
         assert!(answer.contains("is set up"), "first run: {answer}");
         self.sign_in(&secret);
     }

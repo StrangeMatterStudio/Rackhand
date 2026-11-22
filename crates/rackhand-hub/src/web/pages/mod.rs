@@ -20,6 +20,8 @@ use askama::Template;
 use axum::body::Body;
 use axum::http::{HeaderValue, Response, StatusCode, header};
 
+pub(crate) use first_run::Drafts as FirstRunDrafts;
+
 use super::routes::Page;
 use super::{Ctx, Web, auth};
 
@@ -30,6 +32,7 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
         Page::InstallScript => add::release_file(web, "install.sh"),
         Page::ReleaseFile => add::release_file(web, ctx.path.strip_prefix("/release/").unwrap_or("")),
         Page::AppCss => asset("text/css", APP_CSS),
+        Page::FormsJs => asset("text/javascript", FORMS_JS),
         Page::PasskeyJs => asset("text/javascript", PASSKEY_JS),
         Page::SignIn => auth::flow::password_page(web, ctx),
         Page::SignInSubmit => auth::flow::password_step(web, ctx).await,
@@ -40,6 +43,8 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
         Page::StepUpSubmit => auth::flow::step_up(web, ctx).await,
         Page::FirstRunForm => first_run::form(web, ctx),
         Page::FirstRunSubmit => first_run::submit(web, ctx).await,
+        Page::FirstRunFactor => first_run::factor(web, ctx),
+        Page::FirstRunFactorSubmit => first_run::factor_submit(web, ctx).await,
         Page::Overview => overview::page(web, ctx),
         Page::Settings => settings::page(web, ctx),
         Page::SettingsSources => settings::sources(web, ctx).await,
@@ -151,6 +156,8 @@ pub(crate) fn redirect(to: &'static str) -> Response<Body> {
 const APP_CSS: &[u8] = include_bytes!("../../../static/app.css");
 /// The browser half of passkeys: no inline script, so it is a static file (the CSP allows `'self'` only).
 const PASSKEY_JS: &[u8] = include_bytes!("../../../static/passkey.js");
+/// Forms checking themselves as they are filled in, on the pages that have one.
+const FORMS_JS: &[u8] = include_bytes!("../../../static/forms.js");
 
 /// The vendored files (D9), embedded at build time.
 const VENDOR: &[(&str, &str, &[u8])] = &[

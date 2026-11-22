@@ -52,9 +52,12 @@ base64 = { workspace = true }
 zstd = { workspace = true }
 rackhand-release = { path = "../rackhand-release" }
 webpki-roots = { workspace = true }
+qrcodegen = "1"
 
 [dev-dependencies]
 async-trait = "0.1"
+# reads the dashboard's QR codes back
+rqrr = { version = "0.10", default-features = false }
 rackhand-drivers = { path = "../rackhand-drivers", features = ["sim"] }
 tower = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

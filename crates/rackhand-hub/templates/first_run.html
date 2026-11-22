@@ -1,37 +1,34 @@
 {% extends "base.html" %}
 {% block title %}First run: Rackhand{% endblock %}
+{% block head %}<script src="/static/forms.js" defer></script>{% endblock %}
 {% block content %}
 <h1>Set up this hub</h1>
-{% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
-<form method="post" action="/first-run">
-<input type="hidden" name="csrf" value="{{ csrf }}">
-<input type="hidden" name="totp_secret" value="{{ totp_secret }}">
-<input type="hidden" name="totp_sig" value="{{ totp_sig }}">
+<ol class="steps"><li aria-current="step">Details</li><li>Authenticator</li><li>Recovery code</li></ol>
+<form method="post" action="/first-run" novalidate data-check>
+{{ form.hidden(csrf)|safe }}
+{{ form.problems()|safe }}
 <fieldset>
-<legend>Setup code</legend>
-<label>The code the installer printed <input name="setup_code" required autocomplete="off"></label>
+<legend>This installation</legend>
+{{ form.field("setup_code")|safe }}
 </fieldset>
 <fieldset>
 <legend>Admin</legend>
-<label>Name <input name="admin_name" required pattern="[a-z0-9._-]{1,64}" autocomplete="username"></label>
-<label>Password (at least 12 characters) <input type="password" name="password" required minlength="12" autocomplete="new-password"></label>
-<p>Add this key to an authenticator app, then enter the code it shows:</p>
-<p><code class="secret">{{ totp_secret }}</code></p>
-<p class="hint">Or open <code>{{ totp_uri }}</code> on the device with the app.</p>
-<label>Code <input name="totp_code" required inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code"></label>
+{{ form.field("admin_name")|safe }}
+{{ form.field("password")|safe }}
+<p class="hint">The next step adds an authenticator app; have your phone or password manager ready.</p>
 </fieldset>
 <fieldset>
 <legend>Site</legend>
-<label>Name <input name="site_name" required pattern="[a-z0-9-]{1,32}"></label>
-<label>Timezone <input name="timezone" required value="UTC"></label>
+{{ form.field("site_name")|safe }}
+{{ form.field("timezone")|safe }}
 </fieldset>
 <fieldset>
 <legend>Outside sources</legend>
 <p class="hint">Downloaded by the hub to score connections. Each can be turned off later in Settings.</p>
-<label><input type="checkbox" name="source_feodo" checked> abuse.ch Feodo Tracker (CC0)</label>
-<label><input type="checkbox" name="source_spamhaus" checked> Spamhaus DROP (free with credit)</label>
-<label><input type="checkbox" name="source_dbip" checked> DB-IP Lite country and ASN (CC BY 4.0)</label>
+{{ form.field("source_feodo")|safe }}
+{{ form.field("source_spamhaus")|safe }}
+{{ form.field("source_dbip")|safe }}
 </fieldset>
-<button type="submit">Create the admin and the site</button>
+<button type="submit">Continue</button>
 </form>
 {% endblock %}

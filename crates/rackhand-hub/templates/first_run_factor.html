@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Authenticator: Rackhand{% endblock %}
+{% block head %}<script src="/static/forms.js" defer></script>{% endblock %}
+{% block content %}
+<h1>Add your authenticator</h1>
+<ol class="steps"><li class="done"><a href="/first-run">Details</a></li><li aria-current="step">Authenticator</li><li>Recovery code</li></ol>
+<p>Signing in as {{ admin }} takes the password and a code from an authenticator app. Scan this with the app:</p>
+{% include "key.html" %}
+<form method="post" action="/first-run/second-factor" novalidate data-check>
+{{ form.hidden(csrf)|safe }}
+{% for (name, value) in carried %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+{{ form.problems()|safe }}
+{{ form.field("totp_code")|safe }}
+<button type="submit">Create the admin and the site</button>
+</form>
+<p><a href="/first-run">Change the details</a> (they are kept, and so is this key)</p>
+{% endblock %}

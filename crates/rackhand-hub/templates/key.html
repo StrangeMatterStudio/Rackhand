@@ -1,0 +1,9 @@
+<div class="key">
+{{ qr|safe }}
+<div class="key-text">
+<label for="totp-key">Can't scan it? Add this key by hand:</label>
+<input id="totp-key" type="text" name="totp_secret" value="{{ secret }}" readonly spellcheck="false">
+<button type="button" data-copy="totp-key" hidden>Copy the key</button>
+<p><a href="{{ uri }}">Open it in an app on this device</a></p>
+</div>
+</div>
