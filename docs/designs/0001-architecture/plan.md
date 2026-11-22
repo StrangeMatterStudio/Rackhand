@@ -4960,6 +4960,8 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 
 ## Follow-ups (out of scope)
 
+- `rackhand hub init` under a strict umask (077) leaves `/etc/rackhand` closed to the hub's user, and the service fails with a permission error: `init` should set the directory's mode itself (T94; found installing on the owner's LXC, 2026-11-22).
+- The musl release probe is 15 872 048 bytes; the design's limit is 15 MB (T96 measures it; release build at e3d843a, 2026-11-22).
 - Review the Feodo Tracker default (S10: nearly empty when checked) after the first release (owner, 2026-11-21).
 - The iroh segmentation-offload loss (D64): not raised upstream for now (owner, 2026-11-21); the workaround stays.
 - A self-hosted Windows runner, which would move AC35 (Windows) and AC56 from manual to automated (D81).

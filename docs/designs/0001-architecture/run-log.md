@@ -154,3 +154,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-22 | Owner: a rule's duration can be met by 80% of its samples on a machine without history (D101), confirmed; the design stays |
 | 2026-11-22 | T59 done: integration tier 56 of 56 on 14520f2. T60 started |
 | 2026-11-22 | T60a done: the Proxmox host and hub host runbooks; hypervisors patched last and never rebooted automatically (D102) |
+| 2026-11-22 | At the owner's request: the test build (e3d843a) installed by hand on an LXC of theirs. The packaged unit runs in an unprivileged Debian 13 LXC; `/healthz` ok and first run reachable over the LAN; first run left to the owner |
