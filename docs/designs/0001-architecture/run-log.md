@@ -157,3 +157,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-22 | At the owner's request: the test build (e3d843a) installed by hand on an LXC of theirs. The packaged unit runs in an unprivileged Debian 13 LXC; `/healthz` ok and first run reachable over the LAN; first run left to the owner |
 | 2026-11-22 | Owner: first-run's usability problems and an overhaul of the dashboard go to a session of their own (branch of its own, records in `0002-dashboard-ui`); this run goes on with the plan |
 | 2026-11-22 | T60b done: a hypervisor's reboot asked for with its guests listed, once per cluster and window (D103) |
+| 2026-11-22 | T60c built: the reboot of the machine the hub runs on, 60 s out, and the job resumed at verify (D104); integration tier next |

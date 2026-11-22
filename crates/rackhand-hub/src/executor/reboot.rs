@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rackhand_runbook::templates::{REBOOT, WRAPPER};
+use rackhand_runbook::templates::{REBOOT, REBOOT_IN_60S, WRAPPER};
 use rackhand_store::ids::now_ms;
 use serde_json::json;
 
@@ -27,6 +27,8 @@ const FLAG_OR_KERNEL: &str = "if test -e /run/reboot-required || test -e /var/ru
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 /// A machine going down may still report for this long.
 const SHUTDOWN_MS: i64 = 120_000;
+/// How far away a scheduled reboot is.
+const SCHEDULED_MS: i64 = 60_000;
 const POLL: Duration = Duration::from_secs(1);
 
 /// What the step asks about its machine.
@@ -39,6 +41,10 @@ pub trait RebootFacts: Send + Sync {
     }
     /// The machine is asked about its kernels too.
     fn compares_kernels(&self, _machine: &str) -> bool {
+        false
+    }
+    /// The hub goes down with the machine: it runs on it, or on a guest of it.
+    fn hosts_hub(&self, _machine: &str) -> bool {
         false
     }
     /// The machine has started again, and reported, since `since_ms`.
@@ -74,6 +80,17 @@ impl Executor {
         if !facts.auto_reboot(&ctx.machine_id) && !facts.approved(&ctx.job_id) {
             return ended("required_not_allowed", None, StepOutcome::Succeeded);
         }
+        if facts.hosts_hub(&ctx.machine_id) {
+            let command = format!("sudo {WRAPPER} {}", REBOOT_IN_60S.join(" "));
+            return match self.ssh(ctx, Identity::Automation, &command, COMMAND_TIMEOUT).await {
+                Ok(out) if out.exit_code == Some(0) => ended("scheduled", Some(command), StepOutcome::Succeeded),
+                Ok(out) => {
+                    let reason = out.exit_code.map_or("no_exit_status".into(), |c| format!("exit_code {c}"));
+                    StepResult { command: Some(command), stderr: out.stderr, ..StepResult::failed(reason) }
+                }
+                Err(e) => StepResult { command: Some(command), ..StepResult::failed(ssh_failure(&e)) },
+            };
+        }
         let command = format!("sudo {WRAPPER} {REBOOT}");
         let since = now_ms();
         match self.ssh(ctx, Identity::Automation, &command, COMMAND_TIMEOUT).await {
@@ -88,20 +105,38 @@ impl Executor {
             // A machine going down cuts the session, with or without an exit status.
             Ok(_) | Err(_) => {}
         }
+        ended("done", Some(command), self.back(&*facts, &ctx.machine_id, since, SHUTDOWN_MS, wait).await)
+    }
+
+    /// Waits up to `wait` for the machine to have started again since `since`.
+    async fn back(
+        &self,
+        facts: &dyn RebootFacts,
+        machine: &str,
+        since: i64,
+        going_down_ms: i64,
+        wait: Duration,
+    ) -> StepOutcome {
         let deadline = tokio::time::Instant::now() + wait;
-        while !facts.back_since(&ctx.machine_id, since) {
+        while !facts.back_since(machine, since) {
             if tokio::time::Instant::now() >= deadline {
                 // A machine that goes on reporting hasn't started again (the command may never have run): that isn't
                 // the silence after a reboot that rolls a guest back (D45).
-                let reason = if facts.reported_since(&ctx.machine_id, since + SHUTDOWN_MS) {
-                    "did_not_reboot"
-                } else {
-                    NO_REPORT
-                };
-                return ended("done", Some(command), StepOutcome::Failed(reason.into()));
+                let up = facts.reported_since(machine, since + going_down_ms);
+                return StepOutcome::Failed(if up { "did_not_reboot" } else { NO_REPORT }.into());
             }
             tokio::time::sleep(POLL.min(wait / 4)).await;
         }
-        ended("done", Some(command), StepOutcome::Succeeded)
+        StepOutcome::Succeeded
+    }
+
+    /// The wait of a scheduled reboot, also in the hub that came back after it.
+    pub(super) async fn scheduled_reboot(&self, ctx: &StepCtx, since_ms: i64) -> StepResult {
+        let Some((facts, wait)) = self.reboot.as_ref().map(|(f, w)| (Arc::clone(f), *w)) else {
+            return StepResult::failed("reboot_if_required_unavailable");
+        };
+        let wait = wait + Duration::from_millis(SCHEDULED_MS as u64);
+        let outcome = self.back(&*facts, &ctx.machine_id, since_ms, SCHEDULED_MS + SHUTDOWN_MS, wait).await;
+        ended("scheduled", None, outcome)
     }
 }

@@ -103,6 +103,8 @@ pub enum WriteCmd {
     // Actions
     CreateJob(Row),
     UpdateJobStep(Row),
+    /// The step a restarted hub goes on with (7.5.3 step 8).
+    ResumeJobAt(Row),
     FinishJob(Row),
     AppendTranscript(Row),
     // Policy
@@ -169,6 +171,7 @@ impl WriteCmd {
             PutSilence,
             CreateJob,
             UpdateJobStep,
+            ResumeJobAt,
             FinishJob,
             AppendTranscript,
             PutPolicy,
@@ -657,6 +660,13 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
             );
             let values: Vec<&Value> = row.values().collect();
             Ok(conn.execute(&sql, rusqlite::params_from_iter(values))?)
+        }
+        WriteCmd::ResumeJobAt(row) => {
+            let n = conn.execute(
+                "UPDATE jobs SET resumable_step = ?2 WHERE id = ?1 AND state = 'running'",
+                rusqlite::params![text(&row, "id")?, text(&row, "resumable_step")?],
+            )?;
+            if n == 0 { Err(StoreError::Conflict("job not running")) } else { Ok(n) }
         }
         WriteCmd::FinishJob(row) => {
             // Only a job that hasn't finished: the first finish wins.

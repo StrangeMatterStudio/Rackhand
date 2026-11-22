@@ -14,7 +14,8 @@
 //! approved, runs in an open window when nothing else at its site is running or waiting, one host at a time and one per
 //! cluster and window. An approval can be decided until the end of the next window, as a patch's.
 //!
-//! Until its scheduled reboot exists (T60) the role `hub` is left out, and until its runbook does (T90) the kind `windows`.
+//! The machine the hub runs on (role `hub`) goes last of all, and its reboot is asked for the same way. Until its runbook
+//! exists (T90) the kind `windows` is left out.
 
 use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
@@ -114,11 +115,11 @@ impl std::fmt::Debug for Driver {
 
 /// The patch runbook of a machine, if there is one for it.
 fn runbook_for(kind: &str, roles: &[String]) -> Option<&'static str> {
-    if roles.iter().any(|r| r == "hub") {
-        return None;
-    }
     if kind == "hypervisor" || roles.iter().any(|r| r == "hypervisor") {
         return Some(PROXMOX_HOST);
+    }
+    if roles.iter().any(|r| r == "hub") {
+        return Some(HUB_HOST);
     }
     match kind {
         "linux" => Some("patch-debian"),
@@ -128,6 +129,7 @@ fn runbook_for(kind: &str, roles: &[String]) -> Option<&'static str> {
 }
 
 const PROXMOX_HOST: &str = "patch-proxmox-host";
+const HUB_HOST: &str = "patch-hub-host";
 
 /// The approval a machine's patch job needs, as Actions checks it.
 pub fn request(name: &str, machine: &str, rev: i64, risk: Risk) -> ApprovalRequest {
@@ -305,14 +307,14 @@ impl Driver {
             if a.run.ended(now_ms) {
                 continue;
             }
-            let hosts: Vec<(String, Vec<String>)> = a
+            let hosts: Vec<(String, Vec<String>, bool)> = a
                 .machines
                 .iter()
-                .filter(|(_, m)| m.runbook == PROXMOX_HOST)
-                .map(|(id, m)| (id.clone(), m.tags.clone()))
+                .filter(|(_, m)| [PROXMOX_HOST, HUB_HOST].contains(&m.runbook))
+                .map(|(id, m)| (id.clone(), m.tags.clone(), m.runbook == PROXMOX_HOST))
                 .collect();
             let (site, starts_ms) = (a.open.site.clone(), a.open.starts_ms);
-            for (id, tags) in hosts {
+            for (id, tags, hypervisor) in hosts {
                 let Some(approval) = self.approved(hypervisor::REBOOT, &id, now_ms) else { continue };
                 // nothing else of the site's is running or waiting for its turn
                 let busy = state.runs.iter().any(|r| {
@@ -323,7 +325,7 @@ impl Driver {
                 if busy || !available || state.inflight.contains(&id) {
                     continue;
                 }
-                if !self.may_reboot(&id, starts_ms).await {
+                if !self.may_reboot(&id, hypervisor, starts_ms).await {
                     continue;
                 }
                 self.start_reboot(state, id, site.clone(), approval);
@@ -331,14 +333,9 @@ impl Driver {
         }
     }
 
-    /// Whether the hypervisor may be rebooted in the window that started at `starts_ms`: neither it nor another of its
-    /// cluster was (one try per window). Not known, it may not. The host the hub runs on waits for the scheduled reboot (T60).
-    async fn may_reboot(&self, host: &str, starts_ms: i64) -> bool {
-        let Some(hosts) = &self.hosts else { return false };
-        let Ok(view) = hosts.view(host).await else { return false };
-        if self.hub_on(host, &view).is_some() {
-            return false;
-        }
+    /// Whether the host may be rebooted in the window that started at `starts_ms`: neither it nor another hypervisor of
+    /// its cluster was (one try per window). Not known, it may not.
+    async fn may_reboot(&self, host: &str, hypervisor: bool, starts_ms: i64) -> bool {
         let before: rusqlite::Result<Vec<String>> = self.db.readers().with(|c| {
             let mut s = c.prepare(
                 "SELECT DISTINCT target FROM jobs WHERE name = ?1 AND target IS NOT NULL AND started_at >= ?2",
@@ -349,13 +346,32 @@ impl Driver {
         if before.iter().any(|b| b == host) {
             return false;
         }
+        if !hypervisor {
+            return true;
+        }
+        let Some(hosts) = &self.hosts else { return false };
+        let Ok(view) = hosts.view(host).await else { return false };
         for other in before {
+            // the hub's host isn't in a cluster
+            if self.is_hub_host(&other) {
+                continue;
+            }
             match hosts.view(&other).await {
                 Ok(o) if !hypervisor::same_cluster(&view, &o) => {}
                 _ => return false,
             }
         }
         true
+    }
+
+    /// The machine's patch runbook is the hub host's: it runs the hub and is no hypervisor.
+    fn is_hub_host(&self, machine: &str) -> bool {
+        let row: rusqlite::Result<(String, String)> = self.db.readers().with(|c| {
+            c.query_row("SELECT kind, roles FROM machines WHERE id = ?1", [machine], |r| Ok((r.get(0)?, r.get(1)?)))
+        });
+        row.is_ok_and(|(kind, roles)| {
+            runbook_for(&kind, &serde_json::from_str::<Vec<String>>(&roles).unwrap_or_default()) == Some(HUB_HOST)
+        })
     }
 
     /// The hub's own guest on this host, by its confirmed binding.
@@ -397,14 +413,24 @@ impl Driver {
             .any(|v| v["reboot"] == "required_not_allowed")
     }
 
-    /// Asks for a hypervisor's reboot, listing its guests (E13). One whose guests can't be listed isn't asked about:
-    /// nobody could see what goes down with it.
-    async fn ask_reboot(&self, host: &str, open: &OpenWindow) {
-        let Some(hosts) = &self.hosts else { return };
-        let view = match hosts.view(host).await {
-            Ok(v) => v,
-            Err(e) => return tracing::warn!(error = %e, %host, "a hypervisor needs a reboot, its guests aren't listed"),
-        };
+    /// What the approval of a host's reboot says: a hypervisor's guests (E13), or that the hub runs there. A hypervisor
+    /// whose guests can't be listed isn't asked about: nobody could see what goes down with it.
+    async fn reboot_reason(&self, host: &str, runbook: &str) -> Option<String> {
+        if runbook == HUB_HOST {
+            return Some(hypervisor::HUB_HOST_REASON.to_string());
+        }
+        match self.hosts.as_ref()?.view(host).await {
+            Ok(view) => Some(hypervisor::reason(&view, self.hub_on(host, &view))),
+            Err(e) => {
+                tracing::warn!(error = %e, %host, "a hypervisor needs a reboot, its guests aren't listed");
+                None
+            }
+        }
+    }
+
+    /// Asks for a hypervisor's or the hub host's reboot.
+    async fn ask_reboot(&self, host: &str, runbook: &str, open: &OpenWindow) {
+        let Some(reason) = self.reboot_reason(host, runbook).await else { return };
         let Some((rev, risk)) = self.runbook(hypervisor::REBOOT) else {
             return tracing::warn!(runbook = hypervisor::REBOOT, "no such runbook");
         };
@@ -415,11 +441,7 @@ impl Driver {
                 return;
             }
         }
-        let ask = ApprovalRequest {
-            step_up: true,
-            reason: hypervisor::reason(&view, self.hub_on(host, &view)),
-            ..request(hypervisor::REBOOT, host, rev, risk)
-        };
+        let ask = ApprovalRequest { step_up: true, reason, ..request(hypervisor::REBOOT, host, rev, risk) };
         if let Err(e) = Approvals::new(self.db.clone()).create(&ask, now_ms, open.next_ends_ms - now_ms).await {
             tracing::warn!(error = %e, %host, "reboot approval");
         }
@@ -530,11 +552,11 @@ impl Driver {
                     }
                 }
                 Ok(r)
-                    if runbook == PROXMOX_HOST
+                    if [PROXMOX_HOST, HUB_HOST].contains(&runbook)
                         && r.outcome == crate::bus::JobOutcome::Succeeded
                         && driver.reboot_wanted(&r.job_id) =>
                 {
-                    driver.ask_reboot(&machine, &window).await;
+                    driver.ask_reboot(&machine, runbook, &window).await;
                 }
                 Ok(_) => {}
             }

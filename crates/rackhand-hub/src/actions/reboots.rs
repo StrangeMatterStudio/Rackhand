@@ -23,13 +23,20 @@ impl Reboots {
         let last =
             runbook.steps.iter().rposition(|s| matches!(s.kind, StepKind::RebootIfRequired | StepKind::Rollback))?;
         let wait = runbook.steps[last..].iter().position(|s| s.kind == StepKind::WaitReport).map(|i| last + i);
+        let mut hold = self.hold_machine(machine);
+        hold.wait = wait;
+        Some(hold)
+    }
+
+    /// Holds the machine whatever the runbook: a job taken up again while its machine restarts.
+    pub(super) fn hold_machine(&self, machine: &str) -> Awaiting {
         self.machines
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .entry(machine.to_string())
             .and_modify(|n| *n += 1)
             .or_insert(1);
-        Some(Awaiting { reboots: self.clone(), machine: machine.to_string(), wait })
+        Awaiting { reboots: self.clone(), machine: machine.to_string(), wait: None }
     }
 }
 

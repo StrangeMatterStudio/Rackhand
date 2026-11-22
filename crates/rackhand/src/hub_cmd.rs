@@ -237,6 +237,10 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         .with_reboot(machines.clone(), REBOOT_WAIT);
     let actions = rackhand_hub::actions::Actions::new(db.clone(), audit.clone(), bus.clone(), Arc::new(executor))
         .with_gate(Arc::new(ingest.clone()));
+    // a job the hub's own reboot interrupted goes on (7.5.3 step 8)
+    if let Err(e) = actions.resume().await {
+        tracing::error!(error = %e, "resuming jobs");
+    }
     incidents.set_quiet(Arc::new(patching::Expected { machines: machines.clone(), actions: actions.clone() }));
     let hosts = rackhand_hub::checks::steps::Hypervisor::new(db.clone(), vault.clone())
         .with_driver(Arc::new(rackhand_drivers::Proxmox::new()));

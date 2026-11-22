@@ -76,6 +76,7 @@ timeout = "60s"
         reporting: std::sync::atomic::AtomicBool,
         hypervisor: std::sync::atomic::AtomicBool,
         approved: std::sync::atomic::AtomicBool,
+        hub: std::sync::atomic::AtomicBool,
     }
 
     impl rackhand_hub::executor::RebootFacts for Facts {
@@ -84,6 +85,9 @@ timeout = "60s"
         }
         fn approved(&self, _job: &str) -> bool {
             self.approved.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn hosts_hub(&self, _machine: &str) -> bool {
+            self.hub.load(std::sync::atomic::Ordering::SeqCst)
         }
         fn compares_kernels(&self, _machine: &str) -> bool {
             self.hypervisor.load(std::sync::atomic::Ordering::SeqCst)
@@ -122,6 +126,8 @@ timeout = "{timeout}"
         pub(super) actions: Actions,
         pub(super) events: Subscription,
         facts: Arc<Facts>,
+        vault: Arc<Vault>,
+        host_keys: Arc<HostKeys>,
     }
 
     pub(super) fn sh(c: &Container, script: &str) {
@@ -200,11 +206,11 @@ timeout = "{timeout}"
         let bus = Bus::new();
         let events = bus.subscribe("test");
         let facts = Arc::new(Facts::default());
-        let executor = Executor::new(vault, host_keys)
+        let executor = Executor::new(vault.clone(), host_keys.clone())
             .with_poll(Duration::from_millis(500))
             .with_reboot(facts.clone(), Duration::from_secs(6));
         let actions = Actions::new(db.clone(), audit, bus, Arc::new(executor)).with_lock_wait(lock_wait);
-        Lab { db, machine, actions, events, facts }
+        Lab { db, machine, actions, events, facts, vault, host_keys }
     }
 
     async fn wait_listening(addr: &str) {
@@ -530,6 +536,136 @@ timeout = "{timeout}"
         sh(&lab.machine, "rm -f /run/reboot-required /etc/kernel/proxmox-boot-pin");
         lab.facts.hypervisor.store(false, SeqCst);
         assert_eq!(said("an ordinary machine").await, "not_required");
+    }
+
+    /// The machine the hub runs on (7.5.3 step 8).
+    mod hubhost {
+        use std::sync::atomic::Ordering::SeqCst;
+        use std::time::Instant;
+
+        use rackhand_hub::checks::steps::Verify;
+        use rackhand_hub::executor::ByKind;
+        use rackhand_hub::ingest::{DiskSpace, Ingest};
+        use rackhand_runbook::runbook::StepKind;
+
+        use super::*;
+
+        const HOST: &str = r#"name = "host"
+description = "Reboot the hub's host"
+identity = "automation"
+risk = "normal"
+autonomy = 2
+[[step]]
+id = "boot"
+kind = "reboot_if_required"
+timeout = "5m"
+[[step]]
+id = "report"
+kind = "wait_report"
+[[step]]
+id = "check"
+kind = "verify"
+checks = ["bound_checks"]
+timeout = "30s"
+"#;
+
+        #[derive(Debug)]
+        struct Roomy;
+
+        impl DiskSpace for Roomy {
+            fn free_fraction(&self) -> f64 {
+                0.5
+            }
+        }
+
+        fn docker(args: &[&str]) -> String {
+            let out = std::process::Command::new("docker").args(args).output().unwrap();
+            assert!(out.status.success(), "docker {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+
+        /// E14: the reboot is the machine's own timer, 60 s away; the hub goes down, the machine restarts, and the hub
+        /// that comes back finishes the job at its verify step.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn reboot_scheduled_60s_job_resumes_at_verify() {
+            let lab = lab("hubhost", "60s", Duration::from_secs(5)).await;
+            let (library, _) = Library::new(lab.db.clone(), Audit::new(lab.db.writer()));
+            library.save(Kind::Runbook, "host", HOST, "admin", 1).await.unwrap();
+            sh(&lab.machine, "touch /run/reboot-required");
+            lab.facts.auto.store(true, SeqCst);
+            lab.facts.hub.store(true, SeqCst);
+            let scheduled = Instant::now();
+            let run = tokio::spawn({
+                let a = lab.actions.clone();
+                async move { a.run(StartJob::runbook("host", "m1", "test")).await }
+            });
+            let marked = || -> Option<(String, String)> {
+                lab.db
+                    .readers()
+                    .with(|c| {
+                        c.query_row("SELECT id, resumable_step FROM jobs WHERE resumable_step IS NOT NULL", [], |r| {
+                            Ok((r.get(0)?, r.get(1)?))
+                        })
+                    })
+                    .ok()
+            };
+            while marked().is_none() {
+                assert!(scheduled.elapsed() < Duration::from_secs(45), "the job is never marked");
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            let (job, at) = marked().unwrap();
+            assert_eq!(at, "check");
+            let timers =
+                String::from_utf8_lossy(&lab.machine.root("systemctl list-timers --all --no-pager").stdout).to_string();
+            assert!(timers.contains("run-"), "the machine's own timer: {timers}");
+
+            // the hub goes down before its machine does
+            run.abort();
+            let name = lab.machine.name.clone();
+            while docker(&["inspect", "-f", "{{.State.Running}}", &name]) == "true" {
+                assert!(scheduled.elapsed() < Duration::from_secs(150), "the machine never went down");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            let down = scheduled.elapsed();
+            assert!(down >= Duration::from_secs(55), "not before the minute: {down:?}");
+            docker(&["start", &name]);
+            let (ip, _) = lab.machine.ip_and_gateway();
+            let set = Row::from([("address", Value::Text(ip.clone()))]);
+            let update = rackhand_store::RowUpdate { table: "machines", key: ("id", Value::Text("m1".into())), set };
+            let change = rackhand_store::RegistryChange { updates: vec![update], ..Default::default() };
+            lab.db.writer().send(WriteCmd::RegistryChange(change)).await.unwrap();
+            wait_listening(&format!("{ip}:22")).await;
+
+            // the hub that comes back
+            let bus = Bus::new();
+            let ingest = Ingest::new(lab.db.clone(), bus.clone(), Arc::new(Roomy));
+            let other = ByKind::default().with(StepKind::Verify, Arc::new(Verify::new(lab.db.clone(), ingest)));
+            let executor = Executor::new(lab.vault.clone(), lab.host_keys.clone())
+                .with_other(Arc::new(other))
+                .with_reboot(lab.facts.clone(), Duration::from_secs(30));
+            let actions = Actions::new(lab.db.clone(), Audit::new(lab.db.writer()), bus, Arc::new(executor));
+            assert_eq!(actions.resume().await.unwrap(), 1);
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            assert_eq!(job_state(&lab.db, &job), "running", "not before the machine is back");
+            lab.facts.back.store(true, SeqCst);
+            let resumed = Instant::now();
+            while job_state(&lab.db, &job) == "running" {
+                assert!(resumed.elapsed() < Duration::from_secs(60), "the resumed job never ends");
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            assert_eq!(job_state(&lab.db, &job), "succeeded");
+            let steps: Vec<(String, String)> = lab
+                .db
+                .readers()
+                .with(|c| {
+                    let mut s =
+                        c.prepare("SELECT step_id, state FROM job_steps WHERE job_id = ?1 ORDER BY started_at")?;
+                    s.query_map([&job], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
+                })
+                .unwrap();
+            let ok = |s: &str| (s.to_string(), "succeeded".to_string());
+            assert_eq!(steps, [ok("boot"), ok("check")]);
+        }
     }
 
     /// A notifier that records messages, or fails every send.

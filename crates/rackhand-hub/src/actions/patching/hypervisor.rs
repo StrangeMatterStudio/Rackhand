@@ -7,6 +7,10 @@ use crate::actions::runner::BoxFuture;
 /// The runbook a hypervisor's approved reboot runs.
 pub const REBOOT: &str = "reboot-host";
 
+/// What the approval of the hub host's reboot says.
+pub const HUB_HOST_REASON: &str = "updates were installed on the machine this hub runs on and it needs a reboot. \
+    The hub is away until it is back, and finishes the job then.";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostGuest {
     pub vmid: u64,

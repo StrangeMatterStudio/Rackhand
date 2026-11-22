@@ -111,6 +111,6 @@ fn reboot_host_is_high_risk_and_verifies() {
     assert_eq!((r.risk, r.autonomy), (crate::runbook::Risk::High, 1));
     use StepKind::*;
     assert_eq!(r.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), [Verify, RebootIfRequired, WaitReport, Verify]);
-    assert_eq!(r.targets.roles, ["hypervisor"]);
+    assert_eq!(r.targets.roles, ["hypervisor", "hub"]);
     assert!(r.params.is_empty(), "nothing in it can be widened after the approval");
 }

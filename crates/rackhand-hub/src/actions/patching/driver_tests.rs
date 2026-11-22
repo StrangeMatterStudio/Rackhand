@@ -567,10 +567,9 @@ async fn hypervisor_approval_names_hub_when_hub_is_a_guest() {
         e.end_patch("pve", "required_not_allowed").await;
         let (id, _, _, _, reason) = e.reboots()[0].clone();
         assert_eq!(reason.contains("This hub is one of them: rackhand (VM 102)"), named, "{state}: {reason}");
-        // until it can be scheduled (T60c), the reboot that would end its own job doesn't start
         e.approve(&id, e.now + MIN).await;
         e.tick(vec![e.window("auto", Window::Security)], e.now + MIN).await;
-        assert_eq!(e.jobs.started().iter().any(|j| j.0 == "reboot-host"), !named, "{state}");
+        assert!(e.jobs.started().iter().any(|j| j.0 == "reboot-host"), "{state}: the step schedules it");
     }
 }
 
@@ -644,4 +643,35 @@ async fn hypervisor_reboot_is_tried_once_per_window() {
     e.end("pve").await;
     e.tick(open(), e.now + 2 * MIN).await;
     assert_eq!(e.jobs.started().iter().filter(|j| j.0 == "reboot-host").count(), 1);
+}
+
+/// 7.5.3 step 8: the hub's host has its own runbook and goes last, after the hypervisors; its reboot needs an approval
+/// that says the hub goes away with it. A hub on a hypervisor itself is patched as one.
+#[tokio::test(flavor = "multi_thread")]
+async fn hub_host_goes_last_and_asks_before_it_reboots() {
+    let e = env("hub-host").await;
+    e.machine("ahub", "linux", "auto", "[\"hub\"]").await;
+    e.machine("pve", "hypervisor", "auto", "[]").await;
+    e.machine("web", "linux", "auto", "[]").await;
+    let open = || vec![e.window("auto", Window::Security)];
+    for (i, (runbook, machine)) in
+        [("patch-debian", "web"), ("patch-proxmox-host", "pve"), ("patch-hub-host", "ahub")].into_iter().enumerate()
+    {
+        e.tick(open(), e.now + i as i64 * MIN).await;
+        assert_eq!(e.jobs.started().last(), Some(&(runbook.to_string(), machine.to_string())));
+        if machine == "ahub" {
+            e.end_patch(machine, "required_not_allowed").await;
+        } else {
+            e.end(machine).await;
+        }
+    }
+    let asked = e.reboots();
+    assert_eq!(asked.len(), 1);
+    assert_eq!((asked[0].1.as_str(), asked[0].2.as_str(), asked[0].3), ("ahub", "high", true));
+    assert!(asked[0].4.contains("the machine this hub runs on"), "{}", asked[0].4);
+    e.approve(&asked[0].0, e.now + 4 * MIN).await;
+    e.tick(open(), e.now + 4 * MIN).await;
+    assert_eq!(e.jobs.started().last(), Some(&("reboot-host".to_string(), "ahub".to_string())));
+    assert_eq!(runbook_for("hypervisor", &["hub".into()]), Some("patch-proxmox-host"));
+    assert_eq!(runbook_for("linux", &["hub".into(), "hypervisor".into()]), Some("patch-proxmox-host"));
 }

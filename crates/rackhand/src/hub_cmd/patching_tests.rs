@@ -270,3 +270,27 @@ async fn only_an_approved_high_risk_job_may_reboot_a_hypervisor() {
     }
     assert!(m.compares_kernels("pve") && m.compares_kernels("pve2") && !m.compares_kernels("plain"));
 }
+
+/// 7.5.3 steps 7 and 8: the machines whose reboot takes the hub down: its own host, and the hypervisor its confirmed
+/// binding names.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_machines_the_hub_runs_on() {
+    for (state, bound) in [("confirmed", true), ("proposed", false)] {
+        let m = machines(&format!("hubhost-{state}")).await;
+        let hub = Row::from([
+            ("id", t("hub")),
+            ("site_id", t("s")),
+            ("name", t("hub")),
+            ("kind", t("linux")),
+            ("roles", t("[\"hub\"]")),
+            ("proxmox_ref", t("{\"cluster\":\"pve2\",\"node\":\"pve\",\"vmid\":1,\"type\":\"lxc\"}")),
+            ("proxmox_ref_state", t(state)),
+            ("state", t("enrolled")),
+        ]);
+        m.db.writer().send(WriteCmd::Batch(vec![RowWrite::insert("machines", hub)])).await.unwrap();
+        assert!(m.hosts_hub("hub"));
+        assert_eq!(m.hosts_hub("pve2"), bound, "bound through it: {state}");
+        assert_eq!(m.hosts_hub("pve"), bound, "another of its cluster, named as the node: {state}");
+        assert!(!m.hosts_hub("plain") && !m.hosts_hub("missing"));
+    }
+}

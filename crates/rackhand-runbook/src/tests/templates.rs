@@ -52,7 +52,10 @@ fn reboot_step_adds_its_fixed_command() {
     let patch = crate::runbook::Runbook::parse(crate::builtin::runbook("patch-debian").unwrap()).unwrap();
     let list = command_list(&[patch]);
     let reboot: Vec<_> = list.commands.iter().filter(|t| t.step == "reboot").collect();
-    assert_eq!(reboot.len(), 1);
+    assert_eq!(reboot.len(), 2);
     assert_eq!(reboot[0].args, [Arg::Literal("/sbin/reboot".into())]);
+    let scheduled: Vec<Arg> = crate::templates::REBOOT_IN_60S.iter().map(|a| Arg::Literal((*a).to_string())).collect();
+    assert_eq!(reboot[1].args, scheduled, "the reboot of the machine the hub runs on (7.5.3 step 8)");
+    assert_eq!(crate::templates::REBOOT_IN_60S[1], "--on-active=60");
     assert!(list.commands.iter().all(|t| t.step == "reboot" || !t.args.contains(&Arg::Literal("/sbin/reboot".into()))));
 }

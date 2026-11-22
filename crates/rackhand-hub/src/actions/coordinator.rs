@@ -1,6 +1,9 @@
 //! Running a job: resolve the runbook and machine, take the machine, use the approval, then run each step in order,
 //! recording it before it runs (9) and enforcing its timeout. A detached step that passes its timeout isn't killed
 //! (E55): the job ends `timed_out` and the machine stays locked until the step's result is recorded.
+//!
+//! A reboot step that was scheduled (7.5.3 steps 7 and 8) may take the hub down with its machine: the job is marked to go
+//! on at the verify step before anything waits, and `resume` (in `recovery`) goes on there in the hub that comes back.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -89,7 +92,7 @@ impl Actions {
             .ok_or(ActionsError::UnknownMachine)
     }
 
-    fn runbook(&self, start: &StartJob) -> Result<(i64, Runbook), ActionsError> {
+    pub(super) fn runbook(&self, start: &StartJob) -> Result<(i64, Runbook), ActionsError> {
         let db = &self.inner.db;
         let store = |e: crate::library::items::SaveError| ActionsError::Store(e.to_string());
         let (rev, source) = match start.rev {
@@ -185,7 +188,7 @@ impl Actions {
         Ok(JobResult { job_id, outcome, reason })
     }
 
-    async fn finish(
+    pub(super) async fn finish(
         &self,
         job_id: &str,
         actor: &str,
@@ -214,9 +217,25 @@ impl Actions {
         params: &BTreeMap<String, String>,
         guard: MachineGuard,
     ) -> Result<(JobOutcome, Option<String>), ActionsError> {
+        let awaiting = self.inner.reboots.hold(&machine.id, runbook);
+        self.run_steps_from(0, job_id, machine, runbook, params, guard, awaiting).await
+    }
+
+    /// The steps from the `from`th on; `awaiting` is the hold on the machine's expected silence, if it has one.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn run_steps_from(
+        &self,
+        from: usize,
+        job_id: &str,
+        machine: &Machine,
+        runbook: &Runbook,
+        params: &BTreeMap<String, String>,
+        guard: MachineGuard,
+        mut awaiting: Option<super::reboots::Awaiting>,
+    ) -> Result<(JobOutcome, Option<String>), ActionsError> {
         let db = &self.inner.db;
-        let mut awaiting = self.inner.reboots.hold(&machine.id, runbook);
-        for (i, step) in runbook.steps.iter().enumerate() {
+        for (i, step) in runbook.steps.iter().enumerate().skip(from) {
+            let started_ms = now_ms();
             let step = with_params(step, params);
             let argv = step.cmd.as_deref().map(|c| substitute_argv(c, params));
             let command = argv.as_deref().map(display);
@@ -281,7 +300,17 @@ impl Actions {
                     }
                 }
             }
-            let result = last.unwrap_or_else(|| StepResult::failed("not_run"));
+            let mut result = last.unwrap_or_else(|| StepResult::failed("not_run"));
+            if step.kind == StepKind::RebootIfRequired && scheduled(&result) {
+                if let Some(next) = resume_step(runbook, i) {
+                    jobs::resume_at(db, job_id, &next).await?;
+                }
+                let back = match tokio::time::timeout(timeout, self.inner.runner.rebooted(&ctx, started_ms)).await {
+                    Ok(back) => back.outcome,
+                    Err(_) => StepOutcome::Failed("timeout".into()),
+                };
+                result.outcome = back;
+            }
             let failed = match &result.outcome {
                 StepOutcome::Succeeded => None,
                 StepOutcome::Failed(reason) => Some(reason.clone()),
@@ -298,7 +327,12 @@ impl Actions {
         Ok((JobOutcome::Succeeded, None))
     }
 
-    async fn record_step(&self, job_id: &str, step_id: &str, result: StepResult) -> Result<(), ActionsError> {
+    pub(super) async fn record_step(
+        &self,
+        job_id: &str,
+        step_id: &str,
+        result: StepResult,
+    ) -> Result<(), ActionsError> {
         let state = if result.outcome == StepOutcome::Succeeded { "succeeded" } else { "failed" };
         let end = StepEnd {
             state,
@@ -436,6 +470,18 @@ impl Actions {
         drop(guard);
         Ok(result)
     }
+}
+
+/// A reboot step's command only set the reboot's time.
+fn scheduled(result: &StepResult) -> bool {
+    result.outcome == StepOutcome::Succeeded
+        && serde_json::from_slice::<serde_json::Value>(&result.stdout).is_ok_and(|v| v["reboot"] == "scheduled")
+}
+
+/// Where a restarted hub goes on after the reboot step `reboot`: the next verify step, or the next step at all.
+fn resume_step(runbook: &Runbook, reboot: usize) -> Option<String> {
+    let rest = runbook.steps.get(reboot + 1..)?;
+    rest.iter().find(|s| s.kind == StepKind::Verify).or(rest.first()).map(|s| s.id.clone())
 }
 
 fn spawn_step(

@@ -115,6 +115,24 @@ impl RebootFacts for Machines {
         })
     }
 
+    fn hosts_hub(&self, machine: &str) -> bool {
+        let row: rusqlite::Result<bool> = self.db.readers().with(|c| {
+            c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM json_each(m.roles) WHERE value = 'hub')
+                     OR ((m.kind = 'hypervisor' OR EXISTS (SELECT 1 FROM json_each(m.roles) WHERE value = 'hypervisor'))
+                         AND EXISTS (SELECT 1 FROM machines h
+                                     WHERE h.proxmox_ref_state = 'confirmed' AND h.proxmox_ref IS NOT NULL
+                                       AND EXISTS (SELECT 1 FROM json_each(h.roles) WHERE value = 'hub')
+                                       AND (json_extract(h.proxmox_ref, '$.cluster') = m.id
+                                            OR json_extract(h.proxmox_ref, '$.node') = m.name)))
+                 FROM machines m WHERE m.id = ?1",
+                [machine],
+                |r| r.get(0),
+            )
+        });
+        row.unwrap_or(false)
+    }
+
     fn back_since(&self, machine: &str, since_ms: i64) -> bool {
         // A sample's time is rounded down to the machine's interval, so its start can look that much earlier.
         let slack = self.ingest.interval_ms(machine);

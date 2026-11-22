@@ -475,3 +475,171 @@ async fn awaiting_reboot_until_the_wait_step_ends() {
     job.await.unwrap();
     assert!(!actions.awaiting_reboot("m1"));
 }
+
+/// A runner whose reboot step is scheduled; `back` is what waiting for the machine gives, or never.
+struct Scheduled {
+    ran: std::sync::Mutex<Vec<String>>,
+    back: Option<StepOutcome>,
+    asked_since: std::sync::Mutex<Vec<i64>>,
+}
+
+impl Scheduled {
+    fn new(back: Option<StepOutcome>) -> Arc<Scheduled> {
+        Arc::new(Scheduled { ran: Default::default(), back, asked_since: Default::default() })
+    }
+}
+
+impl StepRunner for Scheduled {
+    fn run<'a>(&'a self, _ctx: &'a StepCtx, step: &'a Step, _argv: Option<&'a [String]>) -> BoxFuture<'a, StepResult> {
+        Box::pin(async move {
+            self.ran.lock().unwrap().push(step.id.clone());
+            let stdout = if step.id == "boot" { b"{\"reboot\":\"scheduled\"}\n".to_vec() } else { b"{}".to_vec() };
+            StepResult {
+                outcome: StepOutcome::Succeeded,
+                command: None,
+                exit_code: Some(0),
+                stdout,
+                stderr: Vec::new(),
+            }
+        })
+    }
+    fn rebooted<'a>(&'a self, _ctx: &'a StepCtx, since_ms: i64) -> BoxFuture<'a, StepResult> {
+        self.asked_since.lock().unwrap().push(since_ms);
+        Box::pin(async move {
+            let Some(outcome) = self.back.clone() else { return std::future::pending().await };
+            StepResult { outcome, ..StepResult::failed("") }
+        })
+    }
+}
+
+const REBOOTS_HOST: &str = "name = \"host\"\ndescription = \"d\"\nidentity = \"automation\"\nrisk = \"low\"\nautonomy = 2\n\
+    [[step]]\nid = \"pre\"\nkind = \"verify\"\nchecks = [\"record_state\"]\n\
+    [[step]]\nid = \"boot\"\nkind = \"reboot_if_required\"\ntimeout = \"1m\"\n\
+    [[step]]\nid = \"report\"\nkind = \"wait_report\"\n\
+    [[step]]\nid = \"check\"\nkind = \"verify\"\nchecks = [\"as_recorded\"]\n";
+
+fn job_row(db: &Db, id: Option<&str>) -> (String, String, Option<String>, Option<String>) {
+    db.readers()
+        .with(|c| {
+            c.query_row(
+                "SELECT id, state, resumable_step, outcome FROM jobs WHERE ?1 IS NULL OR id = ?1 ORDER BY id DESC LIMIT 1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+        })
+        .unwrap()
+}
+
+async fn until(what: &str, f: impl Fn() -> bool) {
+    for _ in 0..500 {
+        if f() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("{what}");
+}
+
+async fn host_runbook(name: &str) -> Arc<Db> {
+    let (db, _, _) = setup(name, "managed", Arc::new(Fake::default())).await;
+    let (lib, _) = Library::new(db.clone(), Audit::new(db.writer()));
+    lib.save(Kind::Runbook, "host", REBOOTS_HOST, "admin", 1).await.unwrap();
+    db
+}
+
+fn with_runner(db: &Arc<Db>, runner: Arc<Scheduled>) -> Actions {
+    Actions::new(db.clone(), Audit::new(db.writer()), Bus::new(), runner)
+}
+
+/// 7.5.3 step 8 (E14): a scheduled reboot marks the job to go on at its verify step; the hub that comes back waits for the
+/// machine's restart and finishes the job there.
+#[tokio::test(flavor = "multi_thread")]
+async fn scheduled_reboot_resumes_at_verify_after_the_hub_restarts() {
+    let db = host_runbook("resume").await;
+    let before = Scheduled::new(None);
+    let actions = with_runner(&db, before.clone());
+    let run = tokio::spawn({
+        let a = actions.clone();
+        async move { a.run(StartJob::runbook("host", "m1", "test")).await }
+    });
+    until("the job is marked", || before.asked_since.lock().unwrap().len() == 1).await;
+    let (id, state, resumable, _) = job_row(&db, None);
+    assert_eq!((state.as_str(), resumable.as_deref()), ("running", Some("check")));
+    assert_eq!(*before.ran.lock().unwrap(), ["pre", "boot"], "nothing more until the machine is back");
+    run.abort();
+
+    // while it waits for the machine, its silence is expected and it isn't taken up a second time
+    let waiting = with_runner(&db, Scheduled::new(None));
+    assert_eq!((waiting.resume().await.unwrap(), waiting.resume().await.unwrap()), (1, 0));
+    assert!(waiting.awaiting_reboot("m1"));
+
+    let after = Scheduled::new(Some(StepOutcome::Succeeded));
+    let actions = with_runner(&db, after.clone());
+    assert_eq!(actions.resume().await.unwrap(), 1);
+    until("the job ends", || job_row(&db, Some(&id)).1 != "running").await;
+    assert_eq!(job_row(&db, Some(&id)).1, "succeeded");
+    assert_eq!(*after.ran.lock().unwrap(), ["check"], "from the verify step on");
+    assert_eq!(*after.asked_since.lock().unwrap(), *before.asked_since.lock().unwrap(), "since the same reboot");
+    let steps: Vec<(String, String)> = db
+        .readers()
+        .with(|c| {
+            let mut s = c.prepare("SELECT step_id, state FROM job_steps WHERE job_id = ?1 ORDER BY step_id")?;
+            s.query_map([&id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
+        })
+        .unwrap();
+    let ok = |s: &str| (s.to_string(), "succeeded".to_string());
+    assert_eq!(steps, [ok("boot"), ok("check"), ok("pre")]);
+    assert!(!actions.awaiting_reboot("m1"));
+    assert_eq!(actions.resume().await.unwrap(), 0, "once");
+}
+
+/// A machine that isn't back when the hub is ends the job as it would have; a job without a resumable step isn't touched.
+#[tokio::test(flavor = "multi_thread")]
+async fn resumed_job_fails_when_the_machine_is_not_back() {
+    let db = host_runbook("resume-lost").await;
+    let before = Scheduled::new(None);
+    let actions = with_runner(&db, before.clone());
+    let run = tokio::spawn(async move { actions.run(StartJob::runbook("host", "m1", "test")).await });
+    until("the job is marked", || before.asked_since.lock().unwrap().len() == 1).await;
+    run.abort();
+    let row = Row::from([
+        ("id", Value::Text("other".into())),
+        ("kind", Value::Text("runbook".into())),
+        ("name", Value::Text("host".into())),
+        ("target", Value::Text("m1".into())),
+        ("requested_by", Value::Text("test".into())),
+        ("state", Value::Text("running".into())),
+    ]);
+    db.writer().send(WriteCmd::Batch(vec![RowWrite::insert("jobs", row)])).await.unwrap();
+    let after = Scheduled::new(Some(StepOutcome::Failed("no_report_after_reboot".into())));
+    let actions = with_runner(&db, after.clone());
+    assert_eq!(actions.resume().await.unwrap(), 1);
+    let failed = || {
+        db.readers()
+            .with(|c| {
+                c.query_row(
+                    "SELECT count(*) FROM jobs WHERE state = 'failed' AND outcome = 'no_report_after_reboot'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+            })
+            .unwrap()
+    };
+    until("the job fails", || failed() == 1).await;
+    assert!(after.ran.lock().unwrap().is_empty());
+    assert_eq!(job_row(&db, Some("other")).1, "running");
+}
+
+/// The same reboot of a machine the hub turns out not to be on: the hub is still there and the job simply goes on.
+#[tokio::test(flavor = "multi_thread")]
+async fn scheduled_reboot_goes_on_when_the_hub_stays() {
+    let db = host_runbook("stays").await;
+    let runner = Scheduled::new(Some(StepOutcome::Succeeded));
+    let r = with_runner(&db, runner.clone()).run(StartJob::runbook("host", "m1", "test")).await.unwrap();
+    assert_eq!(r.outcome, JobOutcome::Succeeded);
+    assert_eq!(*runner.ran.lock().unwrap(), ["pre", "boot", "report", "check"]);
+    let lost = Scheduled::new(Some(StepOutcome::Failed("did_not_reboot".into())));
+    let r = with_runner(&db, lost.clone()).run(StartJob::runbook("host", "m1", "test")).await.unwrap();
+    assert_eq!((r.outcome, r.reason.as_deref()), (JobOutcome::Failed, Some("did_not_reboot")));
+    assert_eq!(*lost.ran.lock().unwrap(), ["pre", "boot"]);
+}

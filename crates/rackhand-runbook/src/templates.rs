@@ -9,6 +9,10 @@ use crate::runbook::{Runbook, StepKind};
 /// What a `reboot_if_required` step runs through the wrapper, on systemd and OpenRC alike.
 pub const REBOOT: &str = "/sbin/reboot";
 
+/// The reboot of a machine the hub runs on, or of the hypervisor under it (7.5.3 steps 7 and 8): a minute away, so the
+/// job's state is stored before the hub goes down with it.
+pub const REBOOT_IN_60S: [&str; 4] = ["/usr/bin/systemd-run", "--on-active=60", "/usr/bin/systemctl", "reboot"];
+
 /// The automation user's only sudo entry.
 pub const WRAPPER: &str = "/usr/local/lib/rackhand/run";
 
@@ -81,8 +85,10 @@ pub fn command_list(runbooks: &[Runbook]) -> CommandList {
             commands.push(Template { runbook: rb.name.clone(), step: step.id.clone(), args });
         }
         for step in rb.steps.iter().filter(|s| s.kind == StepKind::RebootIfRequired) {
-            let args = vec![Arg::Literal(REBOOT.into())];
-            commands.push(Template { runbook: rb.name.clone(), step: step.id.clone(), args });
+            for args in [&[REBOOT][..], &REBOOT_IN_60S[..]] {
+                let args = args.iter().map(|a| Arg::Literal((*a).to_string())).collect();
+                commands.push(Template { runbook: rb.name.clone(), step: step.id.clone(), args });
+            }
         }
     }
     CommandList { commands }

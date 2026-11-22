@@ -242,6 +242,10 @@ impl StepRunner for Executor {
         })
     }
 
+    fn rebooted<'a>(&'a self, ctx: &'a StepCtx, since_ms: i64) -> BoxFuture<'a, StepResult> {
+        Box::pin(self.scheduled_reboot(ctx, since_ms))
+    }
+
     /// The assistant's command string, run by `sh -c` under `timeout` so it stops on the machine at its timeout as a
     /// runbook step does (D33, owner review); the job log shows the line that ran.
     fn exec<'a>(&'a self, ctx: &'a StepCtx, command: &'a str) -> BoxFuture<'a, StepResult> {

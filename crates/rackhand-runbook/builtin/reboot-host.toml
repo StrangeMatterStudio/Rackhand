@@ -1,6 +1,6 @@
 name = "reboot-host"
-description = "Reboot a hypervisor that needs it, and check it came back as it was"
-targets = { roles = ["hypervisor"] }
+description = "Reboot a hypervisor, or the machine the hub runs on, that needs it, and check it came back as it was"
+targets = { roles = ["hypervisor", "hub"] }
 identity = "automation"
 risk = "high"
 autonomy = 1
@@ -12,7 +12,8 @@ kind = "verify"
 checks = ["record_state"]
 timeout = "1m"
 
-# Only a job with an approved high-risk approval may reboot a hypervisor (E13); one that no longer needs it isn't.
+# Only a job with an approved high-risk approval may reboot a hypervisor (E13); one that no longer needs it isn't. Where
+# the hub runs on the machine, the reboot is a minute away and the hub goes on at the verify step when it is back.
 [[step]]
 id = "reboot"
 kind = "reboot_if_required"
