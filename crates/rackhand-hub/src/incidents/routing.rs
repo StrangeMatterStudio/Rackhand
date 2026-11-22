@@ -304,6 +304,9 @@ impl Routing {
                 self.incidents.open(o, now_ms).await?;
             }
         }
+        if let Some(machine) = target.as_deref().filter(|_| name.starts_with("patch-")) {
+            self.patch_finished(machine, &name, job_id, outcome, now_ms).await?;
+        }
         let Some(incident_id) = incident_id.filter(|i| requested_by == requester(i)) else { return Ok(()) };
         let inc = by_id(self.db(), &incident_id)?;
         if inc.state == State::Resolved {
@@ -319,6 +322,47 @@ impl Routing {
             _ => "failed",
         };
         self.to_person(&incident_id, &format!("runbook `{name}` {ended} (job {job_id})"), now_ms).await
+    }
+
+    /// 7.5.3 step 6: a patch job that didn't succeed opens `patch_failed` on its machine (one a person cancelled
+    /// doesn't); one that succeeded resolves it.
+    async fn patch_finished(
+        &self,
+        machine: &str,
+        name: &str,
+        job_id: &str,
+        outcome: JobOutcome,
+        now_ms: i64,
+    ) -> Result<(), IncidentsError> {
+        let dedupe_key = format!("{machine}:patch_failed");
+        match outcome {
+            JobOutcome::Cancelled => Ok(()),
+            JobOutcome::Succeeded => {
+                let open: Option<String> = self.db().readers().with(|c| {
+                    c.query_row(
+                        "SELECT id FROM incidents WHERE dedupe_key = ?1 AND state != 'resolved'",
+                        [&dedupe_key],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                })?;
+                match open {
+                    Some(id) => self.incidents.resolve_by(&id, &format!("job:{job_id}"), now_ms).await,
+                    None => Ok(()),
+                }
+            }
+            _ => {
+                let o = Opening {
+                    machine_id: Some(machine.to_string()),
+                    rule_id: None,
+                    dedupe_key,
+                    kind: "patch_failed".into(),
+                    severity: Severity::Warning,
+                    title: format!("Patching failed ({name}, job {job_id})"),
+                };
+                self.incidents.open(o, now_ms).await.map(|_| ())
+            }
+        }
     }
 
     fn recorded_outcome(&self, job_id: &str) -> Option<JobOutcome> {

@@ -42,6 +42,8 @@ impl World for FakeWorld {
 struct FakeJobs {
     started: Mutex<Vec<StartJob>>,
     running: Mutex<BTreeMap<String, oneshot::Sender<JobOutcome>>>,
+    /// The reason a job that isn't `Succeeded` ends with.
+    reason: Mutex<Option<String>>,
 }
 
 impl Jobs for FakeJobs {
@@ -53,9 +55,11 @@ impl Jobs for FakeJobs {
             s.push(job);
             s.len()
         };
+        let reason = self.reason.lock().unwrap().clone();
         Box::pin(async move {
             let outcome = rx.await.unwrap_or(JobOutcome::Failed);
-            Ok(JobResult { job_id: format!("01JJOB{n:020}"), outcome, reason: None })
+            let reason = reason.filter(|_| outcome != JobOutcome::Succeeded);
+            Ok(JobResult { job_id: format!("01JJOB{n:020}"), outcome, reason })
         })
     }
 }
@@ -65,7 +69,10 @@ impl FakeJobs {
         self.started.lock().unwrap().iter().map(|j| (j.name.clone(), j.machine_id.clone())).collect()
     }
     fn end(&self, machine: &str) {
-        self.running.lock().unwrap().remove(machine).unwrap().send(JobOutcome::Succeeded).unwrap();
+        self.end_with(machine, JobOutcome::Succeeded);
+    }
+    fn end_with(&self, machine: &str, outcome: JobOutcome) {
+        self.running.lock().unwrap().remove(machine).unwrap().send(outcome).unwrap();
     }
 }
 
@@ -307,4 +314,59 @@ async fn late_approval_carries_to_the_next_window() {
     e.tick(vec![next], e.now + day).await;
     assert_eq!(e.jobs.started(), [("patch-debian".to_string(), "web".to_string())]);
     assert_eq!(e.approvals().len(), 1, "not asked again");
+}
+
+/// 7.5.3 step 6, D45: a machine that never reported after its patch's reboot is rolled back to the snapshot the job took,
+/// once, when its policy has `auto_rollback`; not for another failure, without a snapshot, or without the policy.
+#[tokio::test(flavor = "multi_thread")]
+async fn rolls_back_only_under_d45() {
+    for (name, auto, snapshot, reason, expected) in [
+        ("yes", 1, r#"{"snapshot":"rackhand-patch-20261122-0400"}"#, "no_report_after_reboot", true),
+        ("off", 0, r#"{"snapshot":"rackhand-patch-20261122-0400"}"#, "no_report_after_reboot", false),
+        ("none", 1, r#"{"snapshot":null,"notes":["not a Proxmox guest"]}"#, "no_report_after_reboot", false),
+        ("up", 1, r#"{"snapshot":"rackhand-patch-20261122-0400"}"#, "did_not_reboot", false),
+        ("verify", 1, r#"{"snapshot":"rackhand-patch-20261122-0400"}"#, "as_recorded", false),
+    ] {
+        let e = env(&format!("rollback-{name}")).await;
+        e.machine("web", "linux", "auto", "[]").await;
+        let set = Row::from([("auto_rollback", Value::Integer(auto))]);
+        let update = rackhand_store::RowUpdate { table: "policies", key: ("id", t("auto")), set };
+        let change = rackhand_store::RegistryChange { updates: vec![update], ..Default::default() };
+        e.db.writer().send(WriteCmd::RegistryChange(change)).await.unwrap();
+        *e.jobs.reason.lock().unwrap() = Some(reason.to_string());
+        e.tick(vec![e.window("auto", Window::Security)], e.now).await;
+        let job = format!("01JJOB{:020}", 1);
+        let row = Row::from([
+            ("id", t(&job)),
+            ("kind", t("runbook")),
+            ("name", t("patch-debian")),
+            ("target", t("web")),
+            ("requested_by", t(REQUESTER)),
+            ("state", t("failed")),
+        ]);
+        let step = Row::from([
+            ("job_id", t(&job)),
+            ("step_id", t("snapshot")),
+            ("state", t("succeeded")),
+            ("stdout", Value::Blob(snapshot.as_bytes().to_vec())),
+        ]);
+        e.db.writer()
+            .send(WriteCmd::Batch(vec![RowWrite::insert("jobs", row), RowWrite::insert("job_steps", step)]))
+            .await
+            .unwrap();
+        e.jobs.end_with("web", JobOutcome::Failed);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let started = e.jobs.started.lock().unwrap().clone();
+        let rollback: Vec<&StartJob> = started.iter().filter(|j| j.name == "rollback").collect();
+        assert_eq!(rollback.len(), usize::from(expected), "{name}: {started:?}");
+        if expected {
+            assert_eq!(rollback[0].params.get("job"), Some(&job));
+            assert_eq!((rollback[0].machine_id.as_str(), rollback[0].requested_by.as_str()), ("web", REQUESTER));
+            assert!(e.driver.busy("web").await, "the machine stays the window's until the rollback ends");
+            e.jobs.end_with("web", JobOutcome::Failed);
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            assert_eq!(e.jobs.started.lock().unwrap().len(), 2, "a failed rollback isn't rolled back");
+            assert!(!e.driver.busy("web").await);
+        }
+    }
 }

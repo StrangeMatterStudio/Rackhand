@@ -4,6 +4,7 @@
 const RUNBOOKS: &[(&str, &str)] = &[
     ("patch-debian", include_str!("../builtin/patch-debian.toml")),
     ("patch-alpine", include_str!("../builtin/patch-alpine.toml")),
+    ("rollback", include_str!("../builtin/rollback.toml")),
 ];
 
 /// Every built-in runbook, as `(name, content)`.

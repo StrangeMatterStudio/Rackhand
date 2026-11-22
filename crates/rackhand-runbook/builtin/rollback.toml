@@ -1,0 +1,15 @@
+name = "rollback"
+description = "Roll a Proxmox guest back to the snapshot one of its patch jobs took"
+identity = "automation"
+risk = "high"
+autonomy = 1
+
+# The patch job whose snapshot to go back to; it must have been this machine's.
+[params.job]
+type = "string"
+pattern = "[0-9A-Z]{26}"
+
+[[step]]
+id = "rollback"
+kind = "rollback"
+timeout = "15m"

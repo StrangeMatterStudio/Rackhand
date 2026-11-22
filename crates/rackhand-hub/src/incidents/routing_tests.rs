@@ -408,3 +408,43 @@ async fn timed_out_detached_step_opens_incident() {
     assert_eq!((kind.as_str(), machine.as_str()), ("job.timed_out", M1));
     assert_ne!(state, "resolved");
 }
+
+/// 7.5.3 step 6: a patch job that didn't succeed opens `patch_failed` on its machine, once while it is open, whoever
+/// asked for it; the machine's next patch job that succeeds resolves it. Other jobs, and one a person cancelled, don't.
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_patch_opens_patch_failed_and_a_success_resolves_it() {
+    let env = Env::new("patch-failed").await;
+    let incidents = || -> Vec<(String, String, String)> {
+        env.db
+            .readers()
+            .with(|c| {
+                let mut s = c.prepare("SELECT kind, machine_id, state FROM incidents ORDER BY opened_at")?;
+                s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect()
+            })
+            .unwrap()
+    };
+    env.finish_job("01JOB0000000000000000000F1", "restart-web", M1, "user:admin", None, JobOutcome::Failed, T0).await;
+    env.finish_job("01JOB0000000000000000000F2", "patch-debian", M1, "user:admin", None, JobOutcome::Cancelled, T0)
+        .await;
+    assert!(incidents().is_empty(), "{:?}", incidents());
+    env.finish_job("01JOB0000000000000000000F3", "patch-debian", M1, "schedule:patch", None, JobOutcome::Failed, T0)
+        .await;
+    env.finish_job(
+        "01JOB0000000000000000000F4",
+        "patch-debian",
+        M1,
+        "schedule:patch",
+        None,
+        JobOutcome::Failed,
+        T0 + MIN,
+    )
+    .await;
+    let open = incidents();
+    assert_eq!(open.len(), 1, "{open:?}");
+    assert_eq!((open[0].0.as_str(), open[0].1.as_str()), ("patch_failed", M1));
+    assert_ne!(open[0].2, "resolved");
+    let at = T0 + 2 * MIN;
+    env.finish_job("01JOB0000000000000000000F5", "patch-debian", M1, "schedule:patch", None, JobOutcome::Succeeded, at)
+        .await;
+    assert_eq!(incidents()[0].2, "resolved");
+}

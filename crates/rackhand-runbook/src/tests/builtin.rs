@@ -60,3 +60,14 @@ fn patch_commands_wait_for_the_lock_and_take_full_updates() {
     assert!(cmd("patch-alpine", "install").ends_with("upgrade"));
     assert!(builtin::runbook("no-such").is_none());
 }
+
+/// The `rollback` runbook: one step, high risk, for the patch job it is given (a job id, nothing else).
+#[test]
+fn rollback_runbook_takes_a_job_id() {
+    let r = Runbook::parse(builtin::runbook("rollback").expect("built in")).unwrap();
+    assert_eq!(r.risk, crate::runbook::Risk::High);
+    assert_eq!(r.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), [StepKind::Rollback]);
+    let param = &r.params["job"];
+    assert!(crate::params::check_value(param, "01JDPATCHED000000000000001").is_ok());
+    assert!(crate::params::check_value(param, "rackhand-patch-1; reboot").is_err());
+}

@@ -475,4 +475,61 @@ mod patch_snapshot {
             e.sim.requests().into_iter().filter(|q| q.path.ends_with("/rollback")).map(|q| q.path).collect();
         assert_eq!(rolled, [format!("/api2/json/nodes/pve9/qemu/200/snapshot/{name}/rollback")]);
     }
+
+    /// The `rollback` runbook goes back to the snapshot a named patch job took of the same machine, and fails rather
+    /// than guess when that job took none or was another machine's.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rollback_job_uses_the_named_jobs_snapshot() {
+        let e = env("patchsnap-other").await;
+        e.make("qemu", 200, "rackhand-patch-20261122-0400").await;
+        let job = |id: &str, name: &str, target: &str, params: &str| {
+            RowWrite::insert(
+                "jobs",
+                Row::from([
+                    ("id", t(id)),
+                    ("kind", t("runbook")),
+                    ("name", t(name)),
+                    ("target", t(target)),
+                    ("params", t(params)),
+                    ("requested_by", t("schedule:patch")),
+                    ("state", t("running")),
+                ]),
+            )
+        };
+        let step = Row::from([
+            ("job_id", t("01JDPATCHED000000000000001")),
+            ("step_id", t("snapshot")),
+            ("state", t("succeeded")),
+            ("stdout", Value::Blob(br#"{"snapshot":"rackhand-patch-20261122-0400"}"#.to_vec())),
+        ]);
+        e.db.writer()
+            .send(WriteCmd::Batch(vec![
+                job("01JDPATCHED000000000000001", "patch-debian", VM, "{}"),
+                job("01JDPATCHED000000000000002", "patch-debian", VM, "{}"),
+                RowWrite::insert("job_steps", step),
+                job("01JDROLLBACK00000000000001", "rollback", VM, r#"{"job":"01JDPATCHED000000000000001"}"#),
+                job("01JDROLLBACK00000000000002", "rollback", VM, r#"{"job":"01JDPATCHED000000000000002"}"#),
+                job("01JDROLLBACK00000000000003", "rollback", CT, r#"{"job":"01JDPATCHED000000000000001"}"#),
+            ]))
+            .await
+            .unwrap();
+        let run = |id: &'static str, machine: &'static str| {
+            let ctx = StepCtx { machine_id: machine.into(), job_id: id.into(), ..ctx(Duration::from_secs(10)) };
+            let e = &e;
+            async move { e.steps.run(&ctx, &step_of("rollback"), None).await }
+        };
+        let none = run("01JDROLLBACK00000000000002", VM).await;
+        assert_eq!(reason(&none).as_deref(), Some("no_snapshot"), "{none:?}");
+        let other = run("01JDROLLBACK00000000000003", CT).await;
+        assert_eq!(reason(&other).as_deref(), Some("no_snapshot"), "another machine's job: {other:?}");
+        let back = run("01JDROLLBACK00000000000001", VM).await;
+        assert_eq!(back.outcome, StepOutcome::Succeeded, "{back:?}");
+        let rolled: Vec<String> =
+            e.sim.requests().into_iter().filter(|q| q.path.ends_with("/rollback")).map(|q| q.path).collect();
+        assert_eq!(rolled, ["/api2/json/nodes/pve9/qemu/200/snapshot/rackhand-patch-20261122-0400/rollback"]);
+    }
+
+    fn step_of(kind: &str) -> Step {
+        step(&format!("kind = \"{kind}\"\n"))
+    }
 }

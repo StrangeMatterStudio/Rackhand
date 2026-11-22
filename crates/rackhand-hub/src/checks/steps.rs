@@ -336,6 +336,24 @@ impl Hypervisor {
         policy.map_or(Snapshot::Required, |p| Snapshot::parse(&p))
     }
 
+    /// The patch job a `rollback` job was given, and whether it was a job on this machine.
+    fn named_job(&self, job_id: &str, machine: &str) -> Option<(String, bool)> {
+        self.db
+            .readers()
+            .with(|c| {
+                c.query_row(
+                    "SELECT json_extract(j.params, '$.job'),
+                            EXISTS (SELECT 1 FROM jobs p WHERE p.id = json_extract(j.params, '$.job') AND p.target = ?2)
+                     FROM jobs j WHERE j.id = ?1 AND json_extract(j.params, '$.job') IS NOT NULL",
+                    [job_id, machine],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+            })
+            .ok()
+            .flatten()
+    }
+
     /// The snapshot this job took, from its snapshot step's output.
     fn taken(&self, job_id: &str) -> Option<String> {
         let outputs: Vec<Vec<u8>> = self
@@ -480,9 +498,17 @@ impl StepRunner for Hypervisor {
             let Some(driver) = self.drivers.get(b.driver.as_str()) else {
                 return StepResult::failed(format!("no_driver:{}", b.driver));
             };
-            // A rollback goes back to the snapshot its job took; otherwise the job's own name.
+            // A rollback goes back to the snapshot the job it was given took (on this machine), or that its own job took;
+            // otherwise the job's own name.
             let own = format!("rackhand-{}", ctx.job_id.to_ascii_lowercase());
-            let name = if op == "rollback" { self.taken(&ctx.job_id).unwrap_or(own) } else { own };
+            let name = match (op, self.named_job(&ctx.job_id, &ctx.machine_id)) {
+                ("rollback", Some((job, ours))) => match self.taken(&job).filter(|_| ours) {
+                    Some(name) => name,
+                    None => return StepResult::failed("no_snapshot"),
+                },
+                ("rollback", None) => self.taken(&ctx.job_id).unwrap_or(own),
+                _ => own,
+            };
             let mut args = b.guest.clone();
             args["name"] = serde_json::json!(name);
             let command = Some(format!("{} {op} {} {}", b.driver, args["vmid"], name));

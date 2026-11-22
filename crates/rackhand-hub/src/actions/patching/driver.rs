@@ -7,6 +7,9 @@
 //! the end of the next window: given while its window is open it starts the job, and given later it carries to the
 //! next window, which doesn't ask again (D89).
 //!
+//! A machine that never reported after its patch's reboot is rolled back to the snapshot the job took under D45
+//! (`rollback`), by the `rollback` runbook; the machine stays the window's until that ends.
+//!
 //! Until their runbooks exist, roles `hypervisor` and `hub` (T60) and kind `windows` (T90) are left out.
 
 use std::collections::{BTreeMap, HashSet};
@@ -19,6 +22,7 @@ use rackhand_store::Db;
 use rusqlite::OptionalExtension;
 use tokio::sync::Mutex;
 
+use super::rollback::{Failure, rolls_back};
 pub use super::select::Window;
 use super::select::{Candidate, DEFAULT_PER_SITE, Order, Others, PatchMode, Run};
 use crate::actions::{Actions, ActionsError, JobResult, StartJob};
@@ -283,6 +287,43 @@ impl Driver {
         }
     }
 
+    /// D45: whether the machine's failed patch is rolled back.
+    fn must_roll_back(&self, machine: &str, result: &JobResult) -> bool {
+        let no_report_after_reboot = result.outcome != crate::bus::JobOutcome::Succeeded
+            && result.reason.as_deref() == Some(crate::actions::patching::NO_REPORT_AFTER_REBOOT);
+        if !no_report_after_reboot {
+            return false;
+        }
+        let policy: Option<(bool, bool)> = self
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row(
+                    "SELECT p.auto_rollback, EXISTS (SELECT 1 FROM json_each(m.roles) WHERE value = 'hub')
+                     FROM machines m JOIN policies p ON p.id = m.policy_id WHERE m.id = ?1",
+                    [machine],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+            })
+            .ok()
+            .flatten();
+        let Some((auto_rollback, hub)) = policy else { return false };
+        let outputs: Vec<Vec<u8>> = self
+            .db
+            .readers()
+            .with(|c| {
+                let mut s = c.prepare("SELECT stdout FROM job_steps WHERE job_id = ?1 AND stdout IS NOT NULL")?;
+                s.query_map([&result.job_id], |r| r.get(0))?.collect()
+            })
+            .unwrap_or_default();
+        let snapshot_taken = outputs
+            .iter()
+            .filter_map(|o| serde_json::from_slice::<serde_json::Value>(o).ok())
+            .any(|v| v["snapshot"].is_string());
+        rolls_back(&Failure { no_report_after_reboot, auto_rollback, hub, snapshot_taken })
+    }
+
     fn start(self: &Arc<Driver>, state: &mut State, run: usize, machine: String, now_ms: i64) {
         let a = &mut state.runs[run];
         let Some((runbook, ask)) = a.machines.get(&machine).copied() else { return };
@@ -304,8 +345,17 @@ impl Driver {
         let running = self.jobs.run(job);
         tokio::spawn(async move {
             let result = running.await;
-            if let Err(e) = &result {
-                tracing::warn!(error = %e, %machine, "patch job not started");
+            match &result {
+                Err(e) => tracing::warn!(error = %e, %machine, "patch job not started"),
+                Ok(r) if driver.must_roll_back(&machine, r) => {
+                    let mut back = StartJob::runbook("rollback", &machine, REQUESTER);
+                    back.params.insert("job".into(), r.job_id.clone());
+                    match driver.jobs.run(back).await {
+                        Ok(b) => tracing::warn!(%machine, outcome = ?b.outcome, "rolled back after a failed patch"),
+                        Err(e) => tracing::error!(error = %e, %machine, "rollback not started"),
+                    }
+                }
+                Ok(_) => {}
             }
             let mut state = driver.state.lock().await;
             state.inflight.remove(&machine);

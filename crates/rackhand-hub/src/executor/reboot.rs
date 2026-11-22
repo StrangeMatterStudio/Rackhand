@@ -15,7 +15,7 @@ use crate::actions::runner::{StepCtx, StepOutcome, StepResult};
 use crate::ssh::keys::Identity;
 
 /// The step's reason when the machine didn't report again after its reboot (E11, D45).
-pub const NO_REPORT: &str = "no_report_after_reboot";
+pub const NO_REPORT: &str = crate::actions::patching::NO_REPORT_AFTER_REBOOT;
 
 const FLAG: &str = "test -e /run/reboot-required || test -e /var/run/reboot-required";
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
