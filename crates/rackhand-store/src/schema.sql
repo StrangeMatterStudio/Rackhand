@@ -93,7 +93,7 @@ CREATE TABLE policies (
   window_length_min INTEGER NOT NULL DEFAULT 180,
   auto_reboot INTEGER NOT NULL DEFAULT 0,
   auto_rollback INTEGER NOT NULL DEFAULT 0,
-  snapshot TEXT NOT NULL DEFAULT 'optional' CHECK (snapshot IN ('required', 'optional')),
+  snapshot TEXT NOT NULL DEFAULT 'required' CHECK (snapshot IN ('required', 'optional')),
   quarantine TEXT NOT NULL DEFAULT 'approval' CHECK (quarantine IN ('approval', 'never')),
   expected_offline INTEGER NOT NULL DEFAULT 0,
   connections TEXT NOT NULL DEFAULT 'full' CHECK (connections IN ('full', 'summary', 'off')),

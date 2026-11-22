@@ -5,7 +5,11 @@
 //! - `firewall_restore`: `{kind, vmid, saved}` puts a `firewall_read` back exactly;
 //! - `power`: `{kind, vmid, action}` with `start`, `stop`, `shutdown` or `reboot`;
 //! - `clone`: `{vmid, newid, name, storage?}` (a full clone of a VM);
-//! - `config`: `{kind, vmid}`.
+//! - `config`: `{kind, vmid}`;
+//! - `snapshots`: `{kind, vmid}` gives the guest's snapshots, `[{name, snaptime}]`, without Proxmox's `current`;
+//! - `snapshot_room`: `{kind, vmid}` gives `{storages: [{storage, type, avail, total, snapshots}]}`, each storage the
+//!   guest's disks use (CD drives left out) and whether it can snapshot them: ZFS, LVM-thin, RBD and Btrfs can; a
+//!   directory or network file storage only a VM's qcow2 images; anything else can't.
 //!
 //! `kind` is `lxc` or `qemu`; `node` may be given, else the guest is looked for on the host's nodes. A failed task's
 //! exit status is the error.
@@ -210,6 +214,68 @@ async fn guests(c: &Client) -> Result<Value, DriverError> {
     Ok(Value::Array(out))
 }
 
+/// The volumes of a guest's disks, by storage: `(storage, volume)` from each disk line, CD drives and `none` left out.
+fn disks(kind: &str, config: &Value) -> Vec<(String, String)> {
+    let disk_key = |k: &str| {
+        let numbered = |prefix: &str| {
+            k.strip_prefix(prefix).is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        };
+        if kind == "lxc" {
+            k == "rootfs" || numbered("mp")
+        } else {
+            ["scsi", "virtio", "sata", "ide"].iter().any(|p| numbered(p)) || k == "efidisk0" || k == "tpmstate0"
+        }
+    };
+    let mut out = Vec::new();
+    for (k, v) in config.as_object().into_iter().flatten() {
+        let Some(line) = v.as_str().filter(|_| disk_key(k)) else { continue };
+        if line.split(',').any(|o| o == "media=cdrom") {
+            continue;
+        }
+        let volume = line.split(',').next().unwrap_or_default();
+        if let Some((storage, name)) = volume.split_once(':') {
+            out.push((storage.to_string(), name.to_string()));
+        }
+    }
+    out
+}
+
+fn can_snapshot(storage_type: &str, kind: &str, volumes: &[&str]) -> bool {
+    match storage_type {
+        "zfspool" | "zfs" | "lvmthin" | "rbd" | "btrfs" => true,
+        "dir" | "nfs" | "cifs" | "glusterfs" | "cephfs" => {
+            kind == "qemu" && volumes.iter().all(|v| v.ends_with(".qcow2"))
+        }
+        _ => false,
+    }
+}
+
+async fn snapshot_room(c: &Client, g: &Guest) -> Result<Value, DriverError> {
+    let config = c.call("GET", &g.path("/config"), &[]).await?;
+    let used = disks(g.kind, &config);
+    let storages = c.call("GET", &format!("/nodes/{}/storage", g.node), &[]).await?;
+    let mut out = Vec::new();
+    let mut names: Vec<&str> = used.iter().map(|(s, _)| s.as_str()).collect();
+    names.sort();
+    names.dedup();
+    for name in names {
+        let volumes: Vec<&str> = used.iter().filter(|(s, _)| s == name).map(|(_, v)| v.as_str()).collect();
+        let found = storages.as_array().into_iter().flatten().find(|s| s["storage"] == name);
+        let Some(st) = found else {
+            return Err(DriverError::Failed(format!("storage {name} isn't on node {}", g.node)));
+        };
+        let storage_type = st["type"].as_str().unwrap_or_default();
+        out.push(json!({
+            "storage": name,
+            "type": storage_type,
+            "avail": st["avail"].as_u64().unwrap_or(0),
+            "total": st["total"].as_u64().unwrap_or(0),
+            "snapshots": can_snapshot(storage_type, g.kind, &volumes),
+        }));
+    }
+    Ok(json!({ "storages": out }))
+}
+
 pub(super) async fn run(c: &Client, target: &DriverTarget, op: DriverOp) -> Result<DriverOpResult, DriverError> {
     let a = &op.args;
     let limit = target.timeout.max(Duration::from_secs(10));
@@ -260,6 +326,12 @@ pub(super) async fn run(c: &Client, target: &DriverTarget, op: DriverOp) -> Resu
             wait(c, &g.node, &upid, limit).await?
         }
         "config" => c.call("GET", &guest(c, a).await?.path("/config"), &[]).await?,
+        "snapshots" => {
+            let list = c.call("GET", &guest(c, a).await?.path("/snapshot"), &[]).await?;
+            let kept = list.as_array().into_iter().flatten().filter(|s| s["name"] != "current");
+            Value::Array(kept.map(|s| json!({ "name": s["name"], "snaptime": s["snaptime"] })).collect())
+        }
+        "snapshot_room" => snapshot_room(c, &guest(c, a).await?).await?,
         "guests" => guests(c).await?,
         other => return Err(bad(&format!("no Proxmox operation `{other}`"))),
     };

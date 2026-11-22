@@ -14,7 +14,9 @@
 //! `snapshot` and `rollback` act on a Proxmox guest through its hypervisor (7.5.3): the guest's confirmed binding
 //! (`proxmox_ref`: `cluster`, the hypervisor machine; `node`, `vmid`, `type`) names it, and the hypervisor's driver
 //! credentials are the Vault's `driver.<hypervisor id>` (`{token, fingerprint}`). The snapshot is the job's own,
-//! `rackhand-<job id>`, and the rollback goes back to it. A binding that isn't confirmed blocks both (7.3.12).
+//! `rackhand-<job id>`, and the rollback goes back to it. A binding that isn't confirmed blocks both (7.3.12). A patch
+//! job's snapshot (its runbook `patch-*`) judges the guest's part of the precheck first, is named
+//! `rackhand-patch-<YYYYMMDD-HHMM>` with the newest 3 kept, and a rollback in the job goes back to the snapshot it took.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -26,6 +28,7 @@ use rackhand_store::Db;
 use rusqlite::OptionalExtension;
 
 use super::patch;
+use crate::actions::patching::precheck::{Guest, Snapshot, guest as guest_precheck};
 use crate::actions::runner::{BoxFuture, StepCtx, StepOutcome, StepResult, StepRunner};
 use crate::ingest::Ingest;
 
@@ -302,6 +305,162 @@ impl Hypervisor {
     }
 }
 
+/// How many `rackhand-patch-*` snapshots a guest keeps (7.5.3).
+const PATCH_SNAPSHOTS_KEPT: usize = 3;
+const PATCH_PREFIX: &str = "rackhand-patch-";
+
+impl Hypervisor {
+    fn job_name(&self, job_id: &str) -> Option<String> {
+        self.db
+            .readers()
+            .with(|c| c.query_row("SELECT name FROM jobs WHERE id = ?1", [job_id], |r| r.get(0)).optional())
+            .ok()
+            .flatten()
+    }
+
+    /// The machine's policy `snapshot`; `required` without a policy (7.5.3 step 9).
+    fn snapshot_policy(&self, machine: &str) -> Snapshot {
+        let policy: Option<String> = self
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row(
+                    "SELECT p.snapshot FROM machines m JOIN policies p ON p.id = m.policy_id WHERE m.id = ?1",
+                    [machine],
+                    |r| r.get(0),
+                )
+                .optional()
+            })
+            .ok()
+            .flatten();
+        policy.map_or(Snapshot::Required, |p| Snapshot::parse(&p))
+    }
+
+    /// The snapshot this job took, from its snapshot step's output.
+    fn taken(&self, job_id: &str) -> Option<String> {
+        let outputs: Vec<Vec<u8>> = self
+            .db
+            .readers()
+            .with(|c| {
+                let mut s = c.prepare(
+                    "SELECT stdout FROM job_steps WHERE job_id = ?1 AND stdout IS NOT NULL ORDER BY started_at DESC",
+                )?;
+                s.query_map([job_id], |r| r.get(0))?.collect()
+            })
+            .unwrap_or_default();
+        outputs
+            .iter()
+            .filter_map(|o| serde_json::from_slice::<serde_json::Value>(o).ok())
+            .find_map(|v| v.get("snapshot").and_then(|s| s.as_str()).map(str::to_string))
+    }
+
+    /// A patch job's snapshot (7.5.3): the guest's part of the precheck first, then `rackhand-patch-<YYYYMMDD-HHMM>`
+    /// (UTC), keeping the newest 3 of them. A machine that isn't a Proxmox guest, or a guest patched without a snapshot
+    /// under `snapshot = "optional"`, passes with a note.
+    async fn patch_snapshot(&self, ctx: &StepCtx) -> StepResult {
+        let skip = |notes: Vec<String>| {
+            let mut out =
+                serde_json::to_vec(&serde_json::json!({ "snapshot": null, "notes": notes })).unwrap_or_default();
+            out.push(b'\n');
+            succeeded(out, None)
+        };
+        let row: Option<(Option<String>, String)> = self
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row(
+                    "SELECT proxmox_ref, proxmox_ref_state FROM machines WHERE id = ?1",
+                    [&ctx.machine_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+            })
+            .ok()
+            .flatten();
+        let Some((Some(_), binding)) = row else {
+            return skip(vec!["not a Proxmox guest: nothing to snapshot".into()]);
+        };
+        let policy = self.snapshot_policy(&ctx.machine_id);
+        let judged = |g: &Guest| match guest_precheck(g, policy) {
+            Ok(notes) if notes.is_empty() => Ok(()),
+            Ok(notes) => Err(skip(notes)),
+            Err(reason) => Err(StepResult::failed(reason)),
+        };
+        if binding != "confirmed" {
+            let unbound = Guest {
+                binding_confirmed: false,
+                datastore_free_pct: 100.0,
+                datastore_free_bytes: u64::MAX,
+                snapshots_supported: true,
+            };
+            return match judged(&unbound) {
+                Ok(()) => StepResult::failed("guest_binding_unconfirmed"),
+                Err(r) => r,
+            };
+        }
+        let b = match self.bound(&ctx.machine_id) {
+            Ok(b) => b,
+            Err(reason) => return StepResult::failed(reason),
+        };
+        let Some(driver) = self.drivers.get(b.driver.as_str()) else {
+            return StepResult::failed(format!("no_driver:{}", b.driver));
+        };
+        let target = DriverTarget { target: b.address.clone(), settings: b.settings.clone(), timeout: ctx.timeout };
+        let call = |name: &str, extra: serde_json::Value| {
+            let mut args = b.guest.clone();
+            if let (Some(a), Some(e)) = (args.as_object_mut(), extra.as_object()) {
+                a.extend(e.clone());
+            }
+            driver.call(&target, DriverOp { name: name.into(), args })
+        };
+        let room = match call("snapshot_room", serde_json::json!({})).await {
+            Ok(r) => r.output,
+            Err(e) => return StepResult::failed(format!("snapshot_room: {e}")),
+        };
+        let storages: Vec<&serde_json::Value> = room["storages"].as_array().into_iter().flatten().collect();
+        let free_pct = |s: &serde_json::Value| {
+            let total = s["total"].as_u64().unwrap_or(0) as f64;
+            if total > 0.0 { 100.0 * s["avail"].as_u64().unwrap_or(0) as f64 / total } else { 0.0 }
+        };
+        let facts = Guest {
+            binding_confirmed: true,
+            datastore_free_pct: storages.iter().map(|s| free_pct(s)).fold(100.0, f64::min),
+            datastore_free_bytes: storages.iter().map(|s| s["avail"].as_u64().unwrap_or(0)).min().unwrap_or(0),
+            snapshots_supported: !storages.is_empty() && storages.iter().all(|s| s["snapshots"] == true),
+        };
+        if let Err(r) = judged(&facts) {
+            return r;
+        }
+        let name = format!("{PATCH_PREFIX}{}", jiff::Timestamp::now().strftime("%Y%m%d-%H%M"));
+        let command = Some(format!("{} snapshot {} {name}", b.driver, b.guest["vmid"]));
+        if let Err(e) = call("snapshot", serde_json::json!({ "name": name })).await {
+            return StepResult { command, ..StepResult::failed(e.to_string()) };
+        }
+        // Keep the newest 3 patch snapshots; the names sort by time. An admin's own snapshots aren't touched.
+        let mut pruned = Vec::new();
+        if let Ok(list) = call("snapshots", serde_json::json!({})).await {
+            let mut ours: Vec<String> = list
+                .output
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|s| s["name"].as_str().filter(|n| n.starts_with(PATCH_PREFIX)).map(str::to_string))
+                .collect();
+            ours.sort();
+            let excess = ours.len().saturating_sub(PATCH_SNAPSHOTS_KEPT);
+            for old in ours.into_iter().take(excess) {
+                if call("delete_snapshot", serde_json::json!({ "name": old })).await.is_ok() {
+                    pruned.push(old);
+                }
+            }
+        }
+        let mut out =
+            serde_json::to_vec(&serde_json::json!({ "snapshot": name, "pruned": pruned })).unwrap_or_default();
+        out.push(b'\n');
+        succeeded(out, command)
+    }
+}
+
 impl StepRunner for Hypervisor {
     fn run<'a>(&'a self, ctx: &'a StepCtx, step: &'a Step, _argv: Option<&'a [String]>) -> BoxFuture<'a, StepResult> {
         Box::pin(async move {
@@ -310,6 +469,10 @@ impl StepRunner for Hypervisor {
                 StepKind::Rollback => "rollback",
                 _ => return StepResult::failed("snapshot_or_rollback_only"),
             };
+            let patching = self.job_name(&ctx.job_id).is_some_and(|n| n.starts_with("patch-"));
+            if op == "snapshot" && patching {
+                return self.patch_snapshot(ctx).await;
+            }
             let b = match self.bound(&ctx.machine_id) {
                 Ok(b) => b,
                 Err(reason) => return StepResult::failed(reason),
@@ -317,7 +480,9 @@ impl StepRunner for Hypervisor {
             let Some(driver) = self.drivers.get(b.driver.as_str()) else {
                 return StepResult::failed(format!("no_driver:{}", b.driver));
             };
-            let name = format!("rackhand-{}", ctx.job_id.to_ascii_lowercase());
+            // A rollback goes back to the snapshot its job took; otherwise the job's own name.
+            let own = format!("rackhand-{}", ctx.job_id.to_ascii_lowercase());
+            let name = if op == "rollback" { self.taken(&ctx.job_id).unwrap_or(own) } else { own };
             let mut args = b.guest.clone();
             args["name"] = serde_json::json!(name);
             let command = Some(format!("{} {op} {} {}", b.driver, args["vmid"], name));

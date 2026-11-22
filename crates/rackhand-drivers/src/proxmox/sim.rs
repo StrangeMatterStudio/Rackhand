@@ -22,6 +22,8 @@ struct Guest {
     options: Map<String, Value>,
     rules: Vec<Value>,
     config: Map<String, Value>,
+    /// Its snapshots (without `current`), as `{name, snaptime, description}`.
+    snapshots: Vec<Value>,
     /// Its configuration doesn't load (a 500).
     broken: bool,
 }
@@ -31,6 +33,8 @@ struct State {
     dir: PathBuf,
     node: String,
     guests: BTreeMap<(String, u32), Guest>,
+    /// Storages changed by a test: type, available and total bytes.
+    storage: BTreeMap<String, (String, u64, u64)>,
     requests: Vec<Request>,
 }
 
@@ -64,9 +68,16 @@ impl Sim {
                 g.rules = fixture(&dir, "lxc_firewall_rules")["data"].as_array().cloned().unwrap_or_default();
             }
             g.config = fixture(&dir, &format!("{kind}_config"))["data"].as_object().cloned().unwrap_or_default();
+            g.snapshots = fixture(&dir, &format!("{kind}_snapshots"))["data"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|s| s["name"] != "current")
+                .cloned()
+                .collect();
             guests.insert((kind.to_string(), vmid), g);
         }
-        let state = Arc::new(Mutex::new(State { dir, node, guests, requests: Vec::new() }));
+        let state = Arc::new(Mutex::new(State { dir, node, guests, storage: BTreeMap::new(), requests: Vec::new() }));
         let (acceptor, fingerprint) = crate::pinned::test_server();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
         let url = format!("https://{}", listener.local_addr().expect("an address"));
@@ -106,6 +117,12 @@ impl Sim {
                 g.broken = true;
             }
         }
+    }
+
+    /// From now on storage `name` reports this type and these sizes.
+    pub fn set_storage(&self, name: &str, kind: &str, avail: u64, total: u64) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.storage.insert(name.to_string(), (kind.to_string(), avail, total));
     }
 
     /// What a quarantine does to a container's firewall (D104): policies DROP, a rule, the device's flag on.
@@ -181,7 +198,19 @@ fn answer(state: &Mutex<State>, req: Request) -> (&'static str, String) {
         ("GET", ["nodes"]) => ok(data("nodes")),
         ("GET", ["cluster", "firewall", "options"]) => ok(data("cluster_firewall_options")),
         ("GET", ["nodes", n, "status"]) if *n == node => ok(data("node_status")),
-        ("GET", ["nodes", n, "storage"]) if *n == node => ok(data("storage")),
+        ("GET", ["nodes", n, "storage"]) if *n == node => {
+            let mut list = data("storage");
+            for st in list.as_array_mut().into_iter().flatten() {
+                let name = st["storage"].as_str().unwrap_or_default().to_string();
+                if let Some((kind, avail, total)) = s.storage.get(&name) {
+                    st["type"] = json!(kind);
+                    st["avail"] = json!(avail);
+                    st["total"] = json!(total);
+                    st["used"] = json!(total.saturating_sub(*avail));
+                }
+            }
+            ok(list)
+        }
         ("GET", ["nodes", n, kind @ ("lxc" | "qemu")]) if *n == node => ok(data(kind)),
         ("GET", ["nodes", n, kind, _, "status", "current"]) if *n == node => ok(data(&format!("{kind}_status"))),
         ("GET", ["nodes", n, "tasks", upid, "status"]) if *n == node => {
@@ -196,11 +225,23 @@ fn answer(state: &Mutex<State>, req: Request) -> (&'static str, String) {
                 None => ("500 Internal Server Error", json!({ "data": null, "message": "no such task" }).to_string()),
             }
         }
-        ("POST", ["nodes", n, "lxc" | "qemu", _, "snapshot"]) if *n == node => ok(data("snapshot_create")),
+        ("POST", ["nodes", n, kind @ ("lxc" | "qemu"), vmid, "snapshot"]) if *n == node => {
+            let name = form(&req.body).into_iter().find(|(k, _)| k == "snapname").map(|(_, v)| v);
+            let key = (kind.to_string(), vmid.parse::<u32>().unwrap_or(0));
+            if let (Some(g), Some(name)) = (s.guests.get_mut(&key), name) {
+                let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                g.snapshots.push(json!({ "name": name, "snaptime": at, "description": "" }));
+            }
+            ok(data("snapshot_create"))
+        }
         ("POST", ["nodes", n, "lxc" | "qemu", _, "snapshot", _, "rollback"]) if *n == node => {
             ok(data("snapshot_rollback"))
         }
-        ("DELETE", ["nodes", n, "lxc" | "qemu", _, "snapshot", name]) if *n == node => {
+        ("DELETE", ["nodes", n, kind @ ("lxc" | "qemu"), vmid, "snapshot", name]) if *n == node => {
+            let key = (kind.to_string(), vmid.parse::<u32>().unwrap_or(0));
+            if let Some(g) = s.guests.get_mut(&key) {
+                g.snapshots.retain(|x| x["name"] != *name);
+            }
             ok(if *name == "rackhand-missing" { data("failed_delete") } else { data("snapshot_delete") })
         }
         (method, ["nodes", n, kind, vmid, tail @ ..]) if *n == node => {
@@ -211,6 +252,11 @@ fn answer(state: &Mutex<State>, req: Request) -> (&'static str, String) {
                     ("500 Internal Server Error", json!({ "data": null, "message": "config unreadable" }).to_string())
                 }
                 ("GET", ["config"]) => ok(Value::Object(g.config.clone())),
+                ("GET", ["snapshot"]) => {
+                    let mut list = g.snapshots.clone();
+                    list.push(json!({ "name": "current", "description": "You are here!", "running": 1 }));
+                    ok(Value::Array(list))
+                }
                 ("PUT", ["config"]) => {
                     for (k, v) in form(&req.body) {
                         g.config.insert(k, Value::String(v));

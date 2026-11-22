@@ -96,3 +96,15 @@ fn every_table_in_the_design_exists() {
     want.sort();
     assert_eq!(found, want);
 }
+
+/// 7.5.3 step 9: a policy takes a snapshot before patching unless it says `optional`, and rolls back only when told to.
+#[test]
+fn policy_defaults_snapshot_required_no_auto_rollback() {
+    let db = Db::open(&temp("policy-defaults")).unwrap();
+    let conn = db.connection();
+    conn.execute("INSERT INTO policies (id, name) VALUES ('p', 'servers')", []).unwrap();
+    let got: (String, i64) = conn
+        .query_row("SELECT snapshot, auto_rollback FROM policies WHERE id = 'p'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap();
+    assert_eq!(got, ("required".to_string(), 0));
+}

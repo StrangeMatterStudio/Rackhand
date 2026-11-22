@@ -59,7 +59,15 @@ pub fn precheck(f: &Facts, snapshot: Snapshot) -> Result<Vec<String>, String> {
     if f.open_critical {
         return Err("open_critical_incident".into());
     }
-    let Some(g) = &f.guest else { return Ok(Vec::new()) };
+    match &f.guest {
+        Some(g) => guest(g, snapshot),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// The guest's part of the precheck, judged by the snapshot step, which reads the guest's storage through its
+/// hypervisor (plan T59c2): `Ok` with notes, or the reason the patch doesn't start.
+pub fn guest(g: &Guest, snapshot: Snapshot) -> Result<Vec<String>, String> {
     let blocked = if !g.binding_confirmed {
         Some(("guest_binding_unconfirmed", "the guest binding isn't confirmed"))
     } else if !g.snapshots_supported {

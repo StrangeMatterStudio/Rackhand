@@ -151,3 +151,56 @@ async fn guests_op_lists_each_guest_with_its_configured_macs() {
     sim.fail_config(200);
     assert!(Proxmox::new().call(&target(&sim), op("guests", json!({}))).await.is_err());
 }
+
+/// T59c2: a guest's snapshots (without Proxmox's `current` entry), kept as the simulator's state so a snapshot made or
+/// deleted shows in the next list.
+#[tokio::test]
+async fn snapshots_op_lists_the_guests_snapshots() {
+    let sim = Sim::start("pve9").await;
+    let pve = Proxmox::new();
+    let names = |out: &serde_json::Value| -> Vec<String> {
+        out.as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap().to_string()).collect()
+    };
+    let guest = json!({ "kind": "lxc", "vmid": 100 });
+    let before = pve.call(&target(&sim), op("snapshots", guest.clone())).await.unwrap().output;
+    assert_eq!(names(&before), ["rackhand-fixture"], "{before}");
+    assert!(before[0]["snaptime"].is_i64(), "{before}");
+    let named = json!({ "kind": "lxc", "vmid": 100, "name": "rackhand-patch-20261121-1200" });
+    pve.call(&target(&sim), op("snapshot", named.clone())).await.unwrap();
+    let after = pve.call(&target(&sim), op("snapshots", guest.clone())).await.unwrap().output;
+    assert_eq!(names(&after), ["rackhand-fixture", "rackhand-patch-20261121-1200"]);
+    pve.call(&target(&sim), op("delete_snapshot", named)).await.unwrap();
+    let gone = pve.call(&target(&sim), op("snapshots", guest)).await.unwrap().output;
+    assert_eq!(names(&gone), ["rackhand-fixture"]);
+}
+
+async fn room_of(sim: &Sim, kind: &str, vmid: u32) -> serde_json::Value {
+    let args = json!({ "kind": kind, "vmid": vmid });
+    Proxmox::new().call(&target(sim), op("snapshot_room", args)).await.unwrap().output
+}
+
+/// T59c2: where a guest's disks live, for the patch precheck (7.5.3): each storage its disks use (a CD drive left out),
+/// with its type, free and total bytes and whether it can snapshot those disks.
+#[tokio::test]
+async fn snapshot_room_reports_the_storage_of_each_disk() {
+    let sim = Sim::start("pve9").await;
+    let room = |kind: &'static str, vmid: u32| room_of(&sim, kind, vmid);
+    let vm = room("qemu", 200).await;
+    let storages = vm["storages"].as_array().unwrap();
+    assert_eq!(storages.len(), 1, "scsi0 on tank; the cloud-init CD drive isn't a disk: {vm}");
+    assert_eq!(storages[0]["storage"], "tank");
+    assert_eq!(storages[0]["type"], "zfspool");
+    assert_eq!(storages[0]["snapshots"], true);
+    assert_eq!(storages[0]["avail"], 15894540800u64);
+    assert_eq!(storages[0]["total"], 16122904576u64);
+    let ct = room("lxc", 100).await;
+    assert_eq!(ct["storages"][0]["storage"], "tank", "{ct}");
+    // a directory storage snapshots only qcow2 images, and a container on one not at all
+    sim.set_storage("tank", "dir", 1 << 30, 16 << 30);
+    let dir = room("lxc", 100).await;
+    assert_eq!(
+        (dir["storages"][0]["snapshots"].clone(), dir["storages"][0]["avail"].clone()),
+        (json!(false), json!(1u64 << 30))
+    );
+    assert_eq!(room("qemu", 200).await["storages"][0]["snapshots"], false, "a raw image on a directory");
+}

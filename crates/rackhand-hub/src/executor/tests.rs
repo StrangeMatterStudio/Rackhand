@@ -296,3 +296,183 @@ async fn snapshot_and_rollback_steps_use_proxmox_driver() {
     let plain = StepCtx { machine_id: M1.into(), ..ctx.clone() };
     assert_eq!(steps.run(&plain, &snap, None).await.outcome, StepOutcome::Failed("not_a_proxmox_guest".into()));
 }
+
+/// A Proxmox host and its guests for the patch snapshot (plan T59c2): the guests' policy and binding, and a patch job.
+mod patch_snapshot {
+    use super::*;
+    use crate::checks::steps::Hypervisor;
+    use crate::vault::master_key::MasterKey;
+    use crate::vault::{Secret, Vault};
+    use rackhand_drivers::proxmox::sim::Sim;
+
+    const CT: &str = "01JD0000000000000000000003";
+    const VM: &str = "01JD0000000000000000000004";
+    const JOB: &str = "01JDPATCH00000000000000001";
+
+    struct Env {
+        db: Arc<Db>,
+        sim: Sim,
+        steps: Hypervisor,
+    }
+
+    fn guest(id: &str, kind: &str, vmid: u32, binding: &str) -> Row {
+        let reference = format!("{{\"cluster\":\"{M1}\",\"node\":\"pve9\",\"vmid\":{vmid},\"type\":\"{kind}\"}}");
+        Row::from([
+            ("id", t(id)),
+            ("site_id", t("s1")),
+            ("name", t(id)),
+            ("kind", t("linux")),
+            ("state", t("enrolled")),
+            ("policy_id", t("p1")),
+            ("proxmox_ref", t(&reference)),
+            ("proxmox_ref_state", t(binding)),
+        ])
+    }
+
+    fn target(sim: &Sim) -> DriverTarget {
+        DriverTarget {
+            target: sim.url.clone(),
+            settings: serde_json::json!({ "token": "rackhand@pve!hub=secret", "fingerprint": sim.fingerprint }),
+            timeout: Duration::from_secs(5),
+        }
+    }
+
+    async fn env(name: &str) -> Env {
+        let db = db(name).await;
+        let sim = Sim::start("pve9").await;
+        let host = Row::from([
+            ("id", t(M1)),
+            ("site_id", t("s1")),
+            ("name", t("pve")),
+            ("kind", t("hypervisor")),
+            ("address", t(&sim.url)),
+            ("driver", t("proxmox")),
+            ("state", t("enrolled")),
+        ]);
+        let job = Row::from([
+            ("id", t(JOB)),
+            ("kind", t("runbook")),
+            ("name", t("patch-debian")),
+            ("requested_by", t("scheduler")),
+            ("state", t("running")),
+        ]);
+        let policy = Row::from([("id", t("p1")), ("name", t("guests")), ("snapshot", t("required"))]);
+        db.writer()
+            .send(WriteCmd::Batch(vec![
+                RowWrite::upsert("machines", "id", host),
+                RowWrite::insert("policies", policy),
+                RowWrite::insert("machines", guest(CT, "lxc", 100, "confirmed")),
+                RowWrite::insert("machines", guest(VM, "qemu", 200, "confirmed")),
+                RowWrite::insert("jobs", job),
+            ]))
+            .await
+            .unwrap();
+        let vault = Arc::new(Vault::new(MasterKey::from_bytes([4u8; 32]), db.clone()));
+        let creds =
+            serde_json::json!({ "token": "rackhand@pve!hub=secret", "fingerprint": sim.fingerprint }).to_string();
+        vault.put(&format!("driver.{M1}"), &Secret::from(creds.as_str())).await.unwrap();
+        let steps = Hypervisor::new(db.clone(), vault).with_driver(Arc::new(rackhand_drivers::Proxmox::new()));
+        Env { db, sim, steps }
+    }
+
+    impl Env {
+        async fn run(&self, machine: &str, kind: &str) -> crate::actions::runner::StepResult {
+            let ctx = StepCtx { machine_id: machine.into(), job_id: JOB.into(), ..ctx(Duration::from_secs(10)) };
+            self.steps.run(&ctx, &step(&format!("kind = \"{kind}\"\n")), None).await
+        }
+
+        async fn set(&self, table: &'static str, id: &str, col: &'static str, value: &str) {
+            let set = Row::from([(col, t(value))]);
+            let update = rackhand_store::RowUpdate { table, key: ("id", t(id)), set };
+            let change = rackhand_store::RegistryChange { updates: vec![update], ..Default::default() };
+            self.db.writer().send(WriteCmd::RegistryChange(change)).await.unwrap();
+        }
+
+        fn posts(&self) -> Vec<String> {
+            self.sim.requests().into_iter().filter(|q| q.method == "POST").map(|q| q.body).collect()
+        }
+
+        async fn snapshots(&self, kind: &str, vmid: u32) -> Vec<String> {
+            let op = DriverOp { name: "snapshots".into(), args: serde_json::json!({ "kind": kind, "vmid": vmid }) };
+            let out = rackhand_drivers::Proxmox::new().call(&target(&self.sim), op).await.unwrap().output;
+            out.as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap().to_string()).collect()
+        }
+
+        async fn make(&self, kind: &str, vmid: u32, name: &str) {
+            let args = serde_json::json!({ "kind": kind, "vmid": vmid, "name": name });
+            let op = DriverOp { name: "snapshot".into(), args };
+            rackhand_drivers::Proxmox::new().call(&target(&self.sim), op).await.unwrap();
+        }
+    }
+
+    fn reason(r: &crate::actions::runner::StepResult) -> Option<String> {
+        match &r.outcome {
+            StepOutcome::Failed(why) => Some(why.clone()),
+            StepOutcome::Succeeded => None,
+        }
+    }
+
+    /// 7.5.3 and E12: a patch job's snapshot judges the guest first. Under `snapshot = "required"` an unconfirmed
+    /// binding, storage that can't snapshot, or a datastore under 10% or 5 GB free fails the step before anything
+    /// changes; under `optional` the patch goes on without a snapshot and the job log says why. A machine that isn't a
+    /// Proxmox guest has nothing to snapshot.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn patch_snapshot_judges_the_guest_first() {
+        let e = env("patchsnap-judge").await;
+        let plain = e.run(M1, "snapshot").await;
+        assert_eq!(plain.outcome, StepOutcome::Succeeded, "{plain:?}");
+        assert!(String::from_utf8_lossy(&plain.stdout).contains("not a Proxmox guest"), "{plain:?}");
+        e.set("machines", CT, "proxmox_ref_state", "proposed").await;
+        assert_eq!(reason(&e.run(CT, "snapshot").await).as_deref(), Some("guest_binding_unconfirmed"));
+        e.set("policies", "p1", "snapshot", "optional").await;
+        let skipped = e.run(CT, "snapshot").await;
+        assert_eq!(skipped.outcome, StepOutcome::Succeeded, "{skipped:?}");
+        assert!(String::from_utf8_lossy(&skipped.stdout).contains("without a snapshot"), "{skipped:?}");
+        e.set("machines", CT, "proxmox_ref_state", "confirmed").await;
+        e.set("policies", "p1", "snapshot", "required").await;
+        e.sim.set_storage("tank", "dir", 10 << 30, 16 << 30);
+        assert_eq!(reason(&e.run(CT, "snapshot").await).as_deref(), Some("snapshot_unsupported"));
+        e.sim.set_storage("tank", "zfspool", 4 << 30, 16 << 30);
+        assert_eq!(reason(&e.run(CT, "snapshot").await).as_deref(), Some("datastore_low"), "under 5 GB free");
+        e.set("policies", "p1", "snapshot", "optional").await;
+        assert_eq!(e.run(CT, "snapshot").await.outcome, StepOutcome::Succeeded);
+        assert!(e.posts().is_empty(), "nothing was snapshotted: {:?}", e.posts());
+    }
+
+    /// 7.5.3: the snapshot is `rackhand-patch-<YYYYMMDD-HHMM>`, the last 3 `rackhand-patch-*` are kept (others aren't
+    /// touched), and a rollback in the same job goes back to the snapshot the job took.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn patch_snapshot_named_keeps_3_and_rollback_uses_it() {
+        let e = env("patchsnap-keep").await;
+        for old in ["rackhand-patch-20200101-0000", "rackhand-patch-20200102-0000", "rackhand-patch-20200103-0000"] {
+            e.make("qemu", 200, old).await;
+        }
+        e.make("qemu", 200, "before-upgrade").await;
+        let made = e.run(VM, "snapshot").await;
+        assert_eq!(made.outcome, StepOutcome::Succeeded, "{made:?}");
+        let out: serde_json::Value = serde_json::from_slice(&made.stdout).unwrap();
+        let name = out["snapshot"].as_str().unwrap().to_string();
+        let stamp = name.strip_prefix("rackhand-patch-").unwrap();
+        assert!(stamp.len() == 13 && stamp.as_bytes()[8] == b'-', "{name}");
+        let kept = e.snapshots("qemu", 200).await;
+        assert_eq!(
+            kept,
+            ["rackhand-patch-20200102-0000", "rackhand-patch-20200103-0000", "before-upgrade", name.as_str()],
+            "the oldest patch snapshot pruned, the admin's own kept"
+        );
+        // the coordinator records the step; a rollback reads the name back from it
+        let row = Row::from([
+            ("job_id", t(JOB)),
+            ("step_id", t("snapshot")),
+            ("state", t("succeeded")),
+            ("stdout", Value::Blob(made.stdout.clone())),
+            ("started_at", Value::Integer(1)),
+        ]);
+        e.db.writer().send(WriteCmd::Batch(vec![RowWrite::insert("job_steps", row)])).await.unwrap();
+        let back = e.run(VM, "rollback").await;
+        assert_eq!(back.outcome, StepOutcome::Succeeded, "{back:?}");
+        let rolled: Vec<String> =
+            e.sim.requests().into_iter().filter(|q| q.path.ends_with("/rollback")).map(|q| q.path).collect();
+        assert_eq!(rolled, [format!("/api2/json/nodes/pve9/qemu/200/snapshot/{name}/rollback")]);
+    }
+}
