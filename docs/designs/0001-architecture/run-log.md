@@ -144,3 +144,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-22 | Integration tier: 51 of 51 on c99d22f with nothing else running; the enrollment login count under load stays open |
 | 2026-11-22 | T59d's reboot step done (D96); its facts aren't wired in the hub yet |
 | 2026-11-22 | T59c3 done: `patch_failed` and the D45 rollback (D97) |
+| 2026-11-22 | Integration tier 52 of 52 on 388c641; the reboot step wired in the hub, the window loop still off |

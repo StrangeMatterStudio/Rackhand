@@ -178,6 +178,9 @@ fn secret(vault: &Vault, name: &str) -> Result<Vec<u8>, String> {
         .map_err(|_| format!("the Vault has no {name}; run `rackhand hub init`"))
 }
 
+/// How long a rebooted machine has to report again (7.5.3).
+const REBOOT_WAIT: Duration = Duration::from_secs(15 * 60);
+
 /// `rackhand hub run`: opens everything the config names and serves until stopped.
 pub async fn run(config: &HubConfig) -> Result<(), String> {
     let key = MasterKey::load(Some(&config.master_key))
@@ -228,13 +231,10 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let pinned = rackhand_hub::ssh::enroll_test::Pinned { vault: vault.clone(), host_keys: host_keys.clone() };
     let enroll_test = Arc::new(rackhand_hub::ssh::enroll_test::EnrollTest::new(db.clone(), Arc::new(pinned)));
     joins::spawn_enroll_tests(ingest.clone(), enroll_test.clone(), greeted_rx, joins::SSH_RETRY);
-    let executor = rackhand_hub::executor::Executor::new(vault.clone(), host_keys.clone()).with_other(Arc::new(steps(
-        &db,
-        &vault,
-        &notify,
-        &ingest,
-        &probe_server,
-    )));
+    let machines = Arc::new(patching::Machines { db: db.clone(), ingest: ingest.clone() });
+    let executor = rackhand_hub::executor::Executor::new(vault.clone(), host_keys.clone())
+        .with_other(Arc::new(steps(&db, &vault, &notify, &ingest, &probe_server)))
+        .with_reboot(machines, REBOOT_WAIT);
     let actions = rackhand_hub::actions::Actions::new(db.clone(), audit.clone(), bus.clone(), Arc::new(executor))
         .with_gate(Arc::new(ingest.clone()));
     // incidents start runbooks through StartJob and hear back on the bus (7.5.2)
@@ -582,6 +582,7 @@ pub fn detect_replay(db_path: &Path, machine: &str, from_ms: i64, to_ms: i64) ->
 
 pub mod backups;
 pub mod joins;
+pub mod patching;
 
 #[cfg(test)]
 mod tests;
