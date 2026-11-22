@@ -75,5 +75,5 @@ own width now), a brand link too narrow to touch, a 13px field, and a search lin
 - There is no way yet to delete a policy or a window (Policy has no such command), so their lists have none.
 - The Add page posts operator and peer invites straight from a button, as before: they have no fields.
 - Not checked: Safari and Firefox, and real phones.
-- A hub makes a new certificate each time it starts, so a browser warns again after every restart. That is left as
-  not changed here.
+- A hub makes a new certificate each time it starts, so a browser warns again after every restart. That isn't
+  changed here.
