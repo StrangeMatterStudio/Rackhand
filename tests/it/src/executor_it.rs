@@ -7,6 +7,7 @@ mod executor {
     use std::time::{Duration, Instant};
 
     use ed25519_dalek::SigningKey;
+    use rackhand_hub::actions::runner::StepOutcome;
     use rackhand_hub::actions::{Actions, ActionsError, JobKind, StartJob};
     use rackhand_hub::audit::Audit;
     use rackhand_hub::bus::{Bus, BusEvent, Delivery, JobOutcome, Subscription};
@@ -370,6 +371,26 @@ timeout = "{timeout}"
         // Free again: the exec runs as the assistant identity.
         let ran = lab.actions.exec(&assistant, "m1", "id -un", Duration::from_secs(30)).await.unwrap();
         assert_eq!(String::from_utf8_lossy(&ran.stdout).trim(), "rackhand-ai");
+    }
+
+    /// Owner review (B4): an assistant `exec` that passes its timeout is stopped on the machine, as a runbook step is
+    /// (D33), rather than left running after the hub gave up on it; its step records the line that ran.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn exec_timeout_stops_command_on_machine() {
+        let lab = lab("exec-timeout", "60s", Duration::from_secs(3)).await;
+        let assistant = lab.actions.open_assistant_job("service-down", "user:admin", None).await.unwrap();
+        let ran = lab.actions.exec(&assistant, "m1", "sleep 602; echo late", Duration::from_secs(3)).await.unwrap();
+        assert_eq!(ran.outcome, StepOutcome::Failed("timeout".into()), "{ran:?}");
+        let start = Instant::now();
+        while lab.machine.root("pgrep -f '[s]leep 602'").status.success() {
+            assert!(start.elapsed() < Duration::from_secs(15), "the exec still runs on the machine");
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        // An exec that finishes in time is unchanged: its output and exit code.
+        let ok =
+            lab.actions.exec(&assistant, "m1", "echo \"$(id -un)\"; exit 4", Duration::from_secs(30)).await.unwrap();
+        assert_eq!((String::from_utf8_lossy(&ok.stdout).trim(), ok.exit_code), ("rackhand-ai", Some(4)));
+        assert!(ok.command.as_deref().is_some_and(|c| c.starts_with("timeout -k 5 30 sh -c ")), "{:?}", ok.command);
     }
 
     /// A notifier that records messages, or fails every send.

@@ -15,6 +15,7 @@
 <dt>Reason</dt><dd>{{ a.reason }}</dd>
 {% if let Some(rev) = a.rev %}<dt>Runbook</dt><dd>revision {{ rev }}</dd>{% endif %}
 <dt>Arguments</dt><dd><pre>{{ a.args }}</pre></dd>
+{% if let Some(line) = a.runs %}<dt>Runs as</dt><dd><code>{{ line }}</code></dd>{% endif %}
 <dt>Approval</dt><dd><code>{{ a.id }}</code></dd>
 <dt>SHA-256</dt><dd><code>{{ a.hash }}</code></dd>
 </dl>

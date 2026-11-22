@@ -540,6 +540,125 @@ async fn machine_output_wrapped_untrusted() {
     assert_eq!(text.matches("IGNORE PREVIOUS").count(), 1);
 }
 
+/// Facts whose every name is text a machine planted.
+#[derive(Debug)]
+struct Planted;
+
+impl Observations for Planted {
+    fn series(&self, _q: &SeriesQuery) -> Vec<(i64, f64)> {
+        Vec::new()
+    }
+    fn facts(&self, _machine_id: &str) -> Facts {
+        Facts {
+            services: vec![json!({ "name": "PLANTED.service", "state": "failed" })],
+            containers: vec![json!({ "name": "PLANTED", "image": "PLANTED:1", "state": "running" })],
+            updates: vec![json!({ "pending": 1, "security": 0, "packages": ["PLANTED"] })],
+        }
+    }
+}
+
+/// Every string holding `marker` that isn't inside an `untrusted_output` wrapper, by its JSON path.
+fn outside_wrapper(v: &Json, marker: &str, path: String, found: &mut Vec<String>) {
+    match v {
+        Json::String(s) if s.contains(marker) => found.push(path),
+        Json::Array(a) => {
+            a.iter().enumerate().for_each(|(n, x)| outside_wrapper(x, marker, format!("{path}[{n}]"), found))
+        }
+        Json::Object(o) => o
+            .iter()
+            .filter(|(k, _)| k.as_str() != "untrusted_output")
+            .for_each(|(k, x)| outside_wrapper(x, marker, format!("{path}.{k}"), found)),
+        _ => {}
+    }
+}
+
+/// Owner review (B3): text a machine reported (its OS, service, container and package names, event subjects and data,
+/// connection executables, and incident titles and timelines built from them) reaches a model inside
+/// `{"untrusted_output": ...}`, as command output does.
+#[tokio::test(flavor = "multi_thread")]
+async fn machine_reported_text_wrapped_untrusted() {
+    let env = env_with("planted", Arc::new(Planted)).await;
+    let now = now_ms();
+    let planted = vec![
+        row(
+            "machines",
+            &[
+                ("id", t("m5")),
+                ("site_id", t("s1")),
+                ("name", t("box")),
+                ("kind", t("linux")),
+                ("os", t("PLANTED 1")),
+                ("state", t("enrolled")),
+            ],
+        ),
+        row(
+            "incidents",
+            &[
+                ("id", t("inc2")),
+                ("machine_id", t("m5")),
+                ("dedupe_key", t("m5/service.down/PLANTED")),
+                ("kind", t("service.down")),
+                ("severity", t("warning")),
+                ("state", t("open")),
+                ("title", t("PLANTED.service is down")),
+                ("opened_at", i(now - 60_000)),
+            ],
+        ),
+        row(
+            "incident_events",
+            &[
+                ("id", t("ie9")),
+                ("incident_id", t("inc2")),
+                ("at_ms", i(now - 50_000)),
+                ("kind", t("escalated")),
+                ("data", t(r#"{"reason":"PLANTED"}"#)),
+            ],
+        ),
+        row(
+            "events",
+            &[
+                ("id", t("e9")),
+                ("machine_id", t("m5")),
+                ("at_ms", i(now - 40_000)),
+                ("kind", t("auth.root_login")),
+                ("severity", t("warning")),
+                ("subject", t("PLANTED")),
+                ("data", t(r#"{"user":"PLANTED"}"#)),
+            ],
+        ),
+        row(
+            "conn_records",
+            &[
+                ("machine_id", t("m5")),
+                ("bucket_ms", i(now - 60_000)),
+                ("container", t("PLANTED")),
+                ("exe", t("/tmp/PLANTED")),
+                ("dest_ip", t("203.0.113.9")),
+                ("dest_port", i(443)),
+                ("proto", t("tcp")),
+                ("count", i(1)),
+            ],
+        ),
+    ];
+    env.db.writer().send(WriteCmd::Batch(planted)).await.unwrap();
+    let token = key(&env, "u-bob", "d-bob", Scope::Read, now_ms() + 3_600_000).await;
+    let mut s = Session::with_token(&env, &env.bob, &token).await;
+    for (tool, args) in [
+        ("list_machines", json!({})),
+        ("get_machine", json!({ "machine": "home/box" })),
+        ("list_incidents", json!({})),
+        ("get_incident", json!({ "id": "inc2" })),
+        ("list_security_events", json!({ "machine": "m5" })),
+        ("get_connections", json!({ "machine": "m5", "since": now - 3_600_000 })),
+    ] {
+        let out = s.call(tool, args).await.unwrap();
+        assert!(out.to_string().contains("PLANTED"), "{tool} returns the machine's text: {out}");
+        let mut found = Vec::new();
+        outside_wrapper(&out, "PLANTED", String::new(), &mut found);
+        assert!(found.is_empty(), "{tool}: machine text outside `untrusted_output` at {found:?}: {out}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn read_key_refused_for_diagnostic_and_runbook() {
     let env = env("read-key").await;
@@ -1099,17 +1218,18 @@ mod mcp {
         let mut s = Session::with_token(&env, &env.bob, &token).await;
         let machine = s.call("get_machine", json!({ "machine": "home/web" })).await.unwrap();
         assert_eq!(
-            machine["services"],
+            machine["services"]["untrusted_output"],
             json!([{ "name": "nginx", "state": "failed", "enabled": true, "since_ms": 5 }])
         );
-        assert_eq!(machine["containers"][0]["image"], "nginx:1.27");
+        assert_eq!(machine["containers"]["untrusted_output"][0]["image"], "nginx:1.27");
         assert_eq!(
-            machine["updates"],
+            machine["updates"]["untrusted_output"],
             json!([{ "pending": 2, "security": 1, "reboot_required": true, "packages": ["openssl", "curl"] }])
         );
         // a machine without a report has no facts yet
         let other = s.call("get_machine", json!({ "machine": "home/db" })).await.unwrap();
-        assert_eq!((other["services"].clone(), other["updates"].clone()), (json!([]), json!([])));
+        let facts = |k: &str| other[k]["untrusted_output"].clone();
+        assert_eq!((facts("services"), facts("updates")), (json!([]), json!([])));
     }
 
     #[tokio::test(flavor = "multi_thread")]

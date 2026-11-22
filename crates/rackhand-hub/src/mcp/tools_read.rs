@@ -1,5 +1,6 @@
 //! The read tools (7.3.6). Machines are named by id or `site/name`; machine output (job logs) comes back wrapped as
-//! untrusted.
+//! untrusted, and so is text a machine reported: its OS, service, container and package names, event subjects and data,
+//! connection executables, and the incident titles and timelines built from them (owner review, 2026-11-21).
 
 use std::collections::BTreeMap;
 
@@ -130,6 +131,12 @@ fn rows(
         .map_err(store)
 }
 
+/// A value the machine reported, or built from what it reported, wrapped as untrusted like command output (owner
+/// review, 2026-11-21); none stays none.
+fn reported(v: Value) -> Value {
+    if v.is_null() { v } else { json!({ "untrusted_output": v }) }
+}
+
 fn json_text(text: Option<String>) -> Value {
     text.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null)
 }
@@ -191,8 +198,8 @@ fn machines(db: &Db, site: Option<&str>, want: Option<&str>) -> Result<Value, To
         let (state, quarantine): (String, String) = (r.get(6)?, r.get(7)?);
         Ok(json!({
             "id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?, "site": r.get::<_, String>(2)?,
-            "kind": r.get::<_, String>(3)?, "os": r.get::<_, Option<String>>(4)?, "access": r.get::<_, String>(5)?,
-            "health": health(&state, &quarantine, worst),
+            "kind": r.get::<_, String>(3)?, "os": reported(json!(r.get::<_, Option<String>>(4)?)),
+            "access": r.get::<_, String>(5)?, "health": health(&state, &quarantine, worst),
         }))
     })?;
     let kept: Vec<Value> = all.into_iter().filter(|m| want.is_none_or(|h| m["health"] == h)).collect();
@@ -211,7 +218,7 @@ fn machine(db: &Db, obs: &dyn Observations, id: &str) -> Result<Value, ToolError
                 |r| {
                     Ok(json!({
                         "id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?, "site": r.get::<_, String>(2)?,
-                        "kind": r.get::<_, String>(3)?, "os": r.get::<_, Option<String>>(4)?,
+                        "kind": r.get::<_, String>(3)?, "os": reported(json!(r.get::<_, Option<String>>(4)?)),
                         "access": r.get::<_, String>(5)?, "state": r.get::<_, String>(6)?,
                         "quarantine": r.get::<_, String>(7)?, "roles": json_text(r.get(8)?), "tags": json_text(r.get(9)?),
                         "policy": r.get::<_, Option<String>>(10)?,
@@ -227,14 +234,15 @@ fn machine(db: &Db, obs: &dyn Observations, id: &str) -> Result<Value, ToolError
         &[&id],
         |r| {
             Ok(json!({ "id": r.get::<_, String>(0)?, "kind": r.get::<_, String>(1)?, "severity": r.get::<_, String>(2)?,
-                       "state": r.get::<_, String>(3)?, "title": r.get::<_, String>(4)?, "opened_at": r.get::<_, i64>(5)? }))
+                       "state": r.get::<_, String>(3)?, "title": reported(json!(r.get::<_, String>(4)?)),
+                       "opened_at": r.get::<_, i64>(5)? }))
         },
     )?;
     let facts = obs.facts(id);
     let mut out = base;
-    out["services"] = Value::Array(facts.services);
-    out["containers"] = Value::Array(facts.containers);
-    out["updates"] = Value::Array(facts.updates);
+    out["services"] = reported(Value::Array(facts.services));
+    out["containers"] = reported(Value::Array(facts.containers));
+    out["updates"] = reported(Value::Array(facts.updates));
     out["open_incidents"] = Value::Array(open);
     Ok(out)
 }
@@ -252,7 +260,8 @@ fn incident(db: &Db, id: &str) -> Result<Value, ToolError> {
                     let (opened, resolved): (i64, Option<i64>) = (r.get(6)?, r.get(9)?);
                     let v = json!({
                         "id": r.get::<_, String>(0)?, "machine": machine, "kind": r.get::<_, String>(2)?,
-                        "severity": r.get::<_, String>(3)?, "state": r.get::<_, String>(4)?, "title": r.get::<_, String>(5)?,
+                        "severity": r.get::<_, String>(3)?, "state": r.get::<_, String>(4)?,
+                        "title": reported(json!(r.get::<_, String>(5)?)),
                         "opened_at": opened, "acked_at": r.get::<_, Option<i64>>(7)?, "acked_by": r.get::<_, Option<String>>(8)?,
                         "resolved_at": resolved,
                     });
@@ -268,6 +277,14 @@ fn incident(db: &Db, id: &str) -> Result<Value, ToolError> {
             Ok(json!({ "at_ms": r.get::<_, i64>(0)?, "kind": r.get::<_, String>(1)?, "data": json_text(r.get(2)?) }))
         })?;
     let (notes, timeline): (Vec<Value>, Vec<Value>) = entries.into_iter().partition(|e| e["kind"] == "note");
+    // Notes are people's and the assistant's own words; the rest of the timeline can carry what the machine said.
+    let timeline: Vec<Value> = timeline
+        .into_iter()
+        .map(|mut e| {
+            e["data"] = reported(e["data"].take());
+            e
+        })
+        .collect();
     let notes: Vec<Value> = notes
         .into_iter()
         .map(|n| json!({ "at_ms": n["at_ms"], "text": n["data"]["text"], "by": n["data"]["by"] }))
@@ -282,7 +299,7 @@ fn incident(db: &Db, id: &str) -> Result<Value, ToolError> {
             |r| {
                 Ok(
                     json!({ "at_ms": r.get::<_, i64>(0)?, "kind": r.get::<_, String>(1)?, "severity": r.get::<_, String>(2)?,
-                           "subject": r.get::<_, Option<String>>(3)? }),
+                           "subject": reported(json!(r.get::<_, Option<String>>(3)?)) }),
                 )
             },
         )?,
@@ -362,7 +379,8 @@ pub(super) fn call(db: &Db, obs: &dyn Observations, tool: &str, args: &Value, no
                 |r| {
                     Ok(json!({ "id": r.get::<_, String>(0)?, "machine": r.get::<_, Option<String>>(1)?,
                                "kind": r.get::<_, String>(2)?, "severity": r.get::<_, String>(3)?,
-                               "state": r.get::<_, String>(4)?, "title": r.get::<_, String>(5)?, "opened_at": r.get::<_, i64>(6)? }))
+                               "state": r.get::<_, String>(4)?, "title": reported(json!(r.get::<_, String>(5)?)),
+                               "opened_at": r.get::<_, i64>(6)? }))
                 },
             )?;
             Ok(json!({ "incidents": list }))
@@ -381,7 +399,8 @@ pub(super) fn call(db: &Db, obs: &dyn Observations, tool: &str, args: &Value, no
                 |r| {
                     Ok(json!({ "id": r.get::<_, String>(0)?, "machine": r.get::<_, Option<String>>(1)?,
                                "at_ms": r.get::<_, i64>(2)?, "kind": r.get::<_, String>(3)?, "severity": r.get::<_, String>(4)?,
-                               "subject": r.get::<_, Option<String>>(5)?, "data": json_text(r.get(6)?) }))
+                               "subject": reported(json!(r.get::<_, Option<String>>(5)?)),
+                               "data": reported(json_text(r.get(6)?)) }))
                 },
             )?;
             let events: Vec<Value> = all
@@ -400,7 +419,8 @@ pub(super) fn call(db: &Db, obs: &dyn Observations, tool: &str, args: &Value, no
                  FROM conn_records WHERE machine_id = ?1 AND bucket_ms >= ?2 ORDER BY bucket_ms DESC LIMIT 2000",
                 &[&machine, &since],
                 |r| {
-                    Ok(json!({ "bucket_ms": r.get::<_, i64>(0)?, "container": r.get::<_, String>(1)?, "exe": r.get::<_, String>(2)?,
+                    Ok(json!({ "bucket_ms": r.get::<_, i64>(0)?, "container": reported(json!(r.get::<_, String>(1)?)),
+                               "exe": reported(json!(r.get::<_, String>(2)?)),
                                "dest_ip": r.get::<_, String>(3)?, "dest_port": r.get::<_, i64>(4)?, "proto": r.get::<_, String>(5)?,
                                "dest_asn": r.get::<_, Option<i64>>(6)?, "dest_country": r.get::<_, Option<String>>(7)?,
                                "verdict": r.get::<_, Option<String>>(8)?, "bytes_out": r.get::<_, i64>(9)?, "count": r.get::<_, i64>(10)? }))

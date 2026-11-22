@@ -119,6 +119,62 @@ async fn tcp_connect_and_dns_answer() {
     assert!(!missing.ok, "NXDOMAIN fails");
 }
 
+/// An HTTPS server with a self-signed certificate answering 200 "all good", and the certificate's fingerprint.
+async fn https_server() -> (String, String) {
+    let (acceptor, fingerprint) = crate::pinned::test_server();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                let Ok(mut s) = acceptor.accept(tcp).await else { return };
+                let mut buf = vec![0u8; 4096];
+                let _ = s.read(&mut buf).await;
+                let body = "all good";
+                let resp =
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let _ = s.write_all(resp.as_bytes()).await;
+                let _ = s.shutdown().await;
+            });
+        }
+    });
+    (format!("https://{addr}"), fingerprint)
+}
+
+/// Owner review (B1): an HTTPS check trusts the public roots, or, with `fingerprint`, exactly the certificate with that
+/// SHA-256, for a self-signed internal service. A wrong one fails the check; the setting is for `https://` only.
+#[tokio::test]
+async fn https_check_pins_a_certificate_by_fingerprint() {
+    let (base, fingerprint) = https_server().await;
+    let http = Http::new();
+    let url = format!("{base}/ok");
+    let public = http.poll(&target(&url, json!({}))).await.unwrap();
+    assert!(!public.ok && public.detail.contains("TLS"), "self-signed isn't publicly trusted: {}", public.detail);
+    let pinned =
+        http.poll(&target(&url, json!({ "fingerprint": fingerprint, "body_contains": "good" }))).await.unwrap();
+    assert!(pinned.ok, "{}", pinned.detail);
+    assert_eq!(metric(&pinned, "check.status_code"), Some(200.0));
+    let lower = fingerprint.replace(':', "").to_lowercase();
+    assert!(http.poll(&target(&url, json!({ "fingerprint": lower }))).await.unwrap().ok, "any case, colons optional");
+    let other = crate::pinned::show(&[7u8; 32]);
+    let wrong = http.poll(&target(&url, json!({ "fingerprint": other }))).await.unwrap();
+    assert!(!wrong.ok && wrong.detail.contains("fingerprint"), "{}", wrong.detail);
+    assert!(matches!(
+        http.poll(&target(&url, json!({ "fingerprint": "not hex" }))).await,
+        Err(DriverError::Invalid(_))
+    ));
+    let plain = http_server().await;
+    assert!(
+        matches!(
+            http.poll(&target(&format!("{plain}/ok"), json!({ "fingerprint": fingerprint }))).await,
+            Err(DriverError::Invalid(_))
+        ),
+        "a fingerprint on http:// is a configuration error"
+    );
+}
+
 /// A TLS server whose self-signed certificate expires in `days` days and an hour.
 async fn tls_server(days: i64) -> String {
     let mut params = rcgen::CertificateParams::new(vec!["svc.lab.test".to_string()]).unwrap();

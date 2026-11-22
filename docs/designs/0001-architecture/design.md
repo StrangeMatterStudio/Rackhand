@@ -680,7 +680,9 @@ the one that asked, the hash matches (a runbook edited since then no longer matc
 marks it used. There is no tool that approves or rejects.
 
 **Enforcement.** The hub checks `allowed_tools` from the job's playbook on every call, not just the runner's flags. All
-output from machines is returned as `{"untrusted_output": "..."}`. Errors: `out_of_scope`, `tool_not_allowed`,
+output from machines is returned as `{"untrusted_output": "..."}`, and so is every value a machine reported or the hub
+built from one (its OS, service, container and package names, event subjects and data, connection executables,
+incident titles and timeline entries), as `{"untrusted_output": <value>}`. Errors: `out_of_scope`, `tool_not_allowed`,
 `needs_approval`, `approval_rejected`, `approval_mismatch`, `deadline_exceeded`, `machine_unreachable`, `machine_busy`,
 `monitor_only` (the call needs an account on a machine at access level `monitor`), `machine_quarantined` (7.5.6),
 `invalid_args`, `rate_limited` (over 60 calls per minute per token).
@@ -710,7 +712,8 @@ output from machines is returned as `{"untrusted_output": "..."}`. Errors: `out_
   user's `/bin/sh` runs. Parameters substitute whole arguments only and are validated against their declared type and
   pattern first. A pattern must match the whole value, and a value that starts with `-` is refused unless the parameter
   declares `allow_leading_dash = true`, so a parameter can't turn into an option of the command. Assistant `exec` sends
-  the given command string as-is (it's the assistant's shell, logged).
+  the given command string as-is (it's the assistant's shell, logged), run as `timeout -k 5 <seconds> sh -c '<command>'`
+  so it stops on the machine at its timeout as a runbook step does; its approval shows that line.
 - **Command wrapper.** The automation user's sudo allow-list has one entry:
   `rackhand ALL=(root) NOPASSWD: /usr/local/lib/rackhand/run`. That fixed path is the command wrapper: the probe
   binary started in its `run-cmd` mode, which is separate from the probe daemon (`rackhand-probe run`) and shares no

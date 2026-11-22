@@ -885,6 +885,28 @@ mod pages {
         assert!(html.contains(&format!("action=\"/approvals/{id}/approve\"")) && html.contains("/reject\""));
     }
 
+    /// Owner review (B4): an `exec` approval shows the line that runs on the machine, with the timeout that stops it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn exec_approval_shows_the_line_that_runs() {
+        let app = app("approval-exec").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let exec = ApprovalRequest {
+            tool: "exec".into(),
+            args: serde_json::json!({ "command": "journalctl -u nginx | tail" }),
+            runbook_rev: None,
+            ..request(Risk::Normal)
+        };
+        Approvals::new(app.db.clone()).create(&exec, now_ms(), 3_600_000).await.unwrap();
+        let responder = session_for(&app.db, Role::Responder).await;
+        let html = text(send(&app.router, get("/approvals", &responder)).await).await;
+        let html = html.replace("&#39;", "'").replace("&#x27;", "'").replace("&#124;", "|").replace("&amp;", "&");
+        assert!(html.contains("Runs as"), "{html}");
+        assert!(html.contains("timeout -k 5 600 sh -c 'journalctl -u nginx | tail'"), "{html}");
+        approval(&app, Risk::Normal).await;
+        let html = text(send(&app.router, get("/approvals", &responder)).await).await;
+        assert_eq!(html.matches("Runs as").count(), 1, "only an exec has a line");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn dashboard_decision_publishes_approval_decided() {
         let bus = crate::bus::Bus::new();

@@ -1,5 +1,7 @@
 //! HTTP(S) checks: one GET, the status (200 unless `status` says otherwise) and, with `body_contains`, the body.
-//! Redirects aren't followed: a redirect is the answer. HTTPS trusts the public roots only, as the notifiers do (D113).
+//! Redirects aren't followed: a redirect is the answer. HTTPS trusts the public roots only, as the notifiers do (D113),
+//! unless `fingerprint` pins the one certificate to accept (its SHA-256, as an appliance's is pinned), for a self-signed
+//! internal service (owner review, 2026-11-21).
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -65,7 +67,7 @@ impl Driver for Http {
     }
 
     fn known_settings(&self) -> &'static [&'static str] {
-        &["status", "body_contains"]
+        &["status", "body_contains", "fingerprint"]
     }
 
     async fn poll(&self, target: &DriverTarget) -> Result<DriverReading, DriverError> {
@@ -79,12 +81,19 @@ impl Driver for Http {
                 as u16,
         };
         let contains = text(s, "body_contains")?;
+        let pin = text(s, "fingerprint")?;
         let url = url::Url::parse(&target.target).map_err(|e| DriverError::Invalid(format!("the URL: {e}")))?;
         let https = match url.scheme() {
             "http" => false,
             "https" => true,
             other => return Err(DriverError::Invalid(format!("an http:// or https:// URL, not {other}://"))),
         };
+        let pinned = match (pin, https) {
+            (None, _) => None,
+            (Some(_), false) => return Err(DriverError::Invalid("`fingerprint` is for https:// URLs".into())),
+            (Some(fp), true) => Some(crate::pinned::connector(Some(fp))?),
+        };
+        let tls = pinned.as_ref().unwrap_or(&self.tls);
         let host = url.host_str().ok_or_else(|| DriverError::Invalid("the URL has no host".into()))?.to_string();
         let port = url.port_or_known_default().unwrap_or(if https { 443 } else { 80 });
         let path = match url.query() {
@@ -98,7 +107,7 @@ impl Driver for Http {
             let tcp = tokio::net::TcpStream::connect(addr).await.map_err(|e| format!("{addr}: {e}"))?;
             if https {
                 let name = rustls::pki_types::ServerName::try_from(bare.clone()).map_err(|e| e.to_string())?;
-                let tls = self.tls.connect(name, tcp).await.map_err(|e| format!("TLS: {e}"))?;
+                let tls = tls.connect(name, tcp).await.map_err(|e| format!("TLS: {e}"))?;
                 get(tls, &host, &path).await
             } else {
                 get(tcp, &host, &path).await

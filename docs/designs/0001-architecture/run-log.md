@@ -134,3 +134,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-21 | T59b done: the patch precheck and the rollback rules and defaults, as pure decisions the patch steps use |
 | 2026-11-21 | Owner review: the filled gaps confirmed; D84 reversed (pending until the SSH test passes), HTTPS check fingerprints, untrusted reported text, assistant exec timeout, Debian full updates only; recorded in the design change log |
 | 2026-11-21 | D90: a managed machine stays pending until the hub's SSH test passes (owner); the integration tier found the probe directory dropping a pending machine's reports, fixed |
+| 2026-11-21 | D91: HTTPS check fingerprints, machine-reported text untrusted in MCP, assistant exec stopped at its timeout (owner B1, B3, B4) |

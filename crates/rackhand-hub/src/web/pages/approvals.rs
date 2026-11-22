@@ -24,6 +24,8 @@ struct Waiting {
     requested_by: String,
     reason: String,
     can_decide: bool,
+    /// For an `exec`, the line that runs on the machine.
+    runs: Option<String>,
 }
 
 #[derive(Template)]
@@ -50,6 +52,11 @@ pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
         )?;
         let rows = s.query_map([ctx.now_ms], |r| {
             let args: String = r.get(3)?;
+            let tool: String = r.get(1)?;
+            let runs = (tool == "exec")
+                .then(|| serde_json::from_str::<serde_json::Value>(&args).ok())
+                .flatten()
+                .and_then(|v| v["command"].as_str().map(|c| crate::executor::exec_line(c, crate::mcp::EXEC_TIMEOUT)));
             let pretty = serde_json::from_str::<serde_json::Value>(&args)
                 .ok()
                 .and_then(|v| serde_json::to_string_pretty(&v).ok())
@@ -58,7 +65,8 @@ pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
             let risk_name: String = r.get(6)?;
             Ok(Waiting {
                 id: r.get(0)?,
-                tool: r.get(1)?,
+                tool,
+                runs,
                 target: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
                 args: pretty,
                 rev: r.get(4)?,

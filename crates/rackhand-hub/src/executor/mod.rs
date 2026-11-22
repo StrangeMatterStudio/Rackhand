@@ -232,14 +232,22 @@ impl StepRunner for Executor {
         })
     }
 
+    /// The assistant's command string, run by `sh -c` under `timeout` so it stops on the machine at its timeout as a
+    /// runbook step does (D33, owner review); the job log shows the line that ran.
     fn exec<'a>(&'a self, ctx: &'a StepCtx, command: &'a str) -> BoxFuture<'a, StepResult> {
         Box::pin(async move {
-            match self.ssh(ctx, Identity::Assistant, command, ctx.timeout + Duration::from_secs(5)).await {
-                Ok(out) => from_output(command.to_string(), out),
-                Err(e) => StepResult { command: Some(command.to_string()), ..StepResult::failed(ssh_failure(&e)) },
+            let line = exec_line(command, ctx.timeout);
+            match self.ssh(ctx, Identity::Assistant, &line, ctx.timeout + Duration::from_secs(5)).await {
+                Ok(out) => from_output(line, out),
+                Err(e) => StepResult { command: Some(line), ..StepResult::failed(ssh_failure(&e)) },
             }
         })
     }
+}
+
+/// The line an assistant `exec` runs as on the machine: its command by `sh -c`, under `timeout` (D33, owner review).
+pub fn exec_line(command: &str, timeout: Duration) -> String {
+    format!("timeout -k 5 {} sh -c {}", timeout.as_secs().max(1), quote::quote(command))
 }
 
 #[cfg(test)]

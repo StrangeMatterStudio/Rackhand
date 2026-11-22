@@ -9,6 +9,7 @@ pub mod auth;
 mod gate;
 pub mod keys;
 mod tools_act;
+pub use tools_act::EXEC_TIMEOUT;
 mod tools_read;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
