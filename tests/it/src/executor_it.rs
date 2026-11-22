@@ -74,11 +74,19 @@ timeout = "60s"
         auto: std::sync::atomic::AtomicBool,
         back: std::sync::atomic::AtomicBool,
         reporting: std::sync::atomic::AtomicBool,
+        hypervisor: std::sync::atomic::AtomicBool,
+        approved: std::sync::atomic::AtomicBool,
     }
 
     impl rackhand_hub::executor::RebootFacts for Facts {
         fn auto_reboot(&self, _machine: &str) -> bool {
             self.auto.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn approved(&self, _job: &str) -> bool {
+            self.approved.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn compares_kernels(&self, _machine: &str) -> bool {
+            self.hypervisor.load(std::sync::atomic::Ordering::SeqCst)
         }
         fn back_since(&self, _machine: &str, _since_ms: i64) -> bool {
             self.back.load(std::sync::atomic::Ordering::SeqCst)
@@ -480,6 +488,48 @@ timeout = "{timeout}"
         lab.facts.reporting.store(true, SeqCst);
         let up = run(&lab).await;
         assert_eq!((up.outcome, up.reason.as_deref()), (JobOutcome::Failed, Some("did_not_reboot")));
+    }
+
+    /// 7.5.3 step 7: a hypervisor sets no flag, so it wants a reboot when its newest installed kernel isn't the one it
+    /// runs and none is pinned; only an approved job reboots it (E13). Asked in a real shell on the machine.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hypervisor_rebooted_for_a_newer_kernel_only_when_approved() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let lab = lab("hvreboot", "60s", Duration::from_secs(5)).await;
+        sh(
+            &lab.machine,
+            "rm -f /sbin/reboot; printf '#!/bin/sh\\nid -un >> /root/rebooted\\n' > /sbin/reboot; chmod 755 /sbin/reboot; \
+             mkdir -p /boot /etc/kernel; rm -f /boot/vmlinuz-*",
+        );
+        let said = |how: &'static str| {
+            let (a, db) = (lab.actions.clone(), lab.db.clone());
+            async move {
+                let job =
+                    a.run(StartJob { params: BTreeMap::new(), ..start("reboot-now", ("unused", "")) }).await.unwrap();
+                assert_eq!(job.outcome, JobOutcome::Succeeded, "{how}: {job:?}");
+                let out: serde_json::Value = serde_json::from_slice(&step(&db, &job.job_id).stdout).unwrap_or_default();
+                out["reboot"].as_str().unwrap_or_default().to_string()
+            }
+        };
+        lab.facts.back.store(true, SeqCst);
+        lab.facts.hypervisor.store(true, SeqCst);
+        assert_eq!(said("no kernels").await, "not_required");
+        sh(&lab.machine, "touch /boot/vmlinuz-$(uname -r) /boot/vmlinuz-0.0.1-1-pve");
+        assert_eq!(said("the newest is running").await, "not_required");
+        sh(&lab.machine, "touch /boot/vmlinuz-999.0.0-10-pve /boot/vmlinuz-999.0.0-9-pve");
+        assert_eq!(said("a newer one").await, "required_not_allowed");
+        sh(&lab.machine, "touch /etc/kernel/proxmox-boot-pin");
+        assert_eq!(said("pinned").await, "not_required");
+        sh(&lab.machine, "touch /run/reboot-required");
+        assert_eq!(said("pinned and flagged").await, "required_not_allowed");
+        assert!(!lab.machine.root("test -e /root/rebooted").status.success());
+        lab.facts.approved.store(true, SeqCst);
+        assert_eq!(said("approved").await, "done");
+        assert!(lab.machine.root("test -e /root/rebooted").status.success());
+        // a machine that isn't a hypervisor isn't asked about its kernels
+        sh(&lab.machine, "rm -f /run/reboot-required /etc/kernel/proxmox-boot-pin");
+        lab.facts.hypervisor.store(false, SeqCst);
+        assert_eq!(said("an ordinary machine").await, "not_required");
     }
 
     /// A notifier that records messages, or fails every send.

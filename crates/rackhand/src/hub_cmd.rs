@@ -238,7 +238,14 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let actions = rackhand_hub::actions::Actions::new(db.clone(), audit.clone(), bus.clone(), Arc::new(executor))
         .with_gate(Arc::new(ingest.clone()));
     incidents.set_quiet(Arc::new(patching::Expected { machines: machines.clone(), actions: actions.clone() }));
-    let windows = rackhand_hub::actions::patching::driver::Driver::new(db.clone(), machines, Arc::new(actions.clone()));
+    let hosts = rackhand_hub::checks::steps::Hypervisor::new(db.clone(), vault.clone())
+        .with_driver(Arc::new(rackhand_drivers::Proxmox::new()));
+    let windows = rackhand_hub::actions::patching::driver::Driver::with_hosts(
+        db.clone(),
+        machines,
+        Arc::new(actions.clone()),
+        Arc::new(hosts),
+    );
     // incidents start runbooks through StartJob and hear back on the bus (7.5.2)
     let starter = Arc::new(ActionsStarter(actions.clone()));
     rackhand_hub::incidents::routing::Routing::new(incidents.clone(), starter).spawn(bus.subscribe("routing"));

@@ -10,6 +10,10 @@
 //! A machine that never reported after its patch's reboot is rolled back to the snapshot the job took under D45
 //! (`rollback`), by the `rollback` runbook; the machine stays the window's until that ends.
 //!
+//! A hypervisor is patched without a reboot; when it needs one, its reboot is asked for (`hypervisor`) and, once
+//! approved, runs in an open window when nothing else at its site is running or waiting, one host at a time and one per
+//! cluster and window. An approval can be decided until the end of the next window, as a patch's.
+//!
 //! Until its scheduled reboot exists (T60) the role `hub` is left out, and until its runbook does (T90) the kind `windows`.
 
 use std::collections::{BTreeMap, HashSet};
@@ -22,6 +26,7 @@ use rackhand_store::Db;
 use rusqlite::OptionalExtension;
 use tokio::sync::Mutex;
 
+use super::hypervisor::{self, HostGuest, HostView, Hosts};
 use super::rollback::{Failure, rolls_back};
 pub use super::select::Window;
 use super::select::{Candidate, DEFAULT_PER_SITE, Order, Others, PatchMode, Run};
@@ -88,12 +93,16 @@ struct Selected {
 struct State {
     runs: Vec<Active>,
     inflight: HashSet<String>,
+    /// The hypervisors a job is rebooting, and their sites.
+    rebooting: BTreeMap<String, String>,
 }
 
 pub struct Driver {
     db: Arc<Db>,
     world: Arc<dyn World>,
     jobs: Arc<dyn Jobs>,
+    /// Without it, no hypervisor's reboot is asked for.
+    hosts: Option<Arc<dyn Hosts>>,
     state: Mutex<State>,
 }
 
@@ -109,7 +118,7 @@ fn runbook_for(kind: &str, roles: &[String]) -> Option<&'static str> {
         return None;
     }
     if kind == "hypervisor" || roles.iter().any(|r| r == "hypervisor") {
-        return Some("patch-proxmox-host");
+        return Some(PROXMOX_HOST);
     }
     match kind {
         "linux" => Some("patch-debian"),
@@ -117,6 +126,8 @@ fn runbook_for(kind: &str, roles: &[String]) -> Option<&'static str> {
         _ => None,
     }
 }
+
+const PROXMOX_HOST: &str = "patch-proxmox-host";
 
 /// The approval a machine's patch job needs, as Actions checks it.
 pub fn request(name: &str, machine: &str, rev: i64, risk: Risk) -> ApprovalRequest {
@@ -134,7 +145,12 @@ pub fn request(name: &str, machine: &str, rev: i64, risk: Risk) -> ApprovalReque
 
 impl Driver {
     pub fn new(db: Arc<Db>, world: Arc<dyn World>, jobs: Arc<dyn Jobs>) -> Arc<Driver> {
-        Arc::new(Driver { db, world, jobs, state: Mutex::default() })
+        Arc::new(Driver { db, world, jobs, hosts: None, state: Mutex::default() })
+    }
+
+    /// The same, reading hypervisors through `hosts`.
+    pub fn with_hosts(db: Arc<Db>, world: Arc<dyn World>, jobs: Arc<dyn Jobs>, hosts: Arc<dyn Hosts>) -> Arc<Driver> {
+        Arc::new(Driver { db, world, jobs, hosts: Some(hosts), state: Mutex::default() })
     }
 
     /// Whether a patch job the driver started on the machine hasn't ended.
@@ -279,6 +295,150 @@ impl Driver {
                 }
             }
         }
+        self.reboot_hosts(&mut state, now_ms).await;
+    }
+
+    /// Starts the approved hypervisor reboots that may run now.
+    async fn reboot_hosts(self: &Arc<Driver>, state: &mut State, now_ms: i64) {
+        for i in 0..state.runs.len() {
+            let a = &state.runs[i];
+            if a.run.ended(now_ms) {
+                continue;
+            }
+            let hosts: Vec<(String, Vec<String>)> = a
+                .machines
+                .iter()
+                .filter(|(_, m)| m.runbook == PROXMOX_HOST)
+                .map(|(id, m)| (id.clone(), m.tags.clone()))
+                .collect();
+            let (site, starts_ms) = (a.open.site.clone(), a.open.starts_ms);
+            for (id, tags) in hosts {
+                let Some(approval) = self.approved(hypervisor::REBOOT, &id, now_ms) else { continue };
+                // nothing else of the site's is running or waiting for its turn
+                let busy = state.runs.iter().any(|r| {
+                    r.run.running_by_site().contains_key(&site)
+                        || (!r.run.ended(now_ms) && r.run.waiting_sites().contains(&site))
+                }) || state.rebooting.values().any(|s| *s == site);
+                let available = self.world.online(&id, now_ms) && !self.world.in_maintenance(&id, &tags, now_ms);
+                if busy || !available || state.inflight.contains(&id) {
+                    continue;
+                }
+                if !self.may_reboot(&id, starts_ms).await {
+                    continue;
+                }
+                self.start_reboot(state, id, site.clone(), approval);
+            }
+        }
+    }
+
+    /// Whether the hypervisor may be rebooted in the window that started at `starts_ms`: neither it nor another of its
+    /// cluster was (one try per window). Not known, it may not. The host the hub runs on waits for the scheduled reboot (T60).
+    async fn may_reboot(&self, host: &str, starts_ms: i64) -> bool {
+        let Some(hosts) = &self.hosts else { return false };
+        let Ok(view) = hosts.view(host).await else { return false };
+        if self.hub_on(host, &view).is_some() {
+            return false;
+        }
+        let before: rusqlite::Result<Vec<String>> = self.db.readers().with(|c| {
+            let mut s = c.prepare(
+                "SELECT DISTINCT target FROM jobs WHERE name = ?1 AND target IS NOT NULL AND started_at >= ?2",
+            )?;
+            s.query_map(rusqlite::params![hypervisor::REBOOT, starts_ms], |r| r.get(0))?.collect()
+        });
+        let Ok(before) = before else { return false };
+        if before.iter().any(|b| b == host) {
+            return false;
+        }
+        for other in before {
+            match hosts.view(&other).await {
+                Ok(o) if !hypervisor::same_cluster(&view, &o) => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// The hub's own guest on this host, by its confirmed binding.
+    fn hub_on<'v>(&self, host: &str, view: &'v HostView) -> Option<&'v HostGuest> {
+        let refs: Vec<String> = self
+            .db
+            .readers()
+            .with(|c| {
+                let mut s = c.prepare(
+                    "SELECT proxmox_ref FROM machines WHERE proxmox_ref_state = 'confirmed' AND proxmox_ref IS NOT NULL
+                       AND EXISTS (SELECT 1 FROM json_each(roles) WHERE value = 'hub')",
+                )?;
+                s.query_map([], |r| r.get(0))?.collect()
+            })
+            .unwrap_or_default();
+        refs.iter().filter_map(|r| serde_json::from_str::<serde_json::Value>(r).ok()).find_map(|r| {
+            // bound through this host, or through another of its cluster that names this node
+            let here = r["node"].as_str() == Some(view.node.as_str())
+                && (r["cluster"].as_str() == Some(host) || view.nodes.len() > 1);
+            view.guests
+                .iter()
+                .find(|g| here && r["vmid"].as_u64() == Some(g.vmid) && r["type"].as_str() == Some(&g.kind))
+        })
+    }
+
+    /// Whether the patch job's reboot step left a reboot to be asked for.
+    fn reboot_wanted(&self, job: &str) -> bool {
+        let outputs: Vec<Vec<u8>> = self
+            .db
+            .readers()
+            .with(|c| {
+                let mut s = c.prepare("SELECT stdout FROM job_steps WHERE job_id = ?1 AND stdout IS NOT NULL")?;
+                s.query_map([job], |r| r.get(0))?.collect()
+            })
+            .unwrap_or_default();
+        outputs
+            .iter()
+            .filter_map(|o| serde_json::from_slice::<serde_json::Value>(o).ok())
+            .any(|v| v["reboot"] == "required_not_allowed")
+    }
+
+    /// Asks for a hypervisor's reboot, listing its guests (E13). One whose guests can't be listed isn't asked about:
+    /// nobody could see what goes down with it.
+    async fn ask_reboot(&self, host: &str, open: &OpenWindow) {
+        let Some(hosts) = &self.hosts else { return };
+        let view = match hosts.view(host).await {
+            Ok(v) => v,
+            Err(e) => return tracing::warn!(error = %e, %host, "a hypervisor needs a reboot, its guests aren't listed"),
+        };
+        let Some((rev, risk)) = self.runbook(hypervisor::REBOOT) else {
+            return tracing::warn!(runbook = hypervisor::REBOOT, "no such runbook");
+        };
+        let now_ms = rackhand_store::ids::now_ms();
+        if let Some((id, state)) = self.approval(hypervisor::REBOOT, host, rev, now_ms) {
+            let asked_ms = id.parse::<ulid::Ulid>().map_or(0, |u| u.timestamp_ms() as i64);
+            if state != "rejected" || asked_ms >= open.starts_ms {
+                return;
+            }
+        }
+        let ask = ApprovalRequest {
+            step_up: true,
+            reason: hypervisor::reason(&view, self.hub_on(host, &view)),
+            ..request(hypervisor::REBOOT, host, rev, risk)
+        };
+        if let Err(e) = Approvals::new(self.db.clone()).create(&ask, now_ms, open.next_ends_ms - now_ms).await {
+            tracing::warn!(error = %e, %host, "reboot approval");
+        }
+    }
+
+    fn start_reboot(self: &Arc<Driver>, state: &mut State, host: String, site: String, approval: String) {
+        state.inflight.insert(host.clone());
+        state.rebooting.insert(host.clone(), site);
+        let mut job = StartJob::runbook(hypervisor::REBOOT, &host, REQUESTER);
+        job.approval_id = Some(approval);
+        let (driver, running) = (self.clone(), self.jobs.run(job));
+        tokio::spawn(async move {
+            if let Err(e) = running.await {
+                tracing::warn!(error = %e, %host, "reboot job not started");
+            }
+            let mut state = driver.state.lock().await;
+            state.inflight.remove(&host);
+            state.rebooting.remove(&host);
+        });
     }
 
     /// Asks for a machine's approval, unless one can still be decided or was rejected in this window.
@@ -368,6 +528,13 @@ impl Driver {
                         Ok(b) => tracing::warn!(%machine, outcome = ?b.outcome, "rolled back after a failed patch"),
                         Err(e) => tracing::error!(error = %e, %machine, "rollback not started"),
                     }
+                }
+                Ok(r)
+                    if runbook == PROXMOX_HOST
+                        && r.outcome == crate::bus::JobOutcome::Succeeded
+                        && driver.reboot_wanted(&r.job_id) =>
+                {
+                    driver.ask_reboot(&machine, &window).await;
                 }
                 Ok(_) => {}
             }

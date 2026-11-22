@@ -533,3 +533,35 @@ mod patch_snapshot {
         step(&format!("kind = \"{kind}\"\n"))
     }
 }
+
+/// E13: the hypervisor's guests as the reboot approval lists them, from its API with the Vault's credentials.
+#[tokio::test(flavor = "multi_thread")]
+async fn hypervisor_view_from_its_api() {
+    use crate::actions::patching::hypervisor::Hosts;
+    use crate::checks::steps::Hypervisor;
+    use crate::vault::master_key::MasterKey;
+    use crate::vault::{Secret, Vault};
+    use rackhand_drivers::proxmox::sim::Sim;
+    let db = db("hostview").await;
+    let sim = Sim::start("pve9").await;
+    let vault = Arc::new(Vault::new(MasterKey::from_bytes([4u8; 32]), db.clone()));
+    let steps = Hypervisor::new(db.clone(), vault.clone()).with_driver(Arc::new(rackhand_drivers::Proxmox::new()));
+    assert!(steps.view(M1).await.is_err(), "no API attached");
+    let row = Row::from([
+        ("id", t(M1)),
+        ("site_id", t("s1")),
+        ("name", t("pve")),
+        ("kind", t("hypervisor")),
+        ("address", t(&sim.url)),
+        ("driver", t("proxmox")),
+        ("state", t("enrolled")),
+    ]);
+    db.writer().send(WriteCmd::Batch(vec![RowWrite::upsert("machines", "id", row)])).await.unwrap();
+    assert!(steps.view(M1).await.is_err(), "no credentials");
+    let creds = serde_json::json!({ "token": "rackhand@pve!hub=secret", "fingerprint": sim.fingerprint }).to_string();
+    vault.put(&format!("driver.{M1}"), &Secret::from(creds.as_str())).await.unwrap();
+    let v = steps.view(M1).await.unwrap();
+    assert_eq!((v.node.as_str(), v.nodes.as_slice()), ("pve9", &["pve9".to_string()][..]));
+    let ct = v.guests.iter().find(|g| g.vmid == 100).unwrap();
+    assert_eq!((ct.kind.as_str(), ct.name.as_str(), ct.running), ("lxc", "ct-test", true));
+}

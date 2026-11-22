@@ -204,3 +204,33 @@ async fn snapshot_room_reports_the_storage_of_each_disk() {
     );
     assert_eq!(room("qemu", 200).await["storages"][0]["snapshots"], false, "a raw image on a directory");
 }
+
+/// 7.5.3 step 7: what goes down with the host, and which nodes it shares a cluster with.
+#[tokio::test]
+async fn host_lists_its_guests_and_the_clusters_nodes() {
+    let sim = sim::Sim::start("pve9").await;
+    let target = |node: Option<&str>| {
+        let mut settings = serde_json::json!({ "token": "rackhand@pve!hub=secret", "fingerprint": sim.fingerprint });
+        if let Some(n) = node {
+            settings["node"] = n.into();
+        }
+        DriverTarget { target: sim.url.clone(), settings, timeout: std::time::Duration::from_secs(5) }
+    };
+    let op = || DriverOp { name: "host".into(), args: Value::Null };
+    let one = Proxmox.call(&target(None), op()).await.unwrap().output;
+    assert_eq!((one["node"].as_str(), &one["nodes"]), (Some("pve9"), &serde_json::json!(["pve9"])));
+    let guests = one["guests"].as_array().unwrap();
+    let ct = guests.iter().find(|g| g["vmid"] == 100).unwrap();
+    assert_eq!(
+        (ct["type"].as_str(), ct["name"].as_str(), ct["running"].as_bool()),
+        (Some("lxc"), Some("ct-test"), Some(true))
+    );
+    assert!(guests.iter().any(|g| g["type"] == "qemu"), "{guests:?}");
+    // a node of a cluster: its guests only, the cluster's nodes all, one that is down among them
+    sim.set_nodes(&[("pve9", "online"), ("other", "offline")]);
+    let all = Proxmox.call(&target(Some("pve9")), op()).await.unwrap().output;
+    assert_eq!((all["node"].as_str(), &all["nodes"]), (Some("pve9"), &serde_json::json!(["other", "pve9"])));
+    assert_eq!(all["guests"], one["guests"]);
+    let which = Proxmox.call(&target(None), op()).await;
+    assert!(which.is_err_and(|e| e.to_string().contains("`node`")), "which of the cluster's nodes this host is");
+}

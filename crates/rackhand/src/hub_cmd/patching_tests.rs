@@ -216,3 +216,57 @@ async fn expected_silence_from_the_windows() {
     assert!(!e.in_maintenance(M, &["web".into()], now_ms()));
     assert!(!e.awaiting_reboot(M));
 }
+
+/// E13: only a job with an approved high-risk approval may reboot a hypervisor, and a hypervisor's kernels are compared
+/// as it has no flag of its own.
+#[tokio::test(flavor = "multi_thread")]
+async fn only_an_approved_high_risk_job_may_reboot_a_hypervisor() {
+    let m = machines("approved").await;
+    let approval = |id: &str, risk: &str, state: &str| {
+        RowWrite::insert(
+            "approvals",
+            Row::from([
+                ("id", t(id)),
+                ("tool", t("run_runbook")),
+                ("target", t("pve")),
+                ("args_hash", Value::Blob(vec![1])),
+                ("risk", t(risk)),
+                ("requested_by", t("schedule:patch")),
+                ("state", t(state)),
+                ("expires_at", Value::Integer(1)),
+            ]),
+        )
+    };
+    let job = |id: &str, name: &str, approval: Option<&str>| {
+        let mut row = Row::from([
+            ("id", t(id)),
+            ("kind", t("runbook")),
+            ("name", t(name)),
+            ("target", t("pve")),
+            ("requested_by", t("schedule:patch")),
+            ("state", t("running")),
+        ]);
+        if let Some(a) = approval {
+            row.insert("approval_id", t(a));
+        }
+        RowWrite::insert("jobs", row)
+    };
+    m.db.writer()
+        .send(WriteCmd::Batch(vec![
+            approval("high", "high", "used"),
+            approval("normal", "normal", "used"),
+            approval("rejected", "high", "rejected"),
+            job("j-high", "reboot-host", Some("high")),
+            job("j-normal", "reboot-host", Some("normal")),
+            job("j-rejected", "reboot-host", Some("rejected")),
+            job("j-patch", "patch-proxmox-host", Some("high")),
+            job("j-none", "reboot-host", None),
+        ]))
+        .await
+        .unwrap();
+    assert!(m.approved("j-high"));
+    for no in ["j-normal", "j-rejected", "j-patch", "j-none", "missing"] {
+        assert!(!m.approved(no), "{no}");
+    }
+    assert!(m.compares_kernels("pve") && m.compares_kernels("pve2") && !m.compares_kernels("plain"));
+}

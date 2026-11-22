@@ -35,6 +35,8 @@ struct State {
     guests: BTreeMap<(String, u32), Guest>,
     /// Storages changed by a test: type, available and total bytes.
     storage: BTreeMap<String, (String, u64, u64)>,
+    /// The cluster's nodes and their status, when a test sets them.
+    nodes: Option<Vec<(String, String)>>,
     requests: Vec<Request>,
 }
 
@@ -77,7 +79,14 @@ impl Sim {
                 .collect();
             guests.insert((kind.to_string(), vmid), g);
         }
-        let state = Arc::new(Mutex::new(State { dir, node, guests, storage: BTreeMap::new(), requests: Vec::new() }));
+        let state = Arc::new(Mutex::new(State {
+            dir,
+            node,
+            guests,
+            storage: BTreeMap::new(),
+            nodes: None,
+            requests: Vec::new(),
+        }));
         let (acceptor, fingerprint) = crate::pinned::test_server();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
         let url = format!("https://{}", listener.local_addr().expect("an address"));
@@ -103,6 +112,12 @@ impl Sim {
             }
         });
         Sim { url, fingerprint, state }
+    }
+
+    /// The nodes `GET /nodes` gives, as `(name, status)`.
+    pub fn set_nodes(&self, nodes: &[(&str, &str)]) {
+        let nodes = nodes.iter().map(|(n, s)| (n.to_string(), s.to_string())).collect();
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).nodes = Some(nodes);
     }
 
     pub fn requests(&self) -> Vec<Request> {
@@ -195,7 +210,12 @@ fn answer(state: &Mutex<State>, req: Request) -> (&'static str, String) {
     let parts: Vec<&str> = rest.trim_matches('/').split('/').collect();
     let data = |name: &str| fixture(&dir, name)["data"].clone();
     match (req.method.as_str(), parts.as_slice()) {
-        ("GET", ["nodes"]) => ok(data("nodes")),
+        ("GET", ["nodes"]) => match &s.nodes {
+            Some(nodes) => {
+                ok(nodes.iter().map(|(n, status)| json!({ "node": n, "status": status, "type": "node" })).collect())
+            }
+            None => ok(data("nodes")),
+        },
         ("GET", ["cluster", "firewall", "options"]) => ok(data("cluster_firewall_options")),
         ("GET", ["nodes", n, "status"]) if *n == node => ok(data("node_status")),
         ("GET", ["nodes", n, "storage"]) if *n == node => {

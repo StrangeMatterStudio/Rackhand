@@ -1,6 +1,8 @@
 //! `reboot_if_required` steps (7.8.7, 7.5.3). The machine is asked at that moment whether it wants a reboot
 //! (`/run/reboot-required`): its reports carry the flag from a refresh up to 6 hours old, from before the updates this
-//! job installed. A machine whose policy doesn't have `auto_reboot` is left running and the job goes on. Otherwise
+//! job installed. A hypervisor has no such flag: it wants one when its newest installed kernel isn't the one it runs,
+//! unless a kernel is pinned. A machine whose policy doesn't have `auto_reboot`, and a hypervisor whose job has no
+//! approved high-risk approval (E13), is left running and the job goes on. Otherwise
 //! `/sbin/reboot` goes through the wrapper, and the step ends once the machine has started again and reported.
 
 use std::sync::Arc;
@@ -18,6 +20,10 @@ use crate::ssh::keys::Identity;
 pub const NO_REPORT: &str = crate::actions::patching::NO_REPORT_AFTER_REBOOT;
 
 const FLAG: &str = "test -e /run/reboot-required || test -e /var/run/reboot-required";
+/// The same, or a newer kernel than the running one is installed and none is pinned.
+const FLAG_OR_KERNEL: &str = "if test -e /run/reboot-required || test -e /var/run/reboot-required; then exit 0; fi; \
+    n=$(ls /boot/vmlinuz-* 2>/dev/null | sed 's,.*/vmlinuz-,,' | sort -V | tail -n 1); \
+    if [ -e /etc/kernel/proxmox-boot-pin ] || [ -z \"$n\" ] || [ \"$n\" = \"$(uname -r)\" ]; then exit 1; fi; exit 0";
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 /// A machine going down may still report for this long.
 const SHUTDOWN_MS: i64 = 120_000;
@@ -27,6 +33,14 @@ const POLL: Duration = Duration::from_secs(1);
 pub trait RebootFacts: Send + Sync {
     /// The machine's policy lets it be rebooted.
     fn auto_reboot(&self, machine: &str) -> bool;
+    /// The job was approved to reboot a machine that is never rebooted automatically.
+    fn approved(&self, _job: &str) -> bool {
+        false
+    }
+    /// The machine is asked about its kernels too.
+    fn compares_kernels(&self, _machine: &str) -> bool {
+        false
+    }
     /// The machine has started again, and reported, since `since_ms`.
     fn back_since(&self, machine: &str, since_ms: i64) -> bool;
     /// The machine has reported since `since_ms`, started again or not.
@@ -44,19 +58,20 @@ impl Executor {
         let Some((facts, wait)) = self.reboot.as_ref().map(|(f, w)| (Arc::clone(f), *w)) else {
             return StepResult::failed("reboot_if_required_unavailable");
         };
-        let required = match self.ssh(ctx, Identity::Automation, FLAG, COMMAND_TIMEOUT).await {
+        let flag = if facts.compares_kernels(&ctx.machine_id) { FLAG_OR_KERNEL } else { FLAG };
+        let required = match self.ssh(ctx, Identity::Automation, flag, COMMAND_TIMEOUT).await {
             Ok(out) if out.exit_code == Some(0) => true,
             Ok(out) if out.exit_code == Some(1) => false,
             Ok(out) => {
                 let reason = out.exit_code.map_or("no_exit_status".into(), |c| format!("exit_code {c}"));
-                return StepResult { command: Some(FLAG.into()), stderr: out.stderr, ..StepResult::failed(reason) };
+                return StepResult { command: Some(flag.into()), stderr: out.stderr, ..StepResult::failed(reason) };
             }
-            Err(e) => return StepResult { command: Some(FLAG.into()), ..StepResult::failed(ssh_failure(&e)) },
+            Err(e) => return StepResult { command: Some(flag.into()), ..StepResult::failed(ssh_failure(&e)) },
         };
         if !required {
             return ended("not_required", None, StepOutcome::Succeeded);
         }
-        if !facts.auto_reboot(&ctx.machine_id) {
+        if !facts.auto_reboot(&ctx.machine_id) && !facts.approved(&ctx.job_id) {
             return ended("required_not_allowed", None, StepOutcome::Succeeded);
         }
         let command = format!("sudo {WRAPPER} {REBOOT}");

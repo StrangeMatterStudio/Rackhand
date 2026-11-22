@@ -10,6 +10,8 @@
 //! - `snapshot_room`: `{kind, vmid}` gives `{storages: [{storage, type, avail, total, snapshots}]}`, each storage the
 //!   guest's disks use (CD drives left out) and whether it can snapshot them: ZFS, LVM-thin, RBD and Btrfs can; a
 //!   directory or network file storage only a VM's qcow2 images; anything else can't.
+//! - `host`: `{node, nodes, guests: [{vmid, type, name, running}]}`, this host's node, every node of its cluster (its own
+//!   alone when it has none), and the guests on its node.
 //!
 //! `kind` is `lxc` or `qemu`; `node` may be given, else the guest is looked for on the host's nodes. A failed task's
 //! exit status is the error.
@@ -214,6 +216,32 @@ async fn guests(c: &Client) -> Result<Value, DriverError> {
     Ok(Value::Array(out))
 }
 
+/// This host: its node, its cluster's nodes (online or not) and the guests on its node (7.5.3 step 7).
+async fn host(c: &Client) -> Result<Value, DriverError> {
+    let list = c.call("GET", "/nodes", &[]).await?;
+    let mut nodes: Vec<String> =
+        list.as_array().into_iter().flatten().filter_map(|n| n["node"].as_str().map(str::to_string)).collect();
+    nodes.sort();
+    nodes.dedup();
+    let node = match (&c.node, nodes.as_slice()) {
+        (Some(n), _) => n.clone(),
+        (None, [only]) => only.clone(),
+        _ => return Err(DriverError::Failed("the cluster has several nodes: set `node` to this host's".into())),
+    };
+    let mut guests = Vec::new();
+    for kind in ["lxc", "qemu"] {
+        let list = c.call("GET", &format!("/nodes/{}/{kind}", segment(&node)), &[]).await?;
+        for g in list.as_array().into_iter().flatten() {
+            let Some(vmid) = g["vmid"].as_u64().or_else(|| g["vmid"].as_str().and_then(|v| v.parse().ok())) else {
+                continue;
+            };
+            let running = g["status"].as_str() == Some("running");
+            guests.push(json!({ "vmid": vmid, "type": kind, "name": g["name"].as_str(), "running": running }));
+        }
+    }
+    Ok(json!({ "node": node, "nodes": nodes, "guests": guests }))
+}
+
 /// The volumes of a guest's disks, by storage: `(storage, volume)` from each disk line, CD drives and `none` left out.
 fn disks(kind: &str, config: &Value) -> Vec<(String, String)> {
     let disk_key = |k: &str| {
@@ -333,6 +361,7 @@ pub(super) async fn run(c: &Client, target: &DriverTarget, op: DriverOp) -> Resu
         }
         "snapshot_room" => snapshot_room(c, &guest(c, a).await?).await?,
         "guests" => guests(c).await?,
+        "host" => host(c).await?,
         other => return Err(bad(&format!("no Proxmox operation `{other}`"))),
     };
     Ok(DriverOpResult { output })

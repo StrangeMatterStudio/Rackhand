@@ -103,3 +103,14 @@ fn rollback_runbook_takes_a_job_id() {
     assert!(crate::params::check_value(param, "01JDPATCHED000000000000001").is_ok());
     assert!(crate::params::check_value(param, "rackhand-patch-1; reboot").is_err());
 }
+
+/// E13: a hypervisor's reboot is its own runbook, high risk, so it always needs an approval with step-up.
+#[test]
+fn reboot_host_is_high_risk_and_verifies() {
+    let r = Runbook::parse(builtin::runbook("reboot-host").expect("built in")).unwrap();
+    assert_eq!((r.risk, r.autonomy), (crate::runbook::Risk::High, 1));
+    use StepKind::*;
+    assert_eq!(r.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), [Verify, RebootIfRequired, WaitReport, Verify]);
+    assert_eq!(r.targets.roles, ["hypervisor"]);
+    assert!(r.params.is_empty(), "nothing in it can be widened after the approval");
+}

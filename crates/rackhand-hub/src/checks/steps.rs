@@ -28,6 +28,7 @@ use rackhand_store::Db;
 use rusqlite::OptionalExtension;
 
 use super::patch;
+use crate::actions::patching::hypervisor::{HostGuest, HostView, Hosts};
 use crate::actions::patching::precheck::{Guest, Snapshot, guest as guest_precheck};
 use crate::actions::runner::{BoxFuture, StepCtx, StepOutcome, StepResult, StepRunner};
 use crate::ingest::Ingest;
@@ -268,6 +269,24 @@ impl Hypervisor {
         self
     }
 
+    /// A hypervisor machine's driver kind, address and credentials.
+    fn api(&self, host: &str) -> Result<(String, String, serde_json::Value), String> {
+        let found: Option<(Option<String>, Option<String>)> = self
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row("SELECT driver, address FROM machines WHERE id = ?1", [host], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .optional()
+            })
+            .map_err(|e| e.to_string())?;
+        let Some((Some(driver), Some(address))) = found else { return Err("no_hypervisor".into()) };
+        let creds = self.vault.get(&format!("driver.{host}")).map_err(|_| "no_hypervisor_credentials".to_string())?;
+        let settings = serde_json::from_slice(creds.expose()).map_err(|_| "no_hypervisor_credentials".to_string())?;
+        Ok((driver, address, settings))
+    }
+
     fn bound(&self, guest: &str) -> Result<Bound, String> {
         let row: Option<(Option<String>, String)> = self
             .db
@@ -286,22 +305,38 @@ impl Hypervisor {
         let r: serde_json::Value =
             serde_json::from_str(&reference).map_err(|_| "guest_binding_unreadable".to_string())?;
         let host = r["cluster"].as_str().ok_or("guest_binding_unreadable")?.to_string();
-        let found: Option<(Option<String>, Option<String>)> = self
-            .db
-            .readers()
-            .with(|c| {
-                c.query_row("SELECT driver, address FROM machines WHERE id = ?1", [&host], |r| {
-                    Ok((r.get(0)?, r.get(1)?))
-                })
-                .optional()
-            })
-            .map_err(|e| e.to_string())?;
-        let Some((Some(driver), Some(address))) = found else { return Err("no_hypervisor".into()) };
-        let creds = self.vault.get(&format!("driver.{host}")).map_err(|_| "no_hypervisor_credentials".to_string())?;
-        let settings: serde_json::Value =
-            serde_json::from_slice(creds.expose()).map_err(|_| "no_hypervisor_credentials".to_string())?;
+        let (driver, address, settings) = self.api(&host)?;
         let guest = serde_json::json!({ "node": r["node"], "vmid": r["vmid"], "kind": r["type"] });
         Ok(Bound { driver, address, settings, guest })
+    }
+}
+
+/// How long a hypervisor's API has to describe its host.
+const VIEW_TIMEOUT: Duration = Duration::from_secs(10);
+
+impl Hosts for Hypervisor {
+    fn view<'a>(&'a self, host: &'a str) -> BoxFuture<'a, Result<HostView, String>> {
+        Box::pin(async move {
+            let (kind, target, settings) = self.api(host)?;
+            let driver = self.drivers.get(kind.as_str()).ok_or_else(|| format!("no_driver:{kind}"))?;
+            let target = DriverTarget { target, settings, timeout: VIEW_TIMEOUT };
+            let op = DriverOp { name: "host".into(), args: serde_json::Value::Null };
+            let v = driver.call(&target, op).await.map_err(|e| e.to_string())?.output;
+            let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+            let guests = v["guests"].as_array().into_iter().flatten();
+            Ok(HostView {
+                node: text(&v["node"]),
+                nodes: v["nodes"].as_array().into_iter().flatten().map(&text).collect(),
+                guests: guests
+                    .map(|g| HostGuest {
+                        vmid: g["vmid"].as_u64().unwrap_or_default(),
+                        kind: text(&g["type"]),
+                        name: text(&g["name"]),
+                        running: g["running"].as_bool().unwrap_or(false),
+                    })
+                    .collect(),
+            })
+        })
     }
 }
 

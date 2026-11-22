@@ -155,3 +155,5 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-22 | T59 done: integration tier 56 of 56 on 14520f2. T60 started |
 | 2026-11-22 | T60a done: the Proxmox host and hub host runbooks; hypervisors patched last and never rebooted automatically (D102) |
 | 2026-11-22 | At the owner's request: the test build (e3d843a) installed by hand on an LXC of theirs. The packaged unit runs in an unprivileged Debian 13 LXC; `/healthz` ok and first run reachable over the LAN; first run left to the owner |
+| 2026-11-22 | Owner: first-run's usability problems and an overhaul of the dashboard go to a session of their own (branch of its own, records in `0002-dashboard-ui`); this run goes on with the plan |
+| 2026-11-22 | T60b done: a hypervisor's reboot asked for with its guests listed, once per cluster and window (D103) |
