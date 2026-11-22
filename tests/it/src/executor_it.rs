@@ -192,6 +192,8 @@ timeout = "{timeout}"
         library.save(Kind::Runbook, "slow", &slow, "admin", 1).await.unwrap();
         library.save(Kind::Runbook, "wrapped", WRAPPED, "admin", 1).await.unwrap();
         library.save(Kind::Runbook, "reboot-now", REBOOT, "admin", 1).await.unwrap();
+        let always = REBOOT.replace("reboot-now", "reboot-asked") + "always = true\n";
+        library.save(Kind::Runbook, "reboot-asked", &always, "admin", 1).await.unwrap();
         let runbooks = [PLAIN, slow.as_str(), WRAPPED, REBOOT].map(|r| Runbook::parse(r).unwrap());
         let now = rackhand_store::ids::now_ms();
         let payload = signed_command_list(&node, &runbooks, 1, now, 3_600_000);
@@ -494,6 +496,36 @@ timeout = "{timeout}"
         lab.facts.reporting.store(true, SeqCst);
         let up = run(&lab).await;
         assert_eq!((up.outcome, up.reason.as_deref()), (JobOutcome::Failed, Some("did_not_reboot")));
+    }
+
+    /// The `reboot` runbook's step reboots a machine that doesn't want it, whatever its policy does by itself; a
+    /// hypervisor isn't rebooted by it (E13): that takes `reboot-host` and its approval.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reboot_asked_for_reboots_all_but_a_hypervisor() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let lab = lab("rebootasked", "60s", Duration::from_secs(5)).await;
+        sh(
+            &lab.machine,
+            "rm -f /sbin/reboot; printf '#!/bin/sh\nid -un >> /root/rebooted\n' > /sbin/reboot; chmod 755 /sbin/reboot",
+        );
+        let run = || {
+            let a = lab.actions.clone();
+            async move {
+                a.run(StartJob { params: BTreeMap::new(), ..start("reboot-asked", ("unused", "")) }).await.unwrap()
+            }
+        };
+        lab.facts.back.store(true, SeqCst);
+        lab.facts.hypervisor.store(true, SeqCst);
+        let refused = run().await;
+        assert_eq!(
+            (refused.outcome, refused.reason.as_deref()),
+            (JobOutcome::Failed, Some("hypervisor_needs_reboot_host"))
+        );
+        assert!(!lab.machine.root("test -e /root/rebooted").status.success());
+        lab.facts.hypervisor.store(false, SeqCst);
+        let done = run().await;
+        assert_eq!(done.outcome, JobOutcome::Succeeded, "{done:?}");
+        assert!(lab.machine.root("test -e /root/rebooted").status.success(), "no flag, no auto_reboot: asked for");
     }
 
     /// 7.5.3 step 7: a hypervisor sets no flag, so it wants a reboot when its newest installed kernel isn't the one it

@@ -114,3 +114,80 @@ fn reboot_host_is_high_risk_and_verifies() {
     assert_eq!(r.targets.roles, ["hypervisor", "hub"]);
     assert!(r.params.is_empty(), "nothing in it can be widened after the approval");
 }
+
+/// 7.6.8 and 7.8.7: every built-in parses, carries the risk the design gives it, and one that takes a parameter has no
+/// trigger (an incident starts a runbook without parameters).
+#[test]
+fn all_parse_and_have_design_risk() {
+    use crate::runbook::Risk::{High, Low, Normal};
+    let risks = [
+        ("patch-debian", Normal),
+        ("patch-alpine", Normal),
+        ("patch-proxmox-host", Normal),
+        ("patch-hub-host", Normal),
+        ("reboot-host", High),
+        ("rollback", High),
+        ("reboot", Normal),
+        ("snapshot", Normal),
+        ("service-restart", Low),
+        ("compose-restart", Low),
+        ("compose-update", Normal),
+    ];
+    for (name, source) in builtin::runbooks() {
+        let r = Runbook::parse(source).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let expected = risks.iter().find(|(n, _)| n == name).unwrap_or_else(|| panic!("{name}: no risk given here"));
+        assert_eq!((r.name.as_str(), r.risk), (*name, expected.1));
+        assert!(r.params.is_empty() || r.triggers.is_none(), "{name}");
+        assert!(r.steps.iter().all(|s| s.timeout_s().is_some()), "{name}: every step has its own limit");
+    }
+    assert_eq!(builtin::runbooks().len(), risks.len());
+}
+
+/// What restarts something waits for a report from after it before it judges, and takes only the names it is meant for.
+#[test]
+fn restart_runbooks_judge_a_fresh_report() {
+    use crate::params::check_value;
+    let parsed = |name: &str| Runbook::parse(builtin::runbook(name).unwrap_or_else(|| panic!("{name}"))).unwrap();
+    let kinds = |r: &Runbook| r.steps.iter().map(|s| s.kind).collect::<Vec<_>>();
+    use StepKind::{RebootIfRequired, Snapshot, Ssh, Verify, WaitReport};
+    let compose = parsed("compose-restart");
+    assert_eq!(kinds(&compose), [Ssh, WaitReport, Verify]);
+    assert_eq!(compose.steps[2].checks.as_deref(), Some(&["containers_running:{{project}}".to_string()][..]));
+    assert_eq!(
+        compose.steps[0].cmd.as_ref().unwrap()[1..].join(" "),
+        format!("{WRAPPER} /usr/bin/docker compose -p {{{{project}}}} restart")
+    );
+    let update = parsed("compose-update");
+    assert_eq!(kinds(&update), [Ssh, Ssh, WaitReport, Verify]);
+    assert!(update.steps[..2].iter().all(|s| s.detached), "a pull outlives a cut connection");
+    let service = parsed("service-restart");
+    assert_eq!(kinds(&service), [Ssh, Ssh, WaitReport, Verify]);
+    assert_eq!(kinds(&parsed("snapshot")), [Snapshot]);
+    let reboot = parsed("reboot");
+    assert_eq!(kinds(&reboot), [Verify, RebootIfRequired, WaitReport, Verify]);
+    assert!(reboot.steps[1].always, "asked for, it reboots whether the machine wants it or not");
+    assert!(!parsed("patch-debian").steps.iter().any(|s| s.always));
+    for (value, ok) in [("web", true), ("my_app-2", true), ("-v", false), ("a b", false), ("a;b", false), ("", false)] {
+        assert_eq!(check_value(&compose.params["project"], value).is_ok(), ok, "project {value:?}");
+    }
+    for (value, ok) in [
+        ("nginx.service", true),
+        ("getty@tty1.service", true),
+        ("nginx", false),
+        ("--now.service", false),
+        ("a b.service", false),
+        ("docker.socket", false),
+    ] {
+        assert_eq!(check_value(&service.params["unit"], value).is_ok(), ok, "unit {value:?}");
+    }
+    for (value, ok) in [
+        ("/opt/web/compose.yml", true),
+        ("/srv/a-b/docker-compose.yaml", true),
+        ("compose.yml", false),
+        ("/etc/shadow", false),
+        ("/opt/../etc/compose.yml", false),
+        ("/opt/a b/compose.yml", false),
+    ] {
+        assert_eq!(check_value(&update.params["file"], value).is_ok(), ok, "file {value:?}");
+    }
+}

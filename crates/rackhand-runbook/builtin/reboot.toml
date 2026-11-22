@@ -1,0 +1,31 @@
+name = "reboot"
+description = "Reboot a machine that is not a hypervisor, and check it came back as it was"
+targets = { kinds = ["linux", "alpine"] }
+identity = "automation"
+risk = "normal"
+autonomy = 1
+
+# The active services and running containers, kept in the job log for the verify step.
+[[step]]
+id = "record"
+kind = "verify"
+checks = ["record_state"]
+timeout = "1m"
+
+# Asked for: whether the machine wants it or not, and whatever its policy does by itself. A hypervisor takes `reboot-host`.
+[[step]]
+id = "reboot"
+kind = "reboot_if_required"
+always = true
+timeout = "20m"
+
+[[step]]
+id = "report"
+kind = "wait_report"
+timeout = "15m"
+
+[[step]]
+id = "verify"
+kind = "verify"
+checks = ["as_recorded", "required_mounts", "bound_checks"]
+timeout = "5m"

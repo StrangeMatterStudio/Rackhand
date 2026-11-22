@@ -8,6 +8,11 @@ const RUNBOOKS: &[(&str, &str)] = &[
     ("patch-hub-host", include_str!("../builtin/patch-hub-host.toml")),
     ("reboot-host", include_str!("../builtin/reboot-host.toml")),
     ("rollback", include_str!("../builtin/rollback.toml")),
+    ("reboot", include_str!("../builtin/reboot.toml")),
+    ("snapshot", include_str!("../builtin/snapshot.toml")),
+    ("service-restart", include_str!("../builtin/service-restart.toml")),
+    ("compose-restart", include_str!("../builtin/compose-restart.toml")),
+    ("compose-update", include_str!("../builtin/compose-update.toml")),
 ];
 
 /// Every built-in runbook, as `(name, content)`.

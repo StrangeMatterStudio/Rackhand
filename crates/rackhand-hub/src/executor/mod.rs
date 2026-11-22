@@ -236,7 +236,9 @@ impl StepRunner for Executor {
                 (StepKind::Ssh, Some(argv)) => self.plain(ctx, identity(ctx.identity), argv).await,
                 // `windows_script` steps go through the dispatcher (T90).
                 (StepKind::Ssh, None) => StepResult::failed("windows_unavailable"),
-                (StepKind::RebootIfRequired, _) if self.reboot.is_some() => self.reboot_if_required(ctx).await,
+                (StepKind::RebootIfRequired, _) if self.reboot.is_some() => {
+                    self.reboot_if_required(ctx, step.always).await
+                }
                 _ => self.other.run(ctx, step, argv).await,
             }
         })

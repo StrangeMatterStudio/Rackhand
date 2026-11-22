@@ -99,3 +99,17 @@ fn targets_name_machines() {
         (&["web".to_string()][..], &["storage".to_string()][..])
     );
 }
+
+/// `always` belongs to reboot steps only.
+#[test]
+fn always_is_for_reboot_steps_only() {
+    let source = |kind: &str| {
+        format!(
+            "name = \"r\"\ndescription = \"d\"\nidentity = \"automation\"\nrisk = \"normal\"\nautonomy = 1\n\
+             [[step]]\nid = \"s\"\nkind = \"{kind}\"\nalways = true\n"
+        )
+    };
+    assert!(crate::runbook::Runbook::parse(&source("reboot_if_required")).unwrap().steps[0].always);
+    let err = crate::runbook::Runbook::parse(&source("wait_report")).unwrap_err().to_string();
+    assert!(err.contains("always"), "{err}");
+}

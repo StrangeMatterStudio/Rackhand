@@ -162,6 +162,7 @@ fn step_for(name: &str, argv: &[String]) -> Step {
         idempotent: true,
         resumable: false,
         detached: false,
+        always: false,
     }
 }
 

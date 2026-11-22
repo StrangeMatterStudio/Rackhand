@@ -110,6 +110,9 @@ pub struct Step {
     pub resumable: bool,
     #[serde(default)]
     pub detached: bool,
+    /// `reboot_if_required`: reboots whether the machine wants it or not.
+    #[serde(default)]
+    pub always: bool,
 }
 
 impl Step {

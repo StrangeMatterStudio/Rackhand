@@ -159,3 +159,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-22 | T60b done: a hypervisor's reboot asked for with its guests listed, once per cluster and window (D103) |
 | 2026-11-22 | T60c built: the reboot of the machine the hub runs on, 60 s out, and the job resumed at verify (D104); integration tier next |
 | 2026-11-22 | T60 done: integration tier 58 of 58 on ac88ee9. T61 started |
+| 2026-11-22 | T61a done: five more built-in runbooks (D105) |

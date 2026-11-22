@@ -69,6 +69,9 @@ fn step_rules(rb: &Runbook, step: &Step) -> Result<(), String> {
     if step.detached && step.kind != StepKind::Ssh {
         return Err("only `ssh` steps can be `detached`".into());
     }
+    if step.always && step.kind != StepKind::RebootIfRequired {
+        return Err("only `reboot_if_required` steps can be `always`".into());
+    }
     if step.timeout.is_some() && step.timeout_s().is_none() {
         return Err(format!("timeout `{}`: use a number with s, m or h", step.timeout.as_deref().unwrap_or("")));
     }

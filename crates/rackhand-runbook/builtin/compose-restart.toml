@@ -1,0 +1,28 @@
+name = "compose-restart"
+description = "Restart one Docker Compose project and check its containers"
+targets = { kinds = ["linux", "alpine"] }
+identity = "automation"
+risk = "low"
+autonomy = 1
+
+[params.project]
+type = "string"
+pattern = "[a-zA-Z0-9_][a-zA-Z0-9_-]{0,63}"
+
+[[step]]
+id = "restart"
+kind = "ssh"
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/bin/docker", "compose", "-p", "{{project}}", "restart"]
+timeout = "5m"
+
+# A report from after it: the checks below judge that one, not the state before.
+[[step]]
+id = "report"
+kind = "wait_report"
+timeout = "5m"
+
+[[step]]
+id = "verify"
+kind = "verify"
+checks = ["containers_running:{{project}}"]
+timeout = "2m"

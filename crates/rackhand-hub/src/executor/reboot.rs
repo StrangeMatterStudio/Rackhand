@@ -60,25 +60,18 @@ fn ended(reboot: &str, command: Option<String>, outcome: StepOutcome) -> StepRes
 }
 
 impl Executor {
-    pub(super) async fn reboot_if_required(&self, ctx: &StepCtx) -> StepResult {
+    pub(super) async fn reboot_if_required(&self, ctx: &StepCtx, always: bool) -> StepResult {
         let Some((facts, wait)) = self.reboot.as_ref().map(|(f, w)| (Arc::clone(f), *w)) else {
             return StepResult::failed("reboot_if_required_unavailable");
         };
-        let flag = if facts.compares_kernels(&ctx.machine_id) { FLAG_OR_KERNEL } else { FLAG };
-        let required = match self.ssh(ctx, Identity::Automation, flag, COMMAND_TIMEOUT).await {
-            Ok(out) if out.exit_code == Some(0) => true,
-            Ok(out) if out.exit_code == Some(1) => false,
-            Ok(out) => {
-                let reason = out.exit_code.map_or("no_exit_status".into(), |c| format!("exit_code {c}"));
-                return StepResult { command: Some(flag.into()), stderr: out.stderr, ..StepResult::failed(reason) };
+        let hypervisor = facts.compares_kernels(&ctx.machine_id);
+        if always {
+            // E13: a hypervisor is rebooted by `reboot-host` with its approval, and nothing else
+            if hypervisor && !facts.approved(&ctx.job_id) {
+                return StepResult::failed("hypervisor_needs_reboot_host");
             }
-            Err(e) => return StepResult { command: Some(flag.into()), ..StepResult::failed(ssh_failure(&e)) },
-        };
-        if !required {
-            return ended("not_required", None, StepOutcome::Succeeded);
-        }
-        if !facts.auto_reboot(&ctx.machine_id) && !facts.approved(&ctx.job_id) {
-            return ended("required_not_allowed", None, StepOutcome::Succeeded);
+        } else if let Some(end) = self.not_wanted(ctx, &*facts, hypervisor).await {
+            return end;
         }
         if facts.hosts_hub(&ctx.machine_id) {
             let command = format!("sudo {WRAPPER} {}", REBOOT_IN_60S.join(" "));
@@ -106,6 +99,31 @@ impl Executor {
             Ok(_) | Err(_) => {}
         }
         ended("done", Some(command), self.back(&*facts, &ctx.machine_id, since, SHUTDOWN_MS, wait).await)
+    }
+
+    /// How the step ends when the machine doesn't want a reboot or mustn't have one; nothing when it is to be rebooted.
+    async fn not_wanted(&self, ctx: &StepCtx, facts: &dyn RebootFacts, hypervisor: bool) -> Option<StepResult> {
+        let flag = if hypervisor { FLAG_OR_KERNEL } else { FLAG };
+        let required = match self.ssh(ctx, Identity::Automation, flag, COMMAND_TIMEOUT).await {
+            Ok(out) if out.exit_code == Some(0) => true,
+            Ok(out) if out.exit_code == Some(1) => false,
+            Ok(out) => {
+                let reason = out.exit_code.map_or("no_exit_status".into(), |c| format!("exit_code {c}"));
+                return Some(StepResult {
+                    command: Some(flag.into()),
+                    stderr: out.stderr,
+                    ..StepResult::failed(reason)
+                });
+            }
+            Err(e) => return Some(StepResult { command: Some(flag.into()), ..StepResult::failed(ssh_failure(&e)) }),
+        };
+        if !required {
+            return Some(ended("not_required", None, StepOutcome::Succeeded));
+        }
+        if !facts.auto_reboot(&ctx.machine_id) && !facts.approved(&ctx.job_id) {
+            return Some(ended("required_not_allowed", None, StepOutcome::Succeeded));
+        }
+        None
     }
 
     /// Waits up to `wait` for the machine to have started again since `since`.
