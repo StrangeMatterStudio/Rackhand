@@ -269,7 +269,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T56 | Library and git mirror | T50, T21, T07 | unit + integration | done |
 | T57 | Incident routing to runbooks and attempt limits | T32, T55 | unit | done |
 | T58 | Dashboard: approvals, jobs, library, patching | T55, T56, T37 | unit (HTTP) | done |
-| T59 | Patching | T55, T34, T47, T12 | unit + integration + live (L4, L9) | in progress (T59a to T59e built, the window loop on; the integration tier waits for a sound clock) |
+| T59 | Patching | T55, T34, T47, T12 | unit + integration + live (L4, L9) | done |
 | T60 | Hypervisor and hub-host patching | T59 | unit + integration + live (L4, L9) | todo |
 | T61 | Remaining built-in runbooks and key rotation | T55, T43 | unit + integration | todo |
 | T62 | Access levels and monitor enforcement | T44, T55, T49 | unit + integration | todo |
@@ -3014,6 +3014,7 @@ Only additions to that list are written out below.
   | 2026-11-22 | The same containers' tests again with the disk sampled every 2 s (33 tests, 4 failed) | up to 4.4 GB waiting to be written within seconds of the start; the host's SSD then wrote 85 MB/s, and 13 MB/s at 1 s a write for a minute; every sync waited behind it. The writes are the unstripped probe (267 MB; 37 MB stripped) copied or downloaded into each of two dozen containers |
   | 2026-11-22 | The same with stripped binaries in the containers | 33 passed, most in 8 to 30 s (before: 75 to 258 s); at most 150 MB waiting to be written |
   | 2026-11-22 | cargo xtask ci it on a clean clone of da8df7a, the disk sampled every 2 s | 56 tests in 1662 s (before: 2316 s): 55 passed, every container booted; at most 363 MB waiting to be written and no sample over 60% blocked. 1 failed: `callouts::disk_rule_callouts_and_resolution`, the critical after 225 s where the test asks for 240 s (D101) |
+  | 2026-11-22 | cargo xtask ci it on a clean clone of 14520f2, the disk sampled every 2 s | exit 0: 56 tests, 56 passed (2267 s; the callout test ran to its end, 841 s). No sample over 60% blocked; at most 1.1 GB waiting to be written with containers running. The boot waits, the login count (D94) and the mirror passed in this run and in the one before, after the binaries were stripped (D100); the login count isn't shown to have had that cause. Live: L4 |
 
 ### T60: Hypervisor and hub-host patching
 - **Design refs:** 7.5.3 (steps 7 and 8), E13, E14, E62, AC73, S4 finding (upgrade command)
