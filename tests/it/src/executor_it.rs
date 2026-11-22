@@ -137,12 +137,50 @@ timeout = "{timeout}"
         pub(super) runbooks: std::sync::Mutex<Vec<Runbook>>,
         /// The version to sign with instead of the time.
         pub(super) version: std::sync::Mutex<Option<u64>>,
+        /// The addresses the machine takes the hub's SSH from.
+        from: Vec<String>,
+        /// Sign key updates with another key than the machine's pinned hub.
+        pub(super) forged: std::sync::atomic::AtomicBool,
+        db: Arc<Db>,
+        /// The machines revoked, in order.
+        pub(super) revoked: std::sync::Mutex<Vec<String>>,
     }
 
     impl rackhand_hub::executor::HubSide for Signer {
         fn signed_commands(&self, now_ms: i64) -> Vec<u8> {
             let version = self.version.lock().unwrap().unwrap_or(now_ms as u64);
             signed_command_list(&self.key, &self.runbooks.lock().unwrap(), version, now_ms, 600_000)
+        }
+
+        fn signed_keys(&self, now_ms: i64, body: &[u8]) -> Vec<u8> {
+            let key = if self.forged.load(std::sync::atomic::Ordering::SeqCst) {
+                SigningKey::from_bytes(&[9u8; 32])
+            } else {
+                self.key.clone()
+            };
+            let signed = rackhand_proto::signed::sign(&key, "keys", now_ms as u64, now_ms, now_ms + 600_000, body);
+            let mut out = Vec::new();
+            prost::Message::encode(&signed, &mut out).unwrap();
+            out
+        }
+
+        fn ssh_from(&self, _machine: &str) -> Vec<String> {
+            self.from.clone()
+        }
+
+        fn managed(&self, _machine: &str) -> bool {
+            true
+        }
+
+        fn revoke<'a>(&'a self, machine: &'a str) -> rackhand_hub::actions::runner::BoxFuture<'a, Result<(), String>> {
+            Box::pin(async move {
+                self.revoked.lock().unwrap().push(machine.to_string());
+                let set = Row::from([("state", Value::Text("revoked".into()))]);
+                let update =
+                    rackhand_store::RowUpdate { table: "machines", key: ("id", Value::Text(machine.into())), set };
+                let change = rackhand_store::RegistryChange { updates: vec![update], ..Default::default() };
+                self.db.writer().send(WriteCmd::RegistryChange(change)).await.map(|_| ()).map_err(|e| e.to_string())
+            })
         }
     }
 
@@ -198,6 +236,9 @@ timeout = "{timeout}"
         // The wrapper, the pinned hub key, and the command list from the runbooks, signed and installed by the wrapper.
         machine.copy_in(&container_binary("rackhand-probe", "rackhand-probe"), WRAPPER);
         sh(&machine, &format!("chown root:root {WRAPPER} && chmod 0755 {WRAPPER}"));
+        // the binary where the installer puts it, which `unenroll` runs
+        let bin = "/usr/local/lib/rackhand/rackhand-probe";
+        sh(&machine, &format!("cp {WRAPPER} {bin} && chown root:root {bin} && chmod 0755 {bin}"));
         let node = SigningKey::from_bytes(&[7u8; 32]);
         let hex: String = node.verifying_key().to_bytes().iter().map(|b| format!("{b:02x}")).collect();
         sh(&machine, &format!("printf '[hub]\\nid = \"{hex}\"\\n' > /etc/rackhand-probe/probe.toml"));
@@ -210,7 +251,8 @@ timeout = "{timeout}"
         library.save(Kind::Runbook, "reboot-now", REBOOT, "admin", 1).await.unwrap();
         let always = REBOOT.replace("reboot-now", "reboot-asked") + "always = true\n";
         library.save(Kind::Runbook, "reboot-asked", &always, "admin", 1).await.unwrap();
-        let runbooks = [PLAIN, slow.as_str(), WRAPPED, REBOOT].map(|r| Runbook::parse(r).unwrap());
+        let unenroll = rackhand_runbook::builtin::runbook("unenroll").unwrap();
+        let runbooks = [PLAIN, slow.as_str(), WRAPPED, REBOOT, unenroll].map(|r| Runbook::parse(r).unwrap());
         let now = rackhand_store::ids::now_ms();
         // versioned by the signing time in milliseconds, as the join's list is
         let payload = signed_command_list(&node, &runbooks, now as u64, now, 3_600_000);
@@ -218,6 +260,10 @@ timeout = "{timeout}"
             key: node.clone(),
             runbooks: std::sync::Mutex::new(runbooks.to_vec()),
             version: Default::default(),
+            from: vec![gateway.clone()],
+            forged: Default::default(),
+            db: db.clone(),
+            revoked: Default::default(),
         });
         let install = machine.exec(Some("rackhand"), &["sudo", "-n", WRAPPER, "install-commands"], Some(&payload));
         assert!(install.status.success(), "install-commands: {}", String::from_utf8_lossy(&install.stderr));
@@ -275,6 +321,27 @@ timeout = "{timeout}"
                 c.query_row(
                     "SELECT state, command, exit_code, stdout, stderr FROM job_steps WHERE job_id = ?1",
                     [job],
+                    |r| {
+                        Ok(StepRow {
+                            state: r.get(0)?,
+                            command: r.get(1)?,
+                            exit_code: r.get(2)?,
+                            stdout: r.get::<_, Option<Vec<u8>>>(3)?.unwrap_or_default(),
+                            stderr: r.get::<_, Option<Vec<u8>>>(4)?.unwrap_or_default(),
+                        })
+                    },
+                )
+            })
+            .unwrap()
+    }
+
+    /// The row of one step of a job.
+    fn step_of(db: &Db, job: &str, step_id: &str) -> StepRow {
+        db.readers()
+            .with(|c| {
+                c.query_row(
+                    "SELECT state, command, exit_code, stdout, stderr FROM job_steps WHERE job_id = ?1 AND step_id = ?2",
+                    [job, step_id],
                     |r| {
                         Ok(StepRow {
                             state: r.get(0)?,
@@ -670,6 +737,196 @@ timeout = "20s"
             assert_eq!((old.outcome, old.reason.as_deref()), (JobOutcome::Failed, Some("exit_code 1")), "{old:?}");
             assert!(String::from_utf8_lossy(&step(&lab.db, &old.job_id).stderr).contains("newer"));
             assert_eq!(list(&lab), kept);
+        }
+    }
+
+    /// `keys-rotate` (7.3.3, 7.3.7): the machine's hub key is replaced by one of its own, through the wrapper, and the old one
+    /// stops working.
+    mod rotation {
+        use rackhand_hub::ssh::keys::{load_for, load_or_create};
+
+        use super::*;
+
+        async fn save(lab: &Lab) {
+            let (library, _) = Library::new(lab.db.clone(), Audit::new(lab.db.writer()));
+            for name in ["keys-rotate", "sudoers-refresh"] {
+                library
+                    .save(Kind::Runbook, name, rackhand_runbook::builtin::runbook(name).unwrap(), "admin", 1)
+                    .await
+                    .unwrap();
+            }
+        }
+
+        /// Whether the machine lets `key` log in as the automation user.
+        async fn accepts(lab: &Lab, key: &russh::keys::PrivateKey) -> bool {
+            let (ip, _) = lab.machine.ip_and_gateway();
+            let addr = format!("{ip}:22").parse().unwrap();
+            let run = rackhand_hub::ssh::client::run(
+                addr,
+                "m1",
+                lab.host_keys.clone(),
+                Identity::Automation,
+                key,
+                "id -un",
+                Duration::from_secs(15),
+            )
+            .await;
+            match run {
+                Ok(out) => out.exit_code == Some(0),
+                Err(rackhand_hub::ssh::client::SshError::AuthRefused(_)) => false,
+                Err(e) => panic!("{e}"),
+            }
+        }
+
+        fn authorized(lab: &Lab, user: &str) -> String {
+            String::from_utf8_lossy(&lab.machine.root(&format!("cat /home/{user}/.ssh/authorized_keys")).stdout)
+                .to_string()
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn keys_rotate_new_key_works_old_refused() {
+            let lab = lab("rotate", "60s", Duration::from_secs(5)).await;
+            save(&lab).await;
+            let (_, gateway) = lab.machine.ip_and_gateway();
+            let hub_key = load_or_create(&lab.vault, Identity::Automation).await.unwrap();
+            let assistant = authorized(&lab, "rackhand-ai");
+            assert!(accepts(&lab, &hub_key).await);
+            let rotate = || lab.actions.run(StartJob::runbook("keys-rotate", "m1", "user:admin"));
+            let r = rotate().await.unwrap();
+            assert_eq!(
+                r.outcome,
+                JobOutcome::Succeeded,
+                "{r:?}\n{}",
+                String::from_utf8_lossy(&step(&lab.db, &r.job_id).stderr)
+            );
+            let first = load_for(&lab.vault, Identity::Automation, "m1").await.unwrap();
+            assert_ne!(first.public_key().to_openssh().unwrap(), hub_key.public_key().to_openssh().unwrap());
+            assert!(accepts(&lab, &first).await, "the new key works");
+            assert!(!accepts(&lab, &hub_key).await, "the old one is refused");
+            // the line: the new key only, from the hub's address only, no forwarding
+            let file = authorized(&lab, "rackhand");
+            let mine = first.public_key().to_openssh().unwrap();
+            let key_part = mine.split(' ').take(2).collect::<Vec<_>>().join(" ");
+            assert_eq!(file.lines().filter(|l| !l.starts_with('#')).count(), 1, "{file}");
+            assert!(file.contains(&key_part) && file.contains(&format!("from=\"{gateway}\"")), "{file}");
+            assert!(file.contains("no-agent-forwarding,no-X11-forwarding,no-port-forwarding"), "{file}");
+            assert_eq!(authorized(&lab, "rackhand-ai"), assistant, "the assistant's account isn't touched");
+            let said = String::from_utf8_lossy(&step(&lab.db, &r.job_id).stdout).to_string();
+            assert!(
+                said.contains("SHA256:") && !said.contains("PRIVATE KEY"),
+                "the log names the key, never gives it: {said}"
+            );
+            // the machine's runbooks go on working with it, and a second rotation does the same again
+            let refresh = lab.actions.run(StartJob::runbook("sudoers-refresh", "m1", "user:admin")).await.unwrap();
+            assert_eq!(refresh.outcome, JobOutcome::Succeeded, "{refresh:?}");
+            assert_eq!(rotate().await.unwrap().outcome, JobOutcome::Succeeded);
+            let second = load_for(&lab.vault, Identity::Automation, "m1").await.unwrap();
+            assert!(accepts(&lab, &second).await && !accepts(&lab, &first).await && !accepts(&lab, &hub_key).await);
+            assert_eq!(authorized(&lab, "rackhand").lines().filter(|l| !l.starts_with('#')).count(), 1);
+        }
+
+        /// A hub that isn't the one pinned on the machine can't change its keys, and the hub keeps the key it had.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn keys_rotate_refused_without_the_pinned_hubs_signature() {
+            let lab = lab("rotate-forged", "60s", Duration::from_secs(5)).await;
+            save(&lab).await;
+            let hub_key = load_or_create(&lab.vault, Identity::Automation).await.unwrap();
+            let before = authorized(&lab, "rackhand");
+            lab.signer.forged.store(true, std::sync::atomic::Ordering::SeqCst);
+            let r = lab.actions.run(StartJob::runbook("keys-rotate", "m1", "user:admin")).await.unwrap();
+            assert_eq!((r.outcome, r.reason.as_deref()), (JobOutcome::Failed, Some("exit_code 1")), "{r:?}");
+            assert!(String::from_utf8_lossy(&step(&lab.db, &r.job_id).stderr).contains("signature"));
+            assert_eq!(authorized(&lab, "rackhand"), before, "the machine's keys are as they were");
+            let kept = load_for(&lab.vault, Identity::Automation, "m1").await.unwrap();
+            assert_eq!(kept.public_key().to_openssh().unwrap(), hub_key.public_key().to_openssh().unwrap());
+            assert!(accepts(&lab, &kept).await);
+            // honest again, the same rotation goes through
+            lab.signer.forged.store(false, std::sync::atomic::Ordering::SeqCst);
+            let done = lab.actions.run(StartJob::runbook("keys-rotate", "m1", "user:admin")).await.unwrap();
+            assert_eq!(done.outcome, JobOutcome::Succeeded, "{done:?}");
+            assert!(!accepts(&lab, &hub_key).await);
+        }
+    }
+
+    /// `unenroll` (7.3.12): the machine removes what the hub put there, and only then does the hub revoke it.
+    mod unenroll {
+        use super::*;
+
+        async fn save(lab: &Lab) {
+            let (library, _) = Library::new(lab.db.clone(), Audit::new(lab.db.writer()));
+            let source = rackhand_runbook::builtin::runbook("unenroll").unwrap();
+            library.save(Kind::Runbook, "unenroll", source, "admin", 1).await.unwrap();
+        }
+
+        fn state(lab: &Lab) -> String {
+            lab.db
+                .readers()
+                .with(|c| c.query_row("SELECT state FROM machines WHERE id = 'm1'", [], |r| r.get(0)))
+                .unwrap()
+        }
+
+        fn present(lab: &Lab, test: &str) -> bool {
+            lab.machine.root(test).status.success()
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn unenroll_removes_users_keys_sudoers_list_and_revokes() {
+            let lab = lab("unenroll", "60s", Duration::from_secs(5)).await;
+            save(&lab).await;
+            sh(
+                &lab.machine,
+                "touch /etc/rackhand-keepme && mkdir -p /home/owner && useradd -m owner 2>/dev/null; true",
+            );
+            for here in [
+                "id rackhand",
+                "id rackhand-ai",
+                "test -e /etc/sudoers.d/rackhand",
+                "test -e /etc/rackhand/commands.json",
+                "test -e /home/rackhand/.ssh/authorized_keys",
+                "test -e /usr/local/lib/rackhand/run",
+            ] {
+                assert!(present(&lab, here), "{here}");
+            }
+            let r = lab.actions.run(StartJob::runbook("unenroll", "m1", "user:admin")).await.unwrap();
+            assert_eq!(
+                r.outcome,
+                JobOutcome::Succeeded,
+                "{r:?}\n{}",
+                String::from_utf8_lossy(&step(&lab.db, &r.job_id).stderr)
+            );
+            for gone in [
+                "id rackhand",
+                "id rackhand-ai",
+                "test -e /etc/sudoers.d/rackhand",
+                "test -e /etc/rackhand",
+                "test -e /etc/rackhand-probe",
+                "test -e /home/rackhand",
+                "test -e /usr/local/lib/rackhand",
+            ] {
+                assert!(!present(&lab, gone), "{gone}");
+            }
+            assert!(present(&lab, "test -e /etc/rackhand-keepme"), "what isn't Rackhand's stays");
+            assert!(present(&lab, "id owner"), "and so do other users");
+            assert!(present(&lab, "systemctl is-active ssh"), "the machine itself goes on");
+            assert_eq!(*lab.signer.revoked.lock().unwrap(), ["m1"]);
+            assert_eq!(state(&lab), "revoked");
+            let revoke = String::from_utf8_lossy(&step_of(&lab.db, &r.job_id, "revoke").stdout).to_string();
+            assert!(revoke.contains("refuses the hub's key"), "{revoke}");
+        }
+
+        /// A machine that doesn't uninstall is not revoked: the hub only revokes what it has seen stop taking its key.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn unenroll_that_fails_on_the_machine_revokes_nothing() {
+            let lab = lab("unenroll-failed", "60s", Duration::from_secs(5)).await;
+            save(&lab).await;
+            sh(&lab.machine, "rm /usr/local/lib/rackhand/rackhand-probe");
+            let r = lab.actions.run(StartJob::runbook("unenroll", "m1", "user:admin")).await.unwrap();
+            assert_eq!(r.outcome, JobOutcome::Failed, "{r:?}");
+            assert!(lab.signer.revoked.lock().unwrap().is_empty());
+            assert_eq!(state(&lab), "enrolled");
+            for here in ["id rackhand", "test -e /etc/sudoers.d/rackhand", "test -e /etc/rackhand/commands.json"] {
+                assert!(present(&lab, here), "{here}");
+            }
         }
     }
 

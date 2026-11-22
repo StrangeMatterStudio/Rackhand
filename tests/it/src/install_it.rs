@@ -417,6 +417,33 @@ mod install {
         reporting(&hub);
     }
 
+    /// 7.3.12, 7.7.3: `rackhand-probe uninstall` on the machine removes the services and files, for root only.
+    #[test]
+    fn probe_uninstall_locally_on_monitor_machine() {
+        let hub = hub("inst-uninstall");
+        let release = Release::new("uninstall", "current", false);
+        let (_, token) = add_machine(&hub, Access::Monitor, &[]);
+        let c = Container::start_systemd_with("debian-install", &[]);
+        ok(&install(&c, &hub, &release, &release.script(None), &token, "--monitor"));
+        let bin = "/usr/local/lib/rackhand/rackhand-probe";
+        let probe_user = c.exec(Some("rackhand-probe"), &[bin, "uninstall"], None);
+        assert!(!probe_user.status.success(), "the probe's own user can't");
+        assert!(String::from_utf8_lossy(&probe_user.stderr).contains("needs root"));
+        assert!(sh(&c, "ls /etc/rackhand-probe/probe.toml").contains("probe.toml"), "nothing was removed");
+        assert_eq!(sh(&c, "systemctl is-active rackhand-probe rackhand-probe-helper | sort -u"), "active");
+        let root = c.exec(None, &[bin, "uninstall"], None);
+        assert!(root.status.success(), "{}", String::from_utf8_lossy(&root.stderr));
+        let left = sh(
+            &c,
+            "ls /usr/local/lib/rackhand /etc/rackhand-probe /var/lib/rackhand-probe /var/lib/rackhand-helper \
+                /etc/systemd/system/rackhand-probe.service /etc/systemd/system/rackhand-probe-helper.service 2>/dev/null; \
+             id rackhand-probe 2>/dev/null; systemctl is-active rackhand-probe rackhand-probe-helper 2>/dev/null | grep -c '^active'",
+        );
+        assert_eq!(left, "0", "no files, no user and no running service: {left}");
+        let again = c.exec(None, &["sh", "-c", "test -e /usr/local/lib/rackhand"], None);
+        assert!(!again.status.success());
+    }
+
     #[test]
     fn bad_signature_stops_before_installing() {
         let hub = hub("inst-badsig");

@@ -33,6 +33,7 @@ pub fn main(args: &[String]) -> ExitCode {
     let rest = args.get(1..).unwrap_or(&[]);
     match args.first().map(String::as_str) {
         Some("install-commands") => install_commands(),
+        Some("install-keys") => install_keys(),
         Some("job-start") => match load_list() {
             Some(list) => detached::start(&list, rest),
             None => no_list(),
@@ -63,6 +64,32 @@ fn load_list() -> Option<matcher::CommandList> {
 fn no_list() -> ExitCode {
     eprintln!("run: no command list at {COMMANDS}");
     ExitCode::from(126)
+}
+
+/// `run install-keys` (7.3.3): the hub's key lines for the automation user, from a payload signed by the hub pinned in
+/// `probe.toml` that is newer than the last applied one and not expired. The same checks as the helper's `ApplyKeys`.
+fn install_keys() -> ExitCode {
+    use prost::Message;
+    let mut payload = Vec::new();
+    if std::io::stdin().take(64 * 1024).read_to_end(&mut payload).is_err() {
+        eprintln!("run: couldn't read the payload");
+        return ExitCode::from(2);
+    }
+    let result = rackhand_proto::common::SignedPayload::decode(payload.as_slice())
+        .map_err(|_| crate::helper::keys::KeysError::Malformed)
+        .and_then(|signed| {
+            crate::helper::keys::apply_signed(&crate::helper::keys::Files::default(), &signed, now_ms())
+        });
+    match result {
+        Ok(version) => {
+            println!("applied key update version {version}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("run: {e}");
+            ExitCode::from(1)
+        }
+    }
 }
 
 fn install_commands() -> ExitCode {

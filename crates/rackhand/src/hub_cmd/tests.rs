@@ -581,7 +581,8 @@ async fn refresh_sends_the_enabled_runbooks_signed_and_newer() {
         rackhand_hub::library::items::Library::new(db.clone(), rackhand_hub::audit::Audit::new(db.writer()));
     library.seed(rackhand_runbook::builtin::runbooks(), 1).await.unwrap();
     let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
-    let signer = joins::CommandSigner { db, signing: key.clone() };
+    let registry = rackhand_hub::registry::Registry::load(db.clone()).unwrap();
+    let signer = joins::CommandSigner { db, signing: key.clone(), addrs: Default::default(), registry };
     let (now, later) = (1_795_000_000_000i64, 1_795_000_500_000i64);
     let bytes = signer.signed_commands(now);
     let signed = rackhand_proto::common::SignedPayload::decode(bytes.as_slice()).unwrap();
@@ -600,4 +601,73 @@ async fn refresh_sends_the_enabled_runbooks_signed_and_newer() {
         rackhand_proto::signed::verify(&next, &key.verifying_key(), "commands", now as u64, later).is_ok(),
         "newer"
     );
+}
+
+/// 7.3.7, D60: a key update lets the hub in from the addresses a join gave the machine: the hub's, or loopback for a
+/// remote-mode probe; until the endpoint is up, from nowhere (the machine refuses such a payload).
+#[tokio::test(flavor = "multi_thread")]
+async fn key_updates_name_the_addresses_the_hub_connects_from() {
+    use rackhand_hub::executor::HubSide;
+    let dir = std::env::temp_dir().join(format!("rackhand-signer-from-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = Arc::new(Db::open(&dir.join("hub.db")).unwrap());
+    {
+        let c = rusqlite::Connection::open(dir.join("hub.db")).unwrap();
+        c.execute("INSERT INTO sites (id, name, timezone, is_local) VALUES ('s', 'home', 'UTC', 1)", []).unwrap();
+        for (id, mode) in [("local", "local"), ("remote", "remote")] {
+            let sql = format!(
+                "INSERT INTO machines (id, site_id, name, kind, mode, state) VALUES ('{id}', 's', '{id}', 'linux', '{mode}', 'enrolled')"
+            );
+            c.execute(&sql, []).unwrap();
+        }
+    }
+    let registry = rackhand_hub::registry::Registry::load(db.clone()).unwrap();
+    let signer = joins::CommandSigner {
+        db,
+        signing: ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]),
+        addrs: Default::default(),
+        registry,
+    };
+    assert!(signer.ssh_from("local").is_empty(), "no address known before the endpoint is up");
+    let addrs: joins::HubAddrs =
+        Arc::new(|| vec!["192.0.2.10:7443".into(), "[2001:db8::1]:7443".into(), "192.0.2.10:7444".into()]);
+    signer.addrs.set(("ab".into(), addrs)).ok().unwrap();
+    assert_eq!(signer.ssh_from("local"), ["192.0.2.10", "2001:db8::1"], "each address once, as a join gives them");
+    assert_eq!(signer.ssh_from("remote"), ["127.0.0.1", "::1"]);
+    assert_eq!(signer.ssh_from("nobody"), ["192.0.2.10", "2001:db8::1"]);
+}
+
+/// 7.3.12: what `unenroll` revokes through, and whether a machine has the hub's accounts to be checked.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_hub_revokes_through_its_registry_and_knows_which_machines_have_accounts() {
+    use rackhand_hub::executor::HubSide;
+    let dir = std::env::temp_dir().join(format!("rackhand-signer-revoke-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = Arc::new(Db::open(&dir.join("hub.db")).unwrap());
+    {
+        let c = rusqlite::Connection::open(dir.join("hub.db")).unwrap();
+        c.execute("INSERT INTO sites (id, name, timezone, is_local) VALUES ('s', 'home', 'UTC', 1)", []).unwrap();
+        for (id, access) in [("managed", "managed"), ("monitor", "monitor")] {
+            let sql = format!(
+                "INSERT INTO machines (id, site_id, name, kind, access, state) VALUES ('{id}', 's', '{id}', 'linux', '{access}', 'enrolled')"
+            );
+            c.execute(&sql, []).unwrap();
+        }
+    }
+    let registry = rackhand_hub::registry::Registry::load(db.clone()).unwrap();
+    let signer = joins::CommandSigner {
+        db: db.clone(),
+        signing: ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]),
+        addrs: Default::default(),
+        registry,
+    };
+    assert!(signer.managed("managed") && !signer.managed("monitor") && !signer.managed("nobody"));
+    signer.revoke("monitor").await.unwrap();
+    let state = |id: &str| -> String {
+        db.readers().with(|c| c.query_row("SELECT state FROM machines WHERE id = ?1", [id], |r| r.get(0))).unwrap()
+    };
+    assert_eq!((state("monitor"), state("managed")), ("revoked".to_string(), "enrolled".to_string()));
+    assert!(signer.revoke("nobody").await.is_err());
 }

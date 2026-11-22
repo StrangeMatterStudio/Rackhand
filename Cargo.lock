@@ -3761,6 +3761,7 @@ dependencies = [
  "blake3",
  "ed25519-dalek 2.2.0",
  "iroh",
+ "prost",
  "rackhand-drivers",
  "rackhand-hub",
  "rackhand-net",

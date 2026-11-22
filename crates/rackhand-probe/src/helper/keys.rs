@@ -145,16 +145,21 @@ fn applied_version(path: &Path) -> Result<u64, KeysError> {
 
 /// Applies a signed key update; returns its version.
 pub fn apply(files: &Files, payload: &str, hub_signature: &str, now_ms: i64) -> Result<u64, KeysError> {
+    let decode = |s: &str| BASE64.decode(s.as_bytes()).map_err(|_| KeysError::Malformed);
+    let signed = SignedPayload { payload: decode(payload)?, hub_signature: decode(hub_signature)? };
+    apply_signed(files, &signed, now_ms)
+}
+
+/// The same, from a decoded payload (the wrapper's `install-keys` reads it from standard input).
+pub fn apply_signed(files: &Files, signed: &SignedPayload, now_ms: i64) -> Result<u64, KeysError> {
     let config = ProbeToml::load(&files.probe_toml).map_err(|e| KeysError::Config(e.to_string()))?;
     if config.machine.as_ref().is_some_and(|m| m.access == "monitor") {
         return Err(KeysError::MonitorOnly);
     }
     let pinned =
         crate::runcmd::install::pinned_hub_key(&files.probe_toml).map_err(|e| KeysError::Config(e.to_string()))?;
-    let decode = |s: &str| BASE64.decode(s.as_bytes()).map_err(|_| KeysError::Malformed);
-    let signed = SignedPayload { payload: decode(payload)?, hub_signature: decode(hub_signature)? };
     let last = applied_version(&files.version)?;
-    let env = signed::verify(&signed, &pinned, KIND, last, now_ms).map_err(|e| match e {
+    let env = signed::verify(signed, &pinned, KIND, last, now_ms).map_err(|e| match e {
         SignedError::BadSignature | SignedError::WrongKind => KeysError::Signature,
         SignedError::Malformed => KeysError::Malformed,
         SignedError::Expired => KeysError::Expired,
@@ -235,6 +240,9 @@ mod write {
 
     /// The last applied version, written whole.
     pub fn version(path: &Path, version: u64) -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
         let part = path.with_extension("new");
         let mut f = std::fs::File::create(&part)?;
         f.write_all(format!("{version}\n").as_bytes())?;

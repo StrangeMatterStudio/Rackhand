@@ -16,7 +16,7 @@ use rackhand_runbook::runbook::{Identity as RunbookIdentity, Step, StepKind};
 use crate::actions::runner::{BoxFuture, StepCtx, StepOutcome, StepResult, StepRunner, display};
 use crate::ssh::client::{Output, SshError, run_with_input};
 use crate::ssh::hostkeys::HostKeys;
-use crate::ssh::keys::{Identity, load_or_create};
+use crate::ssh::keys::{Identity, load_for};
 use crate::ssh::quote;
 use crate::vault::Vault;
 
@@ -171,9 +171,22 @@ impl Executor {
         input: Option<&[u8]>,
         timeout: Duration,
     ) -> Result<Output, SshError> {
+        let key = load_for(&self.vault, id, &ctx.machine_id).await.map_err(|e| SshError::Transport(e.to_string()))?;
+        self.ssh_key(ctx, id, &key, line, input, timeout).await
+    }
+
+    /// The same, with this key rather than the machine's current one.
+    async fn ssh_key(
+        &self,
+        ctx: &StepCtx,
+        id: Identity,
+        key: &russh::keys::PrivateKey,
+        line: &str,
+        input: Option<&[u8]>,
+        timeout: Duration,
+    ) -> Result<Output, SshError> {
         let addr = self.addr(ctx).ok_or_else(|| SshError::Transport("the machine has no address".into()))?;
-        let key = load_or_create(&self.vault, id).await.map_err(|e| SshError::Transport(e.to_string()))?;
-        run_with_input(addr, &ctx.machine_id, self.host_keys.clone(), id, &key, line, input, timeout).await
+        run_with_input(addr, &ctx.machine_id, self.host_keys.clone(), id, key, line, input, timeout).await
     }
 
     async fn plain(&self, ctx: &StepCtx, id: Identity, argv: &[String]) -> StepResult {

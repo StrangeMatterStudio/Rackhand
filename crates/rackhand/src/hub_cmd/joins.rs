@@ -57,10 +57,15 @@ pub fn enabled_runbooks(db: &Db) -> Vec<rackhand_runbook::runbook::Runbook> {
 /// How long a command list sent by `sudoers-refresh` stays valid: it is installed at once.
 const REFRESH_COMMANDS_TTL_MS: i64 = 600_000;
 
-/// What `sudoers-refresh` sends: the command list of the enabled runbooks, signed with the node key.
+/// What the hub signs for `sudoers-refresh` and `keys-rotate`: the command list of the enabled runbooks and key updates,
+/// with the node key.
 pub struct CommandSigner {
     pub db: Arc<Db>,
     pub signing: ed25519_dalek::SigningKey,
+    /// The endpoint's id and addresses, set when it is bound.
+    pub addrs: Arc<std::sync::OnceLock<(String, HubAddrs)>>,
+    /// What `unenroll` revokes machines through.
+    pub registry: Arc<rackhand_hub::registry::Registry>,
 }
 
 impl std::fmt::Debug for CommandSigner {
@@ -70,6 +75,56 @@ impl std::fmt::Debug for CommandSigner {
 }
 
 impl rackhand_hub::executor::HubSide for CommandSigner {
+    fn signed_keys(&self, now_ms: i64, body: &[u8]) -> Vec<u8> {
+        use prost::Message;
+        rackhand_proto::signed::sign(
+            &self.signing,
+            "keys",
+            now_ms.max(0) as u64,
+            now_ms,
+            now_ms + REFRESH_COMMANDS_TTL_MS,
+            body,
+        )
+        .encode_to_vec()
+    }
+
+    fn managed(&self, machine: &str) -> bool {
+        self.db
+            .readers()
+            .with(|c| c.query_row("SELECT access FROM machines WHERE id = ?1", [machine], |r| r.get::<_, String>(0)))
+            .is_ok_and(|access| access == "managed")
+    }
+
+    fn revoke<'a>(&'a self, machine: &'a str) -> rackhand_hub::actions::runner::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            match self.registry.revoke_machine(machine).await {
+                Ok(true) => Ok(()),
+                Ok(false) => Err("no such machine".into()),
+                Err(e) => Err(e.to_string()),
+            }
+        })
+    }
+
+    /// As a join gives them: the hub's addresses (the machine's own loopback for a remote-mode probe, D60).
+    fn ssh_from(&self, machine: &str) -> Vec<String> {
+        let remote = self
+            .db
+            .readers()
+            .with(|c| c.query_row("SELECT mode FROM machines WHERE id = ?1", [machine], |r| r.get::<_, String>(0)))
+            .is_ok_and(|mode| mode == "remote");
+        if remote {
+            return vec!["127.0.0.1".into(), "::1".into()];
+        }
+        let Some((_, addrs)) = self.addrs.get() else { return Vec::new() };
+        let mut ips: Vec<String> = addrs()
+            .iter()
+            .map(|a| a.parse::<std::net::SocketAddr>().map(|s| s.ip().to_string()).unwrap_or_else(|_| a.clone()))
+            .collect();
+        ips.sort();
+        ips.dedup();
+        ips
+    }
+
     fn signed_commands(&self, now_ms: i64) -> Vec<u8> {
         // versioned by the time in milliseconds, as the list in a join is, so the machine finds it newer
         rackhand_hub::executor::commands::signed_command_list(

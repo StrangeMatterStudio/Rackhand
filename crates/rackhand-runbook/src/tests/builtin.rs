@@ -133,6 +133,8 @@ fn all_parse_and_have_design_risk() {
         ("compose-restart", Low),
         ("compose-update", Normal),
         ("sudoers-refresh", High),
+        ("keys-rotate", High),
+        ("unenroll", High),
     ];
     for (name, source) in builtin::runbooks() {
         let r = Runbook::parse(source).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -227,4 +229,33 @@ fn sudoers_refresh_sends_the_hubs_list() {
     assert_eq!(r.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), [StepKind::Hub]);
     assert_eq!(r.steps[0].call.as_deref(), Some("send_commands"));
     assert!(r.params.is_empty() && r.triggers.is_none());
+}
+
+/// `keys-rotate`: one hub step, high risk, no parameter: the hub's own keys are what changes.
+#[test]
+fn keys_rotate_is_one_hub_step() {
+    let r = Runbook::parse(builtin::runbook("keys-rotate").expect("built in")).unwrap();
+    assert_eq!((r.risk, r.autonomy), (crate::runbook::Risk::High, 1));
+    assert_eq!(r.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), [StepKind::Hub]);
+    assert_eq!(r.steps[0].call.as_deref(), Some("rotate_keys"));
+    assert!(r.params.is_empty() && r.triggers.is_none());
+    assert!(r.steps[0].needs_account());
+}
+
+/// 7.3.12: `unenroll` has the machine remove what the hub put there, scheduled so that its answer comes first, and then
+/// the hub revokes the machine; not detached (its account is gone at the end), and with no parameter.
+#[test]
+fn unenroll_uninstalls_then_revokes() {
+    let r = Runbook::parse(builtin::runbook("unenroll").expect("built in")).unwrap();
+    assert_eq!((r.risk, r.autonomy), (crate::runbook::Risk::High, 1));
+    assert_eq!(r.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), [StepKind::Ssh, StepKind::Hub]);
+    let uninstall = &r.steps[0];
+    assert_eq!(
+        uninstall.cmd.as_deref().unwrap(),
+        ["sudo", WRAPPER, "/usr/local/lib/rackhand/rackhand-probe", "uninstall", "--after", "5"]
+    );
+    assert!(!uninstall.detached, "nothing is left to poll it with");
+    assert_eq!(r.steps[1].call.as_deref(), Some("revoke"));
+    assert!(r.params.is_empty() && r.triggers.is_none());
+    assert!(!r.steps[1].needs_account(), "revoking needs no account on the machine");
 }

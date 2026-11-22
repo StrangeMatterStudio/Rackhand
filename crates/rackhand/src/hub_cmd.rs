@@ -234,8 +234,14 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let machines = Arc::new(patching::Machines { db: db.clone(), ingest: ingest.clone() });
     let node_key = rackhand_net::key::load_or_create(&config.node_key)
         .map_err(|e| format!("{}: {e}", config.node_key.display()))?;
-    let signer =
-        joins::CommandSigner { db: db.clone(), signing: ed25519_dalek::SigningKey::from_bytes(&node_key.to_bytes()) };
+    // the hub's endpoint id and addresses, set when it is bound
+    let ticket_addrs: Arc<std::sync::OnceLock<(String, joins::HubAddrs)>> = Arc::default();
+    let signer = joins::CommandSigner {
+        db: db.clone(),
+        signing: ed25519_dalek::SigningKey::from_bytes(&node_key.to_bytes()),
+        addrs: ticket_addrs.clone(),
+        registry: registry.clone(),
+    };
     let executor = rackhand_hub::executor::Executor::new(vault.clone(), host_keys.clone())
         .with_other(Arc::new(steps(&db, &vault, &notify, &ingest, &probe_server)))
         .with_hub(Arc::new(signer))
@@ -264,8 +270,6 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         trusted_proxies: config.trusted_proxies.iter().filter_map(|p| cidr(p)).collect(),
     };
     // the hub's ticket for install commands and invites, once the endpoint is up
-    type Addrs = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
-    let ticket_addrs: Arc<std::sync::OnceLock<(String, Addrs)>> = Arc::default();
     let slot = ticket_addrs.clone();
     let ticket = Arc::new(move || {
         let (id, addrs) = slot.get()?;
@@ -301,7 +305,7 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         rackhand_net::endpoint::EndpointConfig { relays: Default::default(), alpns, bind: Some(config.quic) };
     let endpoint = rackhand_net::endpoint::bind(node_key, &endpoint_config).await.map_err(|e| e.to_string())?;
     let (ep, quic) = (endpoint.clone(), config.clone());
-    let addrs = Arc::new(move || hub_addrs(&quic, &ep.addr().ip_addrs().copied().collect::<Vec<_>>()));
+    let addrs: joins::HubAddrs = Arc::new(move || hub_addrs(&quic, &ep.addr().ip_addrs().copied().collect::<Vec<_>>()));
     let id_hex: String = endpoint.id().as_bytes().iter().map(|b| format!("{b:02x}")).collect();
     let _ = ticket_addrs.set((id_hex, addrs.clone()));
     let join = joins::LazyJoin::new(db.clone(), registry.clone(), setup, addrs, joined_tx);

@@ -162,3 +162,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-22 | T61a done: five more built-in runbooks (D105) |
 | 2026-11-22 | T61b done: the helper applies signed key updates (D106) |
 | 2026-11-22 | Owner agreed to a `hub` step kind. T61c1 done: `sudoers-refresh` (D107) |
+| 2026-11-22 | T61 done: `keys-rotate`, `unenroll` and `rackhand-probe uninstall` (D108); its compose integration test moves to L4 (D109) |

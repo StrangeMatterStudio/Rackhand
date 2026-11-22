@@ -11,3 +11,5 @@ pub mod logging;
 pub mod probe_check;
 pub mod run;
 pub mod runcmd;
+#[cfg(unix)]
+pub mod uninstall;

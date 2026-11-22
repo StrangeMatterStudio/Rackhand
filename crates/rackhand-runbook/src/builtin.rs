@@ -9,6 +9,8 @@ const RUNBOOKS: &[(&str, &str)] = &[
     ("reboot-host", include_str!("../builtin/reboot-host.toml")),
     ("rollback", include_str!("../builtin/rollback.toml")),
     ("sudoers-refresh", include_str!("../builtin/sudoers-refresh.toml")),
+    ("keys-rotate", include_str!("../builtin/keys-rotate.toml")),
+    ("unenroll", include_str!("../builtin/unenroll.toml")),
     ("reboot", include_str!("../builtin/reboot.toml")),
     ("snapshot", include_str!("../builtin/snapshot.toml")),
     ("service-restart", include_str!("../builtin/service-restart.toml")),

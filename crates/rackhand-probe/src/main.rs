@@ -9,7 +9,8 @@ const USAGE: &str = "usage: rackhand-probe --version
        rackhand-probe collect --once --json [--root <dir>] [--interval-ms <n>]
        rackhand-probe run [--config <probe.toml>] [--data-dir <dir>] [--state-file <path>] [--root <dir>]
        rackhand-probe helper [--socket <path>]
-       rackhand-probe enroll --ticket <ticket> --token <token> [--monitor] [--remote] [--role <role>]";
+       rackhand-probe enroll --ticket <ticket> --token <token> [--monitor] [--remote] [--role <role>]
+       rackhand-probe uninstall [--after <seconds>]";
 
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
@@ -32,6 +33,8 @@ fn main() -> ExitCode {
         Some("run") => run(&args[1..]),
         #[cfg(unix)]
         Some("enroll") => enroll(&args[1..]),
+        #[cfg(unix)]
+        Some("uninstall") => uninstall(&args[1..]),
         #[cfg(target_os = "linux")]
         Some("helper") => helper(&args[1..]),
         _ => {
@@ -178,6 +181,43 @@ fn enroll(args: &[String]) -> ExitCode {
         }
         Err(e) => {
             eprintln!("rackhand-probe enroll: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// `uninstall [--after <seconds>]` (7.3.12); `--delay` is the copy that `--after` starts.
+#[cfg(unix)]
+fn uninstall(args: &[String]) -> ExitCode {
+    let (mut after, mut delayed) = (None, false);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--after" | "--delay" => {
+                let Some(n) = it.next().and_then(|v| v.parse::<u64>().ok()).filter(|n| *n <= 3600) else {
+                    eprintln!("{USAGE}");
+                    return ExitCode::from(2);
+                };
+                (after, delayed) = (Some(n), a == "--delay");
+            }
+            _ => {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let options = rackhand_probe::uninstall::Options { root: "/".into(), after, delayed };
+    match rackhand_probe::uninstall::uninstall(&options, &rackhand_probe::uninstall::System) {
+        Ok(()) if after.is_some() && !delayed => {
+            println!("rackhand-probe: uninstall in {} seconds", after.unwrap_or(0));
+            ExitCode::SUCCESS
+        }
+        Ok(()) => {
+            println!("rackhand-probe: uninstalled");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("rackhand-probe: {e}");
             ExitCode::from(1)
         }
     }
