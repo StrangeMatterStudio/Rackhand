@@ -4881,6 +4881,8 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 
 ## Follow-ups (out of scope)
 
+- Review the Feodo Tracker default (S10: nearly empty when checked) after the first release (owner, 2026-11-21).
+- The iroh segmentation-offload loss (D64): not raised upstream for now (owner, 2026-11-21); the workaround stays.
 - A self-hosted Windows runner, which would move AC35 (Windows) and AC56 from manual to automated (D81).
 - A Windows VM in the local lab (an evaluation image with an unattended install), so the run could do MV16's
   checklist itself.
