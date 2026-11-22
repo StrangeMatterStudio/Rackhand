@@ -18,7 +18,7 @@
 <header class="head">
 <a class="btn ghost menu-btn" href="#side" aria-label="Menu{% if shell.incidents + shell.approvals > 0 %}: {{ shell.incidents }} open incidents, {{ shell.approvals }} approvals waiting{% endif %}">{{ crate::web::ui::icon("menu")|safe }}{% if shell.incidents + shell.approvals > 0 %}<span class="count" aria-hidden="true">{{ shell.incidents + shell.approvals }}</span>{% endif %}</a>
 <a class="brand" href="/" aria-label="Rackhand, overview">{{ crate::web::ui::MARK|safe }}<span>Rackhand</span></a>
-<a class="btn search" href="/find" data-palette>{{ crate::web::ui::icon("search")|safe }}<span class="long">Find a machine, incident or page</span><kbd><span data-ctrl>Ctrl</span> K</kbd></a>
+<a class="btn search" href="/find" data-palette aria-label="Find a machine, incident or page">{{ crate::web::ui::icon("search")|safe }}<span class="long">Find a machine, incident or page</span><kbd><span data-ctrl>Ctrl</span> K</kbd></a>
 <details class="menu" data-menu>
 <summary class="btn pill" aria-label="Account, {{ shell.user }}"><span class="avatar" aria-hidden="true">{{ shell.initial() }}</span><span class="name">{{ shell.user }}</span>{{ crate::web::ui::icon("keyboard_arrow_down")|safe }}</summary>
 <div class="menu-body">

@@ -322,7 +322,9 @@ impl Form {
             // typed again: needed whenever the first one was typed
             if !s.same.is_empty() {
                 let first = self.value(s.same).to_string();
-                if value.is_empty() && (self.kept.contains_key(s.same) && first.is_empty() || self.recalled.contains(&s.same)) {
+                if value.is_empty()
+                    && (self.kept.contains_key(s.same) && first.is_empty() || self.recalled.contains(&s.same))
+                {
                     continue;
                 }
                 if !first.is_empty() && value.is_empty() {

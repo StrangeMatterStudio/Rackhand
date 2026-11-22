@@ -159,9 +159,8 @@ fn shortcuts(web: &Web, ctx: &Ctx) -> Response<Body> {
 
 /// Which hub this is: a page that was open while it was updated notices by it.
 fn version() -> Response<Body> {
-    let mut resp = Response::new(Body::from(
-        serde_json::json!({ "version": ui::VERSION, "build": ui::build() }).to_string(),
-    ));
+    let mut resp =
+        Response::new(Body::from(serde_json::json!({ "version": ui::VERSION, "build": ui::build() }).to_string()));
     resp.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
     resp
 }

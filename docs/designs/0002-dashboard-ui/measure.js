@@ -1,12 +1,14 @@
 // Measures the dashboard's pages in a browser: every page and dialog at every width, for what doesn't fit, is cut off, or
 // is too small to touch. Pages come from the test `pages_for_measuring` (RACKHAND_PAGES=<dir>), served by any static
-// server with this file beside them; run `await measure()` in a page of that server.
-window.measure = async function (widths, only) {
+// server with this file beside them; run `await measure()` in a page of that server, and
+// `await measure(null, null, true)` for the same with the pages' scripts off.
+window.measure = async function (widths, only, noScript) {
   widths = widths || [320, 360, 390, 430, 600, 640, 641, 720, 820, 860, 861, 1024, 1180, 1181, 1280, 1440, 1680, 1920, 2560];
   var pages = only || await (await fetch("pages.json")).json();
   var bad = [], screens = 0, controls = 0;
   var frame = document.createElement("iframe");
   frame.style.cssText = "position:absolute;left:0;top:0;border:0;visibility:hidden";
+  if (noScript) { frame.sandbox = "allow-same-origin"; }
   document.body.appendChild(frame);
   function load(url) {
     return new Promise(function (done) { frame.onload = function () { done(); }; frame.src = url; });

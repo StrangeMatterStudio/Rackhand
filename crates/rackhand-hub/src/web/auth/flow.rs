@@ -102,7 +102,10 @@ fn known_device(web: &Web, ctx: &Ctx, account: Option<&Account>) -> Option<Strin
 }
 
 fn password_form(web: &Web, ctx: &Ctx, code: StatusCode, form: Form) -> Response<Body> {
-    html(code, PasswordForm { theme: ui::theme(ctx), csrf: &ctx.csrf, form, oidc: super::oidc::configured(web) }.render())
+    html(
+        code,
+        PasswordForm { theme: ui::theme(ctx), csrf: &ctx.csrf, form, oidc: super::oidc::configured(web) }.render(),
+    )
 }
 
 pub(crate) fn password_page(web: &Web, ctx: &Ctx) -> Response<Body> {
@@ -202,7 +205,14 @@ fn sign_in_code_form(web: &Web, ctx: &Ctx, code: StatusCode, form: Form) -> Resp
     let Some((_, pending)) = pending_of(web, ctx) else { return redirect("/sign-in") };
     let account = users::find(&web.0.db, &pending.name).ok().flatten();
     let passkey = passkey_choice(web, account.as_ref(), "/sign-in/passkey/options", "/sign-in/passkey");
-    let page = CodeForm { theme: ui::theme(ctx), csrf: &ctx.csrf, action: "/sign-in/code", title: "Authenticator code", form, passkey };
+    let page = CodeForm {
+        theme: ui::theme(ctx),
+        csrf: &ctx.csrf,
+        action: "/sign-in/code",
+        title: "Authenticator code",
+        form,
+        passkey,
+    };
     html(code, page.render())
 }
 

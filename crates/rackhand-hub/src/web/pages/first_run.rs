@@ -158,7 +158,11 @@ fn key(ctx: &Ctx) -> String {
 }
 
 fn details_page(ctx: &Ctx, code: StatusCode, form: Form) -> Response<Body> {
-    html(code, DetailsPage { theme: ui::theme(ctx), csrf: &ctx.csrf, form: form.options(forms::ZONE, forms::timezones()) }.render())
+    html(
+        code,
+        DetailsPage { theme: ui::theme(ctx), csrf: &ctx.csrf, form: form.options(forms::ZONE, forms::timezones()) }
+            .render(),
+    )
 }
 
 pub(super) fn form(web: &Web, ctx: &Ctx) -> Response<Body> {
@@ -392,5 +396,8 @@ pub(super) async fn factor_submit(web: &Web, ctx: &Ctx) -> Response<Body> {
     if let Err(e) = web.0.audit.append(name, "first_run.completed", Some(site), &data).await {
         tracing::error!(error = %e, "audit");
     }
-    html(StatusCode::OK, Done { theme: ui::theme(ctx), admin: name, site, recovery_code: &web.0.recovery_code }.render())
+    html(
+        StatusCode::OK,
+        Done { theme: ui::theme(ctx), admin: name, site, recovery_code: &web.0.recovery_code }.render(),
+    )
 }

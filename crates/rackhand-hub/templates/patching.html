@@ -41,7 +41,7 @@
 {% endfor %}</tbody></table>{% endif %}</section>
 <section class="card list"><div class="bar"><h2>Maintenance windows</h2></div>{% if windows.is_empty() %}<p class="empty">No windows yet. Nothing is patched by itself without one.</p>{% else %}
 <table><thead><tr><th scope="col">For</th><th scope="col">When</th><th scope="col">Timezone</th></tr></thead><tbody>
-{% for w in windows %}<tr><td class="t"><b>{% if let Some(m) = w.machine_id %}{{ m }}{% endif %}{% if let Some(t) = w.tag %}tag {{ t }}{% endif %}</b></td><td data-label="When" title="{{ w.rrule }}">{{ said(w.rrule) }}</td><td data-label="Timezone">{{ w.timezone }}</td></tr>
+{% for w in windows %}<tr><td class="t"><b>{% if let Some(m) = w.machine_id %}{{ machine_name(m) }}{% endif %}{% if let Some(t) = w.tag %}tag {{ t }}{% endif %}</b></td><td data-label="When" title="{{ w.rrule }}">{{ said(w.rrule) }}</td><td data-label="Timezone">{{ w.timezone }}</td></tr>
 {% endfor %}</tbody></table>{% endif %}</section>
 <section class="card list"><div class="bar"><h2>Last patch jobs</h2></div>{% if runs.is_empty() %}<p class="empty">No patch jobs yet.</p>{% else %}<div class="rows">{% for r in runs %}<a class="row" href="/jobs/{{ r.id }}"><span><b>{{ r.name }}</b><small>On {{ r.target }}</small></span>{{ crate::web::ui::badge(r.state)|safe }}</a>{% endfor %}</div>{% endif %}</section>
 </div></div>

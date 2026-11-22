@@ -1,6 +1,6 @@
 # Dashboard UI, part 2: proposal
 
-Status: Proposed, second pass, waiting on the owner. Nothing here is built yet except where it says so.
+Status: Accepted by the owner on 2026-11-22 with the recommended answers; built, see [part-2-pages.md](part-2-pages.md).
 
 2026-11-22, the owner on the first pass: "Looks a lot better. Be sure to optimize for mobile and desktop though. Do
 another pass." The section "Phones and desktops" is that pass.

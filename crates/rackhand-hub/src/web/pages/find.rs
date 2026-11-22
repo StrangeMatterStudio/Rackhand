@@ -49,11 +49,13 @@ pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
             icon: "computer",
         }));
         let incidents = super::monitoring::open_incidents(web);
-        found.extend(incidents.into_iter().filter(|i| ui::found(&q, &[&i.title, &i.machine])).take(MOST).map(|i| Found {
-            href: format!("/incidents/{}", i.id),
-            name: i.title,
-            what: format!("Incident on {}", i.machine),
-            icon: "warning",
+        found.extend(incidents.into_iter().filter(|i| ui::found(&q, &[&i.title, &i.machine])).take(MOST).map(|i| {
+            Found {
+                href: format!("/incidents/{}", i.id),
+                name: i.title,
+                what: format!("Incident on {}", i.machine),
+                icon: "warning",
+            }
         }));
     }
     html(StatusCode::OK, FindPage { shell, q, found }.render())

@@ -141,7 +141,17 @@ async fn every_page_has_the_shell() {
         for (i, _) in html.match_indices("<button") {
             let button = &html[i..i + html[i..].find("</button>").unwrap()];
             let open = &button[..button.find('>').unwrap()];
-            assert!(open.contains("aria-label") || !plain(&format!("{button}</button>")).is_empty(), "{path}: {button}");
+            assert!(
+                open.contains("aria-label") || !plain(&format!("{button}</button>")).is_empty(),
+                "{path}: {button}"
+            );
+        }
+        // (what the phone's header shows as icons only)
+        for class in ["menu-btn", "brand", "search", "pill"] {
+            let header = block(&html, "<header", "</header>");
+            let at = header.find(&format!("{class}\"")).unwrap_or_else(|| panic!("{path}: {class}"));
+            let open = &header[header[..at].rfind('<').unwrap()..];
+            assert!(open[..open.find('>').unwrap()].contains("aria-label"), "{path}: {class} has a name");
         }
         for (i, _) in html.match_indices("<svg") {
             let open = &html[i..i + html[i..].find('>').unwrap()];
@@ -205,10 +215,14 @@ async fn the_theme_is_chosen_per_browser() {
     }
     let csrf = csrf_of(&app, &admin).await;
     let resp =
-        send(&app.router, post("/theme", &admin, &[("csrf", csrf.as_str()), ("theme", "dark"), ("back", "/audit")])).await;
+        send(&app.router, post("/theme", &admin, &[("csrf", csrf.as_str()), ("theme", "dark"), ("back", "/audit")]))
+            .await;
     assert_eq!((resp.status(), location(&resp).as_deref()), (StatusCode::SEE_OTHER, Some("/audit")));
     let cookie = set_cookie(&resp, "rh_theme").expect("kept in a cookie");
-    assert!(cookie.starts_with("rh_theme=dark;") && cookie.contains("HttpOnly") && cookie.contains("Secure"), "{cookie}");
+    assert!(
+        cookie.starts_with("rh_theme=dark;") && cookie.contains("HttpOnly") && cookie.contains("Secure"),
+        "{cookie}"
+    );
     let html = see(&app, "/", &format!("{admin}; rh_theme=dark")).await;
     assert!(block(&html, "<html", ">").contains("data-theme=\"dark\""));
     // before anyone has signed in too, and nothing else from the cookie reaches the page
@@ -288,23 +302,34 @@ fn every_color_pair_can_be_read_in_both_themes() {
 async fn lists_inform_and_dialogs_change() {
     let (app, admin) = ready("shell-lists").await;
     machine(&app, "01JD0000000000000000000001", "web1").await;
-    submit(&app, &admin, "/settings/users", &[
-        ("name", "kit"),
-        ("role", "viewer"),
-        ("auth", "local"),
-        ("password", "a long enough secret"),
-        ("password_again", "a long enough secret"),
-    ])
+    submit(
+        &app,
+        &admin,
+        "/settings/users",
+        &[
+            ("name", "kit"),
+            ("role", "viewer"),
+            ("auth", "local"),
+            ("password", "a long enough secret"),
+            ("password_again", "a long enough secret"),
+        ],
+    )
     .await;
-    submit(&app, &admin, "/policies", &[
-        ("name", "web-servers"),
-        ("patch", "auto"),
-        ("snapshot", "required"),
-        ("quarantine", "approval"),
-        ("peer_requests", "approval"),
-    ])
+    submit(
+        &app,
+        &admin,
+        "/policies",
+        &[
+            ("name", "web-servers"),
+            ("patch", "auto"),
+            ("snapshot", "required"),
+            ("quarantine", "approval"),
+            ("peer_requests", "approval"),
+        ],
+    )
     .await;
-    for path in ["/", "/incidents", "/jobs", "/library", "/patching", "/add", "/audit", "/users", "/settings/notifiers"] {
+    for path in ["/", "/incidents", "/jobs", "/library", "/patching", "/add", "/audit", "/users", "/settings/notifiers"]
+    {
         let html = see(&app, path, &admin).await;
         for (i, _) in html.match_indices("<tr") {
             let row = &html[i..i + html[i..].find("</tr>").unwrap()];
@@ -582,7 +607,8 @@ async fn a_window_is_picked_from_day_time_and_length() {
         ("timezone", "Europe/Berlin"),
     ];
     assert_eq!(submit(&app, &admin, "/windows", &window).await.0, StatusCode::SEE_OTHER);
-    let daily = [("for", "tag"), ("tag", "web"), ("repeat", "daily"), ("start", "23:30"), ("lasts", "60"), ("timezone", "UTC")];
+    let daily =
+        [("for", "tag"), ("tag", "web"), ("repeat", "daily"), ("start", "23:30"), ("lasts", "60"), ("timezone", "UTC")];
     assert_eq!(submit(&app, &admin, "/windows", &daily).await.0, StatusCode::SEE_OTHER);
     let rules: Vec<String> = app
         .db
@@ -594,9 +620,22 @@ async fn a_window_is_picked_from_day_time_and_length() {
         })
         .unwrap();
     assert_eq!(rules, ["daily 23:30 60m", "weekly sun 03:00 120m"]);
+    machine(&app, "01JD0000000000000000000009", "nas9").await;
+    let one = [
+        ("for", "machine"),
+        ("machine", "01JD0000000000000000000009"),
+        ("repeat", "fri"),
+        ("start", "22:00"),
+        ("lasts", "240"),
+        ("timezone", "UTC"),
+    ];
+    assert_eq!(submit(&app, &admin, "/windows", &one).await.0, StatusCode::SEE_OTHER);
     let html = see(&app, "/patching", &admin).await;
     assert!(html.contains("Sundays, 03:00 to 05:00"), "said as a person would: {html}");
-    let bad = [("for", "tag"), ("tag", ""), ("repeat", "sometimes"), ("start", "25:00"), ("lasts", "7"), ("timezone", "")];
+    let row = html.split("<tr").find(|r| r.contains("Fridays, 22:00 to 02:00 the next day")).expect("the third window");
+    assert_eq!(cells(row)[0], "nas9", "a machine by its name");
+    let bad =
+        [("for", "tag"), ("tag", ""), ("repeat", "sometimes"), ("start", "25:00"), ("lasts", "7"), ("timezone", "")];
     let (code, html) = submit(&app, &admin, "/windows", &bad).await;
     assert_eq!(code, StatusCode::BAD_REQUEST);
     for name in ["tag", "repeat", "start", "lasts", "timezone"] {
@@ -648,4 +687,193 @@ async fn what_an_approval_runs_is_never_broken_inside_a_word() {
     let html = see(&app, &format!("/approvals?confirm=reject:{id}"), &admin).await;
     let dialog = block(&html, "<dialog", "</dialog>");
     assert!(dialog.contains(&format!("action=\"/approvals/{id}/reject\"")) && dialog.contains("Keep it waiting"));
+}
+
+/// Writes every page and dialog as files, with data that looks real, for the script that measures them in a browser
+/// (`docs/designs/0002-dashboard-ui/measure.js`): `RACKHAND_PAGES=<dir> cargo nextest run ... pages_for_measuring`.
+#[tokio::test(flavor = "multi_thread")]
+async fn pages_for_measuring() {
+    let (app, admin) = ready("shell-measure").await;
+    let long = "a-database-server-with-quite-a-long-name.storage.example";
+    for (i, name) in ["web1", "web2", long, "nas1", "pve1", "dns1", "desk1", "switch1"].into_iter().enumerate() {
+        machine(&app, &format!("01JD000000000000000000000{i}"), name).await;
+    }
+    for (i, (severity, state, title)) in [
+        ("critical", "open", "Disk /var/lib/containers fills in about 9 hours"),
+        ("warning", "open", "nginx.service keeps restarting"),
+        ("warning", "resolved", "No report from the machine"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut row = Row::from([
+            ("id", Value::Text(format!("01JD00000000000000000000I{i}"))),
+            ("machine_id", Value::Text(format!("01JD000000000000000000000{i}"))),
+            ("rule_id", Value::Text("x".into())),
+            ("dedupe_key", Value::Text(format!("x{i}"))),
+            ("kind", Value::Text("x".into())),
+            ("severity", Value::Text(severity.into())),
+            ("state", Value::Text(state.into())),
+            ("title", Value::Text(title.into())),
+            ("opened_at", Value::Integer(now_ms() - 7_200_000)),
+        ]);
+        if state == "resolved" {
+            row.insert("resolved_at", Value::Integer(now_ms()));
+        }
+        insert(&app, "incidents", row).await;
+    }
+    let request = crate::policy::approvals::ApprovalRequest {
+        requester: "job:01JASSISTANTJOBAAAAAAAAAAA".into(),
+        tool: "exec".into(),
+        target: Some(long.into()),
+        args: serde_json::json!({ "command": "systemctl restart nginx.service && systemctl is-active --quiet nginx.service" }),
+        runbook_rev: Some(3),
+        risk: rackhand_runbook::runbook::Risk::Normal,
+        step_up: false,
+        reason: "nginx keeps failing its health check, and a restart cleared it twice this week".into(),
+    };
+    let approval =
+        crate::policy::approvals::Approvals::new(app.db.clone()).create(&request, now_ms(), 3_600_000).await.unwrap();
+    for (n, state) in [("patch-debian", "running"), ("restart-web", "failed"), ("reboot", "succeeded")] {
+        insert(
+            &app,
+            "jobs",
+            Row::from([
+                ("id", Value::Text(format!("01JJOB{n}").replace('-', ""))),
+                ("kind", Value::Text("runbook".into())),
+                ("name", Value::Text(n.into())),
+                ("target", Value::Text(long.into())),
+                ("state", Value::Text(state.into())),
+                ("requested_by", Value::Text("admin".into())),
+                ("started_at", Value::Integer(now_ms())),
+            ]),
+        )
+        .await;
+    }
+    let user: String =
+        app.db.readers().with(|c| c.query_row("SELECT id FROM users WHERE name = 'admin'", [], |r| r.get(0))).unwrap();
+    insert(
+        &app,
+        "devices",
+        Row::from([
+            ("id", Value::Text("d1".into())),
+            ("user_id", Value::Text(user.clone())),
+            ("name", Value::Text("a laptop with a long name of its own".into())),
+            ("endpoint_id", Value::Text("e".repeat(64))),
+            ("created_at", Value::Integer(1)),
+        ]),
+    )
+    .await;
+    for (path, fields) in [
+        (
+            "/policies",
+            vec![
+                ("name", "web-servers"),
+                ("patch", "auto"),
+                ("auto_reboot", "on"),
+                ("snapshot", "required"),
+                ("quarantine", "approval"),
+                ("peer_requests", "approval"),
+            ],
+        ),
+        (
+            "/windows",
+            vec![
+                ("for", "tag"),
+                ("tag", "web"),
+                ("repeat", "sun"),
+                ("start", "03:00"),
+                ("lasts", "120"),
+                ("timezone", "Europe/Berlin"),
+            ],
+        ),
+        (
+            "/settings/notifiers",
+            vec![("kind", "discord"), ("name", "ops"), ("webhook", "https://discord.example.test/api/webhooks/1/x")],
+        ),
+        ("/settings/git-mirror", vec![("url", "ssh://git@git.example.test/homelab/rackhand.git")]),
+        (
+            "/library/config/checks",
+            vec![("content", "[[check]]\nname = \"web\"\nkind = \"tcp\"\ntarget = \"192.0.2.20:22\"\n")],
+        ),
+    ] {
+        assert_eq!(submit(&app, &admin, path, &fields).await.0, StatusCode::SEE_OTHER, "{path}");
+    }
+    let mut pages: Vec<(String, String, String)> = Vec::new();
+    let at = |name: &str, path: &str| (name.to_string(), path.to_string(), admin.clone());
+    for (path, heading) in PAGES {
+        pages.push(at(&heading.to_lowercase().replace(' ', "-"), path));
+    }
+    for (name, path) in [
+        ("machine", "/machines/01JD0000000000000000000002".to_string()),
+        ("site", "/sites/home".into()),
+        ("incident", "/incidents/01JD00000000000000000000I0".into()),
+        ("job", "/jobs/01JJOBrestartweb".into()),
+        ("library-item", "/library/config/checks".into()),
+        ("library-edit", "/library/config/checks?write=1".into()),
+        ("step-up", "/step-up".into()),
+        ("find", "/find?q=web".into()),
+        ("not-found", "/nowhere".into()),
+        ("dialog-user", "/users?add=user".into()),
+        ("dialog-edit-user", format!("/users?edit={user}")),
+        ("dialog-disable", format!("/users?confirm=disable:{user}")),
+        ("dialog-policy", "/patching?add=policy".into()),
+        ("dialog-window", "/patching?add=window".into()),
+        ("dialog-discord", "/settings/notifiers?add=discord".into()),
+        ("dialog-smtp", "/settings/notifiers?add=smtp".into()),
+        ("dialog-machine", "/add?add=machine".into()),
+        ("dialog-proxmox", "/add?add=proxmox".into()),
+        ("dialog-device", "/add?add=device".into()),
+        ("dialog-reject", format!("/approvals?confirm=reject:{approval}")),
+        ("none-found", "/?q=nothing+like+it".into()),
+    ] {
+        pages.push((name.into(), path, admin.clone()));
+    }
+    pages.push(("sign-in".into(), "/sign-in".into(), String::new()));
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (name, path, cookie) in pages {
+        let html = text(send(&app.router, get(&path, &cookie)).await).await;
+        assert!(html.contains("</html>"), "{path}");
+        out.push((name, html));
+    }
+    // refused forms, with every message on
+    let bad = [("name", "al ice"), ("role", "owner"), ("auth", "local"), ("password", "short")];
+    out.push(("refused-user".into(), submit(&app, &admin, "/settings/users", &bad).await.1));
+    let bad = [("for", "tag"), ("repeat", "x"), ("start", "25:00"), ("lasts", "7")];
+    out.push(("refused-window".into(), submit(&app, &admin, "/windows", &bad).await.1));
+    let good = [
+        ("name", "kit"),
+        ("role", "viewer"),
+        ("auth", "local"),
+        ("password", "a long enough secret"),
+        ("password_again", "a long enough secret"),
+    ];
+    out.push(("user-created".into(), submit(&app, &admin, "/settings/users", &good).await.1));
+    let machine = [("name", "web9"), ("os", "linux"), ("access", "managed"), ("mode", "local")];
+    out.push(("install-command".into(), submit(&app, &admin, "/add/machine", &machine).await.1));
+    // first run
+    let fresh = app_with("shell-measure-first", |w| w).await;
+    let opened = open_first_run(&fresh).await;
+    out.push(("first-run".into(), see(&fresh, "/first-run", &opened.0).await));
+    let refused = post(
+        "/first-run",
+        &opened.0,
+        &[("csrf", opened.1.as_str()), ("setup_code", "SETUP-NOPE"), ("admin_name", "Alex Smith")],
+    );
+    out.push(("first-run-refused".into(), text(send(&fresh.router, refused).await).await));
+    submit_details(&fresh, &opened, SETUP_CODE).await;
+    out.push(("first-run-factor".into(), see(&fresh, "/first-run/second-factor", &opened.0).await));
+    let key = second_factor_key(&fresh, &opened).await;
+    out.push(("first-run-done".into(), text(submit_second_factor(&fresh, &opened, &key, now_ms()).await).await));
+    let Some(dir) = std::env::var_os("RACKHAND_PAGES").map(std::path::PathBuf::from) else { return };
+    std::fs::create_dir_all(dir.join("static/vendor")).unwrap();
+    let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("static");
+    for file in ["app.css", "app.js", "forms.js", "passkey.js", "icon.svg", "vendor/htmx-2.0.11.min.js"] {
+        std::fs::copy(assets.join(file), dir.join("static").join(file)).unwrap();
+    }
+    for (name, html) in &out {
+        std::fs::write(dir.join(format!("{name}.html")), html).unwrap();
+    }
+    let names: Vec<&String> = out.iter().map(|(n, _)| n).collect();
+    std::fs::write(dir.join("pages.json"), serde_json::to_string(&names).unwrap()).unwrap();
 }

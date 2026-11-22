@@ -104,7 +104,9 @@ pub(super) fn detail(web: &Web, ctx: &Ctx) -> Response<Body> {
         Ok(Some((job, steps)))
     });
     match found {
-        Ok(Some((run, steps))) => html(StatusCode::OK, Detail { shell: Shell::new(web, ctx, &run.name), run, steps }.render()),
+        Ok(Some((run, steps))) => {
+            html(StatusCode::OK, Detail { shell: Shell::new(web, ctx, &run.name), run, steps }.render())
+        }
         Ok(None) => status(StatusCode::NOT_FOUND, "No such job"),
         Err(e) => {
             tracing::error!(error = %e, "job");

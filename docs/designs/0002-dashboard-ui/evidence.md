@@ -1,4 +1,4 @@
-# Evidence, part 1
+# Evidence
 
 Run on 2026-11-22 with `cargo nextest run -p rackhand-hub`, trimmed to the result lines.
 
@@ -65,5 +65,26 @@ FAIL web::tests::forms::the_rules_shown_are_the_rules_kept                   (a 
 | `cargo xtask ci fast` (fmt, clippy with warnings denied, dependency rules, `cargo deny`, tests) | 550 passed, 1 skipped (`xtask` test marked `ignore` before this branch: it builds the workspace twice) |
 | `cargo xtask arch-check` | no violations |
 | The built hub walked over HTTPS with curl, trusting its own certificate: every problem at once, a wrong then a right setup code, the password kept and not sent back, a wrong then a right authenticator code, the recovery code once | as designed |
-| The same in a browser, with screenshots | not yet: the browser refuses the hub's own certificate until a person continues past it |
+| The same in a browser, with the part 1 build, 2026-11-22: checks while typing, the timezone preselected, four problems at once, setup code accepted and password kept, QR code, copy button, a wrong code with the same key, the right code, the recovery code; desktop and phone width | as designed; screenshots with the owner |
 | Integration tier, lab deploy, live tier | compiled only |
+
+## Part 2, before
+```
+FAIL [   0.013s] ( 1/16) rackhand-hub web::tests::shell::every_color_pair_can_be_read_in_both_themes
+FAIL [   0.093s] ( 2/16) rackhand-hub web::tests::shell::what_an_approval_runs_is_never_broken_inside_a_word
+FAIL [   0.096s] ( 3/16) rackhand-hub web::tests::shell::shortcuts_come_from_one_table
+FAIL [   0.097s] ( 4/16) rackhand-hub web::tests::shell::stepping_up_returns_to_what_asked_for_it
+FAIL [   0.098s] ( 5/16) rackhand-hub web::tests::shell::the_shell_offers_only_what_the_role_can_open
+FAIL [   0.098s] ( 6/16) rackhand-hub web::tests::shell::every_removal_asks_with_the_safe_choice_first
+FAIL [   0.102s] ( 7/16) rackhand-hub web::tests::shell::fields_that_depend_on_a_choice_say_so
+FAIL [   0.103s] ( 8/16) rackhand-hub web::tests::shell::a_window_is_picked_from_day_time_and_length
+FAIL [   0.103s] ( 9/16) rackhand-hub web::tests::shell::the_theme_is_chosen_per_browser
+FAIL [   0.104s] (10/16) rackhand-hub web::tests::shell::dialogs_have_addresses_and_come_drawn_open
+FAIL [   0.104s] (11/16) rackhand-hub web::tests::shell::errors_are_shown_in_the_shell
+FAIL [   0.104s] (12/16) rackhand-hub web::tests::shell::every_page_has_the_shell
+FAIL [   0.104s] (13/16) rackhand-hub web::tests::shell::the_version_is_shown_and_an_update_can_be_noticed
+FAIL [   0.108s] (14/16) rackhand-hub web::tests::shell::lists_are_searched_by_the_hub_too
+FAIL [   0.130s] (15/16) rackhand-hub web::tests::shell::lists_inform_and_dialogs_change
+FAIL [   0.133s] (16/16) rackhand-hub web::tests::shell::new_passwords_are_typed_twice
+Summary [   0.139s] 16 tests run: 0 passed, 16 failed, 335 skipped
+```

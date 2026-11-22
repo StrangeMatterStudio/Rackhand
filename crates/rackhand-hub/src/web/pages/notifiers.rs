@@ -10,8 +10,8 @@ use super::{html, redirect, status};
 use crate::library::config;
 use crate::notify::config::{self as file, DiscordSpec, NotifiersFile, SmtpSpec};
 use crate::vault::Secret;
-use crate::web::ui::{self, Shell};
 use crate::web::forms::{self, Choices, Form, Spec};
+use crate::web::ui::{self, Shell};
 use crate::web::{Ctx, Web, auth};
 
 const FILE: &str = "notifiers";

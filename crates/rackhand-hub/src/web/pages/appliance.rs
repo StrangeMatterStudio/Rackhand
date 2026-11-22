@@ -18,8 +18,8 @@ use crate::registry::RegistryError;
 use crate::registry::agentless::{AddAppliance, referenced, vault_name};
 use crate::registry::tokens::Token;
 use crate::vault::Secret;
-use crate::web::ui::Shell;
 use crate::web::forms::{Choices, Form, Groups, Spec};
+use crate::web::ui::Shell;
 use crate::web::{Ctx, Web};
 
 /// A driver's form: its title, whether it is HTTPS (a certificate to accept), and its default port.
@@ -411,6 +411,10 @@ pub(super) async fn accept(web: &Web, ctx: &Ctx) -> Response<Body> {
     if let Err(e) = web.0.audit.append(&user.name, action, Some(&form.machine_id), &data.to_string()).await {
         tracing::error!(error = %e, "audit");
     }
-    let page = Done { shell: Shell::at(web, ctx, &title, "/add"), lines: vec![], note: "Rackhand checks it through its API from now on.".into() };
+    let page = Done {
+        shell: Shell::at(web, ctx, &title, "/add"),
+        lines: vec![],
+        note: "Rackhand checks it through its API from now on.".into(),
+    };
     html(StatusCode::OK, page.render())
 }

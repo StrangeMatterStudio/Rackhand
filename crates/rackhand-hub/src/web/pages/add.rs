@@ -12,8 +12,8 @@ use sha2::{Digest, Sha256};
 
 use super::{html, redirect, status};
 use crate::registry::machines::AddMachine;
-use crate::web::ui::{self, Shell};
 use crate::web::forms::{self, Choices, Form, Spec};
+use crate::web::ui::{self, Shell};
 use crate::web::{Ctx, Web};
 
 fn release_url() -> String {

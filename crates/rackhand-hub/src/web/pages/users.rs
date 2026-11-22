@@ -10,9 +10,9 @@ use rusqlite::types::Value;
 use super::{html, redirect, status};
 use crate::web::auth::password::MIN_LENGTH;
 use crate::web::auth::users::{self, NewUser, UserError};
-use crate::web::ui::{self, Confirm, Shell};
 use crate::web::forms::{self, Choices, Form, Spec};
 use crate::web::perms::{parse_role, role_name};
+use crate::web::ui::{self, Confirm, Shell};
 use crate::web::{Ctx, Web, totp};
 
 #[derive(Template)]
@@ -51,9 +51,7 @@ const USER: &[Spec] = &[
         .same("password")
         .when("auth=local")
         .attrs("autocomplete=\"new-password\""),
-    Spec::text("subject", "OIDC subject")
-        .hint("The provider's `sub` for this person.")
-        .when("auth=oidc"),
+    Spec::text("subject", "OIDC subject").hint("The provider's `sub` for this person.").when("auth=oidc"),
 ];
 
 const ROLE: &[Spec] = &[Spec::select("role", "Role", ROLES)];
@@ -129,9 +127,8 @@ fn show(web: &Web, ctx: &Ctx, code: StatusCode, sent: Option<Form>, notice: Opti
     let all = list(web, ctx);
     let devices = web.0.registry.as_ref().and_then(|r| r.devices().ok()).unwrap_or_default();
     let editing = ui::asked(ctx, "edit").and_then(|id| all.iter().find(|u| u.id == id));
-    let edit = editing.map(|u| {
-        (u.id.clone(), u.name.clone(), u.disabled, Form::blank("role", ROLE).with("role", &u.role))
-    });
+    let edit =
+        editing.map(|u| (u.id.clone(), u.name.clone(), u.disabled, Form::blank("role", ROLE).with("role", &u.role)));
     let confirm = match ui::asked(ctx, "confirm").and_then(|c| c.split_once(':')) {
         Some(("disable", id)) => all.iter().find(|u| u.id == id && !u.disabled).map(|u| Confirm {
             title: format!("Disable {}?", u.name),
@@ -221,7 +218,18 @@ pub(super) async fn create(web: &Web, ctx: &Ctx) -> Response<Body> {
     let b32 = totp::encode_base32(&secret);
     let uri = totp::uri("Rackhand", name, &secret);
     let qr = forms::qr_svg(&uri, "QR code of the key for an authenticator app");
-    html(StatusCode::OK, Created { shell: Shell::at(web, ctx, "Account created", "/users"), name, role: role_name(role), secret: &b32, uri: &uri, qr }.render())
+    html(
+        StatusCode::OK,
+        Created {
+            shell: Shell::at(web, ctx, "Account created", "/users"),
+            name,
+            role: role_name(role),
+            secret: &b32,
+            uri: &uri,
+            qr,
+        }
+        .render(),
+    )
 }
 
 /// What went wrong with one of the page's buttons, on the page.

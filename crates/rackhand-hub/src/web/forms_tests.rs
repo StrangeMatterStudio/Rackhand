@@ -234,7 +234,10 @@ async fn the_last_admin_is_explained_on_the_settings_page() {
     let cookie = format!("{}={}", session::COOKIE, session::create(&app.db, &id, now_ms()).await.unwrap());
     let (code, html) = submit(&app, &cookie, &format!("/settings/users/{id}/disable"), &[]).await;
     assert_eq!(code, StatusCode::CONFLICT);
-    assert!(html.contains("at least one enabled admin") && html.contains("<h1>Users</h1>"), "on the users page: {html}");
+    assert!(
+        html.contains("at least one enabled admin") && html.contains("<h1>Users</h1>"),
+        "on the users page: {html}"
+    );
     // each user's own role is the one shown
     let html = text(send(&app.router, get(&format!("/users?edit={id}"), &cookie)).await).await;
     assert_eq!(selected(&html, "role", "role").as_deref(), Some("admin"), "{html}");

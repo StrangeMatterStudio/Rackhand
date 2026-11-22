@@ -8,9 +8,9 @@ use axum::http::{Response, StatusCode};
 use super::{html, redirect, status};
 use crate::policy::store::{self, PolicyError, PolicyRow, WindowRow};
 use crate::scheduler::rrule::Recurrence;
-use crate::web::ui::{self, Shell};
 use crate::web::forms::{self, Choices, Form, Spec};
 use crate::web::perms::{Permission, allowed};
+use crate::web::ui::{self, Shell};
 use crate::web::{Ctx, Web};
 
 struct PatchRun {
@@ -42,6 +42,8 @@ struct Page<'a> {
     machines: Vec<MachineUpdates>,
     policies: Vec<PolicyRow>,
     windows: Vec<WindowRow>,
+    /// The machines' names, for the windows.
+    names: std::collections::HashMap<String, String>,
     runs: Vec<PatchRun>,
     can_edit: bool,
     policy: Form,
@@ -65,6 +67,10 @@ const POLICY: &[Spec] = &[
 ];
 
 impl Page<'_> {
+    fn machine_name(&self, id: &str) -> String {
+        self.names.get(id).cloned().unwrap_or_else(|| id.to_string())
+    }
+
     fn said(&self, rule: &str) -> String {
         said(rule)
     }
@@ -132,7 +138,8 @@ fn said(rule: &str) -> String {
         _ => return rule.to_string(),
     };
     let when = REPEAT.iter().find(|(v, _)| *v == day).map_or(day, |(_, l)| *l);
-    let minutes = |t: &str| t.split_once(':').and_then(|(h, m)| Some(h.parse::<u32>().ok()? * 60 + m.parse::<u32>().ok()?));
+    let minutes =
+        |t: &str| t.split_once(':').and_then(|(h, m)| Some(h.parse::<u32>().ok()? * 60 + m.parse::<u32>().ok()?));
     let (Some(from), Some(long)) = (minutes(start), lasts.trim_end_matches('m').parse::<u32>().ok()) else {
         return rule.to_string();
     };
@@ -249,7 +256,25 @@ fn show(web: &Web, ctx: &Ctx, code: StatusCode, mut sent: Option<Form>) -> Respo
     let machines = machines.into_iter().filter(|m| ui::found(&q, &[&m.name, &m.policy, &m.patch])).collect();
     let policy = blank.or_sent(&mut sent);
     let window = window_form(web).or_sent(&mut sent);
-    html(code, Page { shell: Shell::at(web, ctx, "Patching", "/patching"), q, open, csrf: &ctx.csrf, machines, policies, windows, runs, can_edit, policy, window }.render())
+    let names = machine_options(web).into_iter().flat_map(|(_, m)| m).collect();
+    html(
+        code,
+        Page {
+            names,
+            shell: Shell::at(web, ctx, "Patching", "/patching"),
+            q,
+            open,
+            csrf: &ctx.csrf,
+            machines,
+            policies,
+            windows,
+            runs,
+            can_edit,
+            policy,
+            window,
+        }
+        .render(),
+    )
 }
 
 /// The outcome of a policy or window change; a stored change also goes to the git mirror (7.3.13). A refused one shows
@@ -338,8 +363,7 @@ pub(super) async fn save_window(web: &Web, ctx: &Ctx) -> Response<Body> {
 async fn save_rule(web: &Web, ctx: &Ctx, mut form: Form, rule: &str, by: &str) -> Response<Body> {
     let f = |k: &str| ctx.form.get(k).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
     let (machine, tag, tz) = (f("machine"), f("tag"), f(forms::ZONE).unwrap_or_default());
-    let result =
-        store::put_window(&web.0.db, machine.as_deref(), tag.as_deref(), rule, &tz, by, ctx.now_ms).await;
+    let result = store::put_window(&web.0.db, machine.as_deref(), tag.as_deref(), rule, &tz, by, ctx.now_ms).await;
     if result.is_ok() {
         let data = serde_json::json!({ "machine": machine, "tag": tag, "rrule": rule, "timezone": tz });
         audit(web, ctx, "window.saved", data).await;

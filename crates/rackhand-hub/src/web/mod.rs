@@ -247,12 +247,10 @@ impl Web {
         }
         let web = self.clone();
         let other = move |req: Request<Body>| async move { web.handle(&routes::NOT_FOUND, req).await };
-        router.fallback(other).layer(
-            axum::middleware::map_response(|mut resp: Response<Body>| async move {
-                csp::apply(resp.headers_mut());
-                resp
-            }),
-        )
+        router.fallback(other).layer(axum::middleware::map_response(|mut resp: Response<Body>| async move {
+            csp::apply(resp.headers_mut());
+            resp
+        }))
     }
 
     fn admin_exists(&self) -> bool {

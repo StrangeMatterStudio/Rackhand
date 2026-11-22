@@ -206,9 +206,8 @@ pub(super) fn show_machine(web: &Web, ctx: &Ctx, id: &str, code: StatusCode, not
         }
         BindingView { state: binding_state.clone(), guests }
     });
-    let row = super::overview::machines(web, ctx.now_ms, None)
-        .ok()
-        .and_then(|all| all.into_iter().find(|m| m.id == id));
+    let row =
+        super::overview::machines(web, ctx.now_ms, None).ok().and_then(|all| all.into_iter().find(|m| m.id == id));
     let can_confirm = ctx.user.as_ref().is_some_and(|u| allowed(u.role, Permission::ConfirmBinding));
     let asked = ui::asked(ctx, "confirm").and_then(|c| c.strip_prefix("guest:"));
     let confirm = binding
@@ -356,7 +355,10 @@ pub(super) fn incidents(web: &Web, ctx: &Ctx) -> Response<Body> {
     let fits = |i: &IncidentView| ui::found(&q, &[&i.title, &i.machine, &i.severity, &i.state]);
     let open = list(true).into_iter().filter(fits).collect();
     let resolved = list(false).into_iter().filter(fits).collect();
-    html(StatusCode::OK, IncidentsPage { shell: Shell::new(web, ctx, "Incidents"), q: q.clone(), open, resolved }.render())
+    html(
+        StatusCode::OK,
+        IncidentsPage { shell: Shell::new(web, ctx, "Incidents"), q: q.clone(), open, resolved }.render(),
+    )
 }
 
 #[derive(Template)]
@@ -382,7 +384,10 @@ pub(super) fn incident(web: &Web, ctx: &Ctx) -> Response<Body> {
         Ok(Some((incident, events)))
     });
     match found {
-        Ok(Some((incident, events))) => html(StatusCode::OK, IncidentPage { shell: Shell::new(web, ctx, &incident.title), incident, events }.render()),
+        Ok(Some((incident, events))) => html(
+            StatusCode::OK,
+            IncidentPage { shell: Shell::new(web, ctx, &incident.title), incident, events }.render(),
+        ),
         Ok(None) => status(StatusCode::NOT_FOUND, "No such incident"),
         Err(_) => status(StatusCode::INTERNAL_SERVER_ERROR, "The database couldn't be read"),
     }

@@ -9,8 +9,8 @@ use super::{html, redirect, status};
 use crate::library::config::{self, GitMirror, HubConfig, Sources};
 use crate::library::mirror::DEPLOY_KEY;
 use crate::vault::Secret;
-use crate::web::ui::Shell;
 use crate::web::forms::{self, Form, Spec};
+use crate::web::ui::Shell;
 use crate::web::{Ctx, Web, auth};
 
 #[derive(Template)]
@@ -60,13 +60,7 @@ pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
 }
 
 /// The page, with the form that was refused as it was sent, or what went wrong with one of its buttons.
-fn show(
-    web: &Web,
-    ctx: &Ctx,
-    code: StatusCode,
-    mut sent: Option<Form>,
-    notice: Option<&str>,
-) -> Response<Body> {
+fn show(web: &Web, ctx: &Ctx, code: StatusCode, mut sent: Option<Form>, notice: Option<&str>) -> Response<Body> {
     let Ok(current) = config::hub(&web.0.db) else {
         return status(StatusCode::INTERNAL_SERVER_ERROR, "Settings unreadable");
     };
