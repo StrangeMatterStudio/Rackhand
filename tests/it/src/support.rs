@@ -9,9 +9,33 @@ pub fn binary(package: &str, bin: &str) -> PathBuf {
     build(package, bin, None)
 }
 
+/// The same without its symbols, as a release ships it, for a container.
+pub fn container_binary(package: &str, bin: &str) -> PathBuf {
+    stripped(&build(package, bin, None))
+}
+
 /// The same, as a static musl binary (for Alpine containers).
 pub fn musl_binary(package: &str, bin: &str) -> PathBuf {
-    build(package, bin, Some("x86_64-unknown-linux-musl"))
+    stripped(&build(package, bin, Some("x86_64-unknown-linux-musl")))
+}
+
+/// `exe` without its symbols, kept next to it for the other test processes. With them the probe is 270 MB: two dozen
+/// containers each writing a copy left the disk minutes behind, and everything that syncs (a container's systemd
+/// booting, the hub's database) waited for it.
+fn stripped(exe: &std::path::Path) -> PathBuf {
+    static STRIPPING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = STRIPPING.lock().unwrap_or_else(|e| e.into_inner());
+    let meta = std::fs::metadata(exe).unwrap_or_else(|e| panic!("{}: {e}", exe.display()));
+    let built = meta.modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    // Named for the build it came from: another build of the same path never finds it.
+    let out = exe.with_extension(format!("{built}-{}.stripped", meta.len()));
+    if !out.exists() {
+        let part = exe.with_extension(format!("{}.part", std::process::id()));
+        let strip = Command::new("strip").arg("-o").arg(&part).arg(exe).status();
+        assert!(strip.is_ok_and(|s| s.success()), "strip {}", exe.display());
+        std::fs::rename(&part, &out).unwrap();
+    }
+    out
 }
 
 /// A static musl binary built with `features`, copied out of the target directory (a later build without the
@@ -39,7 +63,7 @@ pub fn musl_binary_with(package: &str, bin: &str, features: &str) -> PathBuf {
         .find_map(|m| m["executable"].as_str().map(PathBuf::from))
         .unwrap_or_else(|| panic!("no executable for {bin}"));
     let copy = std::env::temp_dir().join(format!("{bin}-{}-{}", features.replace([',', '/'], "-"), std::process::id()));
-    std::fs::copy(&built, &copy).unwrap_or_else(|e| panic!("copying {bin}: {e}"));
+    std::fs::copy(stripped(&built), &copy).unwrap_or_else(|e| panic!("copying {bin}: {e}"));
     cache.insert(key, copy.clone());
     copy
 }

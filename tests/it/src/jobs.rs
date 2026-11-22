@@ -2,14 +2,17 @@
 
 use std::time::{Duration, Instant};
 
-use crate::support::{Container, binary, musl_binary};
+use crate::support::{Container, container_binary, musl_binary};
 
 const JOB: &str = "01JH9X4M7Z8KQ2V3W5Y6T1R0PA";
 
 /// A container with the wrapper installed and a command list allowing `slow-echo <n>`.
 fn with_wrapper(c: Container, musl: bool) -> Container {
-    let probe =
-        if musl { musl_binary("rackhand-probe", "rackhand-probe") } else { binary("rackhand-probe", "rackhand-probe") };
+    let probe = if musl {
+        musl_binary("rackhand-probe", "rackhand-probe")
+    } else {
+        container_binary("rackhand-probe", "rackhand-probe")
+    };
     c.copy_in(&probe, "/usr/local/lib/rackhand/run");
     assert!(
         c.root("chown root:root /usr/local/lib/rackhand/run && chmod 0755 /usr/local/lib/rackhand/run")

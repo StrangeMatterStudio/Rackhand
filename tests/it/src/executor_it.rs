@@ -24,7 +24,7 @@ mod executor {
     use rusqlite::types::Value;
     use russh::keys::PublicKey;
 
-    use crate::support::{Container, binary};
+    use crate::support::{Container, container_binary};
 
     const WRAPPER: &str = "/usr/local/lib/rackhand/run";
 
@@ -166,7 +166,7 @@ timeout = "{timeout}"
             assert!(w.status.success());
         }
         // The wrapper, the pinned hub key, and the command list from the runbooks, signed and installed by the wrapper.
-        machine.copy_in(&binary("rackhand-probe", "rackhand-probe"), WRAPPER);
+        machine.copy_in(&container_binary("rackhand-probe", "rackhand-probe"), WRAPPER);
         sh(&machine, &format!("chown root:root {WRAPPER} && chmod 0755 {WRAPPER}"));
         let node = SigningKey::from_bytes(&[7u8; 32]);
         let hex: String = node.verifying_key().to_bytes().iter().map(|b| format!("{b:02x}")).collect();

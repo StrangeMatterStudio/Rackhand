@@ -1,7 +1,7 @@
 //! The command wrapper behind sudo (7.3.7, AC57), in a container.
 
 mod runcmd {
-    use crate::support::{Container, binary};
+    use crate::support::{Container, container_binary};
 
     fn text(out: &std::process::Output) -> String {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
@@ -9,7 +9,7 @@ mod runcmd {
 
     #[test]
     fn sudo_entry_runs_wrapper_only() {
-        let probe = binary("rackhand-probe", "rackhand-probe");
+        let probe = container_binary("rackhand-probe", "rackhand-probe");
         let c = Container::start("runcmd");
         c.copy_in(&probe, "/usr/local/lib/rackhand/run");
         assert!(

@@ -32,7 +32,7 @@ mod patch {
     use rusqlite::types::Value;
     use russh::keys::PublicKey;
 
-    use crate::support::{Container, binary};
+    use crate::support::{Container, container_binary};
 
     const WRAPPER: &str = "/usr/local/lib/rackhand/run";
     const M: &str = "01JD0000000000000000000031";
@@ -133,7 +133,7 @@ mod patch {
             Some(line.as_bytes()),
         );
         assert!(put.status.success());
-        machine.copy_in(&binary("rackhand-probe", "rackhand-probe"), WRAPPER);
+        machine.copy_in(&container_binary("rackhand-probe", "rackhand-probe"), WRAPPER);
         sh(&machine, &format!("chown root:root {WRAPPER} && chmod 0755 {WRAPPER}"));
         let node = SigningKey::from_bytes(&[8u8; 32]);
         let hex: String = node.verifying_key().to_bytes().iter().map(|b| format!("{b:02x}")).collect();
