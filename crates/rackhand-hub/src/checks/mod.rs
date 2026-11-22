@@ -14,6 +14,7 @@
 pub mod agentless;
 
 pub mod config;
+pub mod patch;
 pub mod steps;
 
 use std::collections::BTreeMap;
@@ -313,5 +314,7 @@ fn unit(metric: &str) -> &'static str {
     }
 }
 
+#[cfg(test)]
+mod patch_tests;
 #[cfg(test)]
 mod tests;

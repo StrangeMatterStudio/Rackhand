@@ -1,6 +1,7 @@
 //! Runbook and playbook parsing and validation, and command template generation (design 7.2,
 //! Runbook model). Depends on nothing of ours.
 
+pub mod builtin;
 pub mod check_cmd;
 pub mod diagnostics;
 pub mod error;
@@ -14,6 +15,7 @@ pub use error::ModelError;
 
 #[cfg(test)]
 mod tests {
+    mod builtin;
     mod check_cmd;
     mod params;
     mod playbook;

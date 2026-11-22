@@ -64,6 +64,8 @@ pub struct LatestFacts {
     pub reported_at_ms: i64,
     pub services: Vec<ServiceState>,
     pub containers: Vec<ContainerState>,
+    /// The filesystems the report measured, by mount point.
+    pub mounts: Vec<String>,
     /// The last summary sent (at most every 6 h or on change).
     pub updates: Option<UpdateSummary>,
 }

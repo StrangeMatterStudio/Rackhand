@@ -93,6 +93,9 @@ fn valid_name(name: &str) -> bool {
     (1..=64).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
+/// Who a built-in's revisions are by.
+pub const BUILTIN_AUTHOR: &str = "rackhand";
+
 /// The validation errors for content of a kind (runbooks and playbooks as in 7.8.7 and 7.8.8; configuration as TOML).
 pub fn validate(kind: Kind, name: &str, content: &str) -> Result<(), String> {
     if !valid_name(name) {
@@ -133,12 +136,26 @@ impl Library {
         author: &str,
         now_ms: i64,
     ) -> Result<i64, SaveError> {
+        self.store(kind, name, content, author, "user", now_ms).await
+    }
+
+    /// A new revision; `origin` applies when the item is new.
+    async fn store(
+        &self,
+        kind: Kind,
+        name: &str,
+        content: &str,
+        author: &str,
+        origin: &str,
+        now_ms: i64,
+    ) -> Result<i64, SaveError> {
         validate(kind, name, content).map_err(SaveError::Invalid)?;
         let row: Row = [
             ("kind", Value::Text(kind.as_str().into())),
             ("name", Value::Text(name.into())),
             ("content", Value::Text(content.into())),
             ("author", Value::Text(author.into())),
+            ("origin", Value::Text(origin.into())),
             ("created_at", Value::Integer(now_ms)),
         ]
         .into_iter()
@@ -152,6 +169,25 @@ impl Library {
         let verb = if rev == 1 { "add" } else { "edit" };
         let _ = self.changes.send(Change { user: author.into(), summary: format!("{verb} {target}") });
         Ok(rev)
+    }
+
+    /// Seeds the built-in runbooks (origin `builtin`, by [`BUILTIN_AUTHOR`]) and returns the names it stored: one the
+    /// Library doesn't have, or a newer built-in where nobody has edited the item since the last one. An admin's edit
+    /// is kept, and from then on the item is theirs to keep up to date.
+    pub async fn seed(&self, builtins: &[(&str, &str)], now_ms: i64) -> Result<Vec<String>, SaveError> {
+        let mut seeded = Vec::new();
+        for (name, content) in builtins {
+            let take = match self.current(Kind::Runbook, name)? {
+                None => true,
+                Some((_, current)) if current == *content => false,
+                Some(_) => self.history(Kind::Runbook, name)?.first().is_some_and(|h| h.author == BUILTIN_AUTHOR),
+            };
+            if take {
+                self.store(Kind::Runbook, name, content, BUILTIN_AUTHOR, "builtin", now_ms).await?;
+                seeded.push(name.to_string());
+            }
+        }
+        Ok(seeded)
     }
 
     /// A change stored outside `save` (settings and policies, written as config revisions), for the git mirror.

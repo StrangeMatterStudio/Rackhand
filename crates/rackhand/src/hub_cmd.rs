@@ -200,6 +200,12 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let notify = rackhand_hub::notify::Notify::new(db.clone(), ingest.clone(), transports);
     let registry = rackhand_hub::registry::Registry::load(db.clone()).map_err(|e| e.to_string())?;
     let (library, changes) = rackhand_hub::library::items::Library::new(db.clone(), audit.clone());
+    // The built-in runbooks (7.8.7): added, or brought up to date where nobody edited them.
+    match library.seed(rackhand_runbook::builtin::runbooks(), now_ms()).await {
+        Ok(seeded) if !seeded.is_empty() => tracing::info!(?seeded, "built-in runbooks"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "built-in runbooks not seeded"),
+    }
     let (host_keys, host_alerts) = rackhand_hub::ssh::hostkeys::HostKeys::new(db.clone());
     let mirror = rackhand_hub::library::mirror::Mirror {
         db: db.clone(),

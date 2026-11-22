@@ -324,10 +324,22 @@ fn keep_latest(m: &mut Machine, r: &Report, offset_ms: i64) {
         return;
     }
     let updates = r.updates.clone().or_else(|| m.latest.as_ref().and_then(|l| l.updates.clone()));
+    // The filesystems this report measured (`disk.total_bytes` by mount), for the patch verify's required mounts.
+    let total = rackhand_proto::catalogue::by_name("disk.total_bytes").map(|c| c.id);
+    let table = m.labels.get(&r.epoch);
+    let mut mounts: Vec<String> = r
+        .vitals
+        .iter()
+        .filter(|s| Some(s.metric) == total)
+        .filter_map(|s| table.and_then(|t| t.get(&s.labels_id)).and_then(|l| l.get("mount")).cloned())
+        .collect();
+    mounts.sort();
+    mounts.dedup();
     m.latest = Some(LatestFacts {
         reported_at_ms: at,
         services: r.services.clone(),
         containers: r.containers.clone(),
+        mounts,
         updates,
     });
 }

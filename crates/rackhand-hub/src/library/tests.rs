@@ -92,3 +92,38 @@ async fn changes_are_audited() {
     );
     assert_eq!(lib.current(Kind::Playbook, "patch-failure").unwrap().unwrap().0, 1, "applied as a revision");
 }
+
+/// T59c: the built-in runbooks are seeded at hub start with origin `builtin`. A newer built-in replaces one nobody
+/// edited; an admin's edit stays (the built-in is then theirs to keep up to date).
+#[tokio::test(flavor = "multi_thread")]
+async fn builtins_seeded_and_kept_up_to_date_unless_edited() {
+    let (db, lib) = library("builtins");
+    let origin = |name: &str| -> String {
+        db.readers()
+            .with(|c| c.query_row("SELECT origin FROM library_items WHERE name = ?1", [name], |r| r.get(0)))
+            .unwrap()
+    };
+    let v1 = [("compose-restart", RUNBOOK)];
+    assert_eq!(lib.seed(&v1, 1).await.unwrap(), ["compose-restart"]);
+    assert_eq!(origin("compose-restart"), "builtin");
+    assert_eq!(lib.history(Kind::Runbook, "compose-restart").unwrap()[0].author, super::items::BUILTIN_AUTHOR);
+    assert!(lib.seed(&v1, 2).await.unwrap().is_empty(), "the same content again: no new revision");
+    let newer = RUNBOOK.replace("Restart one Docker Compose project", "Restart one Compose project");
+    let v2 = [("compose-restart", newer.as_str())];
+    assert_eq!(lib.seed(&v2, 3).await.unwrap(), ["compose-restart"]);
+    assert_eq!(lib.current(Kind::Runbook, "compose-restart").unwrap().unwrap(), (2, newer.clone()));
+    let mine = newer.replace("Restart one Compose project", "Our restart");
+    lib.save(Kind::Runbook, "compose-restart", &mine, "admin", 4).await.unwrap();
+    let v3 = RUNBOOK.replace("Restart one Docker Compose project", "Restart, version 3");
+    assert!(lib.seed(&[("compose-restart", v3.as_str())], 5).await.unwrap().is_empty(), "the admin's edit stays");
+    assert_eq!(lib.current(Kind::Runbook, "compose-restart").unwrap().unwrap(), (3, mine));
+    assert_eq!(origin("compose-restart"), "builtin", "still a built-in, edited");
+}
+
+/// The shipped built-ins parse as runbooks the Library accepts.
+#[tokio::test(flavor = "multi_thread")]
+async fn shipped_builtins_are_valid_library_runbooks() {
+    let (_, lib) = library("shipped");
+    let seeded = lib.seed(rackhand_runbook::builtin::runbooks(), 1).await.unwrap();
+    assert!(seeded.contains(&"patch-debian".to_string()) && seeded.contains(&"patch-alpine".to_string()), "{seeded:?}");
+}

@@ -4,7 +4,9 @@
 //! with the name of the first that doesn't. The names (with parameters already substituted by the coordinator):
 //! - `containers_running:<project>`: the machine's latest report has the Docker Compose project's containers, all
 //!   running;
-//! - `check:<name>`: the newest result of a service check bound to the machine, from after the step started, passed.
+//! - `check:<name>`: the newest result of a service check bound to the machine, from after the step started, passed;
+//! - the patch runbooks' `patch_precheck`, `record_state`, `as_recorded`, `required_mounts` and `bound_checks`
+//!   (`checks::patch`). The first two are judged once, before the others, and put their findings in the step's output.
 //!
 //! `api` makes the step's `call` through the machine's driver (its `driver` column) at its address, and records the
 //! driver's answer as the step's output.
@@ -23,8 +25,12 @@ use rackhand_runbook::runbook::{Step, StepKind};
 use rackhand_store::Db;
 use rusqlite::OptionalExtension;
 
+use super::patch;
 use crate::actions::runner::{BoxFuture, StepCtx, StepOutcome, StepResult, StepRunner};
 use crate::ingest::Ingest;
+
+/// The names judged once, before the step's other names.
+const ONCE: &[&str] = &["patch_precheck", "record_state"];
 
 const AGAIN: Duration = Duration::from_secs(2);
 
@@ -88,7 +94,19 @@ impl Verify {
         }
     }
 
-    fn evaluate(&self, machine: &str, name: &str, since_ms: i64) -> Outcome {
+    fn evaluate(&self, ctx: &StepCtx, name: &str, since_ms: i64) -> Outcome {
+        let machine = ctx.machine_id.as_str();
+        match name {
+            "as_recorded" => return patch::as_recorded(&self.db, &self.ingest, machine, &ctx.job_id).map_err(Some),
+            "required_mounts" => return patch::required_mounts(&self.db, &self.ingest, machine).map_err(Some),
+            "bound_checks" => {
+                for check in patch::bound_checks(&self.db, machine).map_err(Some)? {
+                    self.check_passes(machine, &check, since_ms)?;
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
         match name.split_once(':') {
             Some(("containers_running", project)) if !project.is_empty() => self.containers_running(machine, project),
             Some(("check", check)) if !check.is_empty() => self.check_passes(machine, check, since_ms),
@@ -103,14 +121,34 @@ impl StepRunner for Verify {
             if step.kind != StepKind::Verify {
                 return StepResult::failed("verify_only");
             }
-            let checks = step.checks.clone().unwrap_or_default();
+            let all = step.checks.clone().unwrap_or_default();
             // a check result may be from the same millisecond the step started
             let since = rackhand_store::ids::now_ms() - 1;
+            let mut output = Vec::new();
+            for name in all.iter().filter(|n| ONCE.contains(&n.as_str())) {
+                let judged = match name.as_str() {
+                    "patch_precheck" => {
+                        patch::patch_precheck(&self.db, &self.ingest, &ctx.machine_id).map_err(|reason| StepResult {
+                            stderr: reason.clone().into_bytes(),
+                            ..StepResult::failed(reason)
+                        })
+                    }
+                    _ => patch::record_state(&self.ingest, &ctx.machine_id).map_err(|why| failed_with(name, why)),
+                };
+                match judged {
+                    Ok(o) => output.push(o),
+                    Err(failed) => return failed,
+                }
+            }
+            let checks: Vec<String> = all.into_iter().filter(|n| !ONCE.contains(&n.as_str())).collect();
+            if checks.is_empty() {
+                return succeeded(format!("{}\n", output.join("\n")).into_bytes(), None);
+            }
             let deadline = tokio::time::Instant::now() + ctx.timeout;
             loop {
                 let mut first_failing = None;
                 for name in &checks {
-                    match self.evaluate(&ctx.machine_id, name, since) {
+                    match self.evaluate(ctx, name, since) {
                         Ok(()) => {}
                         Err(None) => return StepResult::failed(format!("unknown_check:{name}")),
                         Err(Some(why)) => {
@@ -120,7 +158,8 @@ impl StepRunner for Verify {
                     }
                 }
                 let Some((name, why)) = first_failing else {
-                    return succeeded(format!("passed: {}\n", checks.join(", ")).into_bytes(), None);
+                    output.push(format!("passed: {}", checks.join(", ")));
+                    return succeeded(format!("{}\n", output.join("\n")).into_bytes(), None);
                 };
                 if tokio::time::Instant::now() + AGAIN >= deadline {
                     return failed_with(&name, why);
