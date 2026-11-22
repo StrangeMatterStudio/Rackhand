@@ -3,6 +3,7 @@
 {% block nav %}<nav><a href="/">Overview</a> <a href="/incidents">Incidents</a> <a href="/approvals">Approvals</a> <a href="/jobs">Jobs</a> <a href="/library">Library</a> <a href="/patching">Patching</a> <a href="/audit">Audit</a></nav>{% endblock %}
 {% block content %}
 <h1>{{ name }}</h1>
+{% if let Some(n) = notice %}{% include "notice.html" %}{% endif %}
 <p>Site: <a href="/sites/{{ site }}">{{ site }}</a>. Kind: {{ kind }}. OS: {{ os }}. State: {{ state }}.</p>
 <p>Access: {{ access }}. Capture: {{ capture }}.</p>
 {% if let Some(b) = binding %}<h2>Proxmox guest</h2>

@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 
 use super::{html, redirect, status};
 use crate::registry::machines::AddMachine;
+use crate::web::forms::{self, Choices, Form, Spec};
 use crate::web::{Ctx, Web};
 
 fn release_url() -> String {
@@ -22,15 +23,64 @@ fn release_url() -> String {
 #[template(path = "add.html")]
 struct AddPage<'a> {
     csrf: &'a str,
-    users: Vec<(String, String)>,
-    /// The appliance forms: driver, title, address example.
-    drivers: Vec<(&'static str, &'static str, &'static str)>,
-    /// Enrolled machines a Proxmox API can belong to.
-    machines: Vec<(String, String)>,
+    machine: Form,
+    /// The appliance forms: driver, title, form.
+    appliances: Vec<(&'static str, &'static str, Form)>,
+    device: Form,
     bootstrap: String,
     lxc: String,
     /// Machines enrolled in the last day, newest first: name, access, how it went.
     recent: Vec<(String, String, String)>,
+}
+
+/// What a machine or an appliance is called.
+pub(super) const NAME_HINT: &str = "1 to 64 letters, digits, dots, dashes and underscores; not used here yet.";
+pub(super) const NAME_PATTERN: &str = r"[A-Za-z0-9._\-]{1,64}";
+pub(super) const NAME_RULE: &str = "Use 1 to 64 letters, digits, dots, dashes and underscores, with no spaces";
+pub(super) const PLAIN: &str = "autocomplete=\"off\" autocapitalize=\"none\" spellcheck=\"false\"";
+
+const SYSTEMS: Choices = &[("linux", "Linux"), ("alpine", "Alpine"), ("windows", "Windows")];
+const ACCESS: Choices = &[("managed", "Managed: Rackhand can also act on it"), ("monitor", "Monitor only")];
+const MODES: Choices = &[("local", "Local: it reaches the hub on this network"), ("remote", "Remote")];
+
+const MACHINE: &[Spec] = &[
+    Spec::text("name", "Name").hint(NAME_HINT).pattern(NAME_PATTERN, NAME_RULE).attrs(PLAIN),
+    Spec::select("os", "System", SYSTEMS),
+    Spec::select("access", "Access", ACCESS),
+    Spec::select("mode", "Probe", MODES),
+];
+
+const DEVICE: &[Spec] = &[Spec::select("user", "Device of", &[]).hint("The person whose laptop or phone it is.")];
+
+/// The people a device can belong to.
+fn user_options(web: &Web) -> forms::Groups {
+    let users = web
+        .0
+        .db
+        .readers()
+        .with(|c| {
+            let mut s = c.prepare("SELECT id, name FROM users WHERE disabled_at IS NULL ORDER BY name")?;
+            s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
+        })
+        .unwrap_or_default();
+    vec![(String::new(), users)]
+}
+
+/// Whether a machine of that name is already at the site.
+pub(super) fn name_taken(web: &Web, site: &str, name: &str) -> bool {
+    web.0
+        .db
+        .readers()
+        .with(|c| {
+            c.query_row("SELECT count(*) > 0 FROM machines WHERE site_id = ?1 AND name = ?2", [site, name], |r| {
+                r.get(0)
+            })
+        })
+        .unwrap_or(false)
+}
+
+pub(super) fn local_site(web: &Web) -> Option<String> {
+    web.0.db.readers().with(|c| c.query_row("SELECT id FROM sites WHERE is_local = 1", [], |r| r.get(0))).ok()
 }
 
 /// How long a machine stays in the Add page's list.
@@ -45,39 +95,22 @@ struct AddDone {
 }
 
 pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
-    let users = web
-        .0
-        .db
-        .readers()
-        .with(|c| {
-            let mut s = c.prepare("SELECT id, name FROM users WHERE disabled_at IS NULL ORDER BY name")?;
-            s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
-        })
-        .unwrap_or_default();
-    let machines = web
-        .0
-        .db
-        .readers()
-        .with(|c| {
-            let mut s = c.prepare(
-                "SELECT id, name FROM machines WHERE state = 'enrolled' AND probe_endpoint_id IS NOT NULL ORDER BY name",
-            )?;
-            s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
-        })
-        .unwrap_or_default();
-    let drivers = super::appliance::DRIVERS.iter().map(|d| (d.0, d.1, d.2)).collect();
-    let recent = recent(web);
+    show(web, ctx, StatusCode::OK, None)
+}
+
+/// The page, with the form that was refused as it was sent.
+pub(super) fn show(web: &Web, ctx: &Ctx, code: StatusCode, mut sent: Option<Form>) -> Response<Body> {
     let url = release_url();
     let page = AddPage {
         csrf: &ctx.csrf,
-        users,
-        drivers,
-        machines,
+        machine: Form::blank("add-machine", MACHINE).or_sent(&mut sent),
+        appliances: super::appliance::forms(web, &mut sent),
+        device: Form::blank("invite-device", DEVICE).options("user", user_options(web)).or_sent(&mut sent),
         bootstrap: format!("curl -fsSL {url}/install.sh | sudo sh -s -- --hub"),
         lxc: format!("curl -fsSL {url}/rackhand-lxc.sh | sudo sh"),
-        recent,
+        recent: recent(web),
     };
-    html(StatusCode::OK, page.render())
+    html(code, page.render())
 }
 
 /// The machines enrolled in the last day (7.3.12): a managed one is enrolled and healthy once the hub's SSH test
@@ -130,10 +163,6 @@ fn recent(web: &Web) -> Vec<(String, String, String)> {
         .collect()
 }
 
-pub(super) fn valid_name(n: &str) -> bool {
-    (1..=64).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_')
-}
-
 /// A release file the hub holds, by its plain name (no path, nothing hidden), for the offline install.
 pub(super) fn release_file(web: &Web, name: &str) -> Response<Body> {
     let plain = (1..=128).contains(&name.len())
@@ -157,44 +186,38 @@ fn held_script(web: &Web) -> Option<String> {
 
 pub(super) async fn machine(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some(user) = &ctx.user else { return redirect("/sign-in") };
-    let f = |k: &str| ctx.form.get(k).map(|v| v.trim().to_string()).unwrap_or_default();
-    let (os, name) = (f("os"), f("name"));
-    let kind = match os.as_str() {
-        "linux" | "alpine" => os.as_str(),
-        "windows" => "windows",
-        _ => return status(StatusCode::BAD_REQUEST, "The machine is Linux, Alpine or Windows"),
-    };
-    if !valid_name(&name) {
-        return status(StatusCode::BAD_REQUEST, "The name is 1 to 64 letters, digits, ., _ and -");
-    }
-    let access = if f("access") == "monitor" { Access::Monitor } else { Access::Managed };
-    let mode = if f("mode") == "remote" { ProbeMode::Remote } else { ProbeMode::Local };
+    let mut form = Form::sent("add-machine", MACHINE, ctx, &web.0.held);
     let (Some(registry), Some(ticket)) = (web.0.registry.as_ref(), web.ticket()) else {
-        return status(StatusCode::SERVICE_UNAVAILABLE, "The hub isn't ready to add machines yet");
+        form.notice("The hub isn't ready to add machines yet; try again in a minute.");
+        return show(web, ctx, StatusCode::SERVICE_UNAVAILABLE, Some(form));
     };
-    let site: Option<String> =
-        web.0.db.readers().with(|c| c.query_row("SELECT id FROM sites WHERE is_local = 1", [], |r| r.get(0))).ok();
-    let Some(site) = site else { return status(StatusCode::CONFLICT, "Complete first run first") };
-    let taken: bool = web
-        .0
-        .db
-        .readers()
-        .with(|c| {
-            c.query_row("SELECT count(*) > 0 FROM machines WHERE site_id = ?1 AND name = ?2", [&site, &name], |r| {
-                r.get(0)
-            })
-        })
-        .unwrap_or(false);
-    if taken {
-        return status(StatusCode::CONFLICT, "A machine of that name is already here");
+    let Some(site) = local_site(web) else { return status(StatusCode::CONFLICT, "Complete first run first") };
+    form.check();
+    let mut code = StatusCode::BAD_REQUEST;
+    if !form.has_error("name") && name_taken(web, &site, form.value("name")) {
+        if form.ok() {
+            code = StatusCode::CONFLICT;
+        }
+        form.refuse("name", "A machine of that name is already here");
     }
-    let kind_column = if kind == "windows" { "windows" } else { kind };
-    let add = AddMachine { site_id: site, name: name.clone(), kind: kind_column.into(), access, mode, roles: vec![] };
+    if !form.ok() {
+        return show(web, ctx, code, Some(form));
+    }
+    let name = form.value("name").to_string();
+    let kind = match form.value("os") {
+        "alpine" => "alpine",
+        "windows" => "windows",
+        _ => "linux",
+    };
+    let access = if form.value("access") == "monitor" { Access::Monitor } else { Access::Managed };
+    let mode = if form.value("mode") == "remote" { ProbeMode::Remote } else { ProbeMode::Local };
+    let add = AddMachine { site_id: site, name: name.clone(), kind: kind.into(), access, mode, roles: vec![] };
     let (id, token) = match registry.add_machine(&add, &user.name, ctx.now_ms).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "add machine");
-            return status(StatusCode::INTERNAL_SERVER_ERROR, "The machine couldn't be added");
+            form.notice("The machine couldn't be added; try again.");
+            return show(web, ctx, StatusCode::INTERNAL_SERVER_ERROR, Some(form));
         }
     };
     let (id, token) = (id.to_string(), token.as_str().to_string());
@@ -252,25 +275,21 @@ pub(super) async fn machine(web: &Web, ctx: &Ctx) -> Response<Body> {
 
 pub(super) async fn invite(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some(user) = &ctx.user else { return redirect("/sign-in") };
+    let mut form = Form::sent("invite-device", DEVICE, ctx, &web.0.held).options("user", user_options(web));
     let (Some(registry), Some(ticket)) = (web.0.registry.as_ref(), web.ticket()) else {
-        return status(StatusCode::SERVICE_UNAVAILABLE, "The hub isn't ready to invite yet");
+        form.notice("The hub isn't ready to invite yet; try again in a minute.");
+        return show(web, ctx, StatusCode::SERVICE_UNAVAILABLE, Some(form));
     };
     let kind = ctx.form.get("kind").map(String::as_str).unwrap_or("");
     let issued = match kind {
         "operator" => registry.invite_operator(&user.name, ctx.now_ms).await,
         "peer" => registry.invite_peer(&user.name, ctx.now_ms).await,
         "device" => {
-            let for_user = ctx.form.get("user").cloned().unwrap_or_default();
-            let known: bool = web
-                .0
-                .db
-                .readers()
-                .with(|c| c.query_row("SELECT count(*) > 0 FROM users WHERE id = ?1", [&for_user], |r| r.get(0)))
-                .unwrap_or(false);
-            if !known {
-                return status(StatusCode::BAD_REQUEST, "Choose whose device it is");
+            form.check();
+            if !form.ok() {
+                return show(web, ctx, StatusCode::BAD_REQUEST, Some(form));
             }
-            registry.invite_device(&for_user, &user.name, ctx.now_ms).await
+            registry.invite_device(form.value("user"), &user.name, ctx.now_ms).await
         }
         _ => return status(StatusCode::BAD_REQUEST, "The invite is for a device, an operator or a peer"),
     };
@@ -278,7 +297,8 @@ pub(super) async fn invite(web: &Web, ctx: &Ctx) -> Response<Body> {
         Ok(t) => t,
         Err(e) => {
             tracing::error!(error = %e, "invite");
-            return status(StatusCode::INTERNAL_SERVER_ERROR, "The invite couldn't be made");
+            form.notice("The invite couldn't be made; try again.");
+            return show(web, ctx, StatusCode::INTERNAL_SERVER_ERROR, Some(form));
         }
     };
     let invite = format!("{ticket}#{}", token.as_str());

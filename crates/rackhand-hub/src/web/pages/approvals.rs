@@ -33,6 +33,8 @@ struct Waiting {
 struct Page<'a> {
     csrf: &'a str,
     waiting: Vec<Waiting>,
+    /// Why a decision wasn't taken.
+    notice: Option<&'a str>,
 }
 
 fn risk(name: &str) -> Risk {
@@ -44,6 +46,10 @@ fn risk(name: &str) -> Risk {
 }
 
 pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
+    show(web, ctx, StatusCode::OK, None)
+}
+
+fn show(web: &Web, ctx: &Ctx, code: StatusCode, notice: Option<&str>) -> Response<Body> {
     let Some(user) = &ctx.user else { return redirect("/sign-in") };
     let rows: Result<Vec<Waiting>, _> = web.0.db.readers().with(|c| {
         let mut s = c.prepare(
@@ -81,7 +87,7 @@ pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
         rows.collect()
     });
     match rows {
-        Ok(waiting) => html(StatusCode::OK, Page { csrf: &ctx.csrf, waiting }.render()),
+        Ok(waiting) => html(code, Page { csrf: &ctx.csrf, waiting, notice }.render()),
         Err(e) => {
             tracing::error!(error = %e, "approvals");
             status(StatusCode::INTERNAL_SERVER_ERROR, "Approvals unreadable")
@@ -117,16 +123,22 @@ pub(super) async fn decide(web: &Web, ctx: &Ctx, approve: bool) -> Response<Body
         }
         Err(ApprovalError::StepUpRequired) => redirect("/step-up"),
         Err(ApprovalError::NotPermitted) => {
-            status(StatusCode::FORBIDDEN, "Your role can't decide an approval at this risk")
+            show(web, ctx, StatusCode::FORBIDDEN, Some("Your role can't decide an approval at this risk."))
         }
-        Err(ApprovalError::AlreadyDecided) => {
-            status(StatusCode::CONFLICT, "This approval was already decided by someone else; nothing changed")
+        Err(ApprovalError::AlreadyDecided) => show(
+            web,
+            ctx,
+            StatusCode::CONFLICT,
+            Some("This approval was already decided by someone else; nothing changed."),
+        ),
+        Err(ApprovalError::Expired) => {
+            show(web, ctx, StatusCode::CONFLICT, Some("This approval has expired; nothing changed."))
         }
-        Err(ApprovalError::Expired) => status(StatusCode::CONFLICT, "This approval has expired"),
-        Err(ApprovalError::Unknown) => status(StatusCode::NOT_FOUND, "No such approval"),
+        Err(ApprovalError::Unknown) => show(web, ctx, StatusCode::NOT_FOUND, Some("No such approval.")),
         Err(e) => {
             tracing::error!(error = %e, "approval");
-            status(StatusCode::INTERNAL_SERVER_ERROR, "The decision couldn't be recorded")
+            let why = "The decision couldn't be recorded; try again.";
+            show(web, ctx, StatusCode::INTERNAL_SERVER_ERROR, Some(why))
         }
     }
 }

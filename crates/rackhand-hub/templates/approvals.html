@@ -3,6 +3,7 @@
 {% block nav %}<nav><a href="/">Overview</a> <a href="/approvals">Approvals</a> <a href="/jobs">Jobs</a> <a href="/library">Library</a> <a href="/patching">Patching</a></nav>{% endblock %}
 {% block content %}
 <h1>Approvals</h1>
+{% if let Some(n) = notice %}{% include "notice.html" %}{% endif %}
 {% if waiting.is_empty() %}
 <p>Nothing waiting.</p>
 {% endif %}

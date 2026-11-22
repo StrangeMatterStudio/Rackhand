@@ -9,6 +9,7 @@ use super::limits::Attempt;
 use super::step_up;
 use super::users::{self, Account};
 use super::{PENDING_COOKIE, PENDING_MS, Pending, password};
+use crate::web::forms::{Form, Spec};
 use crate::web::pages::{html, redirect, status};
 use crate::web::session::{self, random_token};
 use crate::web::{Ctx, Web, totp};
@@ -20,7 +21,7 @@ const MAX_WRONG_CODES: u32 = 5;
 #[template(path = "sign_in.html")]
 struct PasswordForm<'a> {
     csrf: &'a str,
-    error: Option<&'a str>,
+    form: Form,
     oidc: bool,
 }
 
@@ -30,10 +31,24 @@ struct CodeForm<'a> {
     csrf: &'a str,
     action: &'a str,
     title: &'a str,
-    error: Option<&'a str>,
+    form: Form,
     /// The passkey alternative: where its options come from and where the answer goes.
     passkey: Option<(&'a str, &'a str)>,
 }
+
+const SIGN_IN: &[Spec] = &[
+    Spec::text("name", "Name").attrs("autocomplete=\"username\" autocapitalize=\"none\" spellcheck=\"false\""),
+    Spec::secret("password", "Password").attrs("autocomplete=\"current-password\""),
+];
+
+const CODE: &[Spec] = &[Spec::text("code", "Code from your authenticator app")
+    .hint("The 6 digits the app shows now. Each code works once.")
+    .pattern("[0-9]{6}", "The code is 6 digits")
+    .attrs("autocomplete=\"one-time-code\" inputmode=\"numeric\"")];
+
+pub(crate) const TOO_MANY: &str = "Too many failed sign-ins from here; wait a minute and try again.";
+const WRONG_CODE: &str = "That code doesn't match, or has been used. Each works once: enter the app's next one.";
+const START_AGAIN: &str = "Too many wrong codes. Start again with your password.";
 
 fn with_cookies(mut resp: Response<Body>, cookies: &[String]) -> Response<Body> {
     for c in cookies {
@@ -59,22 +74,33 @@ fn known_device(web: &Web, ctx: &Ctx, account: Option<&Account>) -> Option<Strin
     devices::is_known(&web.0.db, &account.id, token).then(|| devices::hash_hex(token))
 }
 
+fn password_form(web: &Web, ctx: &Ctx, code: StatusCode, form: Form) -> Response<Body> {
+    html(code, PasswordForm { csrf: &ctx.csrf, form, oidc: super::oidc::configured(web) }.render())
+}
+
 pub(crate) fn password_page(web: &Web, ctx: &Ctx) -> Response<Body> {
-    html(StatusCode::OK, PasswordForm { csrf: &ctx.csrf, error: None, oidc: super::oidc::configured(web) }.render())
+    let mut form = Form::blank("sign-in", SIGN_IN);
+    if spent(web, ctx) {
+        form.notice(START_AGAIN);
+    }
+    password_form(web, ctx, StatusCode::OK, form)
 }
 
 pub(crate) async fn password_step(web: &Web, ctx: &Ctx) -> Response<Body> {
     let name = ctx.form.get("name").map(|s| s.trim()).unwrap_or("");
     let given = ctx.form.get("password").map(String::as_str).unwrap_or("");
+    let mut form = Form::sent("sign-in", SIGN_IN, ctx, &web.0.held);
+    form.check();
+    if !form.ok() {
+        return password_form(web, ctx, StatusCode::UNAUTHORIZED, form);
+    }
     let account = users::find(&web.0.db, name).ok().flatten();
     let device = known_device(web, ctx, account.as_ref());
     let attempt = Attempt { source: &ctx.source, account: Some(name), known_device: device.as_deref() };
     let allowed = web.0.limits.lock().map(|mut l| l.try_attempt(&attempt, ctx.now_ms)).unwrap_or(false);
     if !allowed {
-        return status(
-            StatusCode::TOO_MANY_REQUESTS,
-            "Too many failed sign-ins from here; wait a minute and try again",
-        );
+        form.notice(TOO_MANY);
+        return password_form(web, ctx, StatusCode::TOO_MANY_REQUESTS, form);
     }
     let stored = account.as_ref().and_then(|a| a.password_hash.as_deref());
     let ok = password::verify(stored.unwrap_or(password::dummy()), given) && stored.is_some();
@@ -84,11 +110,8 @@ pub(crate) async fn password_step(web: &Web, ctx: &Ctx) -> Response<Body> {
         }
         audit(web, name, "auth.sign_in_failed", serde_json::json!({ "source": ctx.source, "reason": "password" }))
             .await;
-        return html(
-            StatusCode::UNAUTHORIZED,
-            PasswordForm { csrf: &ctx.csrf, error: Some("Wrong name or password"), oidc: super::oidc::configured(web) }
-                .render(),
-        );
+        form.notice("Wrong name or password.");
+        return password_form(web, ctx, StatusCode::UNAUTHORIZED, form);
     };
     if !account.has_local_factor() {
         audit(
@@ -98,10 +121,8 @@ pub(crate) async fn password_step(web: &Web, ctx: &Ctx) -> Response<Body> {
             serde_json::json!({ "source": ctx.source, "reason": "no_second_factor" }),
         )
         .await;
-        return status(
-            StatusCode::FORBIDDEN,
-            "This account has no second factor yet; an admin has to set one up first",
-        );
+        form.notice("This account has no second factor yet; an admin has to set one up first.");
+        return password_form(web, ctx, StatusCode::FORBIDDEN, form);
     }
     let Ok(token) = random_token() else { return status(StatusCode::INTERNAL_SERVER_ERROR, "No randomness") };
     if let Ok(mut pending) = web.0.pending.lock() {
@@ -112,10 +133,19 @@ pub(crate) async fn password_step(web: &Web, ctx: &Ctx) -> Response<Body> {
     with_cookies(redirect("/sign-in/code"), &[session::cookie(PENDING_COOKIE, &token, PENDING_MS / 1000)])
 }
 
-pub(crate) fn pending_of(web: &Web, ctx: &Ctx) -> Option<(String, Pending)> {
+fn find_pending(web: &Web, ctx: &Ctx) -> Option<(String, Pending)> {
     let key = devices::hash_hex(ctx.cookies.get(PENDING_COOKIE)?);
     let pending = web.0.pending.lock().ok()?.get(&key).cloned()?;
     (ctx.now_ms - pending.created_ms < PENDING_MS).then_some((key, pending))
+}
+
+pub(crate) fn pending_of(web: &Web, ctx: &Ctx) -> Option<(String, Pending)> {
+    find_pending(web, ctx).filter(|(_, p)| p.wrong_codes < MAX_WRONG_CODES)
+}
+
+/// Whether the browser's password step was spent on wrong codes; kept only to say so on the sign-in page.
+fn spent(web: &Web, ctx: &Ctx) -> bool {
+    find_pending(web, ctx).is_some_and(|(_, p)| p.wrong_codes >= MAX_WRONG_CODES)
 }
 
 /// The passkey alternative for `account`, when passkeys are on and it has one.
@@ -129,14 +159,33 @@ fn passkey_choice(
 }
 
 pub(crate) fn code_page(web: &Web, ctx: &Ctx) -> Response<Body> {
+    sign_in_code(web, ctx, StatusCode::OK, None)
+}
+
+/// The code step, with what went wrong with it.
+pub(crate) fn sign_in_code(web: &Web, ctx: &Ctx, code: StatusCode, notice: Option<&str>) -> Response<Body> {
+    let mut form = Form::blank("code", CODE);
+    if let Some(n) = notice {
+        form.notice(n);
+    }
+    sign_in_code_form(web, ctx, code, form)
+}
+
+fn sign_in_code_form(web: &Web, ctx: &Ctx, code: StatusCode, form: Form) -> Response<Body> {
     let Some((_, pending)) = pending_of(web, ctx) else { return redirect("/sign-in") };
     let account = users::find(&web.0.db, &pending.name).ok().flatten();
     let passkey = passkey_choice(web, account.as_ref(), "/sign-in/passkey/options", "/sign-in/passkey");
-    html(
-        StatusCode::OK,
-        CodeForm { csrf: &ctx.csrf, action: "/sign-in/code", title: "Authenticator code", error: None, passkey }
-            .render(),
-    )
+    let page = CodeForm { csrf: &ctx.csrf, action: "/sign-in/code", title: "Authenticator code", form, passkey };
+    html(code, page.render())
+}
+
+/// A refused code: malformed, wrong or used. It isn't sent back, as it can't be right later.
+fn refused_code(ctx: &Ctx, web: &Web) -> Form {
+    let mut form = Form::sent("code", CODE, ctx, &web.0.held);
+    form.check();
+    form.refuse("code", WRONG_CODE);
+    form.set("code", "");
+    form
 }
 
 /// Checks a TOTP code for the account: it must match and be for a later time step than any used before.
@@ -154,10 +203,7 @@ pub(crate) async fn code_step(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some((key, pending)) = pending_of(web, ctx) else { return redirect("/sign-in") };
     let source_only = Attempt { source: &ctx.source, account: None, known_device: None };
     if !web.0.limits.lock().map(|mut l| l.try_attempt(&source_only, ctx.now_ms)).unwrap_or(false) {
-        return status(
-            StatusCode::TOO_MANY_REQUESTS,
-            "Too many failed sign-ins from here; wait a minute and try again",
-        );
+        return sign_in_code(web, ctx, StatusCode::TOO_MANY_REQUESTS, Some(TOO_MANY));
     }
     let account = users::find(&web.0.db, &pending.name).ok().flatten();
     let code = ctx.form.get("code").map(String::as_str).unwrap_or("");
@@ -176,23 +222,12 @@ pub(crate) async fn code_step(web: &Web, ctx: &Ctx) -> Response<Body> {
         let wrong = web.0.pending.lock().ok().and_then(|mut p| {
             let entry = p.get_mut(&key)?;
             entry.wrong_codes += 1;
-            let n = entry.wrong_codes;
-            if n >= MAX_WRONG_CODES {
-                p.remove(&key);
-            }
-            Some(n)
+            Some(entry.wrong_codes)
         });
         if wrong.unwrap_or(MAX_WRONG_CODES) >= MAX_WRONG_CODES {
-            return with_cookies(redirect("/sign-in"), &[expire(PENDING_COOKIE)]);
+            return redirect("/sign-in");
         }
-        let form = CodeForm {
-            csrf: &ctx.csrf,
-            action: "/sign-in/code",
-            title: "Authenticator code",
-            error: Some("That code doesn't match"),
-            passkey: None,
-        };
-        return html(StatusCode::UNAUTHORIZED, form.render());
+        return sign_in_code_form(web, ctx, StatusCode::UNAUTHORIZED, refused_code(ctx, web));
     };
     finish_sign_in(web, ctx, &key, &account).await
 }
@@ -229,17 +264,30 @@ pub(crate) async fn sign_out(web: &Web, ctx: &Ctx) -> Response<Body> {
 }
 
 pub(crate) fn step_up_page(web: &Web, ctx: &Ctx) -> Response<Body> {
+    step_up_code(web, ctx, StatusCode::OK, None)
+}
+
+/// The step-up page, with what went wrong with it.
+pub(crate) fn step_up_code(web: &Web, ctx: &Ctx, code: StatusCode, notice: Option<&str>) -> Response<Body> {
+    let mut form = Form::blank("code", CODE);
+    if let Some(n) = notice {
+        form.notice(n);
+    }
+    step_up_form(web, ctx, code, form)
+}
+
+fn step_up_form(web: &Web, ctx: &Ctx, code: StatusCode, form: Form) -> Response<Body> {
     let account = ctx.user.as_ref().and_then(|u| users::find_by_id(&web.0.db, &u.user_id).ok().flatten());
     let passkey = passkey_choice(web, account.as_ref(), "/step-up/passkey/options", "/step-up/passkey");
     let title = "Confirm with your authenticator";
-    html(StatusCode::OK, CodeForm { csrf: &ctx.csrf, action: "/step-up", title, error: None, passkey }.render())
+    html(code, CodeForm { csrf: &ctx.csrf, action: "/step-up", title, form, passkey }.render())
 }
 
 pub(crate) async fn step_up(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some(user) = &ctx.user else { return redirect("/sign-in") };
     let source_only = Attempt { source: &ctx.source, account: None, known_device: None };
     if !web.0.limits.lock().map(|mut l| l.try_attempt(&source_only, ctx.now_ms)).unwrap_or(false) {
-        return status(StatusCode::TOO_MANY_REQUESTS, "Too many failed codes from here; wait a minute and try again");
+        return step_up_code(web, ctx, StatusCode::TOO_MANY_REQUESTS, Some(TOO_MANY));
     }
     // By id: OIDC accounts step up with their local factor too (D49).
     let account = users::find_by_id(&web.0.db, &user.user_id).ok().flatten();
@@ -254,14 +302,7 @@ pub(crate) async fn step_up(web: &Web, ctx: &Ctx) -> Response<Body> {
             l.fail(&attempt, ctx.now_ms);
         }
         audit(web, &user.name, "auth.step_up_failed", serde_json::json!({ "source": ctx.source })).await;
-        let form = CodeForm {
-            csrf: &ctx.csrf,
-            action: "/step-up",
-            title: "Confirm with your authenticator",
-            error: Some("That code doesn't match"),
-            passkey: None,
-        };
-        return html(StatusCode::UNAUTHORIZED, form.render());
+        return step_up_form(web, ctx, StatusCode::UNAUTHORIZED, refused_code(ctx, web));
     }
     if let Err(e) = session::set_step_up(&web.0.db, &user.id_hash, ctx.now_ms).await {
         tracing::error!(error = %e, "step-up");

@@ -1,8 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Library: Rackhand{% endblock %}
+{% block head %}<script src="/static/forms.js" defer></script>{% endblock %}
 {% block nav %}<nav><a href="/">Overview</a> <a href="/approvals">Approvals</a> <a href="/jobs">Jobs</a> <a href="/library">Library</a> <a href="/patching">Patching</a></nav>{% endblock %}
 {% block content %}
 <h1>Library</h1>
+{% if let Some(n) = notice %}{% include "notice.html" %}{% endif %}
 <table>
 <tr><th>Item</th><th>Kind</th><th>Revision</th></tr>
 {% for i in items %}

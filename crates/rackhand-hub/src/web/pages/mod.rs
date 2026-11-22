@@ -1,6 +1,6 @@
 //! Page handlers, called by the gate once its checks have passed.
 
-mod account;
+pub(crate) mod account;
 mod add;
 mod appliance;
 mod approvals;

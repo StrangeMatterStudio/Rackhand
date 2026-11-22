@@ -156,8 +156,8 @@ pub(crate) struct Form {
     /// A problem with the form as a whole.
     notice: Option<String>,
     options: HashMap<&'static str, Groups>,
-    /// Secrets the hub has from an earlier try, shown as kept.
-    kept: Vec<&'static str>,
+    /// Secrets the hub has already, with what is said of them.
+    kept: HashMap<&'static str, &'static str>,
     /// What's said of a field instead of asking for it.
     settled: HashMap<&'static str, &'static str>,
     held: Option<String>,
@@ -170,7 +170,7 @@ struct FieldView<'a> {
     spec: &'a Spec,
     value: &'a str,
     error: &'a str,
-    kept: bool,
+    kept: Option<&'a str>,
     settled: Option<&'a str>,
     groups: Vec<(&'a str, Vec<(&'a str, &'a str)>)>,
     zones: bool,
@@ -199,7 +199,7 @@ impl Form {
             errors: Vec::new(),
             notice: None,
             options: HashMap::new(),
-            kept: Vec::new(),
+            kept: HashMap::new(),
             settled: HashMap::new(),
             held: None,
         }
@@ -220,6 +220,22 @@ impl Form {
             }
         }
         form
+    }
+
+    /// The form that was sent, if it is this one; on a page with several, the others stay as they are.
+    pub fn or_sent(self, sent: &mut Option<Form>) -> Form {
+        match sent.take_if(|s| s.id == self.id) {
+            Some(mut s) => {
+                for (name, groups) in self.options {
+                    s.options.entry(name).or_insert(groups);
+                }
+                for (name, says) in self.kept {
+                    s.kept.entry(name).or_insert(says);
+                }
+                s
+            }
+            None => self,
+        }
     }
 
     pub fn set(&mut self, name: &'static str, value: &str) {
@@ -246,14 +262,14 @@ impl Form {
         self
     }
 
-    /// The hub already has this secret: it can be left empty.
-    pub fn keep(&mut self, name: &'static str) {
-        self.kept.push(name);
+    /// The hub already has this secret, so it can be left empty: `KEPT` or `STORED`.
+    pub fn keep(&mut self, name: &'static str, says: &'static str) {
+        self.kept.insert(name, says);
     }
 
     /// The hub doesn't have it after all.
     pub fn forget(&mut self, name: &'static str) {
-        self.kept.retain(|n| *n != name);
+        self.kept.remove(name);
     }
 
     /// The field has been dealt with; it's replaced with what is said of it.
@@ -268,7 +284,7 @@ impl Form {
                 continue;
             }
             let value = self.value(s.name);
-            if value.is_empty() && self.kept.contains(&s.name) {
+            if value.is_empty() && self.kept.contains_key(s.name) {
                 continue;
             }
             if let Some(p) = s.problem(value).or_else(|| self.choice_problem(s, value)) {
@@ -344,7 +360,7 @@ impl Form {
         let names: Vec<&'static str> = secrets.keys().copied().collect();
         self.held = held.put(&ctx.binding, self.id, secrets, ctx.now_ms);
         if self.held.is_some() {
-            self.kept.extend(names);
+            self.kept.extend(names.into_iter().map(|n| (n, KEPT)));
         }
     }
 
@@ -375,6 +391,11 @@ impl Form {
         ProblemsView { notice: self.notice.as_deref(), errors }.render().unwrap_or_default()
     }
 
+    /// Every field, in order.
+    pub fn all_fields(&self) -> String {
+        self.specs.iter().map(|s| self.field(s.name)).collect()
+    }
+
     /// A field: its label, hint, control and what's wrong with it.
     pub fn field(&self, name: &str) -> String {
         let Some(spec) = self.specs.iter().find(|s| s.name == name) else { return String::new() };
@@ -389,7 +410,7 @@ impl Form {
             spec,
             value: if spec.kind == Kind::Secret { "" } else { self.value(name) },
             error: self.errors.iter().find(|(n, _)| *n == name).map_or("", |(_, e)| e.as_str()),
-            kept: self.kept.contains(&name),
+            kept: self.kept.get(name).copied(),
             settled: self.settled.get(name).copied(),
             groups,
             zones: name == ZONE,
@@ -423,9 +444,14 @@ impl FieldView<'_> {
     }
 
     fn needed(&self) -> bool {
-        self.spec.required && !self.kept
+        self.spec.required && self.kept.is_none()
     }
 }
+
+/// A secret typed on an earlier try of the form.
+pub(crate) const KEPT: &str = "Kept from your last try. Leave it empty to use that one, or type a new one.";
+/// A secret in the Vault.
+pub(crate) const STORED: &str = "One is stored. Leave it empty to keep it, or type a new one.";
 
 /// The name of a timezone field, wherever one is.
 pub(crate) const ZONE: &str = "timezone";

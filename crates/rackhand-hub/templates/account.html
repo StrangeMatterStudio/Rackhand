@@ -3,6 +3,7 @@
 {% block nav %}<nav><a href="/">Overview</a> <a href="/account">Account</a></nav>{% endblock %}
 {% block content %}
 <h1>{{ name }}</h1>
+{% if let Some(n) = notice %}{% include "notice.html" %}{% endif %}
 <p>Authenticator app: {% if totp %}set up{% else %}not set up{% endif %}. Passkeys: {{ passkeys }} passkey{% if passkeys != 1 %}s{% endif %}.</p>
 <form method="post" action="/account/passkeys">
 <input type="hidden" name="csrf" value="{{ csrf }}">

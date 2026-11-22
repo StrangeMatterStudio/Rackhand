@@ -1,8 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Notifiers: Rackhand{% endblock %}
+{% block head %}<script src="/static/forms.js" defer></script>{% endblock %}
 {% block nav %}<nav><a href="/">Overview</a> <a href="/settings">Settings</a></nav>{% endblock %}
 {% block content %}
 <h1>Notifiers</h1>
+{% if let Some(n) = notice %}{% if sent_ok %}<p class="ok" role="status">{{ n }}</p>{% else %}{% include "notice.html" %}{% endif %}{% endif %}
 {% if saved.is_empty() %}<p>No notifiers yet.</p>{% else %}
 <table>
 <thead><tr><th>Name</th><th>Kind</th><th>Sends to</th><th>State</th></tr></thead>
@@ -12,26 +14,20 @@
 {% if !running.is_empty() %}<form method="post" action="/settings/notifiers/test"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Send test</button></form>{% endif %}
 <h2>Add or replace a notifier</h2>
 <p>Saving a name that exists replaces it. Secrets go into the Vault; leave them empty to keep the stored ones. A saved notifier applies when the hub restarts.</p>
-<form method="post" action="/settings/notifiers">
-<input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="discord">
+<form method="post" action="/settings/notifiers" novalidate data-check>
+{{ discord.hidden(csrf)|safe }}<input type="hidden" name="kind" value="discord">
 <fieldset><legend>Discord</legend>
-<label>Name <input name="name" required pattern="[a-z0-9-]{1,64}"></label>
-<label>Webhook URL <input name="webhook" type="password" autocomplete="off"></label>
-<button type="submit">Save</button>
+{{ discord.problems()|safe }}
+{{ discord.all_fields()|safe }}
+<button type="submit">Save the Discord notifier</button>
 </fieldset>
 </form>
-<form method="post" action="/settings/notifiers">
-<input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="smtp">
+<form method="post" action="/settings/notifiers" novalidate data-check>
+{{ smtp.hidden(csrf)|safe }}<input type="hidden" name="kind" value="smtp">
 <fieldset><legend>Email (SMTP)</legend>
-<label>Name <input name="name" required pattern="[a-z0-9-]{1,64}"></label>
-<label>Server <input name="host" required></label>
-<label>Port <input name="port" type="number" min="1" max="65535" value="587" required></label>
-<label>Security <select name="security"><option value="starttls">STARTTLS</option><option value="tls">TLS</option></select></label>
-<label>User name <input name="username" autocomplete="off"></label>
-<label>Password <input name="password" type="password" autocomplete="off"></label>
-<label>From <input name="from" type="email" required></label>
-<label>To (comma-separated) <input name="to" required></label>
-<button type="submit">Save</button>
+{{ smtp.problems()|safe }}
+{{ smtp.all_fields()|safe }}
+<button type="submit">Save the email notifier</button>
 </fieldset>
 </form>
 {% endblock %}

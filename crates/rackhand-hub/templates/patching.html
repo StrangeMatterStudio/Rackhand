@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Patching: Rackhand{% endblock %}
+{% block head %}<script src="/static/forms.js" defer></script>{% endblock %}
 {% block nav %}<nav><a href="/">Overview</a> <a href="/approvals">Approvals</a> <a href="/jobs">Jobs</a> <a href="/library">Library</a> <a href="/patching">Patching</a></nav>{% endblock %}
 {% block content %}
 <h1>Patching</h1>
@@ -30,30 +31,32 @@
 {% if runs.is_empty() %}<p>No patch jobs yet.</p>{% endif %}
 <ul>{% for r in runs %}<li><a href="/jobs/{{ r.id }}">{{ r.name }}</a> on {{ r.target }}: {{ r.state }}</li>{% endfor %}</ul>
 {% if can_edit %}
-<form method="post" action="/policies">
-<input type="hidden" name="csrf" value="{{ csrf }}">
+<form method="post" action="/policies" novalidate data-check>
+{{ policy.hidden(csrf)|safe }}
 <fieldset>
 <legend>Add or change a policy</legend>
-<label>Name <input name="name" required></label>
-<label>Patch <select name="patch"><option>approve-only</option><option>auto</option><option>hold</option></select></label>
-<label><input type="checkbox" name="auto_reboot"> Reboot when needed</label>
-<label><input type="checkbox" name="auto_rollback"> Roll back after a failed patch</label>
-<label>Snapshot <select name="snapshot"><option>optional</option><option>required</option></select></label>
-<label>Quarantine <select name="quarantine"><option>approval</option><option>never</option></select></label>
-<label>Peer requests <select name="peer_requests"><option>approval</option><option>auto</option></select></label>
+{{ policy.problems()|safe }}
+{{ policy.field("name")|safe }}
+{{ policy.field("patch")|safe }}
+{{ policy.field("auto_reboot")|safe }}
+{{ policy.field("auto_rollback")|safe }}
+{{ policy.field("snapshot")|safe }}
+{{ policy.field("quarantine")|safe }}
+{{ policy.field("peer_requests")|safe }}
+<button type="submit">Save the policy</button>
 </fieldset>
-<button type="submit">Save</button>
 </form>
-<form method="post" action="/windows">
-<input type="hidden" name="csrf" value="{{ csrf }}">
+<form method="post" action="/windows" novalidate data-check>
+{{ window.hidden(csrf)|safe }}
 <fieldset>
 <legend>Add a maintenance window</legend>
-<label>Machine <input name="machine"></label>
-<label>or tag <input name="tag"></label>
-<label>When <input name="rrule" placeholder="weekly sun 03:00 120m" required></label>
-<label>Timezone <input name="timezone" placeholder="Europe/Berlin" required></label>
+{{ window.problems()|safe }}
+{{ window.field("machine")|safe }}
+{{ window.field("tag")|safe }}
+{{ window.field("rrule")|safe }}
+{{ window.field("timezone")|safe }}
+<button type="submit">Add the window</button>
 </fieldset>
-<button type="submit">Add</button>
 </form>
 {% endif %}
 <form method="post" action="/sign-out"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Sign out</button></form>

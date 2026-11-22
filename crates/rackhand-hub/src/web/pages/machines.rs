@@ -4,6 +4,7 @@
 use axum::body::Body;
 use axum::http::{Response, StatusCode};
 
+use super::monitoring::show_machine;
 use super::{redirect, status};
 use crate::web::auth::step_up;
 use crate::web::{Ctx, Web};
@@ -22,17 +23,25 @@ pub(super) async fn accept_host_key(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some(keys) = web.0.host_keys.as_ref() else { return status(StatusCode::NOT_FOUND, "No such machine") };
     // Bound to the key the admin was shown: if the machine offers another one meanwhile, nothing is accepted.
     let Some(fingerprint) = ctx.form.get("fingerprint").map(|f| f.trim().to_string()).filter(|f| !f.is_empty()) else {
-        return status(StatusCode::BAD_REQUEST, "Name the fingerprint you are accepting");
+        return show_machine(web, ctx, id, StatusCode::BAD_REQUEST, Some("Name the fingerprint you are accepting."));
     };
     let Some((key_type, _)) = keys.offered(id) else {
-        return status(StatusCode::NOT_FOUND, "This machine hasn't offered a new host key");
+        return show_machine(web, ctx, id, StatusCode::NOT_FOUND, Some("This machine hasn't offered a new host key."));
     };
     match keys.accept_offered(id, &fingerprint, &user.name, ctx.now_ms).await {
         Ok(true) => {}
-        Ok(false) => return status(StatusCode::CONFLICT, "The machine now offers a different key; check it again"),
+        Ok(false) => {
+            return show_machine(
+                web,
+                ctx,
+                id,
+                StatusCode::CONFLICT,
+                Some("The machine now offers a different key; check it again."),
+            );
+        }
         Err(e) => {
             tracing::error!(error = %e, "host key");
-            return status(StatusCode::INTERNAL_SERVER_ERROR, "The key couldn't be stored");
+            return show_machine(web, ctx, id, StatusCode::INTERNAL_SERVER_ERROR, Some("The key couldn't be stored."));
         }
     }
     let data = serde_json::json!({ "key_type": key_type, "fingerprint": fingerprint }).to_string();
@@ -51,16 +60,28 @@ pub(super) async fn confirm_binding(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some(id) = machine_id(&ctx.path) else { return status(StatusCode::NOT_FOUND, "No such machine") };
     let Some(bindings) = web.0.bindings.as_ref() else { return status(StatusCode::NOT_FOUND, "No such machine") };
     let Some(guest) = ctx.form.get("guest").map(|g| g.trim().to_string()).filter(|g| !g.is_empty()) else {
-        return status(StatusCode::BAD_REQUEST, "Name the guest you are confirming");
+        return show_machine(web, ctx, id, StatusCode::BAD_REQUEST, Some("Name the guest you are confirming."));
     };
     match bindings.confirm(id, &guest, &user.name, ctx.now_ms).await {
         Ok(true) => {}
         Ok(false) => {
-            return status(StatusCode::CONFLICT, "That guest isn't this machine's binding or what it looks like now");
+            return show_machine(
+                web,
+                ctx,
+                id,
+                StatusCode::CONFLICT,
+                Some("That guest isn't this machine's binding or what it looks like now."),
+            );
         }
         Err(e) => {
             tracing::error!(error = %e, "binding");
-            return status(StatusCode::INTERNAL_SERVER_ERROR, "The binding couldn't be stored");
+            return show_machine(
+                web,
+                ctx,
+                id,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Some("The binding couldn't be stored."),
+            );
         }
     }
     if let Err(e) = web.0.audit.append(&user.name, "machine.binding_confirmed", Some(id), &guest).await {

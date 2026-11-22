@@ -180,7 +180,7 @@ fn show_draft(form: &mut Form, draft: &Draft) {
         form.settle("setup_code", "Setup code accepted.");
     }
     if draft.password_hash.is_some() {
-        form.keep("password");
+        form.keep("password", forms::KEPT);
     }
 }
 
@@ -245,7 +245,7 @@ pub(super) async fn submit(web: &Web, ctx: &Ctx) -> Response<Body> {
                 return status(StatusCode::INTERNAL_SERVER_ERROR, "Password hashing failed");
             };
             draft.password_hash = Some(hash);
-            form.keep("password");
+            form.keep("password", forms::KEPT);
         } else {
             form.forget("password");
         }

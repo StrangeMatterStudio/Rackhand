@@ -7,8 +7,10 @@ use axum::http::{Response, StatusCode};
 use rackhand_store::{Row, StoreError, WriteCmd};
 use rusqlite::types::Value;
 
-use super::{html, redirect, status};
+use super::{html, redirect, settings, status};
+use crate::web::auth::password::MIN_LENGTH;
 use crate::web::auth::users::{self, NewUser, UserError};
+use crate::web::forms::{self, Choices, Form, Spec};
 use crate::web::perms::{parse_role, role_name};
 use crate::web::{Ctx, Web, totp};
 
@@ -19,16 +21,43 @@ struct Created<'a> {
     role: &'a str,
     secret: &'a str,
     uri: &'a str,
+    qr: String,
+}
+
+const ROLES: Choices = &[
+    ("viewer", "Viewer: sees everything, changes nothing"),
+    ("responder", "Responder: also handles incidents and normal approvals"),
+    ("admin", "Admin: everything"),
+];
+const SIGN_IN: Choices = &[("local", "With a password"), ("oidc", "Through the identity provider (OIDC)")];
+
+const USER: &[Spec] = &[
+    Spec::text("name", "Name")
+        .hint("1 to 64 letters, digits, dots, dashes, underscores or @.")
+        .pattern(r"[A-Za-z0-9._@\-]{1,64}", "Use 1 to 64 letters, digits or . _ @ -, with no spaces")
+        .attrs("autocomplete=\"off\" autocapitalize=\"none\" spellcheck=\"false\""),
+    Spec::select("role", "Role", ROLES),
+    Spec::select("auth", "Signs in", SIGN_IN)
+        .hint("Either way the account gets an authenticator key on the next page."),
+    Spec::secret("password", "Password")
+        .optional()
+        .hint("At least 12 characters. Needed when signing in with a password.")
+        .length(MIN_LENGTH, 1024)
+        .attrs("autocomplete=\"new-password\""),
+    Spec::text("subject", "OIDC subject")
+        .optional()
+        .hint("The provider's `sub` for this person. Needed when signing in through it."),
+];
+
+/// The form that adds a user.
+pub(super) fn blank() -> Form {
+    Form::blank("user", USER)
 }
 
 /// `/settings/<kind>/<id>/...` → the id, if it looks like one.
 fn path_id<'a>(path: &'a str, kind: &str) -> Option<&'a str> {
     let id = path.strip_prefix("/settings/")?.strip_prefix(kind)?.strip_prefix('/')?.split('/').next()?;
     (!id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')).then_some(id)
-}
-
-fn valid_name(name: &str) -> bool {
-    (1..=64).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._@-".contains(&b))
 }
 
 async fn audit(web: &Web, actor: &str, action: &str, target: &str, data: serde_json::Value) {
@@ -39,38 +68,66 @@ async fn audit(web: &Web, actor: &str, action: &str, target: &str, data: serde_j
 
 pub(super) async fn create(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some(admin) = &ctx.user else { return redirect("/sign-in") };
-    let f = |k: &str| ctx.form.get(k).map(|v| v.trim()).unwrap_or("");
-    let name = f("name");
-    if !valid_name(name) {
-        return status(StatusCode::BAD_REQUEST, "A name is 1 to 64 letters, digits or . _ @ -");
+    let mut form = Form::sent("user", USER, ctx, &web.0.held);
+    // what the other way of signing in needs isn't looked at
+    match form.value("auth") {
+        "oidc" => {
+            form.set("password", "");
+            if form.value("subject").is_empty() {
+                form.refuse("subject", "An OIDC account needs the provider's subject (sub)");
+            }
+        }
+        _ => {
+            if form.value("password").is_empty() {
+                form.refuse("password", "This is needed to sign in with a password");
+            }
+        }
     }
-    let Some(role) = parse_role(f("role")) else { return status(StatusCode::BAD_REQUEST, "Choose a role") };
+    form.check();
+    let (true, Some(role)) = (form.ok(), parse_role(form.value("role"))) else {
+        form.hold(&web.0.held, ctx);
+        return settings::show(web, ctx, StatusCode::BAD_REQUEST, Some(form), None);
+    };
     let Ok(secret) = totp::new_secret() else { return status(StatusCode::INTERNAL_SERVER_ERROR, "No randomness") };
-    let new = match f("auth") {
-        "local" => NewUser::Local { password: ctx.form.get("password").map(String::as_str).unwrap_or("") },
-        "oidc" if !f("subject").is_empty() => NewUser::Oidc { subject: f("subject") },
-        "oidc" => return status(StatusCode::BAD_REQUEST, "An OIDC account needs the provider's subject (sub)"),
-        _ => return status(StatusCode::BAD_REQUEST, "Choose local or OIDC"),
+    let auth = form.value("auth").to_string();
+    let new = match auth.as_str() {
+        "oidc" => NewUser::Oidc { subject: form.value("subject") },
+        _ => NewUser::Local { password: form.value("password") },
     };
-    let auth = match new {
-        NewUser::Local { .. } => "local",
-        NewUser::Oidc { .. } => "oidc",
-    };
-    match users::create(&web.0.db, &web.0.vault, name, role, new, &secret, ctx.now_ms).await {
-        Ok(_) => {}
-        Err(UserError::Invalid(why)) => return status(StatusCode::BAD_REQUEST, &why),
+    let name = form.value("name").to_string();
+    let name = name.as_str();
+    let refused = match users::create(&web.0.db, &web.0.vault, name, role, new, &secret, ctx.now_ms).await {
+        Ok(_) => None,
+        Err(UserError::Invalid(why)) => {
+            form.notice(why);
+            Some(StatusCode::BAD_REQUEST)
+        }
         Err(UserError::Store(StoreError::Sqlite(e))) if e.to_string().contains("UNIQUE") => {
-            return status(StatusCode::CONFLICT, "That name or subject is taken");
+            let field = if e.to_string().contains("oidc_subject") { "subject" } else { "name" };
+            let why = format!("`{}` is taken by another account", form.value(field));
+            form.refuse(field, why);
+            Some(StatusCode::CONFLICT)
         }
         Err(e) => {
             tracing::error!(error = %e, "create user");
-            return status(StatusCode::INTERNAL_SERVER_ERROR, "The account couldn't be created");
+            form.notice("The account couldn't be created; try again.");
+            Some(StatusCode::INTERNAL_SERVER_ERROR)
         }
+    };
+    if let Some(code) = refused {
+        form.hold(&web.0.held, ctx);
+        return settings::show(web, ctx, code, Some(form), None);
     }
     audit(web, &admin.name, "user.created", name, serde_json::json!({ "role": role_name(role), "auth": auth })).await;
     let b32 = totp::encode_base32(&secret);
     let uri = totp::uri("Rackhand", name, &secret);
-    html(StatusCode::OK, Created { name, role: role_name(role), secret: &b32, uri: &uri }.render())
+    let qr = forms::qr_svg(&uri, "QR code of the key for an authenticator app");
+    html(StatusCode::OK, Created { name, role: role_name(role), secret: &b32, uri: &uri, qr }.render())
+}
+
+/// What went wrong with one of the page's buttons, on the page.
+fn explain(web: &Web, ctx: &Ctx, code: StatusCode, text: &str) -> Response<Body> {
+    settings::show(web, ctx, code, None, Some(text))
 }
 
 async fn put_user(web: &Web, ctx: &Ctx, cols: Vec<(&'static str, Value)>) -> Result<String, Box<Response<Body>>> {
@@ -81,14 +138,17 @@ async fn put_user(web: &Web, ctx: &Ctx, cols: Vec<(&'static str, Value)>) -> Res
     row.extend(cols);
     match web.0.db.writer().send(WriteCmd::PutUser(row)).await {
         Ok(_) => Ok(id.to_string()),
-        Err(StoreError::Conflict(_)) => Err(Box::new(status(
+        Err(StoreError::Conflict(_)) => Err(Box::new(explain(
+            web,
+            ctx,
             StatusCode::CONFLICT,
-            "The hub needs at least one enabled admin; add another admin first",
+            "The hub needs at least one enabled admin; add another admin first. Nothing was changed.",
         ))),
-        Err(StoreError::NoSuchRow(_)) => Err(Box::new(status(StatusCode::NOT_FOUND, "No such user"))),
+        Err(StoreError::NoSuchRow(_)) => Err(Box::new(explain(web, ctx, StatusCode::NOT_FOUND, "No such user."))),
         Err(e) => {
             tracing::error!(error = %e, "user");
-            Err(Box::new(status(StatusCode::INTERNAL_SERVER_ERROR, "The account couldn't be changed")))
+            let code = StatusCode::INTERNAL_SERVER_ERROR;
+            Err(Box::new(explain(web, ctx, code, "The account couldn't be changed; try again.")))
         }
     }
 }
@@ -96,7 +156,7 @@ async fn put_user(web: &Web, ctx: &Ctx, cols: Vec<(&'static str, Value)>) -> Res
 pub(super) async fn change_role(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some(admin) = &ctx.user else { return redirect("/sign-in") };
     let Some(role) = ctx.form.get("role").and_then(|r| parse_role(r.trim())) else {
-        return status(StatusCode::BAD_REQUEST, "Choose a role");
+        return explain(web, ctx, StatusCode::BAD_REQUEST, "Choose a role.");
     };
     match put_user(web, ctx, vec![("role", Value::Text(role_name(role).into()))]).await {
         Ok(id) => {
@@ -128,10 +188,10 @@ pub(super) async fn revoke_device(web: &Web, ctx: &Ctx) -> Response<Body> {
             audit(web, &admin.name, "device.revoked", id, serde_json::json!({})).await;
             redirect("/settings")
         }
-        Ok(false) => status(StatusCode::NOT_FOUND, "No such device, or it is already revoked"),
+        Ok(false) => explain(web, ctx, StatusCode::NOT_FOUND, "No such device, or it is already revoked."),
         Err(e) => {
             tracing::error!(error = %e, "revoke device");
-            status(StatusCode::INTERNAL_SERVER_ERROR, "The device couldn't be revoked")
+            explain(web, ctx, StatusCode::INTERNAL_SERVER_ERROR, "The device couldn't be revoked; try again.")
         }
     }
 }

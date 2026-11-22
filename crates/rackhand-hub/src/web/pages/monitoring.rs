@@ -39,6 +39,8 @@ fn incident_view(r: &rusqlite::Row<'_>) -> rusqlite::Result<IncidentView> {
 #[derive(Template)]
 #[template(path = "machine.html")]
 struct MachinePage {
+    /// What went wrong with one of its buttons.
+    notice: Option<String>,
     csrf: String,
     id: String,
     name: String,
@@ -107,7 +109,13 @@ fn silent_since(web: &Web, id: &str) -> Option<String> {
 }
 
 pub(super) fn machine(web: &Web, ctx: &Ctx) -> Response<Body> {
-    let id = ctx.path.strip_prefix("/machines/").unwrap_or("").to_string();
+    let id = ctx.path.strip_prefix("/machines/").unwrap_or("");
+    show_machine(web, ctx, id, StatusCode::OK, None)
+}
+
+/// The machine's page, with what went wrong with one of its buttons.
+pub(super) fn show_machine(web: &Web, ctx: &Ctx, id: &str, code: StatusCode, notice: Option<&str>) -> Response<Body> {
+    let id = id.to_string();
     let found = web.0.db.readers().with(|c| {
         c.query_row(
             "SELECT m.name, s.name, m.kind, coalesce(m.os, ''), m.access, m.state, m.proxmox_ref, m.proxmox_ref_state
@@ -177,6 +185,7 @@ pub(super) fn machine(web: &Web, ctx: &Ctx) -> Response<Body> {
     });
     let page = MachinePage {
         csrf: ctx.csrf.clone(),
+        notice: notice.map(str::to_string),
         silent_since: silent_since(web, &id),
         id,
         name,
@@ -192,7 +201,7 @@ pub(super) fn machine(web: &Web, ctx: &Ctx) -> Response<Body> {
         updates,
         binding,
     };
-    html(StatusCode::OK, page.render())
+    html(code, page.render())
 }
 
 pub(super) struct VitalRow {

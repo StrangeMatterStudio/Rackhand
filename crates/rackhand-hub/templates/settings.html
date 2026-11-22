@@ -1,8 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Settings: Rackhand{% endblock %}
+{% block head %}<script src="/static/forms.js" defer></script>{% endblock %}
 {% block nav %}<nav><a href="/">Overview</a> <a href="/settings">Settings</a></nav>{% endblock %}
 {% block content %}
 <h1>Settings</h1>
+{% if let Some(n) = notice %}{% include "notice.html" %}{% endif %}
 <form method="post" action="/settings/sources">
 <input type="hidden" name="csrf" value="{{ csrf }}">
 <fieldset>
@@ -13,28 +15,31 @@
 </fieldset>
 <button type="submit">Save</button>
 </form>
-<form method="post" action="/settings/git-mirror">
-<input type="hidden" name="csrf" value="{{ csrf }}">
+<form method="post" action="/settings/git-mirror" novalidate data-check>
+{{ mirror.hidden(csrf)|safe }}
 <fieldset>
 <legend>Git mirror</legend>
-<label>Repository (ssh://) <input name="url" value="{{ mirror_url }}" required></label>
+{{ mirror.problems()|safe }}
+{{ mirror.field("url")|safe }}
 {% if let Some(key) = deploy_key %}
 <p>Add this deploy key, with write access, to the repository:</p>
-<p><code class="secret">{{ key }}</code></p>
+<p><code class="secret" id="deploy-key">{{ key }}</code></p>
+<p><button type="button" data-copy="deploy-key" hidden>Copy the key</button></p>
 {% endif %}
+<button type="submit">Save the mirror</button>
 </fieldset>
-<button type="submit">Save</button>
 </form>
-<form method="post" action="/settings/oidc">
-<input type="hidden" name="csrf" value="{{ csrf }}">
+<form method="post" action="/settings/oidc" novalidate data-check>
+{{ oidc.hidden(csrf)|safe }}
 <fieldset>
 <legend>OIDC sign-in</legend>
-<label>Issuer <input name="issuer" value="{{ oidc.issuer }}" required></label>
-<label>Client id <input name="client_id" value="{{ oidc.client_id }}" required></label>
-<label>Client secret <input type="password" name="client_secret" autocomplete="off" placeholder="{% if oidc.client_secret.is_empty() %}required{% else %}stored; leave empty to keep{% endif %}"></label>
-<label>Callback URL <input name="redirect_url" value="{{ oidc.redirect_url }}" placeholder="https://hub.example/sign-in/oidc/callback" required></label>
+{{ oidc.problems()|safe }}
+{{ oidc.field("issuer")|safe }}
+{{ oidc.field("client_id")|safe }}
+{{ oidc.field("client_secret")|safe }}
+{{ oidc.field("redirect_url")|safe }}
+<button type="submit">Save OIDC sign-in</button>
 </fieldset>
-<button type="submit">Save</button>
 </form>
 <h2>Users</h2>
 <table>
@@ -43,23 +48,25 @@
 <tr><td>{{ u.name }}</td><td>{{ u.role }}</td><td>{{ u.auth }}</td><td>
 {% if u.disabled %}disabled{% else %}
 <form method="post" action="/settings/users/{{ u.id }}/role"><input type="hidden" name="csrf" value="{{ csrf }}">
-<select name="role"><option value="viewer">viewer</option><option value="responder">responder</option><option value="admin">admin</option></select>
+<select name="role" aria-label="Role of {{ u.name }}">{% for r in ["viewer", "responder", "admin"] %}<option value="{{ r }}"{% if u.role == *r %} selected{% endif %}>{{ r }}</option>{% endfor %}</select>
 <button type="submit">Change role</button></form>
 <form method="post" action="/settings/users/{{ u.id }}/disable"><input type="hidden" name="csrf" value="{{ csrf }}">
 <button type="submit">Disable</button></form>
 {% endif %}</td></tr>
 {% endfor %}
 </table>
-<form method="post" action="/settings/users">
-<input type="hidden" name="csrf" value="{{ csrf }}">
+<form method="post" action="/settings/users" novalidate data-check>
+{{ user.hidden(csrf)|safe }}
 <fieldset>
 <legend>Add a user</legend>
-<label>Name <input name="name" required></label>
-<label>Role <select name="role"><option value="viewer">viewer</option><option value="responder">responder</option><option value="admin">admin</option></select></label>
-<label><input type="radio" name="auth" value="local" checked> Password <input type="password" name="password" autocomplete="new-password"></label>
-<label><input type="radio" name="auth" value="oidc"> OIDC, subject <input name="subject"></label>
+{{ user.problems()|safe }}
+{{ user.field("name")|safe }}
+{{ user.field("role")|safe }}
+{{ user.field("auth")|safe }}
+{{ user.field("password")|safe }}
+{{ user.field("subject")|safe }}
+<button type="submit">Add the user</button>
 </fieldset>
-<button type="submit">Add</button>
 </form>
 <h2>Devices</h2>
 <table>

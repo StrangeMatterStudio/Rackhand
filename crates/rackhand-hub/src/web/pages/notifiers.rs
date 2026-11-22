@@ -6,10 +6,11 @@ use askama::Template;
 use axum::body::Body;
 use axum::http::{Response, StatusCode};
 
-use super::{html, html_text, redirect, status};
+use super::{html, redirect, status};
 use crate::library::config;
 use crate::notify::config::{self as file, DiscordSpec, NotifiersFile, SmtpSpec};
 use crate::vault::Secret;
+use crate::web::forms::{Choices, Form, Spec};
 use crate::web::{Ctx, Web, auth};
 
 const FILE: &str = "notifiers";
@@ -20,7 +21,57 @@ struct NotifiersPage<'a> {
     csrf: &'a str,
     running: Vec<String>,
     saved: Vec<Saved>,
+    /// What went wrong with Send test, or that it worked.
+    notice: Option<&'a str>,
+    sent_ok: bool,
+    discord: Form,
+    smtp: Form,
 }
+
+const NAME: Spec = Spec::text("name", "Name")
+    .hint("1 to 64 lower-case letters (a-z), digits and dashes.")
+    .pattern(r"[a-z0-9\-]{1,64}", "Use 1 to 64 of a-z, 0-9 and dash, with no capitals or spaces")
+    .attrs(PLAIN);
+const PLAIN: &str = "autocomplete=\"off\" autocapitalize=\"none\" spellcheck=\"false\"";
+const WEBHOOK_RULE: &str = "The webhook is an https:// URL (http:// only on this host)";
+const ADDRESS_RULE: &str = "Write it as name@domain";
+
+const DISCORD: &[Spec] = &[
+    NAME,
+    Spec::secret("webhook", "Webhook URL")
+        .optional()
+        .hint("From the channel's settings in Discord. Needed the first time; leave it empty to keep the stored one.")
+        .length(1, 512)
+        .attrs("autocomplete=\"off\""),
+];
+
+const SECURITY: Choices = &[("starttls", "STARTTLS (usually port 587)"), ("tls", "TLS (usually port 465)")];
+
+const SMTP: &[Spec] = &[
+    NAME,
+    Spec::text("host", "Server")
+        .hint("The mail server's host name, such as smtp.example.com.")
+        .pattern(r"\S{1,253}", "A host name has no spaces and is at most 253 characters")
+        .attrs(PLAIN),
+    Spec::text("port", "Port")
+        .hint("1 to 65535; usually 587 for STARTTLS and 465 for TLS.")
+        .pattern("[0-9]{1,5}", "The port is a number from 1 to 65535")
+        .attrs("autocomplete=\"off\" inputmode=\"numeric\""),
+    Spec::select("security", "Security", SECURITY),
+    Spec::text("username", "User name")
+        .optional()
+        .hint("Leave it empty if the server needs no sign-in.")
+        .pattern(r"\S{1,254}", "The user name has no spaces")
+        .attrs(PLAIN),
+    Spec::secret("password", "Password")
+        .optional()
+        .hint("Needed the first time with a user name; leave it empty to keep the stored one.")
+        .attrs("autocomplete=\"new-password\""),
+    Spec::text("from", "From").hint("The sender, as name@domain.").pattern(r"[^\s@]+@\S+", ADDRESS_RULE).attrs(PLAIN),
+    Spec::text("to", "To").hint("The recipients, as name@domain, with commas between them.").attrs(PLAIN),
+];
+
+const NEEDED: &str = "This is needed: none is stored for a notifier of this name";
 
 struct Saved {
     name: String,
@@ -36,6 +87,11 @@ fn saved(web: &Web) -> Result<NotifiersFile, String> {
 }
 
 pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
+    show(web, ctx, StatusCode::OK, None, None)
+}
+
+/// The page, with the form that was refused as it was sent, or what came of Send test.
+fn show(web: &Web, ctx: &Ctx, code: StatusCode, mut sent: Option<Form>, notice: Option<&str>) -> Response<Body> {
     let running = web.0.notify.as_ref().map(|n| n.names()).unwrap_or_default();
     let Ok(current) = saved(web) else {
         return status(StatusCode::INTERNAL_SERVER_ERROR, "config/notifiers.toml couldn't be read");
@@ -50,29 +106,29 @@ pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
         kind: "Email",
         target: format!("{} to {}", s.host, s.to.join(", ")),
     }));
-    html(StatusCode::OK, NotifiersPage { csrf: &ctx.csrf, running, saved: list }.render())
+    let page = NotifiersPage {
+        csrf: &ctx.csrf,
+        running,
+        saved: list,
+        notice,
+        sent_ok: code.is_success(),
+        discord: Form::blank("discord", DISCORD).or_sent(&mut sent),
+        smtp: Form::blank("smtp", SMTP).with("port", "587").or_sent(&mut sent),
+    };
+    html(code, page.render())
 }
 
 /// Send test: one message through every running notifier.
 pub(super) async fn test(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some(notify) = web.0.notify.as_ref().filter(|n| !n.names().is_empty()) else {
-        return html_text(StatusCode::CONFLICT, "Notifiers", "No notifier is running.", Some("/settings/notifiers"));
+        return show(web, ctx, StatusCode::CONFLICT, None, Some("No notifier is running."));
     };
     let by = ctx.user.as_ref().map(|u| u.name.clone()).unwrap_or_default();
     let _ = web.0.audit.append(&format!("user:{by}"), "notifier.test", None, "{}").await;
     match notify.send_text("Test message from Rackhand", ctx.now_ms).await {
-        Ok(()) => html_text(StatusCode::OK, "Notifiers", "The test message was sent.", Some("/settings/notifiers")),
-        Err(e) => html_text(
-            StatusCode::BAD_GATEWAY,
-            "Notifiers",
-            &format!("The test failed: {e}"),
-            Some("/settings/notifiers"),
-        ),
+        Ok(()) => show(web, ctx, StatusCode::OK, None, Some("The test message was sent.")),
+        Err(e) => show(web, ctx, StatusCode::BAD_GATEWAY, None, Some(&format!("The test failed: {e}"))),
     }
-}
-
-fn valid_name(name: &str) -> bool {
-    (1..=64).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 fn plain(v: &str, max: usize) -> bool {
@@ -83,119 +139,129 @@ fn address(v: &str) -> bool {
     plain(v, 254) && v.split_once('@').is_some_and(|(user, host)| !user.is_empty() && !host.is_empty())
 }
 
-/// A secret given in the form goes into the Vault; an empty one keeps the stored one, and a new notifier needs it.
-async fn secret(web: &Web, name: &str, given: &str) -> Result<String, Refusal> {
-    if given.is_empty() {
-        if web.0.vault.get(name).is_err() {
-            return Err((StatusCode::BAD_REQUEST, "Give the secret: none is stored for this notifier yet"));
-        }
-    } else if let Err(e) = web.0.vault.put(name, &Secret::from(given)).await {
+/// The Vault's name for a notifier's secret.
+fn vault_name(name: &str, field: &str) -> String {
+    format!("notifier.{name}.{field}")
+}
+
+/// A secret given in the form goes into the Vault; an empty one keeps the stored one.
+async fn store(web: &Web, name: &str, given: &str) -> Result<String, &'static str> {
+    if !given.is_empty()
+        && let Err(e) = web.0.vault.put(name, &Secret::from(given)).await
+    {
         tracing::error!(error = %e, "notifier secret");
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, "The secret couldn't be stored"));
+        return Err("The secret couldn't be stored; try again.");
     }
     Ok(format!("secret:{name}"))
 }
 
-/// A refused save: its status and the reason shown.
-type Refusal = (StatusCode, &'static str);
-
-enum Spec {
+enum Made {
     Discord(DiscordSpec),
     Smtp(SmtpSpec),
 }
 
-/// Checks the form before anything is stored.
-fn check(ctx: &Ctx) -> Result<(String, &'static str), &'static str> {
-    let f = |k: &str| ctx.form.get(k).map(|v| v.trim().to_string()).unwrap_or_default();
-    let name = f("name");
-    if !valid_name(&name) {
-        return Err("The name is 1 to 64 of a-z, 0-9 and -");
-    }
-    match f("kind").as_str() {
-        "discord" => {
-            let webhook = f("webhook");
-            if !webhook.is_empty() && (!auth::oidc::allowed_url(&webhook) || !plain(&webhook, 512)) {
-                return Err("The webhook must be an https:// URL (http:// only on this host)");
-            }
-            Ok((name, "discord"))
-        }
-        "smtp" => {
-            if !plain(&f("host"), 253) {
-                return Err("Give the mail server's host name");
-            }
-            if !f("port").parse::<u16>().is_ok_and(|p| p > 0) {
-                return Err("The port is 1 to 65535");
-            }
-            if !matches!(f("security").as_str(), "starttls" | "tls") {
-                return Err("Security is starttls or tls");
-            }
-            let to: Vec<String> = f("to").split(',').map(|a| a.trim().to_string()).filter(|a| !a.is_empty()).collect();
-            if !address(&f("from")) || to.is_empty() || !to.iter().all(|a| address(a)) {
-                return Err("Give the sender and at least one recipient as name@domain");
-            }
-            let username = f("username");
-            if !username.is_empty() && !plain(&username, 254) {
-                return Err("The user name has no spaces");
-            }
-            Ok((name, "smtp"))
-        }
-        _ => Err("The kind is discord or smtp"),
+/// A secret that has to be given, unless one is stored for the notifier already.
+fn need_secret(web: &Web, form: &mut Form, field: &'static str) {
+    if form.value(field).is_empty() && web.0.vault.get(&vault_name(form.value("name"), field)).is_err() {
+        form.refuse(field, NEEDED);
     }
 }
 
-async fn spec(web: &Web, ctx: &Ctx, name: &str, kind: &str) -> Result<Spec, Refusal> {
-    let f = |k: &str| ctx.form.get(k).map(|v| v.trim().to_string()).unwrap_or_default();
+/// Checks the form before anything is stored.
+fn check(web: &Web, form: &mut Form, kind: &str) {
+    form.check();
     if kind == "discord" {
-        let webhook = secret(web, &format!("notifier.{name}.webhook"), &f("webhook")).await?;
-        return Ok(Spec::Discord(DiscordSpec { name: name.into(), webhook }));
+        let webhook = form.value("webhook").trim().to_string();
+        let fits = auth::oidc::allowed_url(&webhook) && plain(&webhook, 512);
+        form.require("webhook", fits, WEBHOOK_RULE);
+        need_secret(web, form, "webhook");
+        return;
+    }
+    let port = form.value("port").parse::<u16>().is_ok_and(|p| p > 0);
+    form.require("port", port, "The port is a number from 1 to 65535");
+    let host = plain(form.value("host"), 253);
+    form.require("host", host, "A host name has no spaces and is at most 253 characters");
+    let from = address(form.value("from"));
+    form.require("from", from, ADDRESS_RULE);
+    let to = recipients(form);
+    form.require("to", !to.is_empty() && to.iter().all(|a| address(a)), "Write each recipient as name@domain");
+    if !form.value("username").is_empty() {
+        need_secret(web, form, "password");
+    }
+}
+
+fn recipients(form: &Form) -> Vec<String> {
+    form.value("to").split(',').map(|a| a.trim().to_string()).filter(|a| !a.is_empty()).collect()
+}
+
+async fn spec(web: &Web, form: &Form, kind: &str) -> Result<Made, &'static str> {
+    let f = |k: &str| form.value(k).to_string();
+    let name = f("name");
+    if kind == "discord" {
+        let webhook = store(web, &vault_name(&name, "webhook"), form.value("webhook").trim()).await?;
+        return Ok(Made::Discord(DiscordSpec { name, webhook }));
     }
     let username = Some(f("username")).filter(|u| !u.is_empty());
     let password = match &username {
-        Some(_) => Some(secret(web, &format!("notifier.{name}.password"), &f("password")).await?),
+        Some(_) => Some(store(web, &vault_name(&name, "password"), form.value("password")).await?),
         None => None,
     };
-    Ok(Spec::Smtp(SmtpSpec {
-        name: name.into(),
+    Ok(Made::Smtp(SmtpSpec {
+        name,
         host: f("host"),
         port: f("port").parse().unwrap_or(587),
         security: f("security"),
         username,
         password,
         from: f("from"),
-        to: f("to").split(',').map(|a| a.trim().to_string()).filter(|a| !a.is_empty()).collect(),
+        to: recipients(form),
     }))
 }
 
 /// Adds a notifier, or replaces the one of that name; audited, and the change reaches the git mirror.
 pub(super) async fn save(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some(user) = ctx.user.as_ref() else { return redirect("/sign-in") };
-    let (name, kind) = match check(ctx) {
-        Ok(v) => v,
-        Err(why) => return status(StatusCode::BAD_REQUEST, why),
+    let (kind, id, specs) = match ctx.form.get("kind").map(|k| k.trim()) {
+        Some("discord") => ("discord", "discord", DISCORD),
+        Some("smtp") => ("smtp", "smtp", SMTP),
+        _ => return show(web, ctx, StatusCode::BAD_REQUEST, None, Some("The kind is discord or smtp.")),
     };
+    let mut form = Form::sent(id, specs, ctx, &web.0.held);
+    check(web, &mut form, kind);
+    if !form.ok() {
+        form.hold(&web.0.held, ctx);
+        return show(web, ctx, StatusCode::BAD_REQUEST, Some(form), None);
+    }
+    // what couldn't be saved is on the form, to be sent again
+    let failed = |mut form: Form, why: &str| {
+        form.notice(why);
+        form.hold(&web.0.held, ctx);
+        show(web, ctx, StatusCode::INTERNAL_SERVER_ERROR, Some(form), None)
+    };
+    let name = form.value("name").to_string();
     let Ok(mut current) = saved(web) else {
         return status(StatusCode::INTERNAL_SERVER_ERROR, "config/notifiers.toml couldn't be read");
     };
-    let spec = match spec(web, ctx, &name, kind).await {
+    let spec = match spec(web, &form, kind).await {
         Ok(s) => s,
-        Err((code, why)) => return status(code, why),
+        Err(why) => return failed(form, why),
     };
     current.discord.retain(|d| d.name != name);
     current.smtp.retain(|s| s.name != name);
     match spec {
-        Spec::Discord(d) => current.discord.push(d),
-        Spec::Smtp(s) => current.smtp.push(s),
+        Made::Discord(d) => current.discord.push(d),
+        Made::Smtp(s) => current.smtp.push(s),
     }
     let text = match file::to_toml(&current) {
         Ok(t) => t,
         Err(e) => {
             tracing::error!(error = %e, "notifiers");
-            return status(StatusCode::INTERNAL_SERVER_ERROR, "The notifiers couldn't be saved");
+            return failed(form, "The notifiers couldn't be saved; try again.");
         }
     };
     if let Err(e) = config::put(&web.0.db, FILE, &text, &user.name, ctx.now_ms).await {
         tracing::error!(error = %e, "notifiers");
-        return status(StatusCode::INTERNAL_SERVER_ERROR, "The notifiers couldn't be saved");
+        return failed(form, "The notifiers couldn't be saved; try again.");
     }
     let data = serde_json::json!({ "name": name, "kind": kind });
     if let Err(e) =

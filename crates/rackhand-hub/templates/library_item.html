@@ -3,7 +3,7 @@
 {% block nav %}<nav><a href="/">Overview</a> <a href="/approvals">Approvals</a> <a href="/jobs">Jobs</a> <a href="/library">Library</a> <a href="/patching">Patching</a></nav>{% endblock %}
 {% block content %}
 <h1>{{ kind }} {{ name }}</h1>
-{% if let Some(e) = error %}<p class="error">It doesn't validate: {{ e }}</p>{% endif %}
+{% if let Some(e) = error %}<div class="problems" role="alert" tabindex="-1"><p class="error">It wasn't saved: {{ e }}</p></div>{% endif %}
 {% if let Some((from, to, lines)) = diff %}
 <h2>Changes from revision {{ from }} to revision {{ to }}</h2>
 <pre class="diff">{% for l in lines %}<span class="{{ l.class() }}">{{ l.text }}</span>
@@ -12,7 +12,8 @@
 {% if can_edit %}
 <form method="post" action="/library/{{ kind }}/{{ name }}">
 <input type="hidden" name="csrf" value="{{ csrf }}">
-<textarea name="content" rows="30" cols="100">{{ content }}</textarea>
+<label for="content">Content</label>
+<textarea id="content" name="content" spellcheck="false" rows="30" cols="100">{{ content }}</textarea>
 <button type="submit">Save a new revision</button>
 </form>
 {% else %}

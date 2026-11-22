@@ -9,7 +9,7 @@
 {% else %}<div class="field{% if !error.is_empty() %} bad{% endif %}">
 <label for="{{ id }}">{{ spec.label }}{% if !spec.required %} <span class="optional">(optional)</span>{% endif %}</label>
 {% if !spec.hint.is_empty() %}<p class="hint" id="{{ id }}-hint">{{ spec.hint }}</p>{% endif %}
-{% if kept %}<p class="hint kept">Kept from your last try. Leave it empty to use that one, or type a new one.</p>{% endif %}
+{% if let Some(k) = kept %}<p class="hint kept">{{ k }}</p>{% endif %}
 {% if select() %}<select id="{{ id }}" name="{{ spec.name }}" aria-describedby="{% if !spec.hint.is_empty() %}{{ id }}-hint {% endif %}{{ id }}-error"{% if !error.is_empty() %} aria-invalid="true"{% endif %}{% if needed() %} required{% endif %}{% if zones %} data-browser-timezone{% endif %}>
 {% if unchosen() %}<option value="">Choose one</option>{% endif %}
 {% if unlisted() %}<option value="{{ value }}" selected>{{ value }}</option>{% endif %}

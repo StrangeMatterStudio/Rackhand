@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Add: Rackhand{% endblock %}
+{% block head %}<script src="/static/forms.js" defer></script>{% endblock %}
 {% block nav %}<nav><a href="/">Overview</a> <a href="/settings">Settings</a></nav>{% endblock %}
 {% block content %}
 <h1>Add</h1>
@@ -10,32 +11,39 @@
 {% endfor %}</table>
 {% endif %}
 <h2>Add a machine</h2>
-<form method="post" action="/add/machine">
-<input type="hidden" name="csrf" value="{{ csrf }}">
-<label>Name <input name="name" required pattern="[A-Za-z0-9._-]{1,64}"></label>
-<label>System <select name="os"><option value="linux">Linux</option><option value="alpine">Alpine</option><option value="windows">Windows</option></select></label>
-<label>Access <select name="access"><option value="managed">Managed</option><option value="monitor">Monitor only</option></select></label>
-<label>Probe <select name="mode"><option value="local">Local (it dials the hub)</option><option value="remote">Remote</option></select></label>
+<form method="post" action="/add/machine" novalidate data-check>
+{{ machine.hidden(csrf)|safe }}
+{{ machine.problems()|safe }}
+{{ machine.field("name")|safe }}
+{{ machine.field("os")|safe }}
+{{ machine.field("access")|safe }}
+{{ machine.field("mode")|safe }}
 <button type="submit">Make the install command</button>
 </form>
 <h2>Add an appliance</h2>
 <p>Rackhand checks these through their API; nothing is installed on them.</p>
-{% for d in drivers %}
-<form method="post" action="/add/appliance">
-<input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="driver" value="{{ d.0 }}">
-<h3>{{ d.1 }}</h3>
-<label>Name <input name="name" pattern="[A-Za-z0-9._-]{1,64}"></label>
-{% if d.0 == "proxmox" %}<label>Or the machine it is <select name="machine"><option value="">A new machine</option>{% for m in machines %}<option value="{{ m.0 }}">{{ m.1 }}</option>{% endfor %}</select></label>{% endif %}
-<label>Address <input name="address" required placeholder="{{ d.2 }}"></label>
+{% for (driver, title, form) in appliances %}
+<form method="post" action="/add/appliance" novalidate data-check>
+{{ form.hidden(csrf)|safe }}<input type="hidden" name="driver" value="{{ driver }}">
+<fieldset>
+<legend>{{ title }}</legend>
+{{ form.problems()|safe }}
+{{ form.field("name")|safe }}
+{{ form.field("machine")|safe }}
+{{ form.field("address")|safe }}
 <button type="submit">Next</button>
+</fieldset>
 </form>
 {% endfor %}
 <h2>Invite</h2>
 <form method="post" action="/add/invite"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="operator"><button type="submit">Invite an operator host</button></form>
 <form method="post" action="/add/invite"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="peer"><button type="submit">Invite a peer hub</button></form>
-<form method="post" action="/add/invite"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="device">
-<label>Device of <select name="user">{% for u in users %}<option value="{{ u.0 }}">{{ u.1 }}</option>{% endfor %}</select></label>
-<button type="submit">Invite a device</button></form>
+<form method="post" action="/add/invite" novalidate data-check>
+{{ device.hidden(csrf)|safe }}<input type="hidden" name="kind" value="device">
+{{ device.problems()|safe }}
+{{ device.field("user")|safe }}
+<button type="submit">Invite a device</button>
+</form>
 <h2>A new site</h2>
 <p>On a fresh Debian 12 or later machine, as a user with sudo:</p>
 <pre><code>{{ bootstrap }}</code></pre>

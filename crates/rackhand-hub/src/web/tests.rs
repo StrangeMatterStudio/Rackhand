@@ -562,6 +562,9 @@ fn totp_matches_rfc6238_vectors() {
 #[path = "first_run_tests.rs"]
 mod first_run;
 
+#[path = "forms_tests.rs"]
+mod forms;
+
 mod settings {
     use super::*;
 
@@ -1268,7 +1271,7 @@ mod pages {
     }
 
     #[derive(Debug)]
-    struct Roomy;
+    pub(super) struct Roomy;
 
     impl crate::ingest::DiskSpace for Roomy {
         fn free_fraction(&self) -> f64 {

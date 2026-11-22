@@ -17,15 +17,22 @@ struct Account<'a> {
     passkeys: usize,
     offered: bool,
     stepped_up: bool,
+    /// Why a passkey wasn't added.
+    notice: Option<&'a str>,
 }
 
 pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
+    show(web, ctx, StatusCode::OK, None)
+}
+
+/// The page, with why a passkey wasn't added.
+pub(crate) fn show(web: &Web, ctx: &Ctx, code: StatusCode, notice: Option<&str>) -> Response<Body> {
     let Some(user) = &ctx.user else { return redirect("/sign-in") };
     let Ok(Some(account)) = users::find_by_id(&web.0.db, &user.user_id) else {
         return status(StatusCode::NOT_FOUND, "No such account");
     };
     html(
-        StatusCode::OK,
+        code,
         Account {
             csrf: &ctx.csrf,
             name: &account.name,
@@ -33,6 +40,7 @@ pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
             passkeys: account.passkeys.len(),
             offered: web.passkeys_offered(),
             stepped_up: step_up::fresh(user.step_up_at, ctx.now_ms),
+            notice,
         }
         .render(),
     )

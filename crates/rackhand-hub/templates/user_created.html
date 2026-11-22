@@ -1,10 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Account created: Rackhand{% endblock %}
+{% block head %}<script src="/static/forms.js" defer></script>{% endblock %}
 {% block nav %}<nav><a href="/">Overview</a> <a href="/settings">Settings</a></nav>{% endblock %}
 {% block content %}
 <h1>Account created</h1>
-<p>{{ name }} can sign in as {{ role }}. Give them this authenticator secret now; it isn't shown again.</p>
-<p><code class="secret">{{ secret }}</code></p>
-<p><code class="secret">{{ uri }}</code></p>
+<p>{{ name }} can sign in as {{ role }}, with the next code from their authenticator app. Have them scan this now;
+it isn't shown again.</p>
+{% include "key.html" %}
 <p><a href="/settings">Back to settings</a></p>
 {% endblock %}

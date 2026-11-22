@@ -34,6 +34,8 @@ struct List<'a> {
     items: Vec<Item>,
     drafts: Vec<Draft>,
     can_edit: bool,
+    /// Why a draft wasn't applied.
+    notice: Option<&'a str>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -123,6 +125,10 @@ fn item_path(path: &str) -> Option<(Kind, &str, &str)> {
 }
 
 pub(super) fn list(web: &Web, ctx: &Ctx) -> Response<Body> {
+    show(web, ctx, StatusCode::OK, None)
+}
+
+fn show(web: &Web, ctx: &Ctx, code: StatusCode, notice: Option<&str>) -> Response<Body> {
     let found = web.0.db.readers().with(|c| {
         let mut s = c.prepare("SELECT kind, name, rev FROM library_items ORDER BY kind DESC, name")?;
         let items =
@@ -139,7 +145,7 @@ pub(super) fn list(web: &Web, ctx: &Ctx) -> Response<Body> {
     });
     match found {
         Ok((items, drafts)) => {
-            html(StatusCode::OK, List { csrf: &ctx.csrf, items, drafts, can_edit: can_edit(ctx) }.render())
+            html(code, List { csrf: &ctx.csrf, items, drafts, can_edit: can_edit(ctx), notice }.render())
         }
         Err(e) => {
             tracing::error!(error = %e, "library");
@@ -202,7 +208,8 @@ pub(super) async fn save(web: &Web, ctx: &Ctx) -> Response<Body> {
         Err(SaveError::Invalid(why)) => item_page(web, ctx, StatusCode::BAD_REQUEST, Some(content), Some(&why)),
         Err(e) => {
             tracing::error!(error = %e, "library save");
-            status(StatusCode::INTERNAL_SERVER_ERROR, "The change couldn't be saved")
+            let why = "the change couldn't be saved; try again";
+            item_page(web, ctx, StatusCode::INTERNAL_SERVER_ERROR, Some(content), Some(why))
         }
     }
 }
@@ -212,10 +219,13 @@ pub(super) async fn apply_draft(web: &Web, ctx: &Ctx) -> Response<Body> {
     let id = ctx.path.strip_prefix("/library/drafts/").and_then(|r| r.strip_suffix("/apply")).unwrap_or("");
     match library(web).apply_draft(id, &user.name, ctx.now_ms).await {
         Ok(_) => redirect("/library"),
-        Err(SaveError::Invalid(why)) => status(StatusCode::BAD_REQUEST, &why),
+        Err(SaveError::Invalid(why)) => {
+            let why = format!("The draft wasn't applied: {why}.");
+            show(web, ctx, StatusCode::BAD_REQUEST, Some(&why))
+        }
         Err(e) => {
             tracing::error!(error = %e, "apply draft");
-            status(StatusCode::NOT_FOUND, "No such draft waiting")
+            show(web, ctx, StatusCode::INTERNAL_SERVER_ERROR, Some("The draft couldn't be applied; try again."))
         }
     }
 }
