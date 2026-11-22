@@ -148,3 +148,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-22 | T59d done: patch integration tests with real apt; `apt-get update` didn't wait for its lock, fixed (D98) |
 | 2026-11-22 | Environment blocker: WSL's clock runs 10% fast and is stepped back 4.5 s every 30 s; the integration tier failed 3 of 56 on 5dff0bd. Integration, live and timed work waits for a sound clock (owner: restart WSL) |
 | 2026-11-22 | T59e built: silence suppression, the patching page, the window loop on in the hub (D99); not yet through the integration tier (clock) |
+| 2026-11-22 | WSL restarted: its clock's rate is right again; its wall clock is still stepped, because the Windows host's clock is 5.22 s ahead (owner: set it) |
