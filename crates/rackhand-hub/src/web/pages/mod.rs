@@ -62,6 +62,7 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
         Page::Settings => settings::page(web, ctx),
         Page::SettingsSources => settings::sources(web, ctx).await,
         Page::SettingsGitMirror => settings::git_mirror(web, ctx).await,
+        Page::SettingsDeadman => settings::deadman(web, ctx).await,
         Page::AcceptHostKey => machines::accept_host_key(web, ctx).await,
         Page::BindingConfirm => machines::confirm_binding(web, ctx).await,
         Page::MachineLevel => machines::level(web, ctx).await,

@@ -64,6 +64,7 @@ struct Env {
     peers: Peers,
     bus: Bus,
     registry: Arc<Registry>,
+    ingest: Ingest,
     addr: EndpointAddr,
     beta: Endpoint,
     gamma: Endpoint,
@@ -76,6 +77,10 @@ fn ulid_bytes(id: &str) -> Vec<u8> {
 }
 
 async fn env(name: &str) -> Env {
+    env_at(name, "alpha").await
+}
+
+async fn env_at(name: &str, site: &str) -> Env {
     let dir = std::env::temp_dir().join(format!("rackhand-peer-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -127,14 +132,14 @@ async fn env(name: &str) -> Env {
     let actions = Actions::new(db.clone(), audit.clone(), bus.clone(), Arc::new(Works));
     let ingest = Ingest::new(db.clone(), bus.clone(), Arc::new(Roomy));
     let registry = Registry::load(db.clone()).unwrap();
-    let peers = Peers::new(db.clone(), audit, actions, ingest, "alpha", "0.1.0").with_registry(registry.clone());
+    let peers = Peers::new(db.clone(), audit, actions, ingest.clone(), site, "0.1.0").with_registry(registry.clone());
     peers.clone().spawn(bus.subscribe("peers"));
     let server = rackhand_net::testing::endpoint(&relay_url, &[alpn::PEER]).await;
     let router = rackhand_net::router::Router::new(server.clone(), registry.clone()).route(alpn::PEER, peers.handler());
     tokio::spawn(router.serve());
     let mut addr = server.addr();
     addr.addrs.insert(TransportAddr::Relay(relay_url));
-    Env { db, peers, bus, registry, addr, beta, gamma, _relay: relay, _server: server }
+    Env { db, peers, bus, registry, ingest, addr, beta, gamma, _relay: relay, _server: server }
 }
 
 async fn link(env: &Env, from: &Endpoint) -> PeerLink {
@@ -476,4 +481,122 @@ async fn unlinked_peer_gets_0x13() {
     let closed = tokio::time::timeout(Duration::from_secs(5), after.closed()).await.expect("closed");
     assert_eq!(rackhand_net::close_code(&closed), Some(rackhand_proto::close::CloseCode::Revoked), "{closed:?}");
     let _ = env.registry;
+}
+
+// ---- the watch (T81) ----------------------------------------------------------------------------------------------------
+
+use rackhand_hub::incidents::Incidents;
+use rackhand_proto::peer::{HubHealth, PeerSeen};
+
+const MIN: i64 = 60_000;
+
+/// A summary `peer_id` sent `at` that says it is `well` and last heard `seen` from other sites.
+async fn heard(env: &Env, peer_id: &str, at: i64, well: bool, seen: Vec<PeerSeen>) {
+    use prost::Message;
+    let summary = SiteSummary {
+        site: peer_id.trim_start_matches("peer-").into(),
+        generated_at_ms: at,
+        hub_health: Some(HubHealth { db_ok: true, notifiers_ok: well, self_check_ok: true, ..Default::default() }),
+        peers_seen: seen,
+        ..Default::default()
+    };
+    let row: Row = [
+        ("peer_id", t(peer_id)),
+        ("received_at_ms", Value::Integer(at)),
+        ("summary", Value::Blob(summary.encode_to_vec())),
+    ]
+    .into_iter()
+    .collect();
+    env.db.writer().send(WriteCmd::PutPeerSummary(row)).await.unwrap();
+}
+
+async fn peer_row(env: &Env, id: &str, site: &str) {
+    env.db
+        .writer()
+        .send(WriteCmd::Batch(vec![RowWrite::insert(
+            "peers",
+            Row::from([
+                ("id", t(id)),
+                ("site", t(site)),
+                ("endpoint_id", t(&format!("{id}-endpoint"))),
+                ("added_at", Value::Integer(0)),
+            ]),
+        )]))
+        .await
+        .unwrap();
+}
+
+fn peer_incidents(db: &Db) -> Vec<(String, String, String, bool)> {
+    db.readers()
+        .with(|c| {
+            let mut s = c.prepare(
+                "SELECT i.kind, i.severity, i.state,
+                        EXISTS (SELECT 1 FROM incident_events e WHERE e.incident_id = i.id AND e.kind = 'opened'
+                                AND json_extract(e.data, '$.callout') = 1)
+                 FROM incidents i WHERE i.kind LIKE 'peer.%' ORDER BY i.rowid",
+            )?;
+            s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect()
+        })
+        .unwrap()
+}
+
+fn incidents_of(env: &Env) -> Incidents {
+    Incidents::new(env.db.clone(), env.ingest.clone(), env.bus.clone())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_silent_peer_is_a_warning_a_down_one_critical_and_hearing_from_it_resolves_both() {
+    let env = env("watch").await;
+    let incidents = incidents_of(&env);
+    let t0 = 1_000_000_000_000;
+    heard(&env, "peer-beta", t0, true, vec![]).await;
+    env.db.writer().send(WriteCmd::RegistryChange(rackhand_store::RegistryChange::default())).await.unwrap();
+    // 119 seconds: nothing; 2 minutes: silent; 10 minutes: down, as a callout from this (the only) hub
+    env.peers.watch(&incidents, t0 + 2 * MIN - 1).await;
+    assert!(peer_incidents(&env.db).is_empty());
+    env.peers.watch(&incidents, t0 + 2 * MIN).await;
+    let seen = peer_incidents(&env.db);
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert_eq!((seen[0].0.as_str(), seen[0].1.as_str(), seen[0].3), ("peer.silent", "warning", true), "{seen:?}");
+    env.peers.watch(&incidents, t0 + 10 * MIN).await;
+    let seen = peer_incidents(&env.db);
+    assert!(seen.iter().any(|i| i.0 == "peer.down" && i.1 == "critical" && i.2 != "resolved" && i.3), "{seen:?}");
+    // it is heard from again: both resolve
+    heard(&env, "peer-beta", t0 + 11 * MIN, true, vec![]).await;
+    env.peers.watch(&incidents, t0 + 11 * MIN + 1000).await;
+    assert!(peer_incidents(&env.db).iter().all(|i| i.2 == "resolved"), "{:?}", peer_incidents(&env.db));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_the_first_sorted_healthy_hub_calls_out_for_a_dead_peer() {
+    let now = 1_000_000_000_000;
+    // this hub is "zulu", beta is down for everyone, and alpha is healthy and sees it down too: alpha calls out, not this one
+    let env = env_at("elect-other", "zulu").await;
+    let incidents = incidents_of(&env);
+    peer_row(&env, "peer-alpha", "alpha").await;
+    let beta_gone = vec![PeerSeen { site: "beta".into(), last_heard_ms: now - 30 * MIN }];
+    heard(&env, "peer-alpha", now - MIN, true, beta_gone).await;
+    // beta never sent anything (linked 30 minutes ago): down
+    env.db
+        .writer()
+        .send(WriteCmd::RegistryChange(rackhand_store::RegistryChange {
+            updates: vec![rackhand_store::RowUpdate {
+                table: "peers",
+                key: ("id", t("peer-beta")),
+                set: Row::from([("added_at", Value::Integer(now - 30 * MIN))]),
+            }],
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+    env.peers.watch(&incidents, now).await;
+    assert!(
+        peer_incidents(&env.db).iter().all(|i| i.0 != "peer.down"),
+        "alpha calls out, not zulu: {:?}",
+        peer_incidents(&env.db)
+    );
+    // if alpha is not well, this hub is next
+    heard(&env, "peer-alpha", now - MIN, false, vec![]).await;
+    env.peers.watch(&incidents, now).await;
+    assert!(peer_incidents(&env.db).iter().any(|i| i.0 == "peer.down" && i.3), "{:?}", peer_incidents(&env.db));
 }

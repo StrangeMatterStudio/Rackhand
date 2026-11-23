@@ -3223,3 +3223,48 @@ mod agentless {
         );
     }
 }
+
+/// 7.5.5, 7.7.1 (plan T81): the dead-man URL is an admin's setting, saved and audited without the URL itself.
+mod deadman {
+    use super::*;
+
+    async fn set(app: &App, cookie: &str, url: &str) -> Response<Body> {
+        let csrf = csrf_of(app, cookie).await;
+        send(&app.router, post("/settings/deadman", cookie, &[("csrf", csrf.as_str()), ("url", url)])).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn url_set_in_settings_admin_only() {
+        let app = app("deadman-url").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let responder = session_for(&app.db, Role::Responder).await;
+        assert_eq!(set(&app, &responder, "https://hc.example/ping/secret-key").await.status(), StatusCode::FORBIDDEN);
+        assert!(crate::library::config::hub(&app.db).unwrap().deadman_url.is_none());
+        let admin = session_for(&app.db, Role::Admin).await;
+        // only an https address without spaces
+        for bad in ["http://hc.example/ping", "ftp://x", "https://a b", "not a url"] {
+            assert_eq!(set(&app, &admin, bad).await.status(), StatusCode::BAD_REQUEST, "{bad:?}");
+        }
+        assert_eq!(set(&app, &admin, "https://hc.example/ping/secret-key").await.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            crate::library::config::hub(&app.db).unwrap().deadman_url.as_deref(),
+            Some("https://hc.example/ping/secret-key")
+        );
+        let page = text(send(&app.router, get("/settings", &admin)).await).await;
+        assert!(page.contains("value=\"https:&#x2F;&#x2F;hc.example") || page.contains("hc.example"), "{page}");
+        // audited, with no trace of the key in the log
+        let logged: Vec<String> = app
+            .db
+            .readers()
+            .with(|c| {
+                let mut s = c.prepare("SELECT data FROM audit_log WHERE action = 'settings.deadman'")?;
+                s.query_map([], |r| r.get(0))?.collect()
+            })
+            .unwrap();
+        assert_eq!(logged.len(), 1, "{logged:?}");
+        assert!(logged[0].contains("\"set\":true") && !logged[0].contains("secret-key"), "{logged:?}");
+        // empty turns it off
+        assert_eq!(set(&app, &admin, "").await.status(), StatusCode::SEE_OTHER);
+        assert!(crate::library::config::hub(&app.db).unwrap().deadman_url.is_none());
+    }
+}

@@ -374,6 +374,13 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         .route(rackhand_proto::alpn::JOIN, join.handler());
     tokio::spawn(router.serve());
     let watch = Arc::new(self_watch(config, &db, &ingest, &notify));
+    // the peers watch each other every 30 s, and a hub with none calls its dead-man URL (7.5.5)
+    let deadman_db = db.clone();
+    peers.clone().spawn_watch(
+        incidents.clone(),
+        Arc::new(move || rackhand_hub::library::config::hub(&deadman_db).ok().and_then(|c| c.deadman_url)),
+        Arc::new(rackhand_hub::peers::deadman::Https),
+    );
     spawn_loops(ingest.clone(), incidents, notify, db.clone(), Nightly { config: config.clone(), watch });
     patching::spawn(db.clone(), windows, patching::WINDOW_POLL);
     // the service checks of config/checks.toml, each at its interval (FR-9), and the agentless machines' polls (FR-10)

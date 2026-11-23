@@ -59,6 +59,9 @@ pub struct HubConfig {
     pub probe: Option<ProbeSettings>,
     #[serde(default, skip_serializing_if = "AssistantSettings::is_default")]
     pub assistant: AssistantSettings,
+    /// A URL a hub with no peers calls every 5 minutes, for a service outside the site that notices when it goes quiet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadman_url: Option<String>,
 }
 
 /// The assistant's settings (7.7.1): how many jobs a day the hub starts.

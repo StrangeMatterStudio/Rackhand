@@ -13,6 +13,13 @@
 <div class="field check"><label><input type="checkbox" name="source_airgapped"{% if sources.airgapped %} checked{% endif %}> Air-gapped: the hub makes no outside request at all</label></div>
 <div class="actions"><button type="submit" class="primary">Save</button><button type="button" data-undo hidden>Undo changes</button></div>
 </form></section>
+<section class="card"><h2>Dead-man URL</h2>
+<p class="hint">A hub with no peers calls this address every 5 minutes, so that a service outside your site (such as a healthchecks.io check) notices when the hub goes quiet. Leave it empty to turn it off.</p>
+<form method="post" action="/settings/deadman" novalidate data-check data-edit>
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="field"><label for="deadman-url">Address</label><input id="deadman-url" name="url" type="url" value="{{ deadman }}" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="https://hc-ping.com/..."></div>
+<div class="actions"><button type="submit" class="primary">Save</button><button type="button" data-undo hidden>Undo changes</button></div>
+</form></section>
 <section class="card"><h2>Notifiers</h2><p class="hint">Where callouts go: {{ notifiers }} saved.</p><p><a class="btn" href="/settings/notifiers">Open notifiers</a></p></section>
 <section class="card"><h2>Git mirror</h2>
 <form method="post" action="/settings/git-mirror" novalidate data-check data-edit>

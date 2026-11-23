@@ -177,3 +177,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-23 | T78 done: incident routing to playbooks, briefs and the built-in playbooks (D131 to D133) |
 | 2026-11-23 | T79 done: the assistant pages and settings (D134) |
 | 2026-11-23 | T80 done: the peer contract (D135 to D136) |
+| 2026-11-23 | T81 done: peer watch, callout election and the dead-man URL (D137 to D138) |

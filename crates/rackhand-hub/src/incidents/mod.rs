@@ -12,6 +12,7 @@ mod forecasts;
 mod lifecycle;
 pub mod machine_silence;
 pub mod notes;
+mod peer;
 mod reconcile;
 pub mod replay;
 pub mod routing;

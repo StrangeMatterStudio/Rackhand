@@ -16,11 +16,14 @@
 //! second, and an action request is like a local request at level 1: it always needs an approval on the owning hub unless the
 //! target's policy says `peer_requests = "auto"` for a runbook that isn't high risk. `requested_by` is information.
 
+pub mod deadman;
+pub mod election;
 mod link;
 mod queries;
 mod requests;
 mod summary;
 mod unlink;
+mod watch;
 mod wire;
 
 use std::collections::{HashMap, VecDeque};
@@ -37,6 +40,7 @@ use crate::ingest::Ingest;
 
 pub use link::{PeerLink, Statuses};
 pub use summary::HubHealthSource;
+pub use watch::{DOWN_AFTER_MS, PeerState, SILENT_AFTER_MS};
 
 /// Queries a peer may make in a second.
 pub const QUERIES_PER_SECOND: usize = 10;
