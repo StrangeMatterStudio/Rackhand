@@ -304,3 +304,144 @@ async fn config_set_takes_only_keys_that_cannot_run_code_on_the_host() {
     assert!(matches!(empty, Err(DriverError::Invalid(_))), "nothing to set");
     assert!(sim.requests().iter().all(|q| q.method == "GET"), "no write reached the API: {:?}", sim.requests());
 }
+
+/// Quarantine of a guest with the guest firewall (7.5.6, D104, E24, E66, AC72).
+mod quarantine {
+    use serde_json::{Value, json};
+
+    use super::*;
+
+    fn isolate_args(extra: Value) -> Value {
+        let mut a =
+            json!({ "kind": "lxc", "vmid": 100, "hub_addrs": ["192.0.2.10", "2001:db8::10"], "hub_port": 4433 });
+        for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+            a[k] = v;
+        }
+        a
+    }
+
+    fn own_rules() -> (Value, Vec<Value>) {
+        (
+            json!({ "enable": 1, "policy_in": "ACCEPT", "policy_out": "ACCEPT", "log_level_in": "info" }),
+            vec![
+                json!({ "type": "in", "action": "ACCEPT", "proto": "tcp", "dport": "443", "enable": 1, "comment": "web" }),
+                json!({ "type": "out", "action": "ACCEPT", "dest": "198.51.100.7", "enable": 1 }),
+            ],
+        )
+    }
+
+    #[tokio::test]
+    async fn pve_firewall_off_fails_with_instructions_never_enables() {
+        let sim = Sim::start("pve8").await;
+        let pve = Proxmox::new();
+        // the recorded datacenter options have the firewall off
+        let r = pve.call(&target(&sim), op("firewall_isolate", isolate_args(json!({})))).await;
+        let Err(DriverError::Failed(why)) = r else { panic!("{r:?}") };
+        assert!(why.starts_with("pve_firewall_off:") && why.contains("Datacenter"), "{why}");
+        // and the same when it is set off explicitly
+        sim.set_datacenter_firewall(false);
+        assert!(pve.call(&target(&sim), op("firewall_isolate", isolate_args(json!({})))).await.is_err());
+        // nothing was written anywhere: only reads of the datacenter, none of the guest's configuration
+        let writes: Vec<_> = sim.requests().into_iter().filter(|q| q.method != "GET").collect();
+        assert!(writes.is_empty(), "{writes:?}");
+    }
+
+    #[tokio::test]
+    async fn guest_rules_exact_set() {
+        let sim = Sim::start("pve8").await;
+        sim.set_datacenter_firewall(true);
+        let (options, rules) = own_rules();
+        sim.set_guest_firewall(100, options, rules);
+        let pve = Proxmox::new();
+        let out = pve.call(&target(&sim), op("firewall_isolate", isolate_args(json!({})))).await.unwrap().output;
+        let applied = &out["applied"];
+        assert_eq!(applied["options"]["policy_in"], "DROP");
+        assert_eq!(applied["options"]["policy_out"], "DROP");
+        assert_eq!(applied["options"]["enable"], 1);
+        assert!(applied["devices"]["net0"].as_str().unwrap().contains("firewall=1"), "{applied}");
+        // the guest's own rules are gone, and these are all there is
+        let rules: Vec<String> = applied["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                let f = |k: &str| r[k].as_str().map(str::to_string).or_else(|| r[k].as_i64().map(|n| n.to_string()));
+                let mut parts = vec![f("type").unwrap(), f("action").unwrap(), f("proto").unwrap()];
+                for k in ["source", "dest", "sport", "dport", "icmp-type"] {
+                    if let Some(v) = f(k) {
+                        parts.push(format!("{k}={v}"));
+                    }
+                }
+                parts.join(" ")
+            })
+            .collect();
+        assert_eq!(
+            rules,
+            [
+                "out ACCEPT udp sport=68 dport=67",
+                "in ACCEPT udp sport=67 dport=68",
+                "out ACCEPT udp dest=192.0.2.10 dport=4433",
+                "in ACCEPT tcp source=192.0.2.10 dport=22",
+                "in ACCEPT icmp source=192.0.2.10 icmp-type=echo-request",
+                "out ACCEPT udp dest=2001:db8::10 dport=4433",
+                "in ACCEPT tcp source=2001:db8::10 dport=22",
+                "in ACCEPT ipv6-icmp source=2001:db8::10 icmp-type=echo-request",
+            ]
+        );
+        // the datacenter firewall was only read
+        assert!(sim.requests().iter().all(|q| q.method == "GET" || !q.path.contains("/cluster/")));
+    }
+
+    #[tokio::test]
+    async fn release_restores_identical_configuration() {
+        let sim = Sim::start("pve8").await;
+        sim.set_datacenter_firewall(true);
+        let (options, rules) = own_rules();
+        sim.set_guest_firewall(100, options, rules);
+        let pve = Proxmox::new();
+        let guest = json!({ "kind": "lxc", "vmid": 100 });
+        let before = pve.call(&target(&sim), op("firewall_read", guest.clone())).await.unwrap().output;
+        let out = pve.call(&target(&sim), op("firewall_isolate", isolate_args(json!({})))).await.unwrap().output;
+        assert_eq!(out["saved"], before, "the whole prior configuration is what is saved");
+        assert_ne!(out["applied"], before);
+        let mut release = guest.clone();
+        release["saved"] = out["saved"].clone();
+        release["applied"] = out["applied"].clone();
+        pve.call(&target(&sim), op("firewall_release", release)).await.unwrap();
+        let after = pve.call(&target(&sim), op("firewall_read", guest)).await.unwrap().output;
+        assert_eq!(after, before, "identical to before, including the guest's own rules and its device line");
+    }
+
+    #[tokio::test]
+    async fn changed_config_stops_release() {
+        let sim = Sim::start("pve8").await;
+        sim.set_datacenter_firewall(true);
+        let pve = Proxmox::new();
+        let out = pve.call(&target(&sim), op("firewall_isolate", isolate_args(json!({})))).await.unwrap().output;
+        // an admin loosens the policy while the guest is quarantined
+        sim.set_guest_option(100, "policy_out", json!("ACCEPT"));
+        let mut release = json!({ "kind": "lxc", "vmid": 100 });
+        release["saved"] = out["saved"].clone();
+        release["applied"] = out["applied"].clone();
+        let r = pve.call(&target(&sim), op("firewall_release", release.clone())).await;
+        let Err(DriverError::Failed(why)) = r else { panic!("{r:?}") };
+        assert!(why.starts_with("quarantine_config_changed:"), "{why}");
+        // nothing was put back: the admin's version is still there
+        let now =
+            pve.call(&target(&sim), op("firewall_read", json!({ "kind": "lxc", "vmid": 100 }))).await.unwrap().output;
+        assert_eq!(now["options"]["policy_out"], "ACCEPT");
+        assert_ne!(now["rules"], out["saved"]["rules"], "the rules weren't restored");
+    }
+
+    #[tokio::test]
+    async fn isolate_needs_the_hubs_addresses_and_port() {
+        let sim = Sim::start("pve8").await;
+        sim.set_datacenter_firewall(true);
+        let pve = Proxmox::new();
+        for bad in [json!({ "hub_addrs": [] }), json!({ "hub_port": 0 }), json!({ "hub_addrs": ["not-an-address"] })] {
+            let r = pve.call(&target(&sim), op("firewall_isolate", isolate_args(bad))).await;
+            assert!(matches!(r, Err(DriverError::Invalid(_))), "{r:?}");
+        }
+        assert!(sim.requests().iter().all(|q| q.method == "GET"), "nothing written");
+    }
+}

@@ -39,6 +39,8 @@ struct State {
     storage: BTreeMap<String, (String, u64, u64)>,
     /// The cluster's nodes and their status, when a test sets them.
     nodes: Option<Vec<(String, String)>>,
+    /// The datacenter firewall's `enable`, when a test sets it (the recorded options say off).
+    datacenter_firewall: Option<bool>,
     requests: Vec<Request>,
 }
 
@@ -87,6 +89,7 @@ impl Sim {
             guests,
             storage: BTreeMap::new(),
             nodes: None,
+            datacenter_firewall: None,
             requests: Vec::new(),
         }));
         let (acceptor, fingerprint) = crate::pinned::test_server();
@@ -140,6 +143,25 @@ impl Sim {
     pub fn set_storage(&self, name: &str, kind: &str, avail: u64, total: u64) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         s.storage.insert(name.to_string(), (kind.to_string(), avail, total));
+    }
+
+    /// Turns the datacenter firewall on or off, as an admin would.
+    pub fn set_datacenter_firewall(&self, on: bool) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).datacenter_firewall = Some(on);
+    }
+
+    /// A guest's own firewall: what it had before anything of ours.
+    pub fn set_guest_firewall(&self, vmid: u32, options: Value, rules: Vec<Value>) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let g = s.guests.get_mut(&("lxc".to_string(), vmid)).expect("the guest");
+        g.options = options.as_object().cloned().unwrap_or_default();
+        g.rules = rules;
+    }
+
+    /// Someone changes one of the guest's firewall options.
+    pub fn set_guest_option(&self, vmid: u32, key: &str, value: Value) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.guests.get_mut(&("lxc".to_string(), vmid)).expect("the guest").options.insert(key.into(), value);
     }
 
     /// What a quarantine does to a container's firewall (D104): policies DROP, a rule, the device's flag on.
@@ -218,7 +240,13 @@ fn answer(state: &Mutex<State>, req: Request) -> (&'static str, String) {
             }
             None => ok(data("nodes")),
         },
-        ("GET", ["cluster", "firewall", "options"]) => ok(data("cluster_firewall_options")),
+        ("GET", ["cluster", "firewall", "options"]) => {
+            let mut options = data("cluster_firewall_options");
+            if let (Some(on), Some(m)) = (s.datacenter_firewall, options.as_object_mut()) {
+                m.insert("enable".into(), json!(i64::from(on)));
+            }
+            ok(options)
+        }
         ("GET", ["nodes", n, "status"]) if *n == node => ok(data("node_status")),
         ("GET", ["nodes", n, "storage"]) if *n == node => {
             let mut list = data("storage");
@@ -360,7 +388,9 @@ fn answer(state: &Mutex<State>, req: Request) -> (&'static str, String) {
                         if k == "pos" {
                             pos = v.parse().unwrap_or(0);
                         } else {
-                            rule.insert(k, v.parse::<i64>().map(Value::from).unwrap_or(Value::String(v)));
+                            // the API gives `enable` as a number and every other field (ports too) as text
+                            let number = if k == "enable" { v.parse::<i64>().ok() } else { None };
+                            rule.insert(k, number.map_or(Value::String(v), Value::from));
                         }
                     }
                     let at = pos.min(g.rules.len());
