@@ -80,6 +80,8 @@ struct Inner {
     ingest: Option<crate::ingest::Ingest>,
     /// The threat lists and GeoIP, for the Security page's freshness.
     intel: Option<crate::intel::Intel>,
+    /// The assistant, for Resume job and the operators that are connected.
+    assist: Option<crate::assist::Assist>,
     notify: Option<crate::notify::Notify>,
     bus: Option<crate::bus::Bus>,
     first_run: pages::FirstRunDrafts,
@@ -135,6 +137,7 @@ impl Web {
             library: None,
             ingest: None,
             intel: None,
+            assist: None,
             notify: None,
             bus: None,
             first_run: pages::FirstRunDrafts::default(),
@@ -154,6 +157,14 @@ impl Web {
     pub fn with_ingest(mut self, ingest: crate::ingest::Ingest) -> Web {
         if let Some(inner) = Arc::get_mut(&mut self.0) {
             inner.ingest = Some(ingest);
+        }
+        self
+    }
+
+    /// Assist, for an incident's Resume job and the operators page; before the router is built.
+    pub fn with_assist(mut self, assist: crate::assist::Assist) -> Web {
+        if let Some(inner) = Arc::get_mut(&mut self.0) {
+            inner.assist = Some(assist);
         }
         self
     }

@@ -5,4 +5,10 @@
 <section class="card list"><div class="bar"><h2>Timeline</h2></div>{% if events.is_empty() %}<p class="empty">Nothing recorded yet.</p>{% else %}<table><thead><tr><th scope="col">What</th><th scope="col">When</th><th scope="col">Details</th></tr></thead><tbody>
 {% for e in events %}<tr><td class="t"><b>{{ crate::web::ui::word(e.1) }}</b></td><td data-label="When">{{ e.0|safe }}</td><td data-label="Details"><code>{{ e.2 }}</code></td></tr>
 {% endfor %}</tbody></table>{% endif %}</section></div>
+{% for j in jobs %}<section class="card list"><div class="bar"><h2>Assistant: {{ j.playbook }}</h2>{{ crate::web::ui::badge(j.state)|safe }}{% if j.resumable && can_resume %}<form class="inline" method="post" action="/incidents/{{ incident.id }}/resume"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="job" value="{{ j.id }}"><button type="submit" class="btn primary">Resume job</button></form>{% endif %}</div>
+<p class="hint">Started {{ j.started|safe }}{% if !j.outcome.is_empty() %}. Ended: {{ crate::web::ui::word(j.outcome) }}{% endif %}.{% if j.resumable %} It reached its deadline while an approval was open; resuming starts a new job that makes the approved call first.{% endif %}</p>
+{% if j.transcript.is_empty() %}<p class="empty">Nothing in its transcript.</p>{% else %}<table><thead><tr><th scope="col">What</th><th scope="col">Text</th></tr></thead><tbody>
+{% for e in j.transcript %}<tr><td class="t"><b>{{ crate::web::ui::word(e.0) }}</b></td><td data-label="Text"><code>{{ e.1 }}</code></td></tr>
+{% endfor %}</tbody></table>{% endif %}</section>
+{% endfor %}
 {% endblock %}

@@ -1930,6 +1930,292 @@ mod pages {
             assert!(text(send(&app.router, get("/security", &admin)).await).await.contains("/security?edit="));
         }
     }
+
+    /// 7.7.1, 7.7.2, 10, E21 (plan T79): the assistant's pages.
+    mod assistant {
+        use super::*;
+        use crate::actions::Actions;
+        use crate::actions::runner::{BoxFuture, StepCtx, StepResult, StepRunner};
+        use crate::assist::Assist;
+        use crate::audit::Audit;
+        use crate::bus::Bus;
+        use rackhand_runbook::runbook::Step;
+
+        const INC: &str = "01JINC00000000000000000001";
+        const JOB: &str = "01JJOB00000000000000000001";
+        const MACH: &str = "01JD0000000000000000000001";
+
+        #[derive(Debug)]
+        struct Nobody;
+
+        impl StepRunner for Nobody {
+            fn run<'a>(&'a self, _c: &'a StepCtx, _s: &'a Step, _a: Option<&'a [String]>) -> BoxFuture<'a, StepResult> {
+                Box::pin(async { StepResult::failed("unused") })
+            }
+        }
+
+        const TICKET: &str =
+            "rackhand1:0000000000000000000000000000000000000000000000000000000000000001@192.0.2.10:7443";
+
+        async fn assistant_app(name: &str) -> App {
+            let app = app_with(name, |web| {
+                let db = web.db().clone();
+                let audit = Audit::new(db.writer());
+                let actions = Actions::new(db.clone(), audit.clone(), Bus::new(), Arc::new(Nobody));
+                let registry = crate::registry::Registry::load(db.clone()).unwrap();
+                web.with_assist(Assist::new(db, audit, actions))
+                    .with_registry(registry)
+                    .with_ticket(Arc::new(|| Some(TICKET.to_string())))
+            })
+            .await;
+            complete_first_run(&app, SETUP_CODE).await;
+            app
+        }
+
+        async fn insert(app: &App, table: &'static str, row: Row) {
+            app.db.writer().send(WriteCmd::Batch(vec![RowWrite::insert(table, row)])).await.unwrap();
+        }
+
+        /// A machine, an incident on it, and an assistant job for the incident that ended as `outcome`.
+        async fn incident_with_job(app: &App, outcome: &str) {
+            let machine = Row::from([
+                ("id", Value::Text(MACH.into())),
+                ("site_id", Value::Text(site_id(&app.db))),
+                ("name", Value::Text("web".into())),
+                ("kind", Value::Text("linux".into())),
+                ("state", Value::Text("enrolled".into())),
+            ]);
+            insert(app, "machines", machine).await;
+            let incident = Row::from([
+                ("id", Value::Text(INC.into())),
+                ("machine_id", Value::Text(MACH.into())),
+                ("dedupe_key", Value::Text("k".into())),
+                ("kind", Value::Text("service.not_active".into())),
+                ("severity", Value::Text("warning".into())),
+                ("state", Value::Text("human".into())),
+                ("title", Value::Text("nginx is down".into())),
+                ("opened_at", Value::Integer(now_ms())),
+            ]);
+            insert(app, "incidents", incident).await;
+            let job = Row::from([
+                ("id", Value::Text(JOB.into())),
+                ("kind", Value::Text("assistant".into())),
+                ("name", Value::Text("service-down".into())),
+                ("requested_by", Value::Text("incidents".into())),
+                ("incident_id", Value::Text(INC.into())),
+                ("state", Value::Text("failed".into())),
+                ("outcome", Value::Text(outcome.into())),
+                ("started_at", Value::Integer(now_ms() - 600_000)),
+            ]);
+            insert(app, "jobs", job).await;
+        }
+
+        async fn transcript(app: &App, seq: i64, kind: &str, text: &str) {
+            let row = Row::from([
+                ("job_id", Value::Text(JOB.into())),
+                ("seq", Value::Integer(seq)),
+                ("at_ms", Value::Integer(now_ms())),
+                ("kind", Value::Text(kind.into())),
+                ("text", Value::Text(text.into())),
+            ]);
+            app.db.writer().send(WriteCmd::AppendTranscript(row)).await.unwrap();
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn transcript_rendered_escaped() {
+            let app = assistant_app("as-transcript").await;
+            incident_with_job(&app, "needs_human").await;
+            transcript(&app, 1, "tool_result", "<script>alert('pwned')</script> & \"quotes\"").await;
+            transcript(&app, 2, "message", "looking at the journal").await;
+            let viewer = session_for(&app.db, Role::Viewer).await;
+            let html = text(send(&app.router, get(&format!("/incidents/{INC}"), &viewer)).await).await;
+            assert!(html.contains("Assistant: service-down") && html.contains("looking at the journal"), "{html}");
+            assert!(!html.contains("<script>alert"), "tool output is escaped, never markup: {html}");
+            assert!(html.contains("&#60;script&#62;alert"), "{html}");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn resume_job_shown_after_late_approval() {
+            let app = assistant_app("as-resume").await;
+            incident_with_job(&app, "needs_human").await;
+            let responder = session_for(&app.db, Role::Responder).await;
+            let button = |html: &str| html.contains("Resume job") && html.contains(&format!("/incidents/{INC}/resume"));
+            // the job ended needs_human but nothing is waiting to be used: nothing to resume
+            let before = text(send(&app.router, get(&format!("/incidents/{INC}"), &responder)).await).await;
+            assert!(!button(&before), "{before}");
+            // an approval its call asked for is decided after the deadline, and still valid
+            let request = crate::policy::approvals::ApprovalRequest {
+                requester: format!("job:{JOB}"),
+                tool: "run_runbook".into(),
+                target: Some(MACH.into()),
+                args: serde_json::json!({ "name": "service-restart", "params": {} }),
+                runbook_rev: Some(1),
+                risk: rackhand_runbook::runbook::Risk::Low,
+                step_up: false,
+                reason: "restart nginx".into(),
+            };
+            let id = crate::policy::approvals::Approvals::new(app.db.clone())
+                .create(&request, now_ms(), 3_600_000)
+                .await
+                .unwrap();
+            let after = text(send(&app.router, get(&format!("/incidents/{INC}"), &responder)).await).await;
+            assert!(button(&after), "{after}");
+            // a viewer sees the job but can't resume it; a job that resolved has no button
+            let viewer = session_for(&app.db, Role::Viewer).await;
+            assert!(!button(&text(send(&app.router, get(&format!("/incidents/{INC}"), &viewer)).await).await));
+            let _ = id;
+            let app2 = assistant_app("as-resume-resolved").await;
+            incident_with_job(&app2, "resolved").await;
+            let responder = session_for(&app2.db, Role::Responder).await;
+            assert!(!button(&text(send(&app2.router, get(&format!("/incidents/{INC}"), &responder)).await).await));
+        }
+
+        fn user_of(app: &App, role: &str) -> String {
+            app.db
+                .readers()
+                .with(|c| {
+                    c.query_row("SELECT id FROM users WHERE role = ?1 ORDER BY rowid DESC LIMIT 1", [role], |r| {
+                        r.get(0)
+                    })
+                })
+                .unwrap()
+        }
+
+        async fn device(app: &App, user: &str, name: &str) -> String {
+            let id = ulid::Ulid::new().to_string();
+            let row = Row::from([
+                ("id", Value::Text(id.clone())),
+                ("user_id", Value::Text(user.into())),
+                ("name", Value::Text(name.into())),
+                ("endpoint_id", Value::Text(format!("{:0>64}", id.to_lowercase()))),
+                ("created_at", Value::Integer(0)),
+            ]);
+            insert(app, "devices", row).await;
+            id
+        }
+
+        async fn make_key(app: &App, cookie: &str, device: &str, scope: &str, days: &str) -> (StatusCode, String) {
+            let csrf = csrf_of(app, cookie).await;
+            let resp = send(
+                &app.router,
+                post(
+                    "/account/keys",
+                    cookie,
+                    &[("csrf", csrf.as_str()), ("device", device), ("scope", scope), ("days", days)],
+                ),
+            )
+            .await;
+            (resp.status(), text(resp).await)
+        }
+
+        fn key_count(app: &App) -> i64 {
+            app.db.readers().with(|c| c.query_row("SELECT count(*) FROM mcp_keys", [], |r| r.get(0))).unwrap()
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn mcp_key_scope_capped_by_role_and_expiry_max_1_year() {
+            let app = assistant_app("as-keys").await;
+            let viewer = session_for(&app.db, Role::Viewer).await;
+            let dev = device(&app, &user_of(&app, "viewer"), "laptop").await;
+            // a viewer's key can read only, and a longer-than-a-year key is refused
+            let (code, page) = make_key(&app, &viewer, &dev, "read_request", "90").await;
+            assert_eq!(code, StatusCode::BAD_REQUEST, "{page}");
+            assert!(page.contains("A viewer&#39;s keys can read only") || page.contains("read only"), "{page}");
+            assert_eq!(key_count(&app), 0);
+            for days in ["366", "0", "-5", "x", ""] {
+                assert_eq!(make_key(&app, &viewer, &dev, "read", days).await.0, StatusCode::BAD_REQUEST, "{days:?}");
+            }
+            assert_eq!(key_count(&app), 0);
+            let page = shell::plain(&text(send(&app.router, get("/account/keys", &viewer)).await).await);
+            assert!(!page.contains("Read and ask for changes"), "the option isn't offered: {page}");
+            // a read key for 90 days: the token is shown once
+            let (code, page) = make_key(&app, &viewer, &dev, "read", "90").await;
+            assert_eq!(code, StatusCode::OK, "{page}");
+            assert!(page.contains("Your new key") && page.contains("rk_"), "{page}");
+            assert_eq!(key_count(&app), 1);
+            let (expires, scope): (i64, String) = app
+                .db
+                .readers()
+                .with(|c| c.query_row("SELECT expires_at, scope FROM mcp_keys", [], |r| Ok((r.get(0)?, r.get(1)?))))
+                .unwrap();
+            assert_eq!(scope, "read");
+            assert!((expires - now_ms() - 90 * 86_400_000).abs() < 60_000);
+            let again = text(send(&app.router, get("/account/keys", &viewer)).await).await;
+            assert!(!again.contains("<code>rk_") && again.contains("Active"), "the token isn't shown again: {again}");
+            // a responder may ask for changes, up to 365 days
+            let responder = session_for(&app.db, Role::Responder).await;
+            let dev2 = device(&app, &user_of(&app, "responder"), "phone").await;
+            assert_eq!(make_key(&app, &responder, &dev2, "read_request", "365").await.0, StatusCode::OK);
+            assert_eq!(key_count(&app), 2);
+            // someone else's device isn't yours to make a key for
+            let (code, _) = make_key(&app, &responder, &dev, "read", "30").await;
+            assert_eq!(code, StatusCode::BAD_REQUEST);
+            assert_eq!(key_count(&app), 2);
+            // revoking is your own key only
+            let id: String = app
+                .db
+                .readers()
+                .with(|c| c.query_row("SELECT id FROM mcp_keys WHERE scope = 'read'", [], |r| r.get(0)))
+                .unwrap();
+            let csrf = csrf_of(&app, &responder).await;
+            let resp =
+                send(&app.router, post(&format!("/account/keys/{id}/revoke"), &responder, &[("csrf", csrf.as_str())]))
+                    .await;
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND, "another user's key");
+            let csrf = csrf_of(&app, &viewer).await;
+            let resp =
+                send(&app.router, post(&format!("/account/keys/{id}/revoke"), &viewer, &[("csrf", csrf.as_str())]))
+                    .await;
+            assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+            let revoked: Option<i64> = app
+                .db
+                .readers()
+                .with(|c| c.query_row("SELECT revoked_at FROM mcp_keys WHERE id = ?1", [&id], |r| r.get(0)))
+                .unwrap();
+            assert!(revoked.is_some());
+        }
+
+        async fn set_cap(app: &App, admin: &str, value: &str) -> Response<Body> {
+            let csrf = csrf_of(app, admin).await;
+            send(&app.router, post("/settings/assistant/cap", admin, &[("csrf", csrf.as_str()), ("daily_cap", value)]))
+                .await
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn operator_setup_states_provider_data_use() {
+            let app = assistant_app("as-setup").await;
+            let operator = Row::from([
+                ("id", Value::Text("op1".into())),
+                ("name", Value::Text("lab-operator".into())),
+                ("endpoint_id", Value::Text("ab".repeat(32))),
+                ("runners", Value::Text("[{\"name\":\"claude-code\",\"version\":\"2.1.328\"}]".into())),
+            ]);
+            insert(&app, "operators", operator).await;
+            let admin = session_for(&app.db, Role::Admin).await;
+            let page = shell::plain(&text(send(&app.router, get("/settings/assistant", &admin)).await).await);
+            assert!(page.contains("sends the brief and every tool result") && page.contains("AI provider"), "{page}");
+            assert!(page.contains("lab-operator") && page.contains("claude-code 2.1.328"), "{page}");
+            // an invite gives the command to run on the operator host
+            let csrf = csrf_of(&app, &admin).await;
+            let resp = send(&app.router, post("/settings/assistant/invite", &admin, &[("csrf", csrf.as_str())])).await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            let html = text(resp).await.replace("&#x2F;", "/");
+            assert!(html.contains(&format!("rackhand operator join --ticket {TICKET} --invite ")), "{html}");
+            let tokens: i64 =
+                app.db.readers().with(|c| c.query_row("SELECT count(*) FROM join_tokens", [], |r| r.get(0))).unwrap();
+            assert_eq!(tokens, 1);
+            // the daily cap is a number from 1 to 1000, saved and audited
+            assert_eq!(set_cap(&app, &admin, "0").await.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(set_cap(&app, &admin, "5000").await.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(set_cap(&app, &admin, "5").await.status(), StatusCode::SEE_OTHER);
+            assert_eq!(crate::library::config::hub(&app.db).unwrap().assistant.daily_cap, 5);
+            let page = text(send(&app.router, get("/settings/assistant", &admin)).await).await;
+            assert!(page.contains("name=\"daily_cap\" type=\"number\" min=\"1\" max=\"1000\" value=\"5\""), "{page}");
+            // only an admin sees or changes any of it
+            let responder = session_for(&app.db, Role::Responder).await;
+            assert_eq!(send(&app.router, get("/settings/assistant", &responder)).await.status(), StatusCode::FORBIDDEN);
+        }
+    }
 }
 
 mod metrics {

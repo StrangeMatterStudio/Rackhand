@@ -320,6 +320,7 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         .with_host_keys(host_keys.clone())
         .with_ingest(ingest.clone())
         .with_intel(intel.clone())
+        .with_assist(assist.clone())
         .with_notify(notify.clone())
         .with_bus(bus.clone());
     // the mesh: probes and MCP clients

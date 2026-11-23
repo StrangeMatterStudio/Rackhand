@@ -4,6 +4,7 @@ pub(crate) mod account;
 mod add;
 mod appliance;
 mod approvals;
+mod assistant;
 mod audit;
 mod find;
 mod first_run;
@@ -102,6 +103,13 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
         Page::Incident => monitoring::incident(web, ctx),
         Page::Audit => audit::page(web, ctx),
         Page::Security => security::page(web, ctx),
+        Page::Keys => assistant::keys_page(web, ctx),
+        Page::KeyCreate => assistant::create_key(web, ctx).await,
+        Page::KeyRevoke => assistant::revoke_key(web, ctx).await,
+        Page::AssistantSettings => assistant::settings_page(web, ctx),
+        Page::AssistantInvite => assistant::invite(web, ctx).await,
+        Page::AssistantCap => assistant::set_cap(web, ctx).await,
+        Page::IncidentResume => assistant::resume(web, ctx).await,
         Page::SecurityRuleSave => security::save_rule(web, ctx).await,
         Page::SettingsNotifiers => notifiers::page(web, ctx),
         Page::NotifierSave => notifiers::save(web, ctx).await,

@@ -457,6 +457,10 @@ struct IncidentPage {
     shell: Shell,
     incident: IncidentView,
     events: Vec<(String, String, String)>,
+    /// The assistant's jobs for it, with transcripts.
+    jobs: Vec<super::assistant::JobView>,
+    csrf: String,
+    can_resume: bool,
 }
 
 pub(super) fn incident(web: &Web, ctx: &Ctx) -> Response<Body> {
@@ -474,10 +478,22 @@ pub(super) fn incident(web: &Web, ctx: &Ctx) -> Response<Body> {
         Ok(Some((incident, events)))
     });
     match found {
-        Ok(Some((incident, events))) => html(
-            StatusCode::OK,
-            IncidentPage { shell: Shell::new(web, ctx, &incident.title), incident, events }.render(),
-        ),
+        Ok(Some((incident, events))) => {
+            let jobs = super::assistant::jobs_of(web, id, ctx.now_ms);
+            let can_resume = ctx.user.as_ref().is_some_and(|u| allowed(u.role, Permission::Operate));
+            html(
+                StatusCode::OK,
+                IncidentPage {
+                    shell: Shell::new(web, ctx, &incident.title),
+                    incident,
+                    events,
+                    jobs,
+                    csrf: ctx.csrf.clone(),
+                    can_resume,
+                }
+                .render(),
+            )
+        }
         Ok(None) => status(StatusCode::NOT_FOUND, "No such incident"),
         Err(_) => status(StatusCode::INTERNAL_SERVER_ERROR, "The database couldn't be read"),
     }

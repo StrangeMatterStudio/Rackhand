@@ -72,8 +72,10 @@ pub(crate) const PLACES: &[Place] = &[
     place("/add", "Add", "add_circle", 'n', Permission::Administer, Area::Operate),
     place("/audit", "Audit", "history", 'd', Permission::SeeEverything, Area::Operate),
     place("/account", "Account", "person", 'm', Permission::SeeEverything, Area::Account),
+    place("/account/keys", "MCP keys", "key", 'k', Permission::SeeEverything, Area::Account),
     place("/users", "Users", "group", 'u', Permission::Administer, Area::Account),
     place("/settings", "System settings", "settings", 's', Permission::Administer, Area::Account),
+    place("/settings/assistant", "Assistant", "computer", 'o', Permission::Administer, Area::Account),
 ];
 
 /// The shortcuts that aren't places: the keys, as the help shows them, and what they do.

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">Keys for reading this hub from your own computer with an assistant of your choice (<code>rackhand-cli mcp</code>). A key never does more than your role does here.</p></div></div>
+{% if let Some(n) = notice %}{% include "notice.html" %}{% endif %}
+{% if let Some(t) = new_token %}<section class="card"><h2>Your new key</h2><p>Copy it now. It is shown once, and the hub keeps only its hash.</p><pre id="new-key"><code>{{ t }}</code></pre><p><button type="button" data-copy="new-key" hidden>Copy</button></p></section>{% endif %}
+<div class="cols sided">
+<section class="card list"><div class="bar"><h2>Your keys</h2></div>
+{% if keys.is_empty() %}<p class="empty">No keys yet.</p>{% else %}
+<table><thead><tr><th scope="col">Device</th><th scope="col">May</th><th scope="col">Expires</th><th scope="col">State</th><th scope="col"><span class="sr">Revoke</span></th></tr></thead><tbody>
+{% for k in keys %}<tr><td class="t"><b>{{ k.device }}</b></td><td data-label="May">{{ k.scope }}</td><td data-label="Expires">{{ k.expires|safe }}</td><td data-label="State">{{ k.state }}</td><td class="act">{% if k.state == "Active" %}<form class="inline" method="post" action="/account/keys/{{ k.id }}/revoke"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="btn">Revoke</button></form>{% endif %}</td></tr>
+{% endfor %}</tbody></table>{% endif %}</section>
+<section class="card"><h2>Make a key</h2>
+{% if devices.is_empty() %}<p class="hint">You have no device yet. Add one with <code>rackhand-cli</code>, then make a key for it.</p>{% else %}
+<form method="post" action="/account/keys" novalidate>
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="field"><label for="key-device">Device</label><select id="key-device" name="device">{% for d in devices %}<option value="{{ d.0 }}">{{ d.1 }}</option>{% endfor %}</select></div>
+<div class="field"><label for="key-scope">It may</label><select id="key-scope" name="scope"><option value="read">Read</option>{% if can_request %}<option value="read_request">Read and ask for changes (each waits for an approval)</option>{% endif %}</select></div>
+<div class="field"><label for="key-days">Lasts (days)</label><input id="key-days" name="days" type="number" min="1" max="{{ max_days }}" value="{{ default_days }}"><p class="hint">At most {{ max_days }}.</p></div>
+<button type="submit" class="primary">Make the key</button>
+</form>{% endif %}</section>
+</div>
+{% endblock %}

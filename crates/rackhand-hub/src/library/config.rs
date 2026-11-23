@@ -57,6 +57,32 @@ pub struct HubConfig {
     pub oidc: Option<Oidc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probe: Option<ProbeSettings>,
+    #[serde(default, skip_serializing_if = "AssistantSettings::is_default")]
+    pub assistant: AssistantSettings,
+}
+
+/// The assistant's settings (7.7.1): how many jobs a day the hub starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantSettings {
+    #[serde(default = "daily_cap")]
+    pub daily_cap: u32,
+}
+
+fn daily_cap() -> u32 {
+    crate::assist::DEFAULT_DAILY_CAP
+}
+
+impl Default for AssistantSettings {
+    fn default() -> Self {
+        AssistantSettings { daily_cap: daily_cap() }
+    }
+}
+
+impl AssistantSettings {
+    fn is_default(&self) -> bool {
+        *self == AssistantSettings::default()
+    }
 }
 
 /// What every probe is told (7.8.1): its interval, the connection tuples per report, and its buffer's cap.
