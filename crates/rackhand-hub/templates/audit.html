@@ -1,11 +1,9 @@
 {% extends "base.html" %}
-{% block title %}Audit: Rackhand{% endblock %}
-{% block nav %}<nav><a href="/">Overview</a> <a href="/incidents">Incidents</a> <a href="/approvals">Approvals</a> <a href="/jobs">Jobs</a> <a href="/library">Library</a> <a href="/patching">Patching</a> <a href="/audit">Audit</a></nav>{% endblock %}
 {% block content %}
-<h1>Audit</h1>
-{% if let Some(error) = broken %}<p class="banner critical">The audit log's chain is broken: {{ error }}</p>
-{% else %}<p>The chain verifies ({{ rows }} entries).</p>{% endif %}
-<table><tr><th>#</th><th>When</th><th>Actor</th><th>Action</th><th>Target</th></tr>
-{% for e in entries %}<tr><td>{{ e.seq }}</td><td>{{ e.at }}</td><td>{{ e.actor }}</td><td>{{ e.action }}</td><td>{{ e.target }}</td></tr>
-{% endfor %}</table>
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">{% if broken.is_none() %}The chain verifies ({{ rows }} entries). {% endif %}The newest 100 entries, or the newest 100 that match.</p></div></div>
+{% if let Some(error) = broken %}<p class="banner critical">The audit log's chain is broken: {{ error }}</p>{% endif %}
+<section class="card list"><div class="bar"><h2>Entries</h2>{{ crate::web::ui::search("/audit", q, "the log")|safe }}</div>
+{% if entries.is_empty() %}{{ crate::web::ui::none(q, "entries", "Nothing recorded yet.")|safe }}{% else %}<table><thead><tr><th scope="col">Action</th><th scope="col">Actor</th><th scope="col">Target</th><th scope="col">When</th><th scope="col">Entry</th></tr></thead><tbody>
+{% for e in entries %}<tr><td class="t"><b>{{ e.action }}</b></td><td data-label="Actor">{{ e.actor }}</td><td data-label="Target">{% if e.target.is_empty() %}None{% else %}{{ e.target }}{% endif %}</td><td data-label="When">{{ e.at|safe }}</td><td class="num" data-label="Entry">{{ e.seq }}</td></tr>
+{% endfor %}</tbody></table>{% endif %}</section>
 {% endblock %}

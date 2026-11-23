@@ -28,6 +28,8 @@ pub enum Page {
     StepUpSubmit,
     FirstRunForm,
     FirstRunSubmit,
+    FirstRunFactor,
+    FirstRunFactorSubmit,
     Overview,
     Settings,
     SettingsSources,
@@ -46,6 +48,16 @@ pub enum Page {
     UserDisable,
     DeviceRevoke,
     PasskeyJs,
+    FormsJs,
+    AppJs,
+    Icon,
+    Version,
+    Theme,
+    Find,
+    About,
+    Shortcuts,
+    Users,
+    NotFound,
     Account,
     PasskeyRegisterOptions,
     PasskeyRegister,
@@ -92,6 +104,9 @@ const fn r(method: Method, path: &'static str, access: Access, page: Page) -> Ro
     RouteSpec { method, path, access, page }
 }
 
+/// Any other address: in the shell, for someone signed in.
+pub static NOT_FOUND: RouteSpec = r(Method::GET, "", Access::Public, Page::NotFound);
+
 pub static ROUTES: &[RouteSpec] = &[
     r(Method::GET, "/healthz", Access::Public, Page::Healthz),
     // behind its own bearer token (7.3.14), not a session
@@ -101,6 +116,12 @@ pub static ROUTES: &[RouteSpec] = &[
     r(Method::GET, "/install.sh", Access::Public, Page::InstallScript),
     r(Method::GET, "/release/{file}", Access::Public, Page::ReleaseFile),
     r(Method::GET, "/static/app.css", Access::Public, Page::AppCss),
+    r(Method::GET, "/static/app.js", Access::Public, Page::AppJs),
+    r(Method::GET, "/static/icon.svg", Access::Public, Page::Icon),
+    // which hub this is, for a page that was open while it was updated
+    r(Method::GET, "/version", Access::Public, Page::Version),
+    r(Method::POST, "/theme", Access::Public, Page::Theme),
+    r(Method::GET, "/static/forms.js", Access::Public, Page::FormsJs),
     r(Method::GET, "/static/passkey.js", Access::Public, Page::PasskeyJs),
     r(Method::GET, "/sign-in", Access::Public, Page::SignIn),
     r(Method::POST, "/sign-in", Access::Public, Page::SignInSubmit),
@@ -120,7 +141,13 @@ pub static ROUTES: &[RouteSpec] = &[
     r(Method::POST, "/account/passkeys", Access::Perm(Permission::SeeEverything), Page::PasskeyRegister),
     r(Method::GET, "/first-run", Access::FirstRun, Page::FirstRunForm),
     r(Method::POST, "/first-run", Access::FirstRun, Page::FirstRunSubmit),
+    r(Method::GET, "/first-run/second-factor", Access::FirstRun, Page::FirstRunFactor),
+    r(Method::POST, "/first-run/second-factor", Access::FirstRun, Page::FirstRunFactorSubmit),
     r(Method::GET, "/", Access::Perm(Permission::SeeEverything), Page::Overview),
+    r(Method::GET, "/find", Access::Perm(Permission::SeeEverything), Page::Find),
+    r(Method::GET, "/about", Access::Perm(Permission::SeeEverything), Page::About),
+    r(Method::GET, "/shortcuts", Access::Perm(Permission::SeeEverything), Page::Shortcuts),
+    r(Method::GET, "/users", Access::Perm(Permission::Administer), Page::Users),
     r(Method::GET, "/settings", Access::Perm(Permission::Administer), Page::Settings),
     r(Method::POST, "/settings/sources", Access::Perm(Permission::Administer), Page::SettingsSources),
     r(Method::POST, "/settings/git-mirror", Access::Perm(Permission::Administer), Page::SettingsGitMirror),

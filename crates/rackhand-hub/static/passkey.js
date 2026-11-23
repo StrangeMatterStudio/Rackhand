@@ -54,7 +54,16 @@
   }
   document.querySelectorAll("[data-passkey]").forEach(function (button) {
     button.addEventListener("click", function () {
-      run(button).catch(function (e) { button.insertAdjacentText("afterend", " " + e.message); });
+      var said = button.nextElementSibling;
+      if (!said || !said.matches("[data-passkey-error]")) {
+        said = document.createElement("p");
+        said.className = "field-error";
+        said.setAttribute("role", "alert");
+        said.setAttribute("data-passkey-error", "");
+        button.insertAdjacentElement("afterend", said);
+      }
+      said.textContent = "";
+      run(button).catch(function (e) { said.textContent = e.message; });
     });
   });
 })();

@@ -20,7 +20,7 @@ use super::limits::Attempt;
 use super::step_up;
 use super::users::{self, Account};
 use super::{PENDING_COOKIE, PENDING_MS};
-use crate::web::pages::{redirect, status};
+use crate::web::pages::{account, redirect, status};
 use crate::web::session;
 use crate::web::{Ctx, Web};
 
@@ -120,26 +120,26 @@ pub(crate) async fn register(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some(user) = &ctx.user else { return redirect("/sign-in") };
     let state = pk.registering.lock().ok().and_then(|mut r| r.remove(&user.id_hash));
     let Some((state, at)) = state.filter(|(_, at)| ctx.now_ms - at < PENDING_MS) else {
-        return status(StatusCode::BAD_REQUEST, "The passkey request expired; try again");
+        return account::show(web, ctx, StatusCode::BAD_REQUEST, Some("The passkey request expired; try again."));
     };
     let _ = at;
     let Some(credential) =
         ctx.form.get("credential").and_then(|c| serde_json::from_str::<RegisterPublicKeyCredential>(c).ok())
     else {
-        return status(StatusCode::BAD_REQUEST, "No passkey in the form");
+        return account::show(web, ctx, StatusCode::BAD_REQUEST, Some("No passkey in the form."));
     };
     let passkey = match pk.webauthn.finish_passkey_registration(&credential, &state) {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(error = %e, "passkey registration");
-            return status(StatusCode::BAD_REQUEST, "The passkey couldn't be verified");
+            return account::show(web, ctx, StatusCode::BAD_REQUEST, Some("The passkey couldn't be verified."));
         }
     };
     let Ok(data) = serde_json::to_vec(&passkey) else { return status(StatusCode::INTERNAL_SERVER_ERROR, "Encoding") };
     let row = users::credential(&user.user_id, "passkey", data, ctx.now_ms);
     if let Err(e) = web.0.db.writer().send(WriteCmd::Batch(vec![row])).await {
         tracing::error!(error = %e, "passkey");
-        return status(StatusCode::INTERNAL_SERVER_ERROR, "The passkey couldn't be stored");
+        return account::show(web, ctx, StatusCode::INTERNAL_SERVER_ERROR, Some("The passkey couldn't be stored."));
     }
     flow::audit(web, &user.name, "auth.passkey_added", serde_json::json!({ "source": ctx.source })).await;
     redirect("/account")
@@ -225,10 +225,7 @@ pub(crate) async fn sign_in(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some((pending_id, pending)) = flow::pending_of(web, ctx) else { return redirect("/sign-in") };
     let source_only = Attempt { source: &ctx.source, account: None, known_device: None };
     if !web.0.limits.lock().map(|mut l| l.try_attempt(&source_only, ctx.now_ms)).unwrap_or(false) {
-        return status(
-            StatusCode::TOO_MANY_REQUESTS,
-            "Too many failed sign-ins from here; wait a minute and try again",
-        );
+        return flow::sign_in_code(web, ctx, StatusCode::TOO_MANY_REQUESTS, Some(flow::TOO_MANY));
     }
     let verified = match pending_key(ctx) {
         Some(key) => verify(web, ctx, &key).await.filter(|a| a.name == pending.name),
@@ -246,7 +243,7 @@ pub(crate) async fn sign_in(web: &Web, ctx: &Ctx) -> Response<Body> {
             serde_json::json!({ "source": ctx.source, "reason": "passkey" }),
         )
         .await;
-        return status(StatusCode::UNAUTHORIZED, "The passkey wasn't accepted; try again");
+        return flow::sign_in_code(web, ctx, StatusCode::UNAUTHORIZED, Some("The passkey wasn't accepted; try again."));
     };
     flow::finish_sign_in(web, ctx, &pending_id, &account).await
 }
@@ -280,13 +277,13 @@ pub(crate) async fn step_up(web: &Web, ctx: &Ctx) -> Response<Body> {
             l.fail(&attempt, ctx.now_ms);
         }
         flow::audit(web, &user.name, "auth.step_up_failed", serde_json::json!({ "source": ctx.source })).await;
-        return status(StatusCode::UNAUTHORIZED, "The passkey wasn't accepted; try again");
+        return flow::step_up_code(web, ctx, StatusCode::UNAUTHORIZED, Some("The passkey wasn't accepted; try again."));
     }
     if let Err(e) = session::set_step_up(&web.0.db, &user.id_hash, ctx.now_ms).await {
         tracing::error!(error = %e, "step-up");
         return status(StatusCode::INTERNAL_SERVER_ERROR, "The step-up couldn't be recorded");
     }
-    redirect("/")
+    flow::onward(ctx)
 }
 
 #[cfg(test)]

@@ -3,11 +3,12 @@
 
 use askama::Template;
 use axum::body::Body;
-use axum::http::{HeaderValue, Response, StatusCode, header};
+use axum::http::{Response, StatusCode};
 
-use super::{html, redirect, status};
+use super::{html, redirect, see_other, status};
 use crate::library::items::{HistoryEntry, Kind, Library, SaveError};
 use crate::web::perms::{Permission, allowed};
+use crate::web::ui::{self, Shell};
 use crate::web::{Ctx, Web};
 
 /// The longest file a diff is computed for, in lines.
@@ -30,10 +31,14 @@ struct Draft {
 #[derive(Template)]
 #[template(path = "library.html")]
 struct List<'a> {
+    shell: Shell,
+    q: String,
     csrf: &'a str,
     items: Vec<Item>,
     drafts: Vec<Draft>,
     can_edit: bool,
+    /// Why a draft wasn't applied.
+    notice: Option<&'a str>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -61,6 +66,9 @@ impl Line {
 #[derive(Template)]
 #[template(path = "library_item.html")]
 struct ItemPage<'a> {
+    shell: Shell,
+    /// The editor is open; otherwise the item is read.
+    writing: bool,
     csrf: &'a str,
     kind: &'a str,
     name: &'a str,
@@ -123,6 +131,10 @@ fn item_path(path: &str) -> Option<(Kind, &str, &str)> {
 }
 
 pub(super) fn list(web: &Web, ctx: &Ctx) -> Response<Body> {
+    show(web, ctx, StatusCode::OK, None)
+}
+
+fn show(web: &Web, ctx: &Ctx, code: StatusCode, notice: Option<&str>) -> Response<Body> {
     let found = web.0.db.readers().with(|c| {
         let mut s = c.prepare("SELECT kind, name, rev FROM library_items ORDER BY kind DESC, name")?;
         let items =
@@ -139,7 +151,11 @@ pub(super) fn list(web: &Web, ctx: &Ctx) -> Response<Body> {
     });
     match found {
         Ok((items, drafts)) => {
-            html(StatusCode::OK, List { csrf: &ctx.csrf, items, drafts, can_edit: can_edit(ctx) }.render())
+            let q = ui::query(ctx);
+            let items = items.into_iter().filter(|i| ui::found(&q, &[&i.name, &i.kind])).collect();
+            let shell = Shell::at(web, ctx, "Library", "/library");
+            let page = List { shell, q, csrf: &ctx.csrf, items, drafts, can_edit: can_edit(ctx), notice };
+            html(code, page.render())
         }
         Err(e) => {
             tracing::error!(error = %e, "library");
@@ -165,8 +181,11 @@ fn item_page(web: &Web, ctx: &Ctx, code: StatusCode, typed: Option<&str>, error:
         (a.lines().count() <= MAX_DIFF_LINES && b.lines().count() <= MAX_DIFF_LINES)
             .then(|| (from, from + 1, diff(&a, &b)))
     });
+    let writing = can_edit(ctx) && (typed.is_some() || current.is_none() || ctx.query.contains_key("write"));
     let content = typed.map(str::to_string).or(current.map(|(_, c)| c)).unwrap_or_default();
     let page = ItemPage {
+        shell: Shell::at(web, ctx, &format!("{kind_name} {name}"), &format!("/library/{kind_name}/{name}")),
+        writing,
         csrf: &ctx.csrf,
         kind: kind_name,
         name,
@@ -183,15 +202,6 @@ pub(super) fn item(web: &Web, ctx: &Ctx) -> Response<Body> {
     item_page(web, ctx, StatusCode::OK, None, None)
 }
 
-fn see_other(to: &str) -> Response<Body> {
-    let mut resp = Response::new(Body::empty());
-    *resp.status_mut() = StatusCode::SEE_OTHER;
-    if let Ok(v) = HeaderValue::from_str(to) {
-        resp.headers_mut().insert(header::LOCATION, v);
-    }
-    resp
-}
-
 /// Saves a new revision, or shows why it doesn't validate with the text kept.
 pub(super) async fn save(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some(user) = &ctx.user else { return redirect("/sign-in") };
@@ -202,7 +212,8 @@ pub(super) async fn save(web: &Web, ctx: &Ctx) -> Response<Body> {
         Err(SaveError::Invalid(why)) => item_page(web, ctx, StatusCode::BAD_REQUEST, Some(content), Some(&why)),
         Err(e) => {
             tracing::error!(error = %e, "library save");
-            status(StatusCode::INTERNAL_SERVER_ERROR, "The change couldn't be saved")
+            let why = "the change couldn't be saved; try again";
+            item_page(web, ctx, StatusCode::INTERNAL_SERVER_ERROR, Some(content), Some(why))
         }
     }
 }
@@ -212,10 +223,13 @@ pub(super) async fn apply_draft(web: &Web, ctx: &Ctx) -> Response<Body> {
     let id = ctx.path.strip_prefix("/library/drafts/").and_then(|r| r.strip_suffix("/apply")).unwrap_or("");
     match library(web).apply_draft(id, &user.name, ctx.now_ms).await {
         Ok(_) => redirect("/library"),
-        Err(SaveError::Invalid(why)) => status(StatusCode::BAD_REQUEST, &why),
+        Err(SaveError::Invalid(why)) => {
+            let why = format!("The draft wasn't applied: {why}.");
+            show(web, ctx, StatusCode::BAD_REQUEST, Some(&why))
+        }
         Err(e) => {
             tracing::error!(error = %e, "apply draft");
-            status(StatusCode::NOT_FOUND, "No such draft waiting")
+            show(web, ctx, StatusCode::INTERNAL_SERVER_ERROR, Some("The draft couldn't be applied; try again."))
         }
     }
 }

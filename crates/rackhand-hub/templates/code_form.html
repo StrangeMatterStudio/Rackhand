@@ -1,0 +1,14 @@
+<form method="post" action="{{ action }}" novalidate data-check>
+{{ form.hidden(csrf)|safe }}
+{{ form.problems()|safe }}
+{{ form.all_fields()|safe }}
+<p><button type="submit" class="primary">Continue</button></p>
+</form>
+{% if let Some((options, action)) = passkey %}
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="credential" value="">
+<p><button type="button" data-passkey="get" data-options="{{ options }}">Use a passkey</button></p>
+</form>
+<script src="/static/passkey.js"></script>
+{% endif %}

@@ -1,16 +1,12 @@
 {% extends "base.html" %}
-{% block title %}Incidents: Rackhand{% endblock %}
-{% block nav %}<nav><a href="/">Overview</a> <a href="/incidents">Incidents</a> <a href="/approvals">Approvals</a> <a href="/jobs">Jobs</a> <a href="/library">Library</a> <a href="/patching">Patching</a> <a href="/audit">Audit</a></nav>{% endblock %}
 {% block content %}
-<h1>Incidents</h1>
-<h2>Open</h2>
-{% if open.is_empty() %}<p>No open incidents.</p>{% else %}
-<table><tr><th>Incident</th><th>Machine</th><th>Severity</th><th>State</th><th>Opened</th></tr>
-{% for i in open %}<tr><td><a href="/incidents/{{ i.id }}">{{ i.title }}</a></td><td>{{ i.machine }}</td><td>{{ i.severity }}</td><td>{{ i.state }}</td><td>{{ i.opened }}</td></tr>
-{% endfor %}</table>{% endif %}
-<h2>Resolved in the last 7 days</h2>
-{% if resolved.is_empty() %}<p>None.</p>{% else %}
-<table><tr><th>Incident</th><th>Machine</th><th>Severity</th><th>Opened</th></tr>
-{% for i in resolved %}<tr><td><a href="/incidents/{{ i.id }}">{{ i.title }}</a></td><td>{{ i.machine }}</td><td>{{ i.severity }}</td><td>{{ i.opened }}</td></tr>
-{% endfor %}</table>{% endif %}
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">{{ open.len() }} open, {{ resolved.len() }} resolved in the last 7 days.</p></div></div>
+<section class="card list"><div class="bar"><h2>Open</h2>{{ crate::web::ui::search("/incidents", q, "incidents")|safe }}</div>
+{% if open.is_empty() %}{{ crate::web::ui::none(q, "open incidents", "No open incidents.")|safe }}{% else %}<table><thead><tr><th scope="col">Incident</th><th scope="col">Machine</th><th scope="col">Severity</th><th scope="col">State</th><th scope="col">Opened</th></tr></thead><tbody>
+{% for i in open %}<tr><td class="t"><a href="/incidents/{{ i.id }}">{{ i.title }}</a></td><td data-label="Machine">{{ i.machine }}</td><td class="state">{{ crate::web::ui::badge(i.severity)|safe }}</td><td data-label="State">{{ crate::web::ui::word(i.state) }}</td><td data-label="Opened">{{ i.opened|safe }}</td></tr>
+{% endfor %}</tbody></table>{% endif %}</section>
+<section class="card list"><div class="bar"><h2>Resolved in the last 7 days</h2></div>
+{% if resolved.is_empty() %}{{ crate::web::ui::none(q, "resolved incidents", "None in the last 7 days.")|safe }}{% else %}<table><thead><tr><th scope="col">Incident</th><th scope="col">Machine</th><th scope="col">Severity</th><th scope="col">Opened</th></tr></thead><tbody>
+{% for i in resolved %}<tr><td class="t"><a href="/incidents/{{ i.id }}">{{ i.title }}</a></td><td data-label="Machine">{{ i.machine }}</td><td class="state">{{ crate::web::ui::badge(i.severity)|safe }}</td><td data-label="Opened">{{ i.opened|safe }}</td></tr>
+{% endfor %}</tbody></table>{% endif %}</section>
 {% endblock %}

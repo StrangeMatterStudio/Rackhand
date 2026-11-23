@@ -1,29 +1,19 @@
 {% extends "base.html" %}
-{% block title %}Approvals: Rackhand{% endblock %}
-{% block nav %}<nav><a href="/">Overview</a> <a href="/approvals">Approvals</a> <a href="/jobs">Jobs</a> <a href="/library">Library</a> <a href="/patching">Patching</a></nav>{% endblock %}
 {% block content %}
-<h1>Approvals</h1>
-{% if waiting.is_empty() %}
-<p>Nothing waiting.</p>
-{% endif %}
+{{ confirm|safe }}
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">{% if waiting.is_empty() && q.is_empty() %}Actions that need a person are asked for here.{% else %}{{ waiting.len() }} waiting.{% endif %}</p></div></div>
+{% if let Some(n) = notice %}{% include "notice.html" %}{% endif %}
+{% if waiting.len() > 3 || !q.is_empty() %}<div class="bar">{{ crate::web::ui::search("/approvals", q, "approvals")|safe }}</div>{% endif %}
+{% if waiting.is_empty() %}<section class="card">{{ crate::web::ui::none(q, "approvals", "Nothing waiting.")|safe }}</section>{% endif %}
 {% for a in waiting %}
-<section class="approval">
-<h2>{{ a.tool }} on {{ a.target }}</h2>
-<dl>
-<dt>Risk</dt><dd>{{ a.risk }}{% if a.step_up %} (step-up){% endif %}</dd>
-<dt>Requested by</dt><dd>{{ a.requested_by }}</dd>
-<dt>Reason</dt><dd>{{ a.reason }}</dd>
-{% if let Some(rev) = a.rev %}<dt>Runbook</dt><dd>revision {{ rev }}</dd>{% endif %}
-<dt>Arguments</dt><dd><pre>{{ a.args }}</pre></dd>
-{% if let Some(line) = a.runs %}<dt>Runs as</dt><dd><code>{{ line }}</code></dd>{% endif %}
-<dt>Approval</dt><dd><code>{{ a.id }}</code></dd>
-<dt>SHA-256</dt><dd><code>{{ a.hash }}</code></dd>
-</dl>
-{% if a.can_decide %}
-<form method="post" action="/approvals/{{ a.id }}/approve"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Approve</button></form>
-<form method="post" action="/approvals/{{ a.id }}/reject"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Reject</button></form>
-{% endif %}
+<section class="card approval">
+<h2>{{ a.tool }} on {{ a.target }} {{ crate::web::ui::badge(a.risk)|safe }}</h2>
+<div class="cols sided"><div class="stack">
+<div><p class="hint">Arguments</p><pre>{{ crate::web::ui::words(a.args)|safe }}</pre></div>
+{% if let Some(line) = a.runs %}<div><p class="hint">Runs as</p><pre>{{ crate::web::ui::words(line)|safe }}</pre></div>{% endif %}
+</div>
+<dl class="kv"><dt>Risk</dt><dd>{{ a.risk }}{% if a.step_up %} (asks for a fresh code){% endif %}</dd><dt>Requested by</dt><dd>{{ a.requested_by }}</dd><dt>Reason</dt><dd>{{ a.reason }}</dd>{% if let Some(rev) = a.rev %}<dt>Runbook</dt><dd>revision {{ rev }}</dd>{% endif %}<dt>Expires</dt><dd>{{ a.expires|safe }}</dd><dt>Approval</dt><dd><code>{{ a.id }}</code></dd><dt>SHA-256</dt><dd><code>{{ a.hash }}</code></dd></dl></div>
+{% if a.can_decide %}<div class="actions"><form method="post" action="/approvals/{{ a.id }}/approve"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="primary">{{ crate::web::ui::icon("check")|safe }}Approve</button></form><a class="btn" href="/approvals?confirm=reject:{{ a.id }}">Reject</a></div>{% endif %}
 </section>
 {% endfor %}
-<form method="post" action="/sign-out"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Sign out</button></form>
 {% endblock %}

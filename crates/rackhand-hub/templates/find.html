@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">Machines, open incidents and pages.</p></div></div>
+<section class="card list"><div class="bar">{{ crate::web::ui::search("/find", q, "everything")|safe }}</div>
+<div class="rows" data-found>{% for f in found %}<a class="row" href="{{ f.href }}"><span><b>{{ f.name }}</b><small>{{ f.what }}</small></span>{{ crate::web::ui::icon(f.icon)|safe }}</a>{% endfor %}{% if found.is_empty() %}<p class="empty">Nothing matches.</p>{% endif %}</div></section>
+{% endblock %}

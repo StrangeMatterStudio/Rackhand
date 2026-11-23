@@ -1,19 +1,22 @@
 {% extends "base.html" %}
-{% block title %}Your account: Rackhand{% endblock %}
-{% block nav %}<nav><a href="/">Overview</a> <a href="/account">Account</a></nav>{% endblock %}
 {% block content %}
-<h1>{{ name }}</h1>
-<p>Authenticator app: {% if totp %}set up{% else %}not set up{% endif %}. Passkeys: {{ passkeys }} passkey{% if passkeys != 1 %}s{% endif %}.</p>
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">Your own sign-in on this hub.</p></div></div>
+{% if let Some(n) = notice %}{% include "notice.html" %}{% endif %}
+<div class="cols pair">
+<section class="card"><h2>You</h2><dl class="kv"><dt>Name</dt><dd>{{ name }}</dd><dt>Role</dt><dd>{{ role }}</dd><dt>Authenticator app</dt><dd>{% if totp %}set up{% else %}not set up{% endif %}</dd><dt>Passkeys</dt><dd>{{ passkeys }} passkey{% if passkeys != 1 %}s{% endif %}</dd></dl></section>
+<section class="card"><h2>Add a passkey</h2>
 <form method="post" action="/account/passkeys">
 <input type="hidden" name="csrf" value="{{ csrf }}">
 <input type="hidden" name="credential" value="">
 {% if !offered %}
-<p>Passkeys need the hub's hostname with a trusted certificate (a provided one, or ACME); with the hub's own certificate, use the authenticator app.</p>
+<p class="hint">Passkeys need the hub's hostname with a trusted certificate (a provided one, or ACME); with the hub's own certificate, use the authenticator app.</p>
 {% else if !stepped_up %}
-<p><a href="/step-up">Step up</a> to add a passkey.</p>
+<p class="hint">Adding one needs a fresh code.</p>
+<p><a class="btn" href="/step-up">Step up</a></p>
 {% else %}
-<button type="button" data-passkey="create" data-options="/account/passkeys/options">Add a passkey</button>
+<p><button type="button" class="primary" data-passkey="create" data-options="/account/passkeys/options">Add a passkey</button></p>
 {% endif %}
 </form>
-<script src="/static/passkey.js"></script>
+<script src="/static/passkey.js"></script></section>
+</div>
 {% endblock %}

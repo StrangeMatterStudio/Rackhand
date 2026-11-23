@@ -1,17 +1,54 @@
 <!doctype html>
-<html lang="en">
+<html lang="en"{% if !shell.theme.is_empty() %} data-theme="{{ shell.theme }}"{% endif %}>
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{% block title %}Rackhand{% endblock %}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="app-build" content="{{ shell.build() }}">
+<meta name="htmx-config" content='{"includeIndicatorStyles":false,"allowEval":false}'>
+<title>{{ shell.title }}: Rackhand</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/app.css">
-{% block head %}{% endblock %}
 <script src="/static/vendor/htmx-2.0.11.min.js" defer></script>
+<script src="/static/forms.js" defer></script>
+<script src="/static/app.js" defer></script>
 </head>
 <body>
-<header class="bar"><span class="brand">Rackhand</span>{% block nav %}{% endblock %}</header>
-<main>
+<a class="skip" href="#main">Skip to the page</a>
+<header class="head">
+<a class="btn ghost menu-btn" href="#side" aria-label="Menu{% if shell.incidents + shell.approvals > 0 %}: {{ shell.incidents }} open incidents, {{ shell.approvals }} approvals waiting{% endif %}">{{ crate::web::ui::icon("menu")|safe }}{% if shell.incidents + shell.approvals > 0 %}<span class="count" aria-hidden="true">{{ shell.incidents + shell.approvals }}</span>{% endif %}</a>
+<a class="brand" href="/" aria-label="Rackhand, overview">{{ crate::web::ui::MARK|safe }}<span>Rackhand</span></a>
+<a class="btn search" href="/find" data-palette aria-label="Find a machine, incident or page">{{ crate::web::ui::icon("search")|safe }}<span class="long">Find a machine, incident or page</span><kbd><span data-ctrl>Ctrl</span> K</kbd></a>
+<details class="menu" data-menu>
+<summary class="btn pill" aria-label="Account, {{ shell.user }}"><span class="avatar" aria-hidden="true">{{ shell.initial() }}</span><span class="name">{{ shell.user }}</span>{{ crate::web::ui::icon("keyboard_arrow_down")|safe }}</summary>
+<div class="menu-body">
+<p class="id"><b>{{ shell.user }}</b><small>{{ shell.role }}</small></p>
+<form class="theme" method="post" action="/theme"><input type="hidden" name="csrf" value="{{ shell.csrf }}"><input type="hidden" name="back" value="{{ shell.path }}">
+<span id="theme-label">Theme</span><div role="group" aria-labelledby="theme-label"><button type="submit" name="theme" value="" aria-label="System theme" title="System" aria-pressed="{{ shell.theme.is_empty() }}">{{ crate::web::ui::icon("brightness_auto")|safe }}</button><button type="submit" name="theme" value="light" aria-label="Light theme" title="Light" aria-pressed="{{ shell.theme == "light" }}">{{ crate::web::ui::icon("light_mode")|safe }}</button><button type="submit" name="theme" value="dark" aria-label="Dark theme" title="Dark" aria-pressed="{{ shell.theme == "dark" }}">{{ crate::web::ui::icon("dark_mode")|safe }}</button></div></form>
+{% for p in shell.in_area("account") %}<a class="mi" href="{{ p.path }}" data-key="{{ p.key }}">{{ crate::web::ui::icon(p.icon)|safe }}{{ p.name }}</a>
+{% endfor %}<a class="mi" href="/shortcuts" data-dialog data-help>{{ crate::web::ui::icon("keyboard")|safe }}Keyboard shortcuts<kbd>?</kbd></a>
+<a class="mi" href="/about" data-dialog>{{ crate::web::ui::icon("info")|safe }}About</a>
+<form method="post" action="/sign-out"><input type="hidden" name="csrf" value="{{ shell.csrf }}"><button type="submit" class="mi">{{ crate::web::ui::icon("logout")|safe }}Sign out</button></form>
+</div>
+</details>
+</header>
+<div class="body">
+<a class="scrim" href="#main" aria-label="Close the menu" tabindex="-1"></a>
+<nav class="side" id="side" aria-label="Main">
+<div class="shut"><b>Rackhand</b><a class="btn ghost" href="#main" aria-label="Close the menu">{{ crate::web::ui::icon("close")|safe }}</a></div>
+{% for p in shell.in_area("watch") %}<a href="{{ p.path }}" title="{{ p.name }}" data-key="{{ p.key }}"{% if shell.here(p.path) %} aria-current="page"{% endif %}>{{ crate::web::ui::icon(p.icon)|safe }}<span>{{ p.name }}</span>{% if let Some((n, says)) = shell.waiting(p.path) %}<span class="n"><span aria-hidden="true">{{ n }}</span><span class="sr">{{ says }}</span></span>{% endif %}</a>
+{% endfor %}<h3>Operate</h3>
+{% for p in shell.in_area("operate") %}<a href="{{ p.path }}" title="{{ p.name }}" data-key="{{ p.key }}"{% if p.path == "/add" %} data-create{% endif %}{% if shell.here(p.path) %} aria-current="page"{% endif %}>{{ crate::web::ui::icon(p.icon)|safe }}<span>{{ p.name }}</span></a>
+{% endfor %}{% if !shell.sites.is_empty() %}<h3>Sites</h3>
+{% for s in shell.sites %}<a href="/sites/{{ s }}" title="{{ s }}"{% if shell.path == format!("/sites/{s}") %} aria-current="page"{% endif %}>{{ crate::web::ui::icon("dns")|safe }}<span>{{ s }}</span></a>
+{% endfor %}{% endif %}<p class="foot" title="Build {{ shell.build() }}">Rackhand {{ shell.version() }}</p>
+</nav>
+<main class="main" id="main" tabindex="-1">
+<div class="cap">
 {% block content %}{% endblock %}
+</div>
 </main>
+</div>
+{% block dialog %}{% endblock %}
 </body>
 </html>

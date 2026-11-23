@@ -1,16 +1,13 @@
 {% extends "base.html" %}
-{% block title %}{{ run.name }}: Rackhand{% endblock %}
-{% block nav %}<nav><a href="/">Overview</a> <a href="/approvals">Approvals</a> <a href="/jobs">Jobs</a> <a href="/library">Library</a> <a href="/patching">Patching</a></nav>{% endblock %}
 {% block content %}
-<h1>{{ run.name }}</h1>
-<p>{{ run.kind }} job on {{ run.target }}, requested by {{ run.requested_by }}: {{ run.state }}{% if !run.outcome.is_empty() %} ({{ run.outcome }}){% endif %}</p>
+<div class="page-head"><div><h1>{{ run.name }}</h1><p class="lede">{{ crate::web::ui::word(run.kind) }} job{% if !run.target.is_empty() %} on {{ run.target }}{% endif %}, requested by {{ run.requested_by }}.</p></div>{{ crate::web::ui::badge(run.state)|safe }}</div>
+{% if !run.outcome.is_empty() %}<p>Outcome: {{ run.outcome }}</p>{% endif %}
 {% for s in steps %}
-<section class="step">
-<h2>{{ s.id }}: {{ s.state }}{% if let Some(code) = s.exit_code %}, exit code {{ code }}{% endif %}</h2>
-{% if !s.command.is_empty() %}<p><code>{{ s.command }}</code></p>{% endif %}
-{% if !s.stdout.is_empty() %}<pre class="output">{{ s.stdout }}</pre>{% endif %}
-{% if !s.stderr.is_empty() %}<pre class="output error">{{ s.stderr }}</pre>{% endif %}
+<section class="card step">
+<h2>{{ s.id }} {{ crate::web::ui::badge(s.state)|safe }}{% if let Some(code) = s.exit_code %} <span class="badge{% if *code != 0 %} err{% endif %}">exit code {{ code }}</span>{% endif %}</h2>
+{% if !s.command.is_empty() %}<p class="hint">Command</p><pre>{{ crate::web::ui::words(s.command)|safe }}</pre>{% endif %}
+{% if !s.stdout.is_empty() %}<p class="hint">Output</p><pre class="output" id="out-{{ loop.index }}">{{ s.stdout }}</pre><p><button type="button" data-copy="out-{{ loop.index }}" hidden>Copy the output</button></p>{% endif %}
+{% if !s.stderr.is_empty() %}<p class="hint">Errors</p><pre class="output error">{{ s.stderr }}</pre>{% endif %}
 </section>
 {% endfor %}
-<form method="post" action="/sign-out"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Sign out</button></form>
 {% endblock %}

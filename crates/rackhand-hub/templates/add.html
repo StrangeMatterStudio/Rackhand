@@ -1,45 +1,50 @@
 {% extends "base.html" %}
-{% block title %}Add: Rackhand{% endblock %}
-{% block nav %}<nav><a href="/">Overview</a> <a href="/settings">Settings</a></nav>{% endblock %}
 {% block content %}
-<h1>Add</h1>
-{% if !recent.is_empty() %}
-<h2>Recently added</h2>
-<table><tr><th>Machine</th><th>Access</th><th>Enrollment</th></tr>
-{% for m in recent %}<tr><td>{{ m.0 }}</td><td>{{ m.1 }}</td><td>{{ m.2 }}</td></tr>
-{% endfor %}</table>
-{% endif %}
+{% if open == "machine" %}{{ crate::web::ui::dialog("Add a machine", "/add")|safe }}
+<form method="post" action="/add/machine" novalidate data-check>
+<div class="d-b">
+{{ machine.hidden(csrf)|safe }}
+{{ machine.problems()|safe }}
+{{ machine.all_fields()|safe }}
+</div>
+<div class="d-f"><button type="submit" class="primary">Make the install command</button><a class="btn" href="/add" data-close>Cancel</a></div>
+</form></dialog>{% endif %}
+
+{% for (driver, title, form) in appliances %}{% if open == *driver %}{{ crate::web::ui::dialog(format!("Add {title}"), "/add")|safe }}
+<form method="post" action="/add/appliance" novalidate data-check><div class="d-b">
+{{ form.hidden(csrf)|safe }}<input type="hidden" name="driver" value="{{ driver }}">
+{{ form.problems()|safe }}
+{{ form.all_fields()|safe }}
+</div><div class="d-f"><button type="submit" class="primary">Next</button><a class="btn" href="/add" data-close>Cancel</a></div></form></dialog>{% endif %}{% endfor %}
+{% if open == "device" %}{{ crate::web::ui::dialog("Invite a device", "/add")|safe }}
+<form method="post" action="/add/invite" novalidate data-check>
+<div class="d-b">
+{{ device.hidden(csrf)|safe }}<input type="hidden" name="kind" value="device">
+{{ device.problems()|safe }}
+{{ device.all_fields()|safe }}
+</div>
+<div class="d-f"><button type="submit" class="primary">Make the invite</button><a class="btn" href="/add" data-close>Cancel</a></div>
+</form></dialog>{% endif %}
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">Machines, appliances, people's devices, other hubs.</p></div></div>
 <h2>Add a machine</h2>
-<form method="post" action="/add/machine">
-<input type="hidden" name="csrf" value="{{ csrf }}">
-<label>Name <input name="name" required pattern="[A-Za-z0-9._-]{1,64}"></label>
-<label>System <select name="os"><option value="linux">Linux</option><option value="alpine">Alpine</option><option value="windows">Windows</option></select></label>
-<label>Access <select name="access"><option value="managed">Managed</option><option value="monitor">Monitor only</option></select></label>
-<label>Probe <select name="mode"><option value="local">Local (it dials the hub)</option><option value="remote">Remote</option></select></label>
-<button type="submit">Make the install command</button>
-</form>
+<ul class="choices"><li><a href="/add?add=machine">{{ crate::web::ui::icon("computer")|safe }}<b>Machine</b><small>Linux, Alpine or Windows, with a probe</small></a></li></ul>
 <h2>Add an appliance</h2>
-<p>Rackhand checks these through their API; nothing is installed on them.</p>
-{% for d in drivers %}
-<form method="post" action="/add/appliance">
-<input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="driver" value="{{ d.0 }}">
-<h3>{{ d.1 }}</h3>
-<label>Name <input name="name" pattern="[A-Za-z0-9._-]{1,64}"></label>
-{% if d.0 == "proxmox" %}<label>Or the machine it is <select name="machine"><option value="">A new machine</option>{% for m in machines %}<option value="{{ m.0 }}">{{ m.1 }}</option>{% endfor %}</select></label>{% endif %}
-<label>Address <input name="address" required placeholder="{{ d.2 }}"></label>
-<button type="submit">Next</button>
-</form>
-{% endfor %}
+<p class="hint">Rackhand checks these through their API; nothing is installed on them.</p>
+<ul class="choices">{% for (driver, title, _) in appliances %}<li><a href="/add?add={{ driver }}">{{ crate::web::ui::icon("dns")|safe }}<b>{{ title }}</b><small>Through its API</small></a></li>{% endfor %}</ul>
 <h2>Invite</h2>
-<form method="post" action="/add/invite"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="operator"><button type="submit">Invite an operator host</button></form>
-<form method="post" action="/add/invite"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="peer"><button type="submit">Invite a peer hub</button></form>
-<form method="post" action="/add/invite"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="device">
-<label>Device of <select name="user">{% for u in users %}<option value="{{ u.0 }}">{{ u.1 }}</option>{% endfor %}</select></label>
-<button type="submit">Invite a device</button></form>
+<ul class="choices"><li><a href="/add?add=device">{{ crate::web::ui::icon("devices")|safe }}<b>Device</b><small>A person's laptop or phone</small></a></li></ul>
+<div class="cols pair">
+<section class="card"><h2>Operator host</h2><p class="hint">A machine that runs the assistant.</p><form method="post" action="/add/invite"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="operator"><button type="submit">Invite an operator host</button></form></section>
+<section class="card"><h2>Peer hub</h2><p class="hint">A hub at another site.</p><form method="post" action="/add/invite"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="peer"><button type="submit">Invite a peer hub</button></form></section>
+</div>
 <h2>A new site</h2>
-<p>On a fresh Debian 12 or later machine, as a user with sudo:</p>
-<pre><code>{{ bootstrap }}</code></pre>
-<p>Or on a Proxmox host, which makes a Debian LXC for the hub:</p>
-<pre><code>{{ lxc }}</code></pre>
-<p>Then invite it as a peer from here.</p>
+<div class="cols pair">
+<section class="card"><h2>On Debian</h2><p class="hint">A fresh Debian 12 or later machine, as a user with sudo. Then invite it as a peer from here.</p><pre id="bootstrap">{{ bootstrap }}</pre><p><button type="button" data-copy="bootstrap" hidden>Copy</button></p></section>
+<section class="card"><h2>On a Proxmox host</h2><p class="hint">Makes a Debian LXC for the hub.</p><pre id="lxc">{{ lxc }}</pre><p><button type="button" data-copy="lxc" hidden>Copy</button></p></section>
+</div>
+{% if !recent.is_empty() %}
+<section class="card list"><div class="bar"><h2>Recently added</h2></div><table><thead><tr><th scope="col">Machine</th><th scope="col">Access</th><th scope="col">Enrollment</th></tr></thead><tbody>
+{% for m in recent %}<tr><td class="t"><b>{{ m.0 }}</b></td><td data-label="Access">{{ crate::web::ui::word(m.1) }}</td><td data-label="Enrollment">{{ m.2 }}</td></tr>
+{% endfor %}</tbody></table></section>
+{% endif %}
 {% endblock %}

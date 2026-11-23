@@ -97,13 +97,13 @@ fn field(html: &str, name: &str) -> String {
     html[start..start + html[start..].find('"').unwrap()].to_string()
 }
 
-/// Opens the first-run page: the anonymous cookie, the CSRF token and the TOTP secret with its signature.
-async fn open_first_run(app: &App) -> (String, String, String, String) {
+/// Opens the first-run page: the anonymous cookie and the CSRF token.
+async fn open_first_run(app: &App) -> (String, String) {
     let resp = send(&app.router, get("/first-run", "")).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let cookie = set_cookie(&resp, "rh_anon").expect("anonymous cookie").split(';').next().unwrap().to_string();
     let html = text(resp).await;
-    (cookie, field(&html, "csrf"), field(&html, "totp_secret"), field(&html, "totp_sig"))
+    (cookie, field(&html, "csrf"))
 }
 
 async fn complete_first_run(app: &App, setup_code: &str) -> Response<Body> {
@@ -111,30 +111,22 @@ async fn complete_first_run(app: &App, setup_code: &str) -> Response<Body> {
     submit_first_run(app, opened, setup_code).await
 }
 
-async fn submit_first_run(app: &App, opened: (String, String, String, String), setup_code: &str) -> Response<Body> {
+async fn submit_first_run(app: &App, opened: (String, String), setup_code: &str) -> Response<Body> {
     submit_first_run_at(app, opened, setup_code, now_ms()).await
 }
 
-/// The same, with the authenticator code for the hub's clock at `at_ms`.
-async fn submit_first_run_at(
-    app: &App,
-    opened: (String, String, String, String),
-    setup_code: &str,
-    at_ms: i64,
-) -> Response<Body> {
-    let (cookie, csrf, secret, sig) = opened;
-    let code = totp::code(&totp::decode_base32(&secret).unwrap(), at_ms / 1000);
+/// The first step: the details.
+async fn submit_details(app: &App, opened: &(String, String), setup_code: &str) -> Response<Body> {
+    let (cookie, csrf) = opened;
     let req = post(
         "/first-run",
-        &cookie,
+        cookie,
         &[
             ("csrf", csrf.as_str()),
             ("setup_code", setup_code),
             ("admin_name", "admin"),
             ("password", "correct horse battery staple"),
-            ("totp_secret", secret.as_str()),
-            ("totp_sig", sig.as_str()),
-            ("totp_code", code.as_str()),
+            ("password_again", "correct horse battery staple"),
             ("site_name", "home"),
             ("timezone", "Europe/Berlin"),
             ("source_spamhaus", "on"),
@@ -142,6 +134,28 @@ async fn submit_first_run_at(
         ],
     );
     send(&app.router, req).await
+}
+
+/// The second step: the authenticator code for the hub's clock at `at_ms`.
+async fn submit_second_factor(app: &App, opened: &(String, String), secret: &str, at_ms: i64) -> Response<Body> {
+    let code = totp::code(&totp::decode_base32(secret).unwrap(), at_ms / 1000);
+    let fields = [("csrf", opened.1.as_str()), ("totp_code", code.as_str())];
+    send(&app.router, post("/first-run/second-factor", &opened.0, &fields)).await
+}
+
+/// The key the second step shows.
+async fn second_factor_key(app: &App, opened: &(String, String)) -> String {
+    field(&text(send(&app.router, get("/first-run/second-factor", &opened.0)).await).await, "totp_secret")
+}
+
+/// Both steps, at `at_ms` by the hub's clock; the first step's answer when it isn't accepted.
+async fn submit_first_run_at(app: &App, opened: (String, String), setup_code: &str, at_ms: i64) -> Response<Body> {
+    let details = submit_details(app, &opened, setup_code).await;
+    if location(&details).as_deref() != Some("/first-run/second-factor") {
+        return details;
+    }
+    let secret = second_factor_key(app, &opened).await;
+    submit_second_factor(app, &opened, &secret, at_ms).await
 }
 
 async fn user_count(db: &Db) -> i64 {
@@ -231,10 +245,20 @@ async fn first_run_shows_recovery_code_once() {
     let wrong = complete_first_run(&app, "SETUP-WRONG").await;
     assert_eq!(wrong.status(), StatusCode::FORBIDDEN, "the installer's setup code is required");
     assert_eq!(user_count(&app.db).await, 0);
-    // Two first runs at once (both forms opened before either is sent) make one admin.
+    // Two first runs at once (both second steps reached before either is sent) make one admin.
     let (one, two) = (open_first_run(&app).await, open_first_run(&app).await);
     let late = open_first_run(&app).await;
-    let (a, b) = tokio::join!(submit_first_run(&app, one, SETUP_CODE), submit_first_run(&app, two, SETUP_CODE));
+    let late_second = open_first_run(&app).await;
+    for opened in [&one, &two, &late_second] {
+        assert_eq!(submit_details(&app, opened, SETUP_CODE).await.status(), StatusCode::SEE_OTHER);
+    }
+    let (key_one, key_two) = (second_factor_key(&app, &one).await, second_factor_key(&app, &two).await);
+    assert_ne!(key_one, key_two, "a key of its own each");
+    let late_key = second_factor_key(&app, &late_second).await;
+    let (a, b) = tokio::join!(
+        submit_second_factor(&app, &one, &key_one, now_ms()),
+        submit_second_factor(&app, &two, &key_two, now_ms())
+    );
     let pages = [text(a).await, text(b).await];
     let shown = pages.iter().filter(|p| p.contains(&app.recovery)).count();
     assert_eq!(shown, 1, "the recovery code is shown to the one first run that created the admin");
@@ -244,6 +268,9 @@ async fn first_run_shows_recovery_code_once() {
     // A form opened before the admin existed, sent after: refused, no code.
     let again = submit_first_run(&app, late, SETUP_CODE).await;
     assert_eq!(again.status(), StatusCode::SEE_OTHER);
+    assert!(!text(again).await.contains(&app.recovery));
+    let again = submit_second_factor(&app, &late_second, &late_key, now_ms()).await;
+    assert_eq!(again.status(), StatusCode::SEE_OTHER, "nor a second step reached before and sent after");
     assert!(!text(again).await.contains(&app.recovery));
     let roles: Vec<String> = app
         .db
@@ -266,9 +293,12 @@ async fn first_run_shows_recovery_code_once() {
 #[tokio::test(flavor = "multi_thread")]
 async fn post_without_csrf_token_is_403() {
     let app = app("csrf").await;
-    let (cookie, _, _, _) = open_first_run(&app).await;
+    let (cookie, _) = open_first_run(&app).await;
     let no_token = send(&app.router, post("/first-run", &cookie, &[("setup_code", SETUP_CODE)])).await;
     assert_eq!(no_token.status(), StatusCode::FORBIDDEN, "first run");
+    let no_token = send(&app.router, post("/first-run/second-factor", &cookie, &[("totp_code", "000000")])).await;
+    assert_eq!(no_token.status(), StatusCode::FORBIDDEN, "its second step");
+    assert!(!text(no_token).await.contains("totp_secret"));
     complete_first_run(&app, SETUP_CODE).await;
     let admin = session_for(&app.db, Role::Admin).await;
     let good = csrf_of(&app, &admin).await;
@@ -333,7 +363,11 @@ async fn template_output_is_escaped() {
     // The name appears with `<` and `>` as entities (askama writes them as `&#60;` and `&#62;`), never raw.
     assert!(html.contains("&#60;script&#62;alert(1)&#60;/script&#62;"), "{html}");
     assert!(!html.contains("<script>alert(1)"), "{html}");
-    assert_eq!(html.matches("<script").count(), 1, "only the page's own htmx script tag: {html}");
+    assert_eq!(
+        html.matches("<script").count(),
+        html.matches("<script src=\"/static/").count(),
+        "only the page's own script tags: {html}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -530,6 +564,15 @@ fn totp_matches_rfc6238_vectors() {
     assert_eq!(totp::decode_base32(&b32).unwrap(), secret);
 }
 
+#[path = "first_run_tests.rs"]
+mod first_run;
+
+#[path = "forms_tests.rs"]
+mod forms;
+
+#[path = "shell_tests.rs"]
+mod shell;
+
 mod settings {
     use super::*;
 
@@ -603,6 +646,7 @@ mod settings {
             ("role", "responder"),
             ("auth", "local"),
             ("password", "a long enough secret"),
+            ("password_again", "a long enough secret"),
         ];
         let resp = send(&app.router, post("/settings/users", &admin, &fields)).await;
         assert_eq!(resp.status(), StatusCode::OK);
@@ -610,7 +654,7 @@ mod settings {
         assert!(shown.contains("otpauth://totp/"), "{shown}");
         let (id, role, disabled) = user_row(&app.db, "alice").expect("created");
         assert_eq!((role.as_str(), disabled), ("responder", None));
-        let page = text(send(&app.router, get("/settings", &admin)).await).await;
+        let page = text(send(&app.router, get("/users", &admin)).await).await;
         assert!(page.contains("alice"), "listed");
         // Change the role, then disable: alice's session stops working.
         let alice = session_of(&app.db, &id).await;
@@ -722,9 +766,9 @@ mod settings {
         tx.finish().unwrap();
         assert_eq!(rx.read_to_end(64).await.unwrap(), b"hi", "the device is served");
         conn.close(0u32.into(), b"done");
-        // Listed on the settings page, then revoked there.
+        // Listed on the users page, then revoked there.
         let admin = session_for(&app.db, Role::Admin).await;
-        let page = text(send(&app.router, get("/settings", &admin)).await).await;
+        let page = text(send(&app.router, get("/users", &admin)).await).await;
         assert!(page.contains("laptop"), "listed");
         let csrf = csrf_of(&app, &admin).await;
         let resp = send(&app.router, post("/settings/devices/d1/revoke", &admin, &[("csrf", csrf.as_str())])).await;
@@ -882,7 +926,10 @@ mod pages {
         ] {
             assert!(html.contains(shown), "{shown} not on the page");
         }
-        assert!(html.contains(&format!("action=\"/approvals/{id}/approve\"")) && html.contains("/reject\""));
+        assert!(html.contains(&format!("action=\"/approvals/{id}/approve\"")));
+        // rejecting asks first
+        let asked = text(send(&app.router, get(&format!("/approvals?confirm=reject:{id}"), &responder)).await).await;
+        assert!(html.contains("confirm=reject") && asked.contains(&format!("action=\"/approvals/{id}/reject\"")));
     }
 
     /// Owner review (B4): an `exec` approval shows the line that runs on the machine, with the timeout that stops it.
@@ -899,7 +946,7 @@ mod pages {
         Approvals::new(app.db.clone()).create(&exec, now_ms(), 3_600_000).await.unwrap();
         let responder = session_for(&app.db, Role::Responder).await;
         let html = text(send(&app.router, get("/approvals", &responder)).await).await;
-        let html = html.replace("&#39;", "'").replace("&#x27;", "'").replace("&#124;", "|").replace("&amp;", "&");
+        let html = shell::plain(&html);
         assert!(html.contains("Runs as"), "{html}");
         assert!(html.contains("timeout -k 5 600 sh -c 'journalctl -u nginx | tail'"), "{html}");
         approval(&app, Risk::Normal).await;
@@ -1035,7 +1082,7 @@ mod pages {
         let list = text(send(&app.router, get("/jobs", &viewer)).await).await;
         assert!(list.contains("restart-web") && list.contains("/jobs/01JOBPAGEAAAAAAAAAAAAAAAAA"));
         let page = text(send(&app.router, get("/jobs/01JOBPAGEAAAAAAAAAAAAAAAAA", &viewer)).await).await;
-        assert!(page.contains("systemctl restart nginx.service"));
+        assert!(shell::plain(&page).contains("systemctl restart nginx.service"));
         assert!(page.contains("exit code 3"), "{page}");
         assert!(page.contains("[rackhand: output truncated at 1 MiB]"));
         assert!(!page.contains("<script>alert(1)"), "output is escaped");
@@ -1236,7 +1283,7 @@ mod pages {
     }
 
     #[derive(Debug)]
-    struct Roomy;
+    pub(super) struct Roomy;
 
     impl crate::ingest::DiskSpace for Roomy {
         fn free_fraction(&self) -> f64 {
@@ -1356,12 +1403,12 @@ mod pages {
         };
         let web = row(&ids[0]);
         assert!(web.contains("web&#60;1&#62;") && web.contains("auto-policy"), "{web}");
-        assert!(web.contains("<td>7</td><td>2</td><td>yes</td>"), "{web}");
+        assert_eq!(shell::cells(&web)[..3], ["7", "2", "yes"], "{web}");
         let db = row(&ids[1]);
-        assert!(db.contains("<td>4</td><td>1</td><td>no</td>"), "held updates are still shown (E10): {db}");
+        assert_eq!(shell::cells(&db)[..3], ["4", "1", "no"], "held updates are still shown (E10): {db}");
         assert!(db.contains("hold") && !web.contains("hold"), "the hold: {db}");
         assert!(row(&ids[2]).contains("not reported yet") && row(&ids[2]).contains("no policy"), "{}", row(&ids[2]));
-        assert!(row(&ids[3]).contains("<td>0</td><td>0</td><td>no</td>"));
+        assert_eq!(shell::cells(&row(&ids[3]))[..3], ["0", "0", "no"]);
         assert!(!html.contains("gone"), "a revoked machine isn't patched");
     }
 
@@ -1375,8 +1422,8 @@ mod pages {
         let resp = send(&app.router, get(&format!("/machines/{M}"), &viewer)).await;
         assert_eq!(resp.status(), StatusCode::OK);
         let html = text(resp).await;
-        assert!(html.contains("Capture: eBPF"), "{html}");
-        assert!(html.contains("Access: monitor"));
+        assert!(shell::plain(&html).contains("Capture: eBPF"), "{html}");
+        assert!(shell::plain(&html).contains("Access: monitor"));
         assert!(html.contains("Debian 12"));
         assert!(html.contains(&format!("hx-get=\"/machines/{M}/vitals\"")), "the chart refreshes with htmx");
         // the htmx partial draws a line for each metric with data
@@ -1448,7 +1495,8 @@ mod pages {
         app.db.writer().send(WriteCmd::Batch(vec![RowWrite::insert("incidents", incident)])).await.unwrap();
         let viewer = session_for(&app.db, Role::Viewer).await;
         let html = text(send(&app.router, get(&format!("/machines/{M}"), &viewer)).await).await;
-        assert!(html.contains("Probe silent since 2026-11-19T06:00:00Z"), "{html}");
+        assert!(shell::plain(&html).contains("Probe silent since Thursday, November 19, 06:00 UTC"), "{html}");
+        assert!(html.contains("datetime=\"2026-11-19T06:00:00Z\""), "{html}");
         let overview = text(send(&app.router, get("/", &viewer)).await).await;
         assert!(overview.contains("silent"), "the overview shows it too");
     }
@@ -1859,7 +1907,7 @@ mod binding {
         // the machine page says so, and offers both
         let admin = session_for(&app.db, Role::Admin).await;
         let page = text(send(&app.router, get(&format!("/machines/{GUEST}"), &admin)).await).await;
-        assert!(page.contains("Guest binding: mismatch"), "{page}");
+        assert!(shell::plain(&page).contains("Guest binding: mismatch"), "{page}");
         assert!(page.contains("vmid 100") && page.contains("vmid 200"), "{page}");
         let path = format!("/machines/{GUEST}/binding/confirm");
         let state = |app: &App| -> String {
@@ -2110,8 +2158,10 @@ mod add {
         let at = page.find("Recently added").unwrap_or_else(|| panic!("a recently added list: {page}"));
         let list = &page[at..page[at..].find("</table>").map_or(page.len(), |e| at + e)];
         let row = |name: &str| {
-            let start = list.find(&format!("<td>{name}</td>")).unwrap_or_else(|| panic!("{name} listed: {list}"));
-            list[start..list[start..].find("</tr>").map_or(list.len(), |e| start + e)].to_string()
+            list.split("<tr")
+                .find(|r| shell::cells(r).first().is_some_and(|c| c == name))
+                .unwrap_or_else(|| panic!("{name} listed: {list}"))
+                .to_string()
         };
         assert!(row("web1").contains("Enrolled and healthy"), "{}", row("web1"));
         let failed = row("web2");
@@ -2283,7 +2333,7 @@ mod agentless {
         let app = agentless_app("agentless-vault").await;
         let admin = session_for(&app.db, Role::Admin).await;
         let sim = rackhand_drivers::truenas::sim::Sim::start(rackhand_drivers::truenas::sim::Api::WebSocket).await;
-        let page = unescape(&text(send(&app.router, get("/add", &admin)).await).await);
+        let page = unescape(&text(send(&app.router, get("/add?add=truenas", &admin)).await).await);
         assert!(page.contains("/add/appliance") && page.contains("truenas"), "the appliance forms: {page}");
         // first the address: the hub shows the certificate it was given, before any credential is asked for
         let fields = [("driver", "truenas"), ("name", "nas1"), ("address", sim.url.as_str())];

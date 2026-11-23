@@ -1,4 +1,3 @@
-{% if rows.is_empty() %}<p>No vitals in the last hour.</p>{% else %}
-<table><tr><th>Metric</th><th>Last hour</th><th>Now</th><th>Min</th><th>Max</th></tr>
-{% for r in rows %}<tr><td>{{ r.metric }}</td><td><svg class="spark" viewBox="0 0 300 40" width="300" height="40" role="img" aria-label="{{ r.metric }} over the last hour"><polyline fill="none" stroke="currentColor" stroke-width="1.5" points="{{ r.line }}"/></svg></td><td>{{ r.last }}</td><td>{{ r.min }}</td><td>{{ r.max }}</td></tr>
-{% endfor %}</table>{% endif %}
+{% if rows.is_empty() %}<p class="hint">No vitals in the last hour.</p>{% else %}<div class="vitals">
+{% for r in rows %}<div class="chart" data-metric="{{ r.metric }}"><p>{{ r.name }}<b>{{ r.last }}</b></p><svg class="spark" viewBox="0 0 300 40" preserveAspectRatio="none" role="img" aria-label="{{ r.metric }} over the last hour"><polyline fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke" points="{{ r.line }}"/></svg><small>{{ r.min }} to {{ r.max }}</small></div>
+{% endfor %}</div>{% endif %}

@@ -277,8 +277,9 @@ pub fn machine_state(dash: &Dash, name: &str) -> Option<String> {
     let at = overview.find("href=\"/sites/")? + 6;
     let site = &overview[at..at + overview[at..].find('"')?];
     let (_, page) = dash.get(site);
-    let row = page.split("<tr>").find(|r| r.contains(&format!("/machines/{id}\"")))?;
-    cells(row).get(1).cloned()
+    let row = page.split("<tr").find(|r| r.contains(&format!("/machines/{id}\"")))?;
+    let at = row.find("data-state=\"")? + 12;
+    Some(row[at..at + row[at..].find('"')?].to_string())
 }
 
 /// An open incident: title, machine, severity, state.
@@ -293,8 +294,9 @@ pub struct Open {
 fn cells(row: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = row;
-    while let Some(i) = rest.find("<td>") {
-        let after = &rest[i + 4..];
+    while let Some(i) = rest.find("<td") {
+        let Some(open) = rest[i..].find('>') else { break };
+        let after = &rest[i + open + 1..];
         let end = after.find("</td>").unwrap_or(after.len());
         let mut cell = after[..end].to_string();
         while let (Some(a), Some(b)) = (cell.find('<'), cell.find('>')) {
@@ -315,10 +317,16 @@ pub fn open_incidents(dash: &Dash) -> Vec<Open> {
     let start = page.find("<h2>Open</h2>").expect("the incidents page");
     let end = page.find("<h2>Resolved").unwrap_or(page.len());
     page[start..end]
-        .split("<tr>")
+        .split("<tr")
         .map(cells)
         .filter(|c| c.len() >= 4)
-        .map(|c| Open { title: c[0].clone(), machine: c[1].clone(), severity: c[2].clone(), state: c[3].clone() })
+        // (the pages show the words with a capital)
+        .map(|c| Open {
+            title: c[0].clone(),
+            machine: c[1].clone(),
+            severity: c[2].to_lowercase(),
+            state: c[3].to_lowercase(),
+        })
         .collect()
 }
 
@@ -326,7 +334,7 @@ pub fn open_incidents(dash: &Dash) -> Vec<Open> {
 pub fn resolved_titles(dash: &Dash) -> Vec<String> {
     let (_, page) = dash.get("/incidents");
     let start = page.find("<h2>Resolved").expect("the incidents page");
-    page[start..].split("<tr>").map(cells).filter(|c| c.len() >= 3).map(|c| format!("{} on {}", c[0], c[1])).collect()
+    page[start..].split("<tr").map(cells).filter(|c| c.len() >= 3).map(|c| format!("{} on {}", c[0], c[1])).collect()
 }
 
 /// The x coordinates of a metric's line in the machine's last-hour chart.
@@ -458,7 +466,7 @@ pub fn ensure_target(dash: &Dash, token: &str) -> String {
         "target stayed pending: the hub's SSH test didn't pass (the Add page says why)"
     );
     let (_, page) = dash.get(&format!("/machines/{id}"));
-    let access = if page.contains("Access: managed") { "managed" } else { "other" };
+    let access = if page.contains("<dt>Access</dt><dd>managed</dd>") { "managed" } else { "other" };
     let never = f64::INFINITY;
     let record = format!(
         "machine={id}\nvitals_s={}\nservices_s={}\nupdates_s={}\naccess={access}\n",
@@ -515,7 +523,7 @@ pub fn ensure_notifier(dash: &Dash) {
     ensure_hook();
     let running = |dash: &Dash| {
         let (_, page) = dash.get("/settings/notifiers");
-        page.split("<tr>").any(|row| row.contains(&format!("<td>{HOOK_NAME}</td>")) && row.contains("running"))
+        page.split("<tr").any(|row| row.contains(&format!("<b>{HOOK_NAME}</b>")) && row.contains("running"))
     };
     if running(dash) {
         return;

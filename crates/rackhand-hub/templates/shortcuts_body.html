@@ -1,0 +1,4 @@
+<dl class="kv">
+{% for (keys, does) in crate::web::ui::KEYS %}<dt>{{ keys|safe }}</dt><dd>{{ does }}</dd>
+{% endfor %}{% for p in shell.places %}<dt><kbd>g</kbd> <kbd>{{ p.key }}</kbd></dt><dd>{{ p.name }}</dd>
+{% endfor %}</dl>

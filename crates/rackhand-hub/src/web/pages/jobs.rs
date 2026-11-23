@@ -7,6 +7,7 @@ use axum::http::{Response, StatusCode};
 use rusqlite::OptionalExtension;
 
 use super::{html, status};
+use crate::web::ui::{self, Shell};
 use crate::web::{Ctx, Web};
 
 struct Run {
@@ -30,15 +31,16 @@ struct StepView {
 
 #[derive(Template)]
 #[template(path = "jobs.html")]
-struct List<'a> {
-    csrf: &'a str,
+struct List {
+    shell: Shell,
+    q: String,
     runs: Vec<Run>,
 }
 
 #[derive(Template)]
 #[template(path = "job.html")]
-struct Detail<'a> {
-    csrf: &'a str,
+struct Detail {
+    shell: Shell,
     run: Run,
     steps: Vec<StepView>,
 }
@@ -64,7 +66,12 @@ pub(super) fn list(web: &Web, ctx: &Ctx) -> Response<Body> {
         rows.collect()
     });
     match runs {
-        Ok(runs) => html(StatusCode::OK, List { csrf: &ctx.csrf, runs }.render()),
+        Ok(runs) => {
+            let q = ui::query(ctx);
+            let fits = |r: &Run| ui::found(&q, &[&r.name, &r.kind, &r.target, &r.state, &r.outcome, &r.requested_by]);
+            let runs = runs.into_iter().filter(fits).collect();
+            html(StatusCode::OK, List { shell: Shell::new(web, ctx, "Jobs"), q: q.clone(), runs }.render())
+        }
         Err(e) => {
             tracing::error!(error = %e, "jobs");
             status(StatusCode::INTERNAL_SERVER_ERROR, "Jobs unreadable")
@@ -97,7 +104,9 @@ pub(super) fn detail(web: &Web, ctx: &Ctx) -> Response<Body> {
         Ok(Some((job, steps)))
     });
     match found {
-        Ok(Some((run, steps))) => html(StatusCode::OK, Detail { csrf: &ctx.csrf, run, steps }.render()),
+        Ok(Some((run, steps))) => {
+            html(StatusCode::OK, Detail { shell: Shell::new(web, ctx, &run.name), run, steps }.render())
+        }
         Ok(None) => status(StatusCode::NOT_FOUND, "No such job"),
         Err(e) => {
             tracing::error!(error = %e, "job");

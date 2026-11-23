@@ -1,19 +1,15 @@
 {% extends "base.html" %}
-{% block nav %}<nav><a href="/">Overview</a> <a href="/incidents">Incidents</a> <a href="/approvals">Approvals</a> <a href="/jobs">Jobs</a> <a href="/library">Library</a> <a href="/patching">Patching</a> <a href="/audit">Audit</a> <a href="/settings">Settings</a> <span class="user">{{ user }}</span>
-<form class="inline" method="post" action="/sign-out"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Sign out</button></form></nav>{% endblock %}
 {% block content %}
-<h1>Overview</h1>
-{% if open_incidents == 0 %}<p>No open incidents.</p>{% else %}<p><a href="/incidents">{{ open_incidents }} open incidents</a></p>{% endif %}
-{% for site in sites %}<h2><a href="/sites/{{ site }}">{{ site }}</a></h2>{% endfor %}
-{% if machines.is_empty() %}
-<p>No machines yet: <a href="/add">Add machine</a></p>
-{% else %}
-<table>
-<thead><tr><th>Site</th><th>Machine</th><th>Kind</th><th>State</th><th>Health</th></tr></thead>
-<tbody>
-{% for m in machines %}<tr><td>{{ m.site }}</td><td><a href="/machines/{{ m.id }}">{{ m.name }}</a></td><td>{{ m.kind }}</td><td>{{ m.state }}</td><td class="health {{ m.health }}">{{ m.health }}</td></tr>
-{% endfor %}
-</tbody>
-</table>
-{% endif %}
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">{{ counts.total }} machine{% if counts.total != 1 %}s{% endif %} at {{ shell.sites.len() }} site{% if shell.sites.len() != 1 %}s{% endif %}.</p></div>{% if shell.adds %}<a class="btn primary" href="/add?add=machine">{{ crate::web::ui::icon("add")|safe }}Add a machine</a>{% endif %}</div>
+<div class="stats"><div class="stat"><span>Healthy</span><b>{{ counts.healthy }}</b> <small>of {{ counts.total }}</small></div><a class="stat" href="/incidents"><span>Open incidents</span><b>{{ counts.incidents }}</b>{% if counts.critical > 0 %} <small>{{ counts.critical }} critical</small>{% endif %}</a><a class="stat" href="/approvals"><span>Approvals waiting</span><b>{{ shell.approvals }}</b></a><a class="stat" href="/patching"><span>Updates pending</span><b>{{ counts.updates }}</b>{% if counts.security > 0 %} <small>{{ counts.security }} security</small>{% endif %}</a></div>
+<div class="cols attend"><div class="stack">
+<section class="card list"><div class="bar"><h2>Open incidents</h2></div>{% if incidents.is_empty() %}<p class="empty">No open incidents.</p>{% else %}<div class="rows">{% for i in incidents %}<a class="row" href="/incidents/{{ i.id }}"><span><b>{{ i.title }}</b><small>{{ i.machine }}, since {{ i.opened|safe }}</small></span>{{ crate::web::ui::badge(i.severity)|safe }}</a>{% endfor %}</div>{% endif %}</section>
+<section class="card list"><div class="bar"><h2>Approvals</h2></div>{% if approvals.is_empty() %}<p class="empty">Nothing waiting.</p>{% else %}<div class="rows">{% for (tool, target, by) in approvals %}<a class="row" href="/approvals"><span><b>{{ tool }} on {{ target }}</b><small>Asked by {{ by }}</small></span></a>{% endfor %}</div>{% endif %}</section>
+</div>
+<section class="card list"><div class="bar"><h2>Machines</h2>{{ crate::web::ui::search("/", q, "machines")|safe }}</div>
+{% if machines.is_empty() %}{{ crate::web::ui::none(q, "machines", "No machines yet. <a href=\"/add\">Add machine</a>")|safe }}{% else %}
+<table><thead><tr><th scope="col">Machine</th><th scope="col">State</th><th scope="col">Kind</th><th scope="col">CPU</th><th scope="col" class="x">Memory</th><th scope="col">Updates</th><th scope="col" class="x">Policy</th><th scope="col">Last seen</th></tr></thead><tbody>
+{% for m in machines %}<tr><td class="t"><a href="/machines/{{ m.id }}">{{ m.name }}</a></td><td class="state" data-health="{{ m.health }}">{{ crate::web::ui::badge(m.health)|safe }}</td><td data-label="Kind">{{ crate::web::ui::word(m.kind) }}</td><td class="num" data-label="CPU">{{ crate::web::pages::shown(m.cpu) }}</td><td class="x num" data-label="Memory">{{ crate::web::pages::shown(m.memory) }}</td><td class="num" data-label="Updates">{{ crate::web::pages::shown(m.updates) }}</td><td class="x" data-label="Policy">{% if m.policy.is_empty() %}None{% else %}{{ m.policy }}{% endif %}</td><td class="num" data-label="Last seen">{{ crate::web::pages::shown(m.last_seen) }}</td></tr>
+{% endfor %}</tbody></table>{% endif %}
+</section></div>
 {% endblock %}

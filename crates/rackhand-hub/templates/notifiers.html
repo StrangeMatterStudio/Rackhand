@@ -1,37 +1,29 @@
 {% extends "base.html" %}
-{% block title %}Notifiers: Rackhand{% endblock %}
-{% block nav %}<nav><a href="/">Overview</a> <a href="/settings">Settings</a></nav>{% endblock %}
 {% block content %}
-<h1>Notifiers</h1>
-{% if saved.is_empty() %}<p>No notifiers yet.</p>{% else %}
-<table>
-<thead><tr><th>Name</th><th>Kind</th><th>Sends to</th><th>State</th></tr></thead>
-<tbody>{% for n in saved %}<tr><td>{{ n.name }}</td><td>{{ n.kind }}</td><td>{{ n.target }}</td><td>{% if running.contains(n.name) %}running{% else %}applies when the hub restarts{% endif %}</td></tr>{% endfor %}</tbody>
-</table>
-{% endif %}
-{% if !running.is_empty() %}<form method="post" action="/settings/notifiers/test"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Send test</button></form>{% endif %}
-<h2>Add or replace a notifier</h2>
-<p>Saving a name that exists replaces it. Secrets go into the Vault; leave them empty to keep the stored ones. A saved notifier applies when the hub restarts.</p>
-<form method="post" action="/settings/notifiers">
-<input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="discord">
-<fieldset><legend>Discord</legend>
-<label>Name <input name="name" required pattern="[a-z0-9-]{1,64}"></label>
-<label>Webhook URL <input name="webhook" type="password" autocomplete="off"></label>
-<button type="submit">Save</button>
-</fieldset>
-</form>
-<form method="post" action="/settings/notifiers">
-<input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="smtp">
-<fieldset><legend>Email (SMTP)</legend>
-<label>Name <input name="name" required pattern="[a-z0-9-]{1,64}"></label>
-<label>Server <input name="host" required></label>
-<label>Port <input name="port" type="number" min="1" max="65535" value="587" required></label>
-<label>Security <select name="security"><option value="starttls">STARTTLS</option><option value="tls">TLS</option></select></label>
-<label>User name <input name="username" autocomplete="off"></label>
-<label>Password <input name="password" type="password" autocomplete="off"></label>
-<label>From <input name="from" type="email" required></label>
-<label>To (comma-separated) <input name="to" required></label>
-<button type="submit">Save</button>
-</fieldset>
-</form>
+{% if open == "discord" %}{{ crate::web::ui::dialog("Discord notifier", "/settings/notifiers")|safe }}
+<form method="post" action="/settings/notifiers" novalidate data-check>
+<div class="d-b">
+{{ discord.hidden(csrf)|safe }}<input type="hidden" name="kind" value="discord">
+{{ discord.problems()|safe }}
+{{ discord.all_fields()|safe }}
+</div>
+<div class="d-f"><button type="submit" class="primary">Save</button><a class="btn" href="/settings/notifiers" data-close>Cancel</a></div>
+</form></dialog>{% endif %}
+{% if open == "smtp" %}{{ crate::web::ui::dialog("Email notifier", "/settings/notifiers")|safe }}
+<form method="post" action="/settings/notifiers" novalidate data-check>
+<div class="d-b">
+{{ smtp.hidden(csrf)|safe }}<input type="hidden" name="kind" value="smtp">
+{{ smtp.problems()|safe }}
+{{ smtp.all_fields()|safe }}
+</div>
+<div class="d-f"><button type="submit" class="primary">Save</button><a class="btn" href="/settings/notifiers" data-close>Cancel</a></div>
+</form></dialog>{% endif %}
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">Where callouts go. Secrets go into the Vault. A saved notifier applies when the hub restarts.</p></div>{% if !running.is_empty() %}<form method="post" action="/settings/notifiers/test"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Send test</button></form>{% endif %}</div>
+{% if let Some(n) = notice %}{% if sent_ok %}<p class="good-news" role="status">{{ n }}</p>{% else %}{% include "notice.html" %}{% endif %}{% endif %}
+<section class="card list"><div class="bar"><h2>Saved</h2></div>
+{% if saved.is_empty() %}<p class="empty">No notifiers yet. Add one, so a callout reaches someone.</p>{% else %}<table><thead><tr><th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Sends to</th><th scope="col">State</th><th scope="col"><span class="sr">Edit</span></th></tr></thead><tbody>
+{% for n in saved %}<tr><td class="t"><b>{{ n.name }}</b></td><td data-label="Kind">{{ n.kind }}</td><td data-label="Sends to">{{ n.target }}</td><td data-label="State">{% if running.contains(n.name) %}running{% else %}applies when the hub restarts{% endif %}</td><td class="act"><a class="btn" href="/settings/notifiers?edit={{ n.name }}" aria-label="Edit {{ n.name }}">Edit</a></td></tr>
+{% endfor %}</tbody></table>{% endif %}</section>
+<h2>Add one</h2>
+<ul class="choices"><li><a href="/settings/notifiers?add=discord">{{ crate::web::ui::icon("link")|safe }}<b>Discord</b><small>A channel's webhook</small></a></li><li><a href="/settings/notifiers?add=smtp">{{ crate::web::ui::icon("notifications")|safe }}<b>Email</b><small>Through a mail server (SMTP)</small></a></li></ul>
 {% endblock %}

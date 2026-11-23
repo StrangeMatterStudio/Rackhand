@@ -12,44 +12,146 @@ use axum::http::{Response, StatusCode};
 use rackhand_drivers::DriverTarget;
 use rackhand_store::{StoreError, TokenRefusal};
 
-use super::add::valid_name;
+use super::add::{self, NAME_HINT, NAME_PATTERN, NAME_RULE, PLAIN, local_site, name_taken};
 use super::{html, redirect, status};
 use crate::registry::RegistryError;
 use crate::registry::agentless::{AddAppliance, referenced, vault_name};
 use crate::registry::tokens::Token;
 use crate::vault::Secret;
+use crate::web::forms::{Choices, Form, Groups, Spec};
+use crate::web::ui::Shell;
 use crate::web::{Ctx, Web};
 
-/// The drivers with a form: name, title, address example, HTTPS (a certificate to accept), default port.
-pub(super) const DRIVERS: &[(&str, &str, &str, bool, u16)] = &[
-    ("proxmox", "Proxmox VE", "https://pve.lab.test:8006", true, 8006),
-    ("truenas", "TrueNAS", "https://nas.lab.test", true, 443),
-    ("redfish", "Redfish BMC", "https://bmc.lab.test", true, 443),
-    ("snmp", "SNMP device", "switch.lab.test:161", false, 161),
+/// A driver's form: its title, whether it is HTTPS (a certificate to accept), and its default port.
+struct DriverForm {
+    driver: &'static str,
+    id: &'static str,
+    title: &'static str,
+    tls: bool,
+    port: u16,
+    specs: &'static [Spec],
+    credentials: &'static [Spec],
+}
+
+const DRIVERS: &[DriverForm] = &[
+    DriverForm {
+        driver: "proxmox",
+        id: "add-proxmox",
+        title: "Proxmox VE",
+        tls: true,
+        port: 8006,
+        specs: PROXMOX,
+        credentials: PROXMOX_CREDENTIALS,
+    },
+    DriverForm {
+        driver: "truenas",
+        id: "add-truenas",
+        title: "TrueNAS",
+        tls: true,
+        port: 443,
+        specs: &[NAME, address("Such as https://nas.lab.test; its port, if it isn't 443.")],
+        credentials: &[Spec::secret("api_key", "API key").hint("Made in TrueNAS for this hub.").attrs(SECRET)],
+    },
+    DriverForm {
+        driver: "redfish",
+        id: "add-redfish",
+        title: "Redfish BMC",
+        tls: true,
+        port: 443,
+        specs: &[NAME, address("Such as https://bmc.lab.test; its port, if it isn't 443.")],
+        credentials: &[
+            Spec::text("username", "BMC account").hint("One that can read is enough.").attrs(PLAIN),
+            Spec::secret("password", "Password").attrs(SECRET),
+        ],
+    },
+    DriverForm {
+        driver: "snmp",
+        id: "add-snmp",
+        title: "SNMP device",
+        tls: false,
+        port: 161,
+        specs: &[NAME, address("Such as switch.lab.test:161, or 192.0.2.30:161.")],
+        credentials: SNMP_CREDENTIALS,
+    },
 ];
+
+const SECRET: &str = "autocomplete=\"new-password\"";
+const NAME: Spec = Spec::text("name", "Name").hint(NAME_HINT).pattern(NAME_PATTERN, NAME_RULE).attrs(PLAIN);
+
+const fn address(hint: &'static str) -> Spec {
+    Spec::text("address", "Address").hint(hint).length(1, 512).attrs(PLAIN)
+}
+
+const PROXMOX: &[Spec] = &[
+    NAME.optional(),
+    Spec::select("machine", "Or the machine it is", &[])
+        .optional()
+        .hint("When the host already runs a probe, its API is added to that machine and needs no name."),
+    address("Such as https://pve.lab.test:8006."),
+];
+
+const PROXMOX_CREDENTIALS: &[Spec] = &[
+    Spec::secret("token_value", "API token")
+        .hint("As Proxmox shows it: user@realm!id=secret.")
+        .pattern(r"[^\s!]+![^\s=]+=\S+", "A token is user@realm!id=secret, all of it")
+        .attrs(SECRET),
+    Spec::text("node", "Node").optional().hint("Only for one node of a cluster.").attrs(PLAIN),
+];
+
+const VERSIONS: Choices = &[("2c", "2c: a community"), ("3", "3: a user, authenticated (SHA) and encrypted (AES)")];
+
+const SNMP_CREDENTIALS: &[Spec] = &[
+    Spec::select("version", "Version", VERSIONS),
+    Spec::secret("community", "Community").optional().when("version=2c").attrs(SECRET),
+    Spec::text("user", "User").optional().when("version=3").attrs(PLAIN),
+    Spec::secret("auth_password", "Authentication password")
+        .optional()
+        .hint("At least 8 characters.")
+        .length(8, 1024)
+        .when("version=3")
+        .attrs(SECRET),
+    Spec::secret("priv_password", "Privacy password")
+        .optional()
+        .hint("At least 8 characters.")
+        .length(8, 1024)
+        .when("version=3")
+        .attrs(SECRET),
+];
+
+fn driver_form(driver: &str) -> Option<&'static DriverForm> {
+    DRIVERS.iter().find(|d| d.driver == driver)
+}
+
+/// Enrolled machines a Proxmox API can belong to.
+fn host_options(web: &Web) -> Groups {
+    let machines = web
+        .0
+        .db
+        .readers()
+        .with(|c| {
+            let mut s = c.prepare(
+                "SELECT id, name FROM machines WHERE state = 'enrolled' AND probe_endpoint_id IS NOT NULL ORDER BY name",
+            )?;
+            s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
+        })
+        .unwrap_or_default();
+    vec![(String::new(), vec![(String::new(), "A new machine".to_string())]), ("Machines".into(), machines)]
+}
+
+/// The Add page's appliance forms: driver, title and form, one of them perhaps as it was sent.
+pub(super) fn forms(web: &Web, sent: &mut Option<Form>) -> Vec<(&'static str, &'static str, Form)> {
+    let hosts = host_options(web);
+    DRIVERS
+        .iter()
+        .map(|d| {
+            let form = Form::blank(d.id, d.specs).options("machine", hosts.clone()).or_sent(sent);
+            (d.driver, d.title, form)
+        })
+        .collect()
+}
 
 /// The settings that are credentials: the Vault holds them, the row a reference.
 const SECRETS: &[&str] = &["token", "api_key", "password", "community", "auth_password", "priv_password"];
-
-/// A driver's credential fields: the form field, its label, whether it is hidden as typed, and the setting it sets.
-fn fields(driver: &str) -> Vec<(&'static str, &'static str, bool)> {
-    match driver {
-        "proxmox" => {
-            vec![("token_value", "API token (user@realm!id=secret)", true), ("node", "Node (optional)", false)]
-        }
-        "truenas" => vec![("api_key", "API key", true)],
-        "redfish" => vec![("username", "BMC account", false), ("password", "Password", true)],
-        _ => vec![
-            ("version", "Version (2c or 3)", false),
-            ("community", "Community (v2c)", true),
-            ("user", "User (v3)", false),
-            ("auth", "Authentication (v3: SHA or SHA-256)", false),
-            ("auth_password", "Authentication password (v3)", true),
-            ("priv", "Privacy (v3: AES)", false),
-            ("priv_password", "Privacy password (v3)", true),
-        ],
-    }
-}
 
 fn setting_of(field: &str) -> &str {
     if field == "token_value" { "token" } else { field }
@@ -58,19 +160,19 @@ fn setting_of(field: &str) -> &str {
 #[derive(Template)]
 #[template(path = "appliance_accept.html")]
 struct Accept<'a> {
+    shell: Shell,
     csrf: &'a str,
-    name: String,
     title: &'static str,
     address: String,
     token: String,
     fingerprint: String,
-    fields: Vec<(&'static str, &'static str, bool)>,
+    form: Form,
 }
 
 #[derive(Template)]
 #[template(path = "add_done.html")]
 struct Done {
-    title: String,
+    shell: Shell,
     lines: Vec<(String, String)>,
     note: String,
 }
@@ -119,74 +221,75 @@ fn machine_name(web: &Web, id: &str) -> Option<String> {
 /// The address half: the pending machine (or the machine it attaches to), the certificate shown, the form's token.
 pub(super) async fn start(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some(user) = &ctx.user else { return redirect("/sign-in") };
-    let f = |k: &str| ctx.form.get(k).map(|v| v.trim().to_string()).unwrap_or_default();
-    let (driver, name, address, attach) = (f("driver"), f("name"), f("address"), f("machine"));
-    let Some(&(driver, title, _, tls, port)) = DRIVERS.iter().find(|d| d.0 == driver) else {
+    let given = ctx.form.get("driver").map(|d| d.trim()).unwrap_or("");
+    let Some(d) = driver_form(given) else {
         return status(StatusCode::BAD_REQUEST, "The appliance is Proxmox VE, TrueNAS, Redfish or SNMP");
     };
-    let Some(registry) = web.0.registry.as_ref().filter(|_| web.0.drivers.contains_key(driver)) else {
-        return status(StatusCode::SERVICE_UNAVAILABLE, "The hub isn't ready to add appliances yet");
+    let mut form = Form::sent(d.id, d.specs, ctx, &web.0.held).options("machine", host_options(web));
+    let Some(registry) = web.0.registry.as_ref().filter(|_| web.0.drivers.contains_key(d.driver)) else {
+        form.notice("The hub isn't ready to add appliances yet; try again in a minute.");
+        return add::show(web, ctx, StatusCode::SERVICE_UNAVAILABLE, Some(form));
     };
-    let attach = (driver == "proxmox" && !attach.is_empty()).then_some(attach);
-    if attach.is_none() && !valid_name(&name) {
-        return status(StatusCode::BAD_REQUEST, "The name is 1 to 64 letters, digits, ., _ and -");
+    let Some(site) = local_site(web) else { return status(StatusCode::CONFLICT, "Complete first run first") };
+    let attach = Some(form.value("machine").to_string()).filter(|m| !m.is_empty());
+    if attach.is_none() && form.value("name").is_empty() {
+        form.refuse("name", "This is needed");
     }
-    if address.is_empty() || address.len() > 512 {
-        return status(StatusCode::BAD_REQUEST, "Give the appliance's address");
-    }
-    let site: Option<String> =
-        web.0.db.readers().with(|c| c.query_row("SELECT id FROM sites WHERE is_local = 1", [], |r| r.get(0))).ok();
-    let Some(site) = site else { return status(StatusCode::CONFLICT, "Complete first run first") };
-    if attach.is_none() {
-        let taken: bool = web
-            .0
-            .db
-            .readers()
-            .with(|c| {
-                c.query_row("SELECT count(*) > 0 FROM machines WHERE site_id = ?1 AND name = ?2", [&site, &name], |r| {
-                    r.get(0)
-                })
-            })
-            .unwrap_or(false);
-        if taken {
-            return status(StatusCode::CONFLICT, "A machine of that name is already here");
+    form.check();
+    let url = if d.tls { https_address(form.value("address"), d.port) } else { None };
+    form.require("address", !d.tls || url.is_some(), "The address is https://host, or https://host:port");
+    let mut code = StatusCode::BAD_REQUEST;
+    if attach.is_none() && !form.has_error("name") && name_taken(web, &site, form.value("name")) {
+        if form.ok() {
+            code = StatusCode::CONFLICT;
         }
+        form.refuse("name", "A machine of that name is already here");
     }
-    let (address, fingerprint) = if tls {
-        let Some((url, host, port)) = https_address(&address, port) else {
-            return status(StatusCode::BAD_REQUEST, "The address is https://host[:port]");
-        };
-        match rackhand_drivers::pinned::presented(&host, port, Duration::from_secs(10)).await {
-            Ok(fp) => (url, Some(fp)),
-            Err(e) => return status(StatusCode::BAD_GATEWAY, &format!("Couldn't reach {url}: {e}")),
+    if !form.ok() {
+        return add::show(web, ctx, code, Some(form));
+    }
+    let (address, fingerprint) = match url {
+        Some((url, host, port)) => {
+            match rackhand_drivers::pinned::presented(&host, port, Duration::from_secs(10)).await {
+                Ok(fp) => (url, Some(fp)),
+                Err(e) => {
+                    form.refuse("address", format!("Couldn't reach {url}: {e}"));
+                    return add::show(web, ctx, StatusCode::BAD_GATEWAY, Some(form));
+                }
+            }
         }
-    } else {
-        (address, None)
+        None => (form.value("address").to_string(), None),
     };
+    let name = form.value("name").to_string();
     let add = AddAppliance {
         site_id: site,
         name: name.clone(),
-        driver: driver.into(),
+        driver: d.driver.into(),
         address: address.clone(),
         fingerprint: fingerprint.clone(),
         attach,
     };
     let (id, token) = match registry.add_appliance(&add, &user.name, ctx.now_ms).await {
         Ok(r) => r,
-        Err(RegistryError::Invalid(why)) => return status(StatusCode::BAD_REQUEST, &why),
+        Err(RegistryError::Invalid(why)) => {
+            form.notice(why);
+            return add::show(web, ctx, StatusCode::BAD_REQUEST, Some(form));
+        }
         Err(e) => {
             tracing::error!(error = %e, "add appliance");
-            return status(StatusCode::INTERNAL_SERVER_ERROR, "The appliance couldn't be added");
+            form.notice("The appliance couldn't be added; try again.");
+            return add::show(web, ctx, StatusCode::INTERNAL_SERVER_ERROR, Some(form));
         }
     };
+    let name = machine_name(web, &id).unwrap_or(name);
     let page = Accept {
+        shell: Shell::at(web, ctx, &format!("Add {name}"), "/add"),
         csrf: &ctx.csrf,
-        name: machine_name(web, &id).unwrap_or(name),
-        title,
+        title: d.title,
         address,
         token: token.as_str().to_string(),
         fingerprint: fingerprint.unwrap_or_default(),
-        fields: fields(driver),
+        form: Form::blank("accept", d.credentials),
     };
     html(StatusCode::OK, page.render())
 }
@@ -205,17 +308,58 @@ pub(super) async fn accept(web: &Web, ctx: &Ctx) -> Response<Body> {
             return refusal(&e).unwrap_or_else(|| status(StatusCode::BAD_REQUEST, "That form can't be completed"));
         }
     };
+    let Some(d) = driver_form(&form.driver) else {
+        return status(StatusCode::SERVICE_UNAVAILABLE, "The hub has no driver for it");
+    };
+    let mut sent = Form::sent("accept", d.credentials, ctx, &web.0.held);
+    // what SNMP needs depends on its version; the other one's fields aren't looked at
+    let (needs, unused): (&[&'static str], &[&'static str]) = match (d.driver, sent.value("version")) {
+        ("snmp", "3") => (&["user", "auth_password", "priv_password"], &["community"]),
+        ("snmp", "2c") => (&["community"], &["user", "auth_password", "priv_password"]),
+        _ => (&[], &[]),
+    };
+    for name in unused {
+        sent.set(name, "");
+    }
+    for name in needs {
+        if sent.value(name).is_empty() {
+            sent.refuse(name, "This is needed for the version chosen");
+        }
+    }
+    sent.check();
+    // the same page again: what was typed kept, the secrets held
+    let again = |mut sent: Form, code: StatusCode, why: Option<String>| {
+        if let Some(why) = why {
+            sent.notice(why);
+        }
+        sent.hold(&web.0.held, ctx);
+        let name = machine_name(web, &form.machine_id).unwrap_or_default();
+        let page = Accept {
+            shell: Shell::at(web, ctx, &format!("Add {name}"), "/add"),
+            csrf: &ctx.csrf,
+            title: d.title,
+            address: form.address.clone(),
+            token: token.as_str().to_string(),
+            fingerprint: form.fingerprint.clone().unwrap_or_default(),
+            form: sent,
+        };
+        html(code, page.render())
+    };
+    if !sent.ok() {
+        return again(sent, StatusCode::BAD_REQUEST, None);
+    }
     let mut settings = serde_json::Map::new();
     if let Some(shown) = &form.fingerprint {
         if !f("fingerprint").eq_ignore_ascii_case(shown) {
-            return status(StatusCode::UNPROCESSABLE_ENTITY, "That isn't the certificate the appliance presented");
+            let why = "That isn't the certificate the appliance presented".to_string();
+            return again(sent, StatusCode::UNPROCESSABLE_ENTITY, Some(why));
         }
         settings.insert("fingerprint".into(), shown.clone().into());
     }
-    for (field, _, _) in fields(&form.driver) {
-        let v = f(field);
+    for spec in d.credentials {
+        let v = sent.value(spec.name).trim();
         if !v.is_empty() {
-            settings.insert(setting_of(field).into(), v.into());
+            settings.insert(setting_of(spec.name).into(), v.into());
         }
     }
     let settings = serde_json::Value::Object(settings);
@@ -226,15 +370,19 @@ pub(super) async fn accept(web: &Web, ctx: &Ctx) -> Response<Body> {
         DriverTarget { target: form.address.clone(), settings: settings.clone(), timeout: Duration::from_secs(10) };
     match driver.poll(&target).await {
         Ok(r) if r.ok => {}
-        Ok(r) => return status(StatusCode::UNPROCESSABLE_ENTITY, &format!("The first poll failed: {}", r.detail)),
-        Err(e) => return status(StatusCode::UNPROCESSABLE_ENTITY, &format!("The settings: {e}")),
+        Ok(r) => {
+            let why = format!("The first poll failed: {}", r.detail);
+            return again(sent, StatusCode::UNPROCESSABLE_ENTITY, Some(why));
+        }
+        Err(e) => return again(sent, StatusCode::UNPROCESSABLE_ENTITY, Some(format!("The settings: {e}"))),
     }
     let name = vault_name(&form.machine_id);
     let secret = match web.0.vault.sealed(&name, &Secret::new(settings.to_string().into_bytes()), ctx.now_ms) {
         Ok(s) => s,
         Err(e) => {
             tracing::error!(error = %e, "sealing appliance credentials");
-            return status(StatusCode::INTERNAL_SERVER_ERROR, "The credentials couldn't be stored");
+            let why = "The credentials couldn't be stored; try again.".to_string();
+            return again(sent, StatusCode::INTERNAL_SERVER_ERROR, Some(why));
         }
     };
     let shown = referenced(&settings, SECRETS, &name);
@@ -263,6 +411,10 @@ pub(super) async fn accept(web: &Web, ctx: &Ctx) -> Response<Body> {
     if let Err(e) = web.0.audit.append(&user.name, action, Some(&form.machine_id), &data.to_string()).await {
         tracing::error!(error = %e, "audit");
     }
-    let page = Done { title, lines: vec![], note: "Rackhand checks it through its API from now on.".into() };
+    let page = Done {
+        shell: Shell::at(web, ctx, &title, "/add"),
+        lines: vec![],
+        note: "Rackhand checks it through its API from now on.".into(),
+    };
     html(StatusCode::OK, page.render())
 }
