@@ -86,6 +86,7 @@ impl Env {
         ];
         db.writer().send(WriteCmd::Batch(rows)).await.unwrap();
         let ingest = Ingest::new(db.clone(), Bus::new(), Arc::new(Roomy));
+        ingest.start(0).await.unwrap();
         let incidents = Incidents::new(db.clone(), ingest, Bus::new());
         let (library, _) = Library::new(db.clone(), crate::audit::Audit::new(db.writer()));
         let starts = Arc::new(Starts::default());

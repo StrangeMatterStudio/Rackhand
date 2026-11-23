@@ -870,6 +870,110 @@ timeout = "20s"
         }
     }
 
+    /// A hub that dies in the middle of its jobs (T65, E44): a new one on the same database takes up the detached step
+    /// where the machine has it, and ends what it can't take up as interrupted, with an incident.
+    mod recovery {
+        use super::*;
+
+        /// The hub's tasks, all of them, stopped where they are (the in-process stand-in for `kill -9`).
+        fn kill(rt: tokio::runtime::Runtime) {
+            rt.shutdown_background();
+        }
+
+        fn restarted(lab: &Lab) -> Actions {
+            let executor = Executor::new(lab.vault.clone(), lab.host_keys.clone())
+                .with_poll(Duration::from_millis(500))
+                .with_hub(lab.signer.clone())
+                .with_reboot(lab.facts.clone(), Duration::from_secs(6));
+            Actions::new(lab.db.clone(), Audit::new(lab.db.writer()), Bus::new(), Arc::new(executor))
+        }
+
+        fn job_state(db: &Db, name: &str) -> (String, String, Option<String>) {
+            db.readers()
+                .with(|c| {
+                    c.query_row(
+                        "SELECT id, state, outcome FROM jobs WHERE name = ?1 ORDER BY started_at DESC LIMIT 1",
+                        [name],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                })
+                .unwrap()
+        }
+
+        async fn until_done(db: &Db, name: &str) -> (String, String, Option<String>) {
+            let deadline = std::time::Instant::now() + Duration::from_secs(60);
+            loop {
+                let job = job_state(db, name);
+                if job.1 != "running" {
+                    return job;
+                }
+                assert!(std::time::Instant::now() < deadline, "the job never ended: {job:?}");
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn hub_killed_mid_jobs_resumes_detached_and_resumable() {
+            let lab = lab("recover-detached", "60s", Duration::from_secs(5)).await;
+            let dying = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            let actions = lab.actions.clone();
+            dying.spawn(async move {
+                let _ = actions.run(start("slow", ("n", "8"))).await;
+            });
+            let deadline = std::time::Instant::now() + Duration::from_secs(60);
+            while !lab.machine.root("pgrep -f '[s]low-echo 8'").status.success() {
+                assert!(std::time::Instant::now() < deadline, "the detached step never started");
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            kill(dying);
+            let (job, state, _) = job_state(&lab.db, "slow");
+            assert_eq!(state, "running", "the dead hub recorded no end");
+            // the machine goes on with the step; a new hub takes it up where it is, and starts nothing again
+            let hub = restarted(&lab);
+            assert_eq!(hub.resume().await.unwrap(), 1);
+            let (_, state, reason) = until_done(&lab.db, "slow").await;
+            assert_eq!((state.as_str(), reason), ("succeeded", None));
+            let row = step(&lab.db, &job);
+            assert_eq!((row.state.as_str(), row.exit_code), ("succeeded", Some(0)));
+            let out = String::from_utf8_lossy(&row.stdout);
+            for i in 1..=8 {
+                assert!(out.contains(&format!("line {i}\n")), "every line of the step, from before and after: {out}");
+            }
+            let starts = lab.machine.root("ls /var/lib/rackhand-run/jobs 2>/dev/null | wc -l");
+            assert!(String::from_utf8_lossy(&starts.stdout).trim().parse::<u32>().unwrap() <= 1, "started once");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_job_in_a_plain_step_is_interrupted_with_an_incident() {
+            let lab = lab("recover-plain", "60s", Duration::from_secs(5)).await;
+            let dying = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            let actions = lab.actions.clone();
+            dying.spawn(async move {
+                let _ = actions.run(start("plain", ("mode", "sleep"))).await;
+            });
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            while !lab.machine.root("pgrep -f '[s]leep 600'").status.success() {
+                assert!(std::time::Instant::now() < deadline, "the step never started");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            kill(dying);
+            let hub = restarted(&lab);
+            assert_eq!(hub.resume().await.unwrap(), 0);
+            let (job, state, reason) = job_state(&lab.db, "plain");
+            assert_eq!((state.as_str(), reason.as_deref()), ("interrupted", Some("hub_restarted")));
+            assert_eq!(step(&lab.db, &job).state, "interrupted");
+            let kinds: Vec<(String, String)> = lab
+                .db
+                .readers()
+                .with(|c| {
+                    let mut s = c.prepare("SELECT kind, severity FROM events WHERE job_id = ?1")?;
+                    s.query_map([&job], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
+                })
+                .unwrap();
+            assert_eq!(kinds, [("job.interrupted".to_string(), "warning".to_string())]);
+        }
+    }
+
     /// `send_guest` (T64): a hypervisor's wrapper gives a guest its enrollment: a VM's cloud-init user data, or the
     /// installer run inside a container.
     mod provision {

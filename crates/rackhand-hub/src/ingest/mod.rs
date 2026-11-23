@@ -131,6 +131,8 @@ struct Inner {
     compacting: tokio::sync::Mutex<()>,
     /// Reports staged since the hub started (`rackhand_hub_ingest_reports_total`).
     reports_total: std::sync::atomic::AtomicU64,
+    /// Set once the recent window has been rebuilt on start (E44): no rule runs before.
+    window_ready: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Debug, Default)]
@@ -204,6 +206,7 @@ impl Ingest {
                 state: Mutex::default(),
                 compacting: tokio::sync::Mutex::new(()),
                 reports_total: std::sync::atomic::AtomicU64::new(0),
+                window_ready: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
@@ -219,7 +222,14 @@ impl Ingest {
     pub async fn start(&self, now_ms: i64) -> Result<(), IngestError> {
         self.load_ranges()?;
         self.compact().await?;
-        self.rebuild_window(now_ms)
+        self.rebuild_window(now_ms)?;
+        self.inner.window_ready.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Whether `start` has rebuilt the recent window: until then the rules judge nothing (E44).
+    pub fn window_rebuilt(&self) -> bool {
+        self.inner.window_ready.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The committed seq ranges of a stopped hub: those kept at its last compaction, and every report still staged

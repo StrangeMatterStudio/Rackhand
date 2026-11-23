@@ -593,7 +593,8 @@ async fn scheduled_reboot_resumes_at_verify_after_the_hub_restarts() {
     assert_eq!(actions.resume().await.unwrap(), 0, "once");
 }
 
-/// A machine that isn't back when the hub is ends the job as it would have; a job without a resumable step isn't touched.
+/// A machine that isn't back when the hub is ends the job as it would have; a running job with nothing to resume (T65,
+/// E44) ends interrupted.
 #[tokio::test(flavor = "multi_thread")]
 async fn resumed_job_fails_when_the_machine_is_not_back() {
     let db = host_runbook("resume-lost").await;
@@ -627,7 +628,7 @@ async fn resumed_job_fails_when_the_machine_is_not_back() {
     };
     until("the job fails", || failed() == 1).await;
     assert!(after.ran.lock().unwrap().is_empty());
-    assert_eq!(job_row(&db, Some("other")).1, "running");
+    assert_eq!(job_row(&db, Some("other")).1, "interrupted");
 }
 
 /// The same reboot of a machine the hub turns out not to be on: the hub is still there and the job simply goes on.

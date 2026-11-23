@@ -14,7 +14,8 @@ use rackhand_runbook::runbook::{Identity, Runbook, Step, StepKind};
 use rackhand_store::ids::{new_id, now_ms};
 use rusqlite::OptionalExtension;
 
-use super::jobs::{self, NewJob, StepEnd};
+pub(super) use super::jobs::StepEnd;
+use super::jobs::{self, NewJob};
 use super::locks::MachineGuard;
 use super::runner::{StepCtx, StepOutcome, StepResult, StepRunner, display};
 use super::{Actions, ActionsError, DEFAULT_STEP_TIMEOUT, JobKind, JobResult, StartJob};
@@ -36,7 +37,7 @@ impl Machine {
 }
 
 /// Whole-argument substitution (7.3.7): an argument that is exactly `{{name}}` becomes the value.
-fn substitute_argv(cmd: &[String], params: &BTreeMap<String, String>) -> Vec<String> {
+pub(super) fn substitute_argv(cmd: &[String], params: &BTreeMap<String, String>) -> Vec<String> {
     cmd.iter()
         .map(|a| {
             let name = a.trim().strip_prefix("{{").and_then(|r| r.strip_suffix("}}")).map(str::trim);

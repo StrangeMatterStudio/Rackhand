@@ -183,6 +183,7 @@ async fn no_patch_or_silence_alert_during_maintenance_window() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert_eq!(count(&m, PATCH_JOBS), started, "in maintenance: {maintained}");
+        m.ingest.start(0).await.unwrap();
         let incidents = rackhand_hub::incidents::Incidents::new(m.db.clone(), m.ingest.clone(), Bus::new());
         incidents.set_quiet(Arc::new(Expected { machines: Arc::new(m.clone()), actions }));
         incidents.set_started(now - 3_600_000);

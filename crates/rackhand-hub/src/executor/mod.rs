@@ -226,6 +226,15 @@ impl Executor {
             }
             Err(e) => return StepResult { command: Some(command), ..StepResult::failed(ssh_failure(&e)) },
         }
+        self.poll_detached(ctx, command, &job_ref).await
+    }
+
+    /// Polls a detached step on the machine to its end, collecting its output; then cleans it up. Used after starting
+    /// it and, after a hub restart, in place of starting it again (T65).
+    async fn poll_detached(&self, ctx: &StepCtx, command: String, job_ref: &str) -> StepResult {
+        let id = Identity::Automation;
+        let limit = Duration::from_secs(60);
+        let job_ref = job_ref.to_string();
         let mut collected = detached::Collected::default();
         let end = loop {
             tokio::time::sleep(self.poll).await;
@@ -293,6 +302,18 @@ impl StepRunner for Executor {
 
     fn rebooted<'a>(&'a self, ctx: &'a StepCtx, since_ms: i64) -> BoxFuture<'a, StepResult> {
         Box::pin(self.scheduled_reboot(ctx, since_ms))
+    }
+
+    fn adopt<'a>(&'a self, ctx: &'a StepCtx, step: &'a Step, argv: Option<&'a [String]>) -> BoxFuture<'a, StepResult> {
+        Box::pin(async move {
+            match (step.kind, argv) {
+                (StepKind::Ssh, Some(argv)) if step.detached => {
+                    let job_ref = format!("{}/{}", ctx.job_id, step.id);
+                    self.poll_detached(ctx, display(argv), &job_ref).await
+                }
+                _ => StepResult::failed("adopt_unavailable"),
+            }
+        })
     }
 
     /// The assistant's command string, run by `sh -c` under `timeout` so it stops on the machine at its timeout as a
