@@ -322,6 +322,7 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let alpns = vec![
         rackhand_proto::alpn::PROBE.to_vec(),
         rackhand_proto::alpn::MCP.to_vec(),
+        rackhand_proto::alpn::OPERATOR.to_vec(),
         rackhand_proto::alpn::JOIN.to_vec(),
     ];
     let endpoint_config =
@@ -333,12 +334,14 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let _ = ticket_addrs.set((id_hex, addrs.clone()));
     let join = joins::LazyJoin::new(db.clone(), registry.clone(), setup, addrs, joined_tx);
     let observations = Arc::new(crate::observations::FromIngest(ingest.clone()));
+    let assist = rackhand_hub::assist::Assist::new(db.clone(), audit.clone(), actions.clone());
     let mcp = rackhand_hub::mcp::Mcp::new(db.clone(), audit.clone(), observations)
         .with_actions(actions)
         .with_library(library);
     let router = rackhand_net::router::Router::new(endpoint.clone(), registry.clone())
         .route(rackhand_proto::alpn::PROBE, probe_server.handler())
         .route(rackhand_proto::alpn::MCP, mcp.handler())
+        .route(rackhand_proto::alpn::OPERATOR, assist.handler())
         .route(rackhand_proto::alpn::JOIN, join.handler());
     tokio::spawn(router.serve());
     let watch = Arc::new(self_watch(config, &db, &ingest, &notify));

@@ -127,6 +127,11 @@ impl Assist {
         })
     }
 
+    /// The operators connected now, by id.
+    pub fn connected_operators(&self) -> Vec<String> {
+        self.inner.links.lock().map(|l| l.keys().cloned().collect()).unwrap_or_default()
+    }
+
     /// Whether the job is attached to a connected operator.
     pub fn attached(&self, job_id: &str) -> bool {
         let operator = self.inner.jobs.lock().ok().and_then(|j| j.get(job_id).map(|t| t.operator_id.clone()));

@@ -173,3 +173,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-23 | T71 done: security events, severities and exemptions (D120) |
 | 2026-11-23 | T72 done: quarantine, release, the rules and the proposals (D121 to D126) |
 | 2026-11-23 | T73 done: the security pages (D127) |
+| 2026-11-23 | T77 done: the operator binary, its bridge and runners (D128 to D130) |

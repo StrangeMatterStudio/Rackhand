@@ -12,6 +12,7 @@ pub mod relays;
 pub mod router;
 #[cfg(feature = "testing")]
 pub mod testing;
+pub mod ticket;
 
 use iroh::endpoint::ConnectionError;
 use rackhand_proto::close::CloseCode;

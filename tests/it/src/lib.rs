@@ -20,6 +20,9 @@ mod jobs;
 #[cfg(test)]
 mod mirror_it;
 #[cfg(test)]
+#[path = "operator_it.rs"]
+mod operator_it;
+#[cfg(test)]
 mod patch_it;
 #[cfg(test)]
 mod probe_hub;
