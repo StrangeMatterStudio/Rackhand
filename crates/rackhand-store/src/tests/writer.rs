@@ -319,3 +319,80 @@ async fn checks_and_their_results_written() {
     let results: i64 = conn.query_row("SELECT count(*) FROM check_results", [], |r| r.get(0)).unwrap();
     assert_eq!((interval, results), (30, 2));
 }
+
+/// 7.3.12, D89: a machine's access level changes only in the transaction that uses up a join token, so nothing the hub
+/// does alone can raise a monitor machine to managed.
+mod level {
+    use super::*;
+    use crate::writer::{ConsumeToken, RegistryChange, RowUpdate};
+
+    fn seed(path: &std::path::Path) {
+        let c = rusqlite::Connection::open(path).unwrap();
+        c.execute("INSERT INTO sites (id, name, timezone, is_local) VALUES ('s', 'home', 'UTC', 1)", []).unwrap();
+        c.execute(
+            "INSERT INTO machines (id, site_id, name, kind, access, state) VALUES ('m', 's', 'm', 'linux', 'monitor', 'enrolled')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO join_tokens (id, kind, hash, created_by, expires_at) VALUES ('t', 'machine', x'0102', 'admin', 9999999)",
+            [],
+        )
+        .unwrap();
+    }
+
+    fn access(path: &std::path::Path) -> String {
+        let c = rusqlite::Connection::open(path).unwrap();
+        c.query_row("SELECT access FROM machines WHERE id = 'm'", [], |r| r.get(0)).unwrap()
+    }
+
+    fn set_access(to: &str) -> RowUpdate {
+        RowUpdate {
+            table: "machines",
+            key: ("id", Value::Text("m".into())),
+            set: Row::from([("access", Value::Text(to.into()))]),
+        }
+    }
+
+    fn consume() -> ConsumeToken {
+        ConsumeToken { hash: vec![1, 2], kind: "machine".into(), now_ms: 1000 }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_write_without_a_token_cannot_change_the_level() {
+        let path = temp("level-alone");
+        let db = Db::open(&path).unwrap();
+        seed(&path);
+        let w = db.writer();
+        let update = RegistryChange { updates: vec![set_access("managed")], ..Default::default() };
+        let refused = w.send(WriteCmd::RegistryChange(update)).await;
+        assert!(matches!(refused, Err(StoreError::Conflict(m)) if m.contains("level")), "{refused:?}");
+        let row = Row::from([("id", Value::Text("m".into())), ("access", Value::Text("managed".into()))]);
+        for cmd in [
+            WriteCmd::Batch(vec![RowWrite::upsert("machines", "id", row.clone())]),
+            WriteCmd::Batch(vec![RowWrite { table: "machines", row, mode: crate::writer::WriteMode::Replace }]),
+        ] {
+            assert!(matches!(w.send(cmd).await, Err(StoreError::Conflict(_))));
+        }
+        assert_eq!(access(&path), "monitor");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_join_that_uses_a_token_changes_it_and_a_write_of_the_same_level_is_fine() {
+        let path = temp("level-join");
+        let db = Db::open(&path).unwrap();
+        seed(&path);
+        let w = db.writer();
+        let same = RegistryChange { updates: vec![set_access("monitor")], ..Default::default() };
+        w.send(WriteCmd::RegistryChange(same)).await.unwrap();
+        let join =
+            RegistryChange { consume: Some(consume()), updates: vec![set_access("managed")], ..Default::default() };
+        w.send(WriteCmd::RegistryChange(join)).await.unwrap();
+        assert_eq!(access(&path), "managed");
+        // the token is used up, and a refused one changes nothing
+        let again =
+            RegistryChange { consume: Some(consume()), updates: vec![set_access("monitor")], ..Default::default() };
+        assert!(w.send(WriteCmd::RegistryChange(again)).await.is_err());
+        assert_eq!(access(&path), "managed");
+    }
+}

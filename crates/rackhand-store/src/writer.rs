@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use rusqlite::Connection;
 use rusqlite::types::Value;
+use rusqlite::{Connection, OptionalExtension};
 use tokio::sync::{mpsc, oneshot};
 
 /// Column name to value. Column and table names come from code, never from input.
@@ -328,7 +328,6 @@ fn write_row(tx: &rusqlite::Transaction<'_>, w: &RowWrite) -> Result<usize, Stor
 }
 
 fn consume_token(tx: &rusqlite::Transaction<'_>, t: &ConsumeToken) -> Result<usize, StoreError> {
-    use rusqlite::OptionalExtension;
     let found: Option<(String, i64, Option<i64>)> = tx
         .query_row("SELECT kind, expires_at, used_at FROM join_tokens WHERE hash = ?1", [&t.hash], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))
@@ -447,7 +446,49 @@ fn replace_one(conn: &mut Connection, table: &'static str, row: Row) -> Result<u
 }
 
 /// Runs one command in one transaction; nothing is committed if any part fails.
+/// 7.3.12, D89: a machine's access level changes only in the transaction that uses up a join token (the machine's own
+/// join, run as root on it). Any other write that would change it is refused, so nothing the hub does alone can raise
+/// a `monitor` machine to `managed`.
+fn level_guard(conn: &Connection, cmd: &WriteCmd) -> Result<(), StoreError> {
+    let (writes, updates, joined): (&[RowWrite], &[RowUpdate], bool) = match cmd {
+        WriteCmd::Batch(writes) => (writes, &[], false),
+        WriteCmd::RegistryChange(c) => (&c.writes, &c.updates, c.consume.is_some()),
+        _ => return Ok(()),
+    };
+    if joined {
+        return Ok(());
+    }
+    let changes = |key: &str, value: &Value, new: Option<&Value>| -> Result<bool, StoreError> {
+        let Some(Value::Text(new)) = new else { return Ok(false) };
+        let sql = format!("SELECT access FROM machines WHERE \"{key}\" = ?1");
+        let current: Option<String> = conn.query_row(&sql, [value], |r| r.get(0)).optional()?;
+        Ok(current.is_some_and(|c| &c != new))
+    };
+    let refused = Err(StoreError::Conflict("a machine's access level changes only by its own join"));
+    for w in writes.iter().filter(|w| w.table == "machines") {
+        let key = match w.mode {
+            WriteMode::Upsert(k) => k,
+            WriteMode::Replace => "id",
+            _ => continue,
+        };
+        check_ident(key)?;
+        if let Some(value) = w.row.get(key) {
+            if changes(key, value, w.row.get("access"))? {
+                return refused;
+            }
+        }
+    }
+    for u in updates.iter().filter(|u| u.table == "machines") {
+        check_ident(u.key.0)?;
+        if changes(u.key.0, &u.key.1, u.set.get("access"))? {
+            return refused;
+        }
+    }
+    Ok(())
+}
+
 fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
+    level_guard(conn, &cmd)?;
     match cmd {
         WriteCmd::Batch(rows) => {
             let tx = conn.transaction()?;
@@ -462,10 +503,8 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
             // A replaced secret keeps its created_at and records rotated_at.
             let tx = conn.transaction()?;
             let name = text(&row, "name")?.to_string();
-            let created: Option<i64> = {
-                use rusqlite::OptionalExtension;
-                tx.query_row("SELECT created_at FROM secrets WHERE name = ?1", [&name], |r| r.get(0)).optional()?
-            };
+            let created: Option<i64> =
+                { tx.query_row("SELECT created_at FROM secrets WHERE name = ?1", [&name], |r| r.get(0)).optional()? };
             if let Some(created) = created {
                 let now = int(&row, "created_at")?;
                 row.insert("created_at", Value::Integer(created));
@@ -578,7 +617,6 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
             let tx = conn.transaction()?;
             let (kind, name) = (text(&row, "kind")?.to_string(), text(&row, "name")?.to_string());
             let current: Option<i64> = {
-                use rusqlite::OptionalExtension;
                 tx.query_row("SELECT rev FROM library_items WHERE kind = ?1 AND name = ?2", [&kind, &name], |r| {
                     r.get(0)
                 })
@@ -810,7 +848,6 @@ fn text<'a>(row: &'a Row, col: &'static str) -> Result<&'a str, StoreError> {
 
 /// Appends one audit row after the current head, inside the caller's transaction (the single writer keeps one chain).
 fn append_audit(tx: &rusqlite::Transaction<'_>, row: &Row, checkpoint: bool) -> Result<(), StoreError> {
-    use rusqlite::OptionalExtension;
     let head: Option<(i64, Vec<u8>)> = tx
         .query_row("SELECT seq, hash FROM audit_log ORDER BY seq DESC LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()?;

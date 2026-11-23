@@ -299,8 +299,8 @@ impl Hypervisor {
             })
             .map_err(|e| e.to_string())?;
         let Some((Some(reference), state)) = row else { return Err("not_a_proxmox_guest".into()) };
-        if state != "confirmed" {
-            return Err("guest_binding_unconfirmed".into());
+        if let Some(why) = crate::actions::hypervisor_guard::refusal(&state) {
+            return Err(why.into());
         }
         let r: serde_json::Value =
             serde_json::from_str(&reference).map_err(|_| "guest_binding_unreadable".to_string())?;
@@ -313,6 +313,48 @@ impl Hypervisor {
 
 /// How long a hypervisor's API has to describe its host.
 const VIEW_TIMEOUT: Duration = Duration::from_secs(10);
+
+impl Hypervisor {
+    /// One hypervisor-side call on a guest (7.3.12): only on the guest its confirmed binding names, and refused
+    /// before any call to the API when the binding isn't confirmed. `extra` is added to the call's arguments.
+    pub async fn guest_call(
+        &self,
+        machine_id: &str,
+        action: crate::actions::hypervisor_guard::GuestAction,
+        extra: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, String> {
+        let b = self.bound(machine_id)?;
+        let op = match action {
+            crate::actions::hypervisor_guard::GuestAction::Snapshot => "snapshot",
+            crate::actions::hypervisor_guard::GuestAction::Rollback => "rollback",
+            crate::actions::hypervisor_guard::GuestAction::Firewall => "firewall_read",
+            crate::actions::hypervisor_guard::GuestAction::Power => "power",
+        };
+        self.guest_op(&b, action, op, extra, timeout).await
+    }
+
+    /// A named driver operation of an action on the bound guest.
+    async fn guest_op(
+        &self,
+        b: &Bound,
+        action: crate::actions::hypervisor_guard::GuestAction,
+        op: &str,
+        extra: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, String> {
+        if !action.ops().contains(&op) {
+            return Err(format!("{op}_is_not_a_{action:?}_operation").to_ascii_lowercase());
+        }
+        let driver = self.drivers.get(b.driver.as_str()).ok_or_else(|| format!("no_driver:{}", b.driver))?;
+        let target = DriverTarget { target: b.address.clone(), settings: b.settings.clone(), timeout };
+        let mut args = b.guest.clone();
+        if let (Some(a), Some(e)) = (args.as_object_mut(), extra.as_object()) {
+            a.extend(e.clone());
+        }
+        driver.call(&target, DriverOp { name: op.into(), args }).await.map(|r| r.output).map_err(|e| e.to_string())
+    }
+}
 
 impl Hosts for Hypervisor {
     fn view<'a>(&'a self, host: &'a str) -> BoxFuture<'a, Result<HostView, String>> {

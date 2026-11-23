@@ -4,6 +4,7 @@
 
 mod coordinator;
 pub mod diagnostics;
+pub mod hypervisor_guard;
 pub mod jobs;
 mod locks;
 pub mod patching;

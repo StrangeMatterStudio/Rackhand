@@ -309,14 +309,14 @@ mod patch_snapshot {
     use crate::vault::{Secret, Vault};
     use rackhand_drivers::proxmox::sim::Sim;
 
-    const CT: &str = "01JD0000000000000000000003";
-    const VM: &str = "01JD0000000000000000000004";
+    pub(super) const CT: &str = "01JD0000000000000000000003";
+    pub(super) const VM: &str = "01JD0000000000000000000004";
     const JOB: &str = "01JDPATCH00000000000000001";
 
-    struct Env {
-        db: Arc<Db>,
-        sim: Sim,
-        steps: Hypervisor,
+    pub(super) struct Env {
+        pub(super) db: Arc<Db>,
+        pub(super) sim: Sim,
+        pub(super) steps: Hypervisor,
     }
 
     fn guest(id: &str, kind: &str, vmid: u32, binding: &str) -> Row {
@@ -341,7 +341,7 @@ mod patch_snapshot {
         }
     }
 
-    async fn env(name: &str) -> Env {
+    pub(super) async fn env(name: &str) -> Env {
         let db = db(name).await;
         let sim = Sim::start("pve9").await;
         let host = Row::from([
@@ -385,7 +385,7 @@ mod patch_snapshot {
             self.steps.run(&ctx, &step(&format!("kind = \"{kind}\"\n")), None).await
         }
 
-        async fn set(&self, table: &'static str, id: &str, col: &'static str, value: &str) {
+        pub(super) async fn set(&self, table: &'static str, id: &str, col: &'static str, value: &str) {
             let set = Row::from([(col, t(value))]);
             let update = rackhand_store::RowUpdate { table, key: ("id", t(id)), set };
             let change = rackhand_store::RegistryChange { updates: vec![update], ..Default::default() };
@@ -584,4 +584,61 @@ async fn hub_step_unavailable_until_wired() {
     let result =
         executor.run(&ctx(Duration::from_secs(2)), &step("kind = \"hub\"\ncall = \"send_commands\"\n"), None).await;
     assert_eq!(result.outcome, StepOutcome::Failed("hub_unavailable".into()));
+}
+
+/// 7.3.12, D93, E50, AC60: what a hypervisor-side action does to a guest whose binding isn't confirmed.
+mod guard {
+    use super::patch_snapshot::{CT, VM, env};
+    use super::*;
+    use crate::actions::hypervisor_guard::GuestAction;
+
+    const ACTIONS: [GuestAction; 4] =
+        [GuestAction::Snapshot, GuestAction::Rollback, GuestAction::Firewall, GuestAction::Power];
+
+    fn args(action: GuestAction) -> serde_json::Value {
+        match action {
+            GuestAction::Snapshot | GuestAction::Rollback => serde_json::json!({ "name": "before" }),
+            GuestAction::Firewall => serde_json::json!({}),
+            GuestAction::Power => serde_json::json!({ "action": "reboot" }),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mismatched_binding_refuses_snapshot_rollback_firewall_power() {
+        let e = env("guard-mismatch").await;
+        e.set("machines", CT, "proxmox_ref_state", "mismatch").await;
+        for action in ACTIONS {
+            let refused = e.steps.guest_call(CT, action, args(action), Duration::from_secs(5)).await;
+            assert_eq!(refused.unwrap_err(), "guest_binding_mismatch", "{action:?}");
+        }
+        assert!(e.sim.requests().is_empty(), "refused before any API call: {:?}", e.sim.requests());
+        // a binding that is only proposed, or none, is refused too, and says so
+        e.set("machines", CT, "proxmox_ref_state", "proposed").await;
+        let proposed =
+            e.steps.guest_call(CT, GuestAction::Power, args(GuestAction::Power), Duration::from_secs(5)).await;
+        assert_eq!(proposed.unwrap_err(), "guest_binding_unconfirmed");
+        assert!(e.sim.requests().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn other_guest_never_touched() {
+        let e = env("guard-other").await;
+        e.set("machines", CT, "proxmox_ref_state", "mismatch").await;
+        for action in ACTIONS {
+            let _ = e.steps.guest_call(CT, action, args(action), Duration::from_secs(5)).await;
+        }
+        // the confirmed guest next to it still works, and only it is addressed
+        let ok =
+            e.steps.guest_call(VM, GuestAction::Snapshot, args(GuestAction::Snapshot), Duration::from_secs(5)).await;
+        assert!(ok.is_ok(), "{ok:?}");
+        let paths: Vec<String> = e.sim.requests().into_iter().map(|q| q.path).collect();
+        assert!(!paths.is_empty());
+        assert!(paths.iter().all(|p| !p.contains("/100/")), "the other guest (vmid 100) was addressed: {paths:?}");
+        assert!(paths.iter().any(|p| p.contains("/qemu/200/")), "{paths:?}");
+        // an admin confirming the binding again lets the actions through
+        e.set("machines", CT, "proxmox_ref_state", "confirmed").await;
+        let after =
+            e.steps.guest_call(CT, GuestAction::Firewall, args(GuestAction::Firewall), Duration::from_secs(5)).await;
+        assert!(after.is_ok(), "{after:?}");
+    }
 }
