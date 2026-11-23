@@ -1,0 +1,14 @@
+name = "quarantine-release"
+description = "Take a machine out of quarantine: put back exactly what the quarantine saved"
+targets = { kinds = ["linux", "alpine", "windows"] }
+identity = "automation"
+risk = "high"
+autonomy = 1
+
+# A Proxmox guest gets its saved firewall configuration back, unless someone changed it while it was quarantined
+# (`quarantine_config_changed`: a person decides which version to keep). An in-guest quarantine drops its nftables table.
+[[step]]
+id = "release"
+kind = "hub"
+call = "quarantine_release"
+timeout = "3m"

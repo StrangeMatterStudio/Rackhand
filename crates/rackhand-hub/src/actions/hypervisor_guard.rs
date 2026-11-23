@@ -8,7 +8,7 @@
 pub enum GuestAction {
     Snapshot,
     Rollback,
-    /// Reading, setting and restoring the guest's firewall (quarantine and release).
+    /// Reading and restoring the guest's firewall, and isolating it and releasing it (quarantine, 7.5.6).
     Firewall,
     Power,
 }
@@ -19,7 +19,7 @@ impl GuestAction {
         match self {
             GuestAction::Snapshot => &["snapshot", "snapshot_room", "snapshots", "delete_snapshot"],
             GuestAction::Rollback => &["rollback"],
-            GuestAction::Firewall => &["firewall_read", "firewall_restore", "firewall_set"],
+            GuestAction::Firewall => &["firewall_read", "firewall_restore", "firewall_isolate", "firewall_release"],
             GuestAction::Power => &["power"],
         }
     }

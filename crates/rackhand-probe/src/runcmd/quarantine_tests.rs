@@ -93,8 +93,13 @@ fn nothing_but_our_table_is_touched() {
     for script in [ruleset(&hubs), off_script()] {
         assert!(!script.contains("flush"), "{script}");
         assert!(!script.contains("ruleset"), "{script}");
-        for line in script.lines().filter(|l| l.starts_with("add ") || l.starts_with("delete ") || l.starts_with("table ")) {
-            assert!(line.ends_with("inet rackhand_quarantine") || line.ends_with("inet rackhand_quarantine {"), "{line}");
+        for line in
+            script.lines().filter(|l| l.starts_with("add ") || l.starts_with("delete ") || l.starts_with("table "))
+        {
+            assert!(
+                line.ends_with("inet rackhand_quarantine") || line.ends_with("inet rackhand_quarantine {"),
+                "{line}"
+            );
         }
     }
     assert_eq!(off_script(), "add table inet rackhand_quarantine\ndelete table inet rackhand_quarantine\n");

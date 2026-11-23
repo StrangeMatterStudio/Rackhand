@@ -238,7 +238,7 @@ impl Driver {
                 pending_security,
                 pending_total,
                 in_maintenance: self.world.in_maintenance(&id, &tags, now_ms),
-                quarantined: quarantine != "none",
+                quarantined: crate::policy::quarantine::State::parse(&quarantine).is_some_and(|s| s.blocks_actions()),
                 id: id.clone(),
             });
             machines.insert(id, Selected { runbook, ask, tags });

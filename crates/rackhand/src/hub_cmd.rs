@@ -247,16 +247,18 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", config.node_key.display()))?;
     // the hub's endpoint id and addresses, set when it is bound
     let ticket_addrs: Arc<std::sync::OnceLock<(String, joins::HubAddrs)>> = Arc::default();
+    let hypervisor = Arc::new(
+        rackhand_hub::checks::steps::Hypervisor::new(db.clone(), vault.clone())
+            .with_driver(Arc::new(rackhand_drivers::Proxmox::new())),
+    );
     let signer = joins::CommandSigner {
         db: db.clone(),
         signing: ed25519_dalek::SigningKey::from_bytes(&node_key.to_bytes()),
         addrs: ticket_addrs.clone(),
         registry: registry.clone(),
         provisioning: joins::Provisioning {
-            hosts: Some(Arc::new(
-                rackhand_hub::checks::steps::Hypervisor::new(db.clone(), vault.clone())
-                    .with_driver(Arc::new(rackhand_drivers::Proxmox::new())),
-            )),
+            hosts: Some(hypervisor.clone()),
+            hypervisor: Some(hypervisor),
             release_dir: Some(config.data_dir.join("release")),
             web_port: config.web.port(),
             ..Default::default()

@@ -31,6 +31,9 @@ fn actions_error(e: ActionsError) -> ToolError {
     match e {
         ActionsError::MachineBusy => ToolError::new("machine_busy", "another job holds the machine; try again later"),
         ActionsError::MonitorOnly => ToolError::new("monitor_only", "the machine is at access level monitor"),
+        ActionsError::Quarantined => {
+            ToolError::new("machine_quarantined", "only diagnostics and the release run on a quarantined machine")
+        }
         ActionsError::Approval(e) => gate::approval_error("", &e),
         ActionsError::InvalidParam(..)
         | ActionsError::UnknownDiagnostic

@@ -282,18 +282,30 @@ async fn firewall_isolate(c: &Client, g: &Guest, args: &Value) -> Result<Value, 
         ));
     }
     let saved = firewall_read(c, g).await?;
-    // rules first (they are inert until the policies and the devices' flags are on), then the policies, then the devices
-    put_rules(c, g, &isolation_rules(&addrs, port)).await?;
-    let form = vec![pair("enable", "1"), pair("policy_in", "DROP"), pair("policy_out", "DROP")];
-    c.call("PUT", &g.path("/firewall/options"), &form).await?;
-    let devices: Vec<(String, String)> = saved["devices"]
-        .as_object()
-        .into_iter()
-        .flatten()
-        .filter_map(|(k, v)| Some((k.clone(), with_firewall_flag(v.as_str()?))))
-        .collect();
-    if !devices.is_empty() {
-        c.call("PUT", &g.path("/config"), &devices).await?;
+    // rules first (they are inert until the policies and the devices' flags are on), then the policies, then the devices;
+    // a write that fails puts the saved configuration back, so a retry never takes a half-isolated one for the original
+    let written: Result<(), DriverError> = async {
+        put_rules(c, g, &isolation_rules(&addrs, port)).await?;
+        let form = vec![pair("enable", "1"), pair("policy_in", "DROP"), pair("policy_out", "DROP")];
+        c.call("PUT", &g.path("/firewall/options"), &form).await?;
+        let devices: Vec<(String, String)> = saved["devices"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(k, v)| Some((k.clone(), with_firewall_flag(v.as_str()?))))
+            .collect();
+        if !devices.is_empty() {
+            c.call("PUT", &g.path("/config"), &devices).await?;
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(e) = written {
+        let back = match firewall_restore(c, g, &saved).await {
+            Ok(()) => "put back as it was",
+            Err(_) => "left as it is: putting it back failed too",
+        };
+        return Err(DriverError::Failed(format!("isolating the guest failed ({e}); its firewall was {back}")));
     }
     let applied = firewall_read(c, g).await?;
     Ok(json!({ "saved": saved, "applied": applied }))

@@ -74,6 +74,8 @@ pub struct CommandSigner {
 pub struct Provisioning {
     /// Reads a hypervisor's node, for the binding.
     pub hosts: Option<Arc<dyn rackhand_hub::actions::patching::hypervisor::Hosts>>,
+    /// The hypervisors' API, for a quarantined guest's firewall and its forensic snapshot (7.5.6).
+    pub hypervisor: Option<Arc<rackhand_hub::checks::steps::Hypervisor>>,
     /// The release the hub holds; a guest takes its installer from the hub then, not from GitHub.
     pub release_dir: Option<std::path::PathBuf>,
     /// The dashboard's port, for the installer's address (8443 when not set).
@@ -177,6 +179,70 @@ impl rackhand_hub::executor::HubSide for CommandSigner {
             .await
             .map_err(|e| e.to_string())
         })
+    }
+
+    fn quarantine_addrs(&self) -> Vec<String> {
+        self.addrs.get().map(|(_, addrs)| addrs()).unwrap_or_default()
+    }
+
+    fn guest_firewall<'a>(
+        &'a self,
+        machine: &'a str,
+        op: &'a str,
+        args: serde_json::Value,
+        timeout: std::time::Duration,
+    ) -> rackhand_hub::actions::runner::BoxFuture<'a, Result<serde_json::Value, String>> {
+        Box::pin(async move {
+            let h = self.provisioning.hypervisor.as_ref().ok_or("no_hypervisor_api")?;
+            h.guest_firewall(machine, op, args, timeout).await
+        })
+    }
+
+    fn guest_snapshot<'a>(
+        &'a self,
+        machine: &'a str,
+        name: &'a str,
+        timeout: std::time::Duration,
+    ) -> rackhand_hub::actions::runner::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            use rackhand_hub::actions::hypervisor_guard::GuestAction;
+            let h = self.provisioning.hypervisor.as_ref().ok_or("no_hypervisor_api")?;
+            h.guest_call(machine, GuestAction::Snapshot, serde_json::json!({ "name": name }), timeout).await.map(|_| ())
+        })
+    }
+
+    /// What the machine's quarantine recorded when it isolated it: the output of the `isolate` step of the oldest
+    /// `quarantine` job since the last release that got that far (a retry after a failure goes back to the original).
+    fn quarantine_record(&self, machine: &str) -> Option<serde_json::Value> {
+        let rows: Vec<(String, String, Option<Vec<u8>>)> = self
+            .db
+            .readers()
+            .with(|c| {
+                let mut s = c.prepare(
+                    "SELECT j.name, j.state, s.stdout FROM jobs j
+                     LEFT JOIN job_steps s ON s.job_id = j.id AND s.step_id = 'isolate' AND s.state = 'succeeded'
+                     WHERE j.target = ?1 AND j.name IN ('quarantine', 'quarantine-release')
+                     ORDER BY j.started_at DESC, j.id DESC",
+                )?;
+                s.query_map([machine], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect()
+            })
+            .ok()?;
+        let mut record = None;
+        for (name, state, stdout) in rows {
+            if name == "quarantine-release" {
+                if state == "succeeded" {
+                    break;
+                }
+                continue;
+            }
+            if let Some(out) = stdout {
+                let line = String::from_utf8_lossy(&out);
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line.lines().next().unwrap_or("")) {
+                    record = Some(v);
+                }
+            }
+        }
+        record
     }
 
     fn machine_enrolled(&self, host: &str, name: &str) -> bool {

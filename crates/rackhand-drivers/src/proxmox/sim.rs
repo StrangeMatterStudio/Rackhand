@@ -41,6 +41,8 @@ struct State {
     nodes: Option<Vec<(String, String)>>,
     /// The datacenter firewall's `enable`, when a test sets it (the recorded options say off).
     datacenter_firewall: Option<bool>,
+    /// Requests that fail once with a 500: the method and the end of the path.
+    fail_once: Vec<(String, String)>,
     requests: Vec<Request>,
 }
 
@@ -90,6 +92,7 @@ impl Sim {
             storage: BTreeMap::new(),
             nodes: None,
             datacenter_firewall: None,
+            fail_once: Vec::new(),
             requests: Vec::new(),
         }));
         let (acceptor, fingerprint) = crate::pinned::test_server();
@@ -143,6 +146,11 @@ impl Sim {
     pub fn set_storage(&self, name: &str, kind: &str, avail: u64, total: u64) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         s.storage.insert(name.to_string(), (kind.to_string(), avail, total));
+    }
+
+    /// The next request with this method whose path ends with `tail` fails with a 500.
+    pub fn fail_once(&self, method: &str, tail: &str) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).fail_once.push((method.into(), tail.into()));
     }
 
     /// Turns the datacenter firewall on or off, as an admin would.
@@ -230,6 +238,10 @@ fn answer(state: &Mutex<State>, req: Request) -> (&'static str, String) {
     let dir = s.dir.clone();
     let node = s.node.clone();
     let path = req.path.split('?').next().unwrap_or("").to_string();
+    if let Some(i) = s.fail_once.iter().position(|(m, p)| *m == req.method && path.ends_with(p.as_str())) {
+        s.fail_once.remove(i);
+        return ("500 Internal Server Error", json!({ "data": null, "message": "injected failure" }).to_string());
+    }
     let Some(rest) = path.strip_prefix("/api2/json") else { return ("404 Not Found", "{}".into()) };
     let parts: Vec<&str> = rest.trim_matches('/').split('/').collect();
     let data = |name: &str| fixture(&dir, name)["data"].clone();

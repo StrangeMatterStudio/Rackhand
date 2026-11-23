@@ -18,16 +18,18 @@ pub(super) use super::jobs::StepEnd;
 use super::jobs::{self, NewJob};
 use super::locks::MachineGuard;
 use super::runner::{StepCtx, StepOutcome, StepResult, StepRunner, display};
-use super::{Actions, ActionsError, DEFAULT_STEP_TIMEOUT, JobKind, JobResult, StartJob};
+use super::{Actions, ActionsError, DEFAULT_STEP_TIMEOUT, JobKind, JobResult, StartJob, quarantining};
 use crate::bus::JobOutcome;
 use crate::library::items::{Kind, Library};
 use crate::policy::approvals::{ApprovalRequest, Approvals, approval_hash};
+use crate::policy::quarantine::State;
 
 pub(super) struct Machine {
     pub(super) id: String,
     pub(super) kind: String,
     pub(super) access: String,
     pub(super) address: Option<String>,
+    pub(super) quarantine: String,
 }
 
 impl Machine {
@@ -80,8 +82,14 @@ impl Actions {
             .db
             .readers()
             .with(|c| {
-                c.query_row("SELECT id, kind, access, address FROM machines WHERE id = ?1", [id], |r| {
-                    Ok(Machine { id: r.get(0)?, kind: r.get(1)?, access: r.get(2)?, address: r.get(3)? })
+                c.query_row("SELECT id, kind, access, address, quarantine FROM machines WHERE id = ?1", [id], |r| {
+                    Ok(Machine {
+                        id: r.get(0)?,
+                        kind: r.get(1)?,
+                        access: r.get(2)?,
+                        address: r.get(3)?,
+                        quarantine: r.get(4)?,
+                    })
                 })
                 .optional()
             })?
@@ -117,6 +125,10 @@ impl Actions {
         let machine = self.machine(&start.machine_id)?;
         let (rev, runbook) = self.runbook(&start)?;
         check_params(&runbook, &start.params)?;
+        // A quarantined machine runs nothing but its release, whoever asks (7.5.6)
+        if !quarantining::allowed(&start.name, State::parse(&machine.quarantine).unwrap_or(State::None)) {
+            return Err(ActionsError::Quarantined);
+        }
         // The approval is checked now and used only once the machine is ours: a busy machine doesn't spend it.
         let approval = start.approval_id.as_ref().map(|id| {
             let request = ApprovalRequest {
@@ -159,6 +171,11 @@ impl Actions {
             self.finish(&job_id, &start.requested_by, JobOutcome::Failed, reason.as_deref()).await?;
             return Ok(JobResult { job_id, outcome: JobOutcome::Failed, reason });
         };
+        // the state may have changed while this job waited for the machine
+        let q_state = self.quarantine_state(&machine.id)?;
+        if !quarantining::allowed(&start.name, q_state) {
+            return Err(ActionsError::Quarantined);
+        }
         if let Some((id, hash)) = &approval {
             // Used now, once; another call may have used it while this one waited.
             approvals.use_approval(id, &start.requested_by, hash, now_ms()).await.map_err(ActionsError::Approval)?;
@@ -172,15 +189,20 @@ impl Actions {
             serde_json::json!({ "runbook": start.name, "rev": rev, "machine": machine.id }),
         )
         .await;
+        self.quarantine_begin(&start.name, &machine.id, q_state, &job_id, &start.requested_by).await?;
         let (outcome, reason) = match self.run_steps(&job_id, &machine, &runbook, &start.params, guard).await {
             Ok(end) => end,
             Err(e) => {
                 // A step row couldn't be written: the job still ends, so nothing waits on it forever.
                 let _ = self.finish(&job_id, &start.requested_by, JobOutcome::Failed, Some("store_error")).await;
+                let _ = self
+                    .quarantine_end(&start.name, &machine.id, &job_id, JobOutcome::Failed, &start.requested_by)
+                    .await;
                 return Err(e);
             }
         };
         self.finish(&job_id, &start.requested_by, outcome, reason.as_deref()).await?;
+        self.quarantine_end(&start.name, &machine.id, &job_id, outcome, &start.requested_by).await?;
         Ok(JobResult { job_id, outcome, reason })
     }
 

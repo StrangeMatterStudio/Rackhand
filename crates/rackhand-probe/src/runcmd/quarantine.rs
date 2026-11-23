@@ -43,11 +43,7 @@ impl Host for System {
             input.write_all(script.as_bytes()).map_err(|e| format!("couldn't write to nft: {e}"))?;
         }
         let out = child.wait_with_output().map_err(|e| format!("nft: {e}"))?;
-        if out.status.success() {
-            Ok(())
-        } else {
-            Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-        }
+        if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_string()) }
     }
 
     fn flush_conntrack(&self) -> bool {
@@ -102,28 +98,40 @@ pub fn ruleset(hubs: &[SocketAddr]) -> String {
         let (v4, v6): (Vec<&str>, Vec<&str>) = text.lines().partition(|l| l.trim_start().starts_with("ip "));
         v4.into_iter().chain(v6).map(|l| format!("{l}\n")).collect()
     };
-    let mut out = format!("add table {TABLE}
+    let mut out = format!(
+        "add table {TABLE}
 delete table {TABLE}
 table {TABLE} {{
-");
-    out.push_str("  chain input {
+"
+    );
+    out.push_str(
+        "  chain input {
     type filter hook input priority -300; policy drop;
-");
-    out.push_str("    iifname \"lo\" accept
+",
+    );
+    out.push_str(
+        "    iifname \"lo\" accept
     udp sport 67 udp dport 68 accept
-");
+",
+    );
     out.push_str(&sorted(&input));
-    out.push_str("  }
+    out.push_str(
+        "  }
   chain output {
     type filter hook output priority -300; policy drop;
-");
-    out.push_str("    oifname \"lo\" accept
+",
+    );
+    out.push_str(
+        "    oifname \"lo\" accept
     udp sport 68 udp dport 67 accept
-");
+",
+    );
     out.push_str(&sorted(&output));
-    out.push_str("  }
+    out.push_str(
+        "  }
 }
-");
+",
+    );
     out
 }
 

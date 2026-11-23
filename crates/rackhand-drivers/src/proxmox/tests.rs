@@ -434,6 +434,24 @@ mod quarantine {
     }
 
     #[tokio::test]
+    async fn a_failed_isolation_puts_the_saved_configuration_back() {
+        let sim = Sim::start("pve8").await;
+        sim.set_datacenter_firewall(true);
+        let (options, rules) = own_rules();
+        sim.set_guest_firewall(100, options, rules);
+        let pve = Proxmox::new();
+        let guest = json!({ "kind": "lxc", "vmid": 100 });
+        let before = pve.call(&target(&sim), op("firewall_read", guest.clone())).await.unwrap().output;
+        // the last write, the device's firewall flag, fails
+        sim.fail_once("PUT", "/config");
+        let r = pve.call(&target(&sim), op("firewall_isolate", isolate_args(json!({})))).await;
+        let Err(DriverError::Failed(why)) = r else { panic!("{r:?}") };
+        assert!(why.contains("put back as it was"), "{why}");
+        let after = pve.call(&target(&sim), op("firewall_read", guest)).await.unwrap().output;
+        assert_eq!(after, before, "the guest's own firewall, exactly as it was");
+    }
+
+    #[tokio::test]
     async fn isolate_needs_the_hubs_addresses_and_port() {
         let sim = Sim::start("pve8").await;
         sim.set_datacenter_firewall(true);

@@ -367,6 +367,19 @@ impl Hypervisor {
         self.guest_op(&b, action, op, extra, timeout).await
     }
 
+    /// A firewall operation on the guest the machine's confirmed binding names (`firewall_isolate`, `firewall_release`,
+    /// `firewall_read`, `firewall_restore`), with `extra` added to its arguments.
+    pub async fn guest_firewall(
+        &self,
+        machine_id: &str,
+        op: &str,
+        extra: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, String> {
+        let b = self.bound(machine_id)?;
+        self.guest_op(&b, crate::actions::hypervisor_guard::GuestAction::Firewall, op, extra, timeout).await
+    }
+
     /// A named driver operation of an action on the bound guest.
     async fn guest_op(
         &self,

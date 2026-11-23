@@ -42,8 +42,9 @@ impl Target {
         let (access, quarantine, roles, tags) = row.ok_or_else(|| ToolError::invalid(format!("no machine `{id}`")))?;
         Ok(Target {
             access: if access == "monitor" { Access::Monitor } else { Access::Managed },
-            // Anything but `none`: a quarantine that failed part-way leaves the machine suspect too (7.5.6).
-            quarantined: quarantine != "none",
+            // Applying, active, releasing and failed: a quarantine that failed part-way leaves the machine suspect too;
+            // one waiting for an approval has not isolated anything yet (7.5.6).
+            quarantined: crate::policy::quarantine::State::parse(&quarantine).is_some_and(|s| s.blocks_actions()),
             roles: serde_json::from_str(&roles).unwrap_or_default(),
             tags: serde_json::from_str(&tags).unwrap_or_default(),
         })

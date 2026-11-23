@@ -316,7 +316,7 @@ mod patch_snapshot {
     pub(super) struct Env {
         pub(super) db: Arc<Db>,
         pub(super) sim: Sim,
-        pub(super) steps: Hypervisor,
+        pub(super) steps: Arc<Hypervisor>,
     }
 
     fn guest(id: &str, kind: &str, vmid: u32, binding: &str) -> Row {
@@ -376,7 +376,7 @@ mod patch_snapshot {
             serde_json::json!({ "token": "rackhand@pve!hub=secret", "fingerprint": sim.fingerprint }).to_string();
         vault.put(&format!("driver.{M1}"), &Secret::from(creds.as_str())).await.unwrap();
         let steps = Hypervisor::new(db.clone(), vault).with_driver(Arc::new(rackhand_drivers::Proxmox::new()));
-        Env { db, sim, steps }
+        Env { db, sim, steps: Arc::new(steps) }
     }
 
     impl Env {
@@ -640,5 +640,236 @@ mod guard {
         let after =
             e.steps.guest_call(CT, GuestAction::Firewall, args(GuestAction::Firewall), Duration::from_secs(5)).await;
         assert!(after.is_ok(), "{after:?}");
+    }
+}
+
+/// `quarantine` and `quarantine-release` on a Proxmox guest (7.5.6, D104, E24, E66, AC72): the hub's three calls against the
+/// simulated API, through a hub that keeps the isolate step's record as the store does.
+mod quarantine {
+    use serde_json::{Value, json};
+
+    use super::patch_snapshot::{CT, Env, env};
+    use super::*;
+    use crate::actions::hypervisor_guard::GuestAction;
+    use crate::actions::runner::BoxFuture;
+    use crate::checks::steps::Hypervisor;
+    use crate::executor::{Executor, HubSide};
+    use crate::ssh::hostkeys::HostKeys;
+    use crate::vault::Vault;
+    use crate::vault::master_key::MasterKey;
+
+    const HUB: &str = "192.0.2.10:4433";
+
+    struct Hub {
+        steps: Arc<Hypervisor>,
+        record: Mutex<Option<Value>>,
+        addrs: Vec<String>,
+        managed: bool,
+    }
+
+    impl HubSide for Hub {
+        fn signed_commands(&self, _now_ms: i64) -> Vec<u8> {
+            Vec::new()
+        }
+        fn signed_keys(&self, _now_ms: i64, _body: &[u8]) -> Vec<u8> {
+            Vec::new()
+        }
+        fn ssh_from(&self, _machine: &str) -> Vec<String> {
+            Vec::new()
+        }
+        fn managed(&self, _machine: &str) -> bool {
+            self.managed
+        }
+        fn revoke<'a>(&'a self, _machine: &'a str) -> BoxFuture<'a, Result<(), String>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn quarantine_addrs(&self) -> Vec<String> {
+            self.addrs.clone()
+        }
+        fn guest_firewall<'a>(
+            &'a self,
+            machine: &'a str,
+            op: &'a str,
+            args: Value,
+            timeout: Duration,
+        ) -> BoxFuture<'a, Result<Value, String>> {
+            Box::pin(async move { self.steps.guest_firewall(machine, op, args, timeout).await })
+        }
+        fn guest_snapshot<'a>(
+            &'a self,
+            machine: &'a str,
+            name: &'a str,
+            timeout: Duration,
+        ) -> BoxFuture<'a, Result<(), String>> {
+            Box::pin(async move {
+                self.steps
+                    .guest_call(machine, GuestAction::Snapshot, json!({ "name": name }), timeout)
+                    .await
+                    .map(|_| ())
+            })
+        }
+        fn quarantine_record(&self, _machine: &str) -> Option<Value> {
+            self.record.lock().unwrap().clone()
+        }
+    }
+
+    struct Q {
+        e: Env,
+        hub: Arc<Hub>,
+        executor: Executor,
+    }
+
+    async fn q(name: &str, addrs: &[&str], managed: bool) -> Q {
+        let e = env(name).await;
+        e.sim.set_datacenter_firewall(true);
+        let hub = Arc::new(Hub {
+            steps: e.steps.clone(),
+            record: Mutex::new(None),
+            addrs: addrs.iter().map(|a| a.to_string()).collect(),
+            managed,
+        });
+        let vault = Arc::new(Vault::new(MasterKey::from_bytes([4u8; 32]), e.db.clone()));
+        let (host_keys, _) = HostKeys::new(e.db.clone());
+        let executor = Executor::new(vault, host_keys).with_hub(hub.clone());
+        Q { e, hub, executor }
+    }
+
+    impl Q {
+        async fn call(&self, call: &str, kind: &str) -> crate::actions::runner::StepResult {
+            let ctx = StepCtx {
+                machine_id: CT.into(),
+                machine_kind: kind.into(),
+                address: None,
+                ..ctx(Duration::from_secs(10))
+            };
+            self.executor.run(&ctx, &step(&format!("kind = \"hub\"\ncall = \"{call}\"\n")), None).await
+        }
+
+        /// The isolate step's output, kept as the record the store would give back.
+        fn keep(&self, r: &crate::actions::runner::StepResult) {
+            let line = String::from_utf8_lossy(&r.stdout);
+            *self.hub.record.lock().unwrap() = serde_json::from_str(line.lines().next().unwrap()).ok();
+        }
+
+        async fn firewall(&self) -> Value {
+            self.e.steps.guest_firewall(CT, "firewall_read", json!({}), Duration::from_secs(5)).await.unwrap()
+        }
+
+        fn writes(&self) -> usize {
+            self.e.sim.requests().iter().filter(|q| q.method != "GET").count()
+        }
+
+        /// The machine isn't a guest on any hypervisor.
+        async fn unbind(&self) {
+            let update = rackhand_store::RowUpdate {
+                table: "machines",
+                key: ("id", t(CT)),
+                set: Row::from([("proxmox_ref", rusqlite::types::Value::Null)]),
+            };
+            let change = rackhand_store::RegistryChange { updates: vec![update], ..Default::default() };
+            self.e.db.writer().send(WriteCmd::RegistryChange(change)).await.unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pve_firewall_off_fails_with_instructions_never_enables() {
+        let q = q("q-off", &[HUB], true).await;
+        q.e.sim.set_datacenter_firewall(false);
+        let r = q.call("quarantine_isolate", "linux").await;
+        assert_eq!(r.outcome, StepOutcome::Failed("pve_firewall_off".into()), "{r:?}");
+        assert!(String::from_utf8_lossy(&r.stderr).contains("Datacenter"), "the admin is told what to do");
+        assert_eq!(q.writes(), 0, "the simulated API saw no write at all: the datacenter firewall is never turned on");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn proxmox_guest_is_isolated_snapshotted_and_released_identically() {
+        let q = q("q-flow", &[HUB, "[2001:db8::10]:4433"], true).await;
+        let before = q.firewall().await;
+        let isolated = q.call("quarantine_isolate", "linux").await;
+        assert_eq!(isolated.outcome, StepOutcome::Succeeded, "{isolated:?}");
+        q.keep(&isolated);
+        let record = q.hub.record.lock().unwrap().clone().unwrap();
+        assert_eq!((record["method"].as_str(), record["enforced"].as_bool()), (Some("proxmox"), Some(true)));
+        assert_eq!(record["saved"], before, "the whole prior configuration is in the record");
+        assert_eq!(q.firewall().await["options"]["policy_in"], "DROP");
+        // the forensic snapshot, named by the time
+        let snap = q.call("quarantine_snapshot", "linux").await;
+        assert_eq!(snap.outcome, StepOutcome::Succeeded, "{snap:?}");
+        let posts: Vec<String> =
+            q.e.sim.requests().into_iter().filter(|r| r.method == "POST").map(|r| r.body).collect();
+        assert!(posts.iter().any(|b| b.starts_with("snapname=rackhand-quarantine-")), "{posts:?}");
+        // the release puts back exactly what was there
+        let released = q.call("quarantine_release", "linux").await;
+        assert_eq!(released.outcome, StepOutcome::Succeeded, "{released:?}");
+        assert_eq!(q.firewall().await, before);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn changed_config_stops_release() {
+        let q = q("q-changed", &[HUB], true).await;
+        let isolated = q.call("quarantine_isolate", "linux").await;
+        q.keep(&isolated);
+        q.e.sim.set_guest_option(100, "policy_out", json!("ACCEPT"));
+        let r = q.call("quarantine_release", "linux").await;
+        assert_eq!(r.outcome, StepOutcome::Failed("quarantine_config_changed".into()), "{r:?}");
+        assert_eq!(q.firewall().await["options"]["policy_out"], "ACCEPT", "the admin's version is left alone");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_retry_takes_up_the_earlier_record() {
+        let q = q("q-retry", &[HUB], true).await;
+        let first = q.call("quarantine_isolate", "linux").await;
+        q.keep(&first);
+        let writes = q.writes();
+        let again = q.call("quarantine_isolate", "linux").await;
+        assert_eq!(again.outcome, StepOutcome::Succeeded, "{again:?}");
+        let text = String::from_utf8_lossy(&again.stdout).to_string();
+        let v: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        assert_eq!(v["reused"], true);
+        let original = q.hub.record.lock().unwrap().clone().unwrap()["saved"].clone();
+        assert_eq!(v["saved"], original, "still the original, not the isolated one");
+        assert_eq!(q.writes(), writes, "nothing was written again");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unconfirmed_binding_is_refused_before_any_call() {
+        let q = q("q-binding", &[HUB], true).await;
+        q.e.set("machines", CT, "proxmox_ref_state", "mismatch").await;
+        let r = q.call("quarantine_isolate", "linux").await;
+        assert_eq!(r.outcome, StepOutcome::Failed("guest_binding_mismatch".into()), "{r:?}");
+        assert!(q.e.sim.requests().is_empty(), "{:?}", q.e.sim.requests());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn in_guest_needs_an_account_a_supported_system_and_the_hubs_addresses() {
+        // a monitor machine that isn't a guest has no account, so only a hypervisor could cut it off
+        let monitor = q("q-monitor", &[HUB], false).await;
+        monitor.unbind().await;
+        let r = monitor.call("quarantine_isolate", "linux").await;
+        assert_eq!(r.outcome, StepOutcome::Failed("monitor_machine_needs_hypervisor".into()), "{r:?}");
+        // an operating system with no in-guest quarantine yet
+        assert_eq!(
+            monitor.call("quarantine_isolate", "windows").await.outcome,
+            StepOutcome::Failed("in_guest_quarantine_unsupported".into())
+        );
+        // with an account it goes over SSH (and this machine has no address to reach)
+        let managed = q("q-managed", &[HUB], true).await;
+        managed.unbind().await;
+        let ssh = managed.call("quarantine_isolate", "linux").await;
+        assert_eq!(ssh.outcome, StepOutcome::Failed("machine_unreachable".into()), "{ssh:?}");
+        // no addresses of the hub's: nothing can be allowed, so nothing is done
+        let none = q("q-noaddr", &[], true).await;
+        let r = none.call("quarantine_isolate", "linux").await;
+        assert_eq!(r.outcome, StepOutcome::Failed("hub_addresses_unknown".into()));
+        assert_eq!(none.writes(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn snapshot_and_release_need_the_record() {
+        let q = q("q-norecord", &[HUB], true).await;
+        for call in ["quarantine_snapshot", "quarantine_release"] {
+            let r = q.call(call, "linux").await;
+            assert_eq!(r.outcome, StepOutcome::Failed("no_quarantine_record".into()), "{call}");
+        }
     }
 }

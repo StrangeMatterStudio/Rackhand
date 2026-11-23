@@ -42,10 +42,21 @@ pub enum StepKind {
 }
 
 /// What a `hub` step may ask the hub to do: send a machine its signed command list, replace its hub keys, revoke its
-/// endpoint, or take a guest through provisioning: make its machine and token, have the hypervisor's wrapper give it its
-/// enrollment, bind it to the guest, and wait until it has enrolled.
-pub const HUB_CALLS: [&str; 7] =
-    ["send_commands", "rotate_keys", "revoke", "provision_machine", "send_guest", "bind_guest", "await_machine"];
+/// endpoint, take a guest through provisioning (make its machine and token, have the hypervisor's wrapper give it its
+/// enrollment, bind it to the guest, and wait until it has enrolled), or quarantine a machine, take its forensic snapshot,
+/// and release it (7.5.6).
+pub const HUB_CALLS: [&str; 10] = [
+    "send_commands",
+    "rotate_keys",
+    "revoke",
+    "provision_machine",
+    "send_guest",
+    "bind_guest",
+    "await_machine",
+    "quarantine_isolate",
+    "quarantine_snapshot",
+    "quarantine_release",
+];
 
 /// A step's `call` as a name and its `key=value` words (`clone vmid=9000 newid=120`). A word without `=` is no
 /// argument. Parameters have been put in by then, and a parameter's pattern holds no space.
@@ -140,9 +151,20 @@ impl Step {
             StepKind::Ssh | StepKind::Transfer => true,
             StepKind::Hub => {
                 // revoking and the bookkeeping of a provisioning are the hub's own; only what goes through the
-                // machine's wrapper (the command list, the keys, a guest's enrollment) needs its account
+                // machine's wrapper (the command list, the keys, a guest's enrollment) needs its account. A quarantine is
+                // done from the hypervisor for a guest, which a monitor machine can be; the in-guest one checks for the
+                // account itself
                 let call = call_parts(self.call.as_deref().unwrap_or("")).0;
-                !["revoke", "provision_machine", "bind_guest", "await_machine"].contains(&call)
+                ![
+                    "revoke",
+                    "provision_machine",
+                    "bind_guest",
+                    "await_machine",
+                    "quarantine_isolate",
+                    "quarantine_snapshot",
+                    "quarantine_release",
+                ]
+                .contains(&call)
             }
             _ => false,
         }

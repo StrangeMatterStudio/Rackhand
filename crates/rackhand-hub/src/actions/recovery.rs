@@ -166,7 +166,16 @@ impl Actions {
         .into_iter()
         .collect();
         db.writer().send(WriteCmd::PutEvents(vec![event])).await?;
-        self.finish(&job.id, &job.start.requested_by, JobOutcome::Interrupted, Some(HUB_RESTARTED)).await
+        self.finish(&job.id, &job.start.requested_by, JobOutcome::Interrupted, Some(HUB_RESTARTED)).await?;
+        // a quarantine the restart cut short is failed, so the machine isn't left applying for good
+        self.quarantine_end(
+            &job.start.name,
+            &job.start.machine_id,
+            &job.id,
+            JobOutcome::Interrupted,
+            &job.start.requested_by,
+        )
+        .await
     }
 
     async fn resume_detached(

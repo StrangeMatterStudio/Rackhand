@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use rackhand_store::{Db, Row, WriteCmd};
+use rusqlite::OptionalExtension;
 use rusqlite::types::Value;
 
 use super::exclusions::quarantine_excluded;
@@ -278,6 +279,26 @@ pub async fn put_rule(
     .into_iter()
     .collect();
     db.writer().send(WriteCmd::PutQuarantineRule(row)).await?;
+    Ok(())
+}
+
+/// Writes a machine's quarantine state.
+pub async fn set_state(db: &Db, machine: &str, to: State) -> Result<(), QuarantineError> {
+    let set = Row::from([("quarantine", Value::Text(to.as_str().into()))]);
+    let update = rackhand_store::RowUpdate { table: "machines", key: ("id", Value::Text(machine.into())), set };
+    let change = rackhand_store::RegistryChange { updates: vec![update], ..Default::default() };
+    db.writer().send(WriteCmd::RegistryChange(change)).await?;
+    Ok(())
+}
+
+/// A proposal that was rejected or ran out: a machine that was `pending` is `none` again; any other state stays.
+pub async fn clear_pending(db: &Db, machine: &str) -> Result<(), QuarantineError> {
+    let current: Option<String> = db
+        .readers()
+        .with(|c| c.query_row("SELECT quarantine FROM machines WHERE id = ?1", [machine], |r| r.get(0)).optional())?;
+    if current.as_deref() == Some("pending") {
+        set_state(db, machine, State::None).await?;
+    }
     Ok(())
 }
 

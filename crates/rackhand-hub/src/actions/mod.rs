@@ -9,6 +9,7 @@ pub mod jobs;
 mod locks;
 pub mod patching;
 pub mod provision;
+pub mod quarantining;
 mod reboots;
 mod recovery;
 pub mod runner;
@@ -90,6 +91,8 @@ pub enum ActionsError {
     MachineBusy,
     #[error("monitor_only: the machine is at access level monitor")]
     MonitorOnly,
+    #[error("machine_quarantined: only the quarantine's release (and diagnostics) run on a quarantined machine")]
+    Quarantined,
     #[error("no such machine")]
     UnknownMachine,
     #[error("no such runbook or revision")]
@@ -195,3 +198,7 @@ impl Actions {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "quarantine_tests.rs"]
+mod quarantine;

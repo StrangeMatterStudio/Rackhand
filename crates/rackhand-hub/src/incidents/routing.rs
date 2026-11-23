@@ -183,6 +183,9 @@ impl Routing {
         let (Some(machine_id), Some(machine)) = (inc.machine_id.clone(), machine) else {
             return self.incidents.set_state(incident_id, State::Human, now_ms).await;
         };
+        if self.quarantine_route(&inc, &machine_id, &machine, now_ms).await? {
+            return Ok(());
+        }
         let runbooks = self.runbooks();
         let Some(rb) = choose(&runbooks, &inc.kind, &machine.facts) else {
             return self.incidents.set_state(incident_id, State::Human, now_ms).await;
@@ -402,6 +405,9 @@ impl Routing {
         let args: serde_json::Value = serde_json::from_str(&args).unwrap_or_default();
         let name = args["name"].as_str().unwrap_or_default().to_string();
         if !approved {
+            if name == "quarantine" {
+                self.clear_pending(&machine).await;
+            }
             return self
                 .to_person(incident_id, &format!("the approval to run runbook `{name}` was rejected"), now_ms)
                 .await;
@@ -430,6 +436,7 @@ impl Routing {
             let why = format!("the condition persists 10 minutes after runbook `{runbook}` succeeded");
             self.to_person(&id, &why, now_ms).await?;
         }
+        self.expire_pending(now_ms).await?;
         Ok(())
     }
 
@@ -477,6 +484,9 @@ impl Routing {
         })
     }
 }
+
+#[path = "quarantine_routing.rs"]
+mod quarantine_route;
 
 #[cfg(test)]
 #[path = "routing_tests.rs"]

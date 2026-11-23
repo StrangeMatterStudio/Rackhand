@@ -8,6 +8,8 @@
 //! - `provision_machine`, `send_guest`, `bind_guest`, `await_machine`: the hub's side of `provision-vm` and
 //!   `provision-lxc` (T64): the guest's machine and token; the hypervisor's wrapper giving the guest its enrollment
 //!   (`run install-guest`, a payload signed with the node key); the guest's binding; and waiting for it to enroll.
+//! - `quarantine_isolate`, `quarantine_snapshot`, `quarantine_release`: `quarantine` and `quarantine-release` (7.5.6), in
+//!   `quarantine.rs`.
 //! - `revoke`: waits until the machine refuses the hub's key (its accounts are gone, which is how the hub knows an
 //!   uninstall happened), then revokes the machine. A machine at access level `monitor` has no such account: it is
 //!   revoked at once.
@@ -81,6 +83,35 @@ pub trait HubSide: Send + Sync {
     fn managed(&self, machine: &str) -> bool;
     /// Revokes the machine: it is marked and its probe is no longer admitted.
     fn revoke<'a>(&'a self, machine: &'a str) -> BoxFuture<'a, Result<(), String>>;
+    /// The hub's addresses as `ip:port`, the one path out of a quarantined machine (7.5.6).
+    fn quarantine_addrs(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// A firewall operation of the hypervisor on the machine's guest (`firewall_isolate`, `firewall_release`), only when the
+    /// machine's binding to it is confirmed; `not_a_proxmox_guest` when the machine isn't one.
+    fn guest_firewall<'a>(
+        &'a self,
+        _machine: &'a str,
+        _op: &'a str,
+        _args: serde_json::Value,
+        _timeout: std::time::Duration,
+    ) -> BoxFuture<'a, Result<serde_json::Value, String>> {
+        Box::pin(async { Err("not_a_proxmox_guest".to_string()) })
+    }
+    /// A snapshot of the machine's guest called `name`.
+    fn guest_snapshot<'a>(
+        &'a self,
+        _machine: &'a str,
+        _name: &'a str,
+        _timeout: std::time::Duration,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Err("not_a_proxmox_guest".to_string()) })
+    }
+    /// What the machine's quarantine recorded when it isolated the machine, and that hasn't been released: `{method,
+    /// enforced, saved, applied}`.
+    fn quarantine_record(&self, _machine: &str) -> Option<serde_json::Value> {
+        None
+    }
 }
 
 /// How long a rotation's login and key updates may take each.
@@ -137,6 +168,9 @@ impl Executor {
             }
             Some("rotate_keys") => self.rotate_keys(ctx, hub.as_ref()).await,
             Some("revoke") => self.revoke_machine(ctx, hub.as_ref()).await,
+            Some("quarantine_isolate") => self.quarantine_isolate(ctx, hub.as_ref()).await,
+            Some("quarantine_snapshot") => self.quarantine_snapshot(ctx, hub.as_ref()).await,
+            Some("quarantine_release") => self.quarantine_release(ctx, hub.as_ref()).await,
             Some(other) => StepResult::failed(format!("hub_call_unavailable:{other}")),
             None => StepResult::failed("no_call"),
         }
@@ -146,7 +180,7 @@ impl Executor {
 /// How often `await_machine` looks.
 const AWAIT_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
-fn succeeded_text(out: String) -> StepResult {
+pub(super) fn succeeded_text(out: String) -> StepResult {
     StepResult { outcome: StepOutcome::Succeeded, stdout: out.into_bytes(), ..StepResult::failed("") }
 }
 

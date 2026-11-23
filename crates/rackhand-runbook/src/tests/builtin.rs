@@ -137,6 +137,8 @@ fn all_parse_and_have_design_risk() {
         ("unenroll", High),
         ("provision-vm", Normal),
         ("provision-lxc", Normal),
+        ("quarantine", High),
+        ("quarantine-release", High),
     ];
     for (name, source) in builtin::runbooks() {
         let r = Runbook::parse(source).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -343,5 +345,28 @@ fn provision_runbooks_make_start_enroll_and_bind() {
         ("x", false),
     ] {
         assert_eq!(check_value(&lxc.params["template"], value).is_ok(), ok, "template {value:?}");
+    }
+}
+
+/// `quarantine` and `quarantine-release` (7.5.6, D61, D104): always high risk, so an approval with step-up; no trigger of their own
+/// (the policy's automatic rules start `quarantine`, not an incident's routing); and neither needs an account on the machine,
+/// because a Proxmox guest is isolated from its hypervisor, and an in-guest quarantine checks for the account itself.
+#[test]
+fn quarantine_runbooks_isolate_snapshot_and_release() {
+    let parsed = |name: &str| Runbook::parse(builtin::runbook(name).unwrap_or_else(|| panic!("{name}"))).unwrap();
+    let calls = |r: &Runbook| r.steps.iter().map(|s| s.call.clone().unwrap_or_default()).collect::<Vec<_>>();
+    let q = parsed("quarantine");
+    let release = parsed("quarantine-release");
+    assert_eq!(calls(&q), ["quarantine_isolate", "quarantine_snapshot"]);
+    assert_eq!(q.steps.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["isolate", "snapshot"]);
+    assert_eq!(calls(&release), ["quarantine_release"]);
+    for r in [&q, &release] {
+        assert_eq!((r.risk, r.autonomy), (crate::runbook::Risk::High, 1));
+        assert!(r.triggers.is_none() && r.params.is_empty());
+        assert!(r.steps.iter().all(|s| s.kind == StepKind::Hub && !s.needs_account() && s.timeout_s().is_some()));
+        for kind in ["linux", "alpine", "windows"] {
+            assert!(r.targets.kinds.iter().any(|k| k == kind), "{kind}");
+        }
+        assert!(!r.targets.kinds.iter().any(|k| k == "hypervisor"), "a hypervisor is never quarantined");
     }
 }

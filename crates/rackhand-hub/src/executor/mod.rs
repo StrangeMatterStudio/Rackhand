@@ -5,6 +5,7 @@
 pub mod commands;
 mod detached;
 mod hub;
+pub mod quarantine;
 mod reboot;
 
 use std::net::{IpAddr, SocketAddr};
