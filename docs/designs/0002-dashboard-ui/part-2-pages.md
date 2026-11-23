@@ -66,6 +66,30 @@ Chromium, the real pages with real styles and scripts, written out by `pages_for
 The first runs found, and the fixes are in: lists in narrow columns of wide screens that didn't fold (they fold by their
 own width now), a brand link too narrow to touch, a 13px field, short words split in narrow columns, and a search link without a name on phones.
 
+### On a running hub
+
+A throwaway hub on this computer (built from this branch, first run completed, no machines), in the desktop app's
+Chromium, on 2026-11-23:
+
+| Walked | Result |
+| --- | --- |
+| A page asked for without a session (`/audit?q=sign`), then sign-in with a password and an authenticator code | Returned to that page with its search |
+| Every page in the navigation, every dialog address, `/find`, `/step-up` and an unknown address | Each answered with its heading (the unknown one 404); no content security policy errors in the console |
+| Add a user from its button | Opened as a modal without leaving the page, focus in the first field |
+| The same form refused by the hub (a name that is taken, passwords that differ) | Returned in its dialog with both problems listed (the taken name only after the fix below) |
+| Ctrl K, typing, arrow and Enter | The palette found Audit and opened it |
+| `?`, Esc, `g i` | Shortcuts shown, closed, Incidents opened |
+| Theme from the account menu | Light and dark, on the same page, without a flash |
+| 375px: the drawer, Esc, a long dialog in dark | The drawer opens and closes; the dialog fits the screen and scrolls inside |
+
+Found and fixed (tests first, `add_user_shows_every_problem_and_the_new_key_has_a_qr_code` and
+`counts_and_offers_are_worded_right`): a taken user name was said only once every other field was right; the phone's menu
+button said "1 open incidents, 0 approvals waiting"; an empty machine list offered "Add machine", unlike the button
+above it. (That link still goes to the Add page, as a test of the overview expects, and is shown to viewers too, who
+can't add a machine; left as it was.)
+
+Not walked there: the step-up return and the live vitals, which need a machine (their tests cover them).
+
 ## Deviations and limits
 
 - The overview's machine list has CPU and memory, not disk: a machine has several disks and the page has no rule for

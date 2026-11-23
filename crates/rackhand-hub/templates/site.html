@@ -2,7 +2,7 @@
 {% block content %}
 <div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">{{ machines.len() }} machine{% if machines.len() != 1 %}s{% endif %}.</p></div></div>
 <section class="card list"><div class="bar"><h2>Machines</h2>{{ crate::web::ui::search(shell.path.as_str(), q, "machines")|safe }}</div>
-{% if machines.is_empty() %}{{ crate::web::ui::none(q, "machines", "No machines at this site yet. <a href=\"/add\">Add machine</a>")|safe }}{% else %}
+{% if machines.is_empty() %}{{ crate::web::ui::none(q, "machines", "No machines at this site yet. <a href=\"/add\">Add a machine</a>")|safe }}{% else %}
 <table><thead><tr><th scope="col">Machine</th><th scope="col">State</th><th scope="col">Kind</th><th scope="col">CPU</th><th scope="col" class="x">Memory</th><th scope="col">Updates</th><th scope="col" class="x">Policy</th><th scope="col">Last seen</th></tr></thead><tbody>
 {% for m in machines %}<tr><td class="t"><a href="/machines/{{ m.id }}">{{ m.name }}</a></td><td class="state" data-health="{{ m.health }}" data-state="{{ m.state }}">{{ crate::web::ui::badge(m.health)|safe }}</td><td data-label="Kind">{{ crate::web::ui::word(m.kind) }}</td><td class="num" data-label="CPU">{{ crate::web::pages::shown(m.cpu) }}</td><td class="x num" data-label="Memory">{{ crate::web::pages::shown(m.memory) }}</td><td class="num" data-label="Updates">{{ crate::web::pages::shown(m.updates) }}</td><td class="x" data-label="Policy">{% if m.policy.is_empty() %}None{% else %}{{ m.policy }}{% endif %}</td><td class="num" data-label="Last seen">{{ crate::web::pages::shown(m.last_seen) }}</td></tr>
 {% endfor %}</tbody></table>{% endif %}

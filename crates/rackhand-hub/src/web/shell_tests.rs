@@ -924,3 +924,32 @@ async fn each_dialog_is_named_by_its_own_heading() {
     names.dedup();
     assert_eq!(names.len(), 3, "{names:?}");
 }
+
+/// What waits is counted in words a screen reader says right, and an empty list offers what its page's button does.
+#[tokio::test(flavor = "multi_thread")]
+async fn counts_and_offers_are_worded_right() {
+    let (app, admin) = ready("shell-words").await;
+    let html = see(&app, "/", &admin).await;
+    assert!(html.contains("aria-label=\"Menu\""), "nothing waits: {}", block(&html, "<header", "</header>"));
+    assert!(html.contains("No machines yet. <a href=\"/add\">Add a machine</a>"), "{html}");
+    insert(
+        &app,
+        "incidents",
+        Row::from([
+            ("id", Value::Text("01JD00000000000000000000W1".into())),
+            ("machine_id", Value::Text("01JD00000000000000000000W1".into())),
+            ("rule_id", Value::Text("x".into())),
+            ("dedupe_key", Value::Text("w1".into())),
+            ("kind", Value::Text("x".into())),
+            ("severity", Value::Text("warning".into())),
+            ("state", Value::Text("open".into())),
+            ("title", Value::Text("One".into())),
+            ("opened_at", Value::Integer(now_ms())),
+        ]),
+    )
+    .await;
+    let html = see(&app, "/", &admin).await;
+    assert!(html.contains("aria-label=\"Menu: 1 open incident\""), "{}", block(&html, "<header", "</header>"));
+    let html = see(&app, "/sites/home", &admin).await;
+    assert!(html.contains("<a href=\"/add\">Add a machine</a>"), "{html}");
+}

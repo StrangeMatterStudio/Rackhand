@@ -180,9 +180,18 @@ pub(super) async fn create(web: &Web, ctx: &Ctx) -> Response<Body> {
         form.set("password_again", "");
     }
     form.check();
+    // a name that is taken is said with every other problem; the store refuses one taken meanwhile
+    let mut code = StatusCode::BAD_REQUEST;
+    if !form.has_error("name") && matches!(users::find(&web.0.db, form.value("name")), Ok(Some(_))) {
+        if form.ok() {
+            code = StatusCode::CONFLICT;
+        }
+        let why = format!("`{}` is taken by another account", form.value("name"));
+        form.refuse("name", why);
+    }
     let (true, Some(role)) = (form.ok(), parse_role(form.value("role"))) else {
         form.hold(&web.0.held, ctx);
-        return show(web, ctx, StatusCode::BAD_REQUEST, Some(form), None);
+        return show(web, ctx, code, Some(form), None);
     };
     let Ok(secret) = totp::new_secret() else { return status(StatusCode::INTERNAL_SERVER_ERROR, "No randomness") };
     let auth = form.value("auth").to_string();
