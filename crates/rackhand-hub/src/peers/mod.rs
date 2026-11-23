@@ -24,6 +24,7 @@ mod queries;
 pub mod relay_lists;
 mod requests;
 mod summary;
+pub mod tunnel;
 mod unlink;
 mod watch;
 mod wire;

@@ -28,8 +28,10 @@ pub struct HubConfig {
     #[serde(default)]
     pub trusted_proxies: Vec<String>,
     /// Names the dashboard's certificate is issued for.
-    #[serde(default)]
     pub names: Vec<String>,
+    /// The hub's own relays, in order (7.3.10): joins hand them to probes, and they carry tunnels to remote-mode probes.
+    #[serde(default)]
+    pub relays: Vec<String>,
 }
 
 impl HubConfig {
@@ -42,6 +44,7 @@ impl HubConfig {
             node_key: config_dir.join("node.key"),
             trusted_proxies: Vec::new(),
             names: vec!["localhost".into()],
+            relays: Vec::new(),
         }
     }
 
@@ -270,8 +273,14 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
             ..Default::default()
         },
     };
+    // tunnels: devices open them, and the hub's own SSH to a remote-mode machine goes through one (7.3.11); the endpoint is
+    // bound further down
+    let relay_urls: Vec<iroh::RelayUrl> = config.relays.iter().filter_map(|r| r.parse().ok()).collect();
+    let network = Arc::new(rackhand_hub::peers::tunnel::Network::deferred(relay_urls));
+    let forwards = Arc::new(rackhand_hub::peers::tunnel::Forwards::new(db.clone(), network.clone()));
     let executor = rackhand_hub::executor::Executor::new(vault.clone(), host_keys.clone())
-        .with_other(Arc::new(steps(&db, &vault, &notify, &ingest, &probe_server)))
+        .with_other(Arc::new(steps(&db, &vault, &notify, &ingest, &probe_server, network.clone())))
+        .with_remote(forwards)
         .with_hub(Arc::new(signer))
         .with_reboot(machines.clone(), REBOOT_WAIT);
     let actions = rackhand_hub::actions::Actions::new(db.clone(), audit.clone(), bus.clone(), Arc::new(executor))
@@ -352,16 +361,20 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         rackhand_proto::alpn::MCP.to_vec(),
         rackhand_proto::alpn::OPERATOR.to_vec(),
         rackhand_proto::alpn::PEER.to_vec(),
+        rackhand_proto::alpn::TUNNEL.to_vec(),
         rackhand_proto::alpn::JOIN.to_vec(),
     ];
-    let endpoint_config =
-        rackhand_net::endpoint::EndpointConfig { relays: Default::default(), alpns, bind: Some(config.quic) };
+    let relays = rackhand_net::relays::RelayConfig { relays: config.relays.clone(), ..Default::default() };
+    let endpoint_config = rackhand_net::endpoint::EndpointConfig { relays, alpns, bind: Some(config.quic) };
     let endpoint = rackhand_net::endpoint::bind(node_key, &endpoint_config).await.map_err(|e| e.to_string())?;
+    network.bind(endpoint.clone());
+    let tunnels = rackhand_hub::peers::tunnel::Tunnels::new(db.clone(), audit.clone(), network);
     let (ep, quic) = (endpoint.clone(), config.clone());
     let addrs: joins::HubAddrs = Arc::new(move || hub_addrs(&quic, &ep.addr().ip_addrs().copied().collect::<Vec<_>>()));
     let id_hex: String = endpoint.id().as_bytes().iter().map(|b| format!("{b:02x}")).collect();
     let _ = ticket_addrs.set((id_hex, addrs.clone()));
-    let join = joins::LazyJoin::new(db.clone(), registry.clone(), setup, addrs, joined_tx);
+    let join =
+        joins::LazyJoin::with_relays(db.clone(), registry.clone(), setup, addrs, joined_tx, config.relays.clone());
     let observations = Arc::new(crate::observations::FromIngest(ingest.clone()));
     let mcp = rackhand_hub::mcp::Mcp::new(db.clone(), audit.clone(), observations)
         .with_actions(actions)
@@ -371,6 +384,7 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         .route(rackhand_proto::alpn::MCP, mcp.handler())
         .route(rackhand_proto::alpn::OPERATOR, assist.handler())
         .route(rackhand_proto::alpn::PEER, peers.handler())
+        .route(rackhand_proto::alpn::TUNNEL, tunnels.handler())
         .route(rackhand_proto::alpn::JOIN, join.handler());
     tokio::spawn(router.serve());
     let watch = Arc::new(self_watch(config, &db, &ingest, &notify));
@@ -471,6 +485,7 @@ pub fn steps(
     notify: &rackhand_hub::notify::Notify,
     ingest: &Ingest,
     probes: &ProbeServer,
+    network: Arc<rackhand_hub::peers::tunnel::Network>,
 ) -> rackhand_hub::executor::ByKind {
     use rackhand_hub::checks::steps::{Api, Hypervisor, Verify};
     use rackhand_runbook::runbook::StepKind;
@@ -484,6 +499,7 @@ pub fn steps(
         .with(StepKind::Snapshot, hypervisor.clone())
         .with(StepKind::Rollback, hypervisor)
         .with(StepKind::ProbeCheck, Arc::new(probes.probe_checks()))
+        .with(StepKind::Tunnel, Arc::new(rackhand_hub::executor::tunnel_step::TunnelStep::new(db.clone(), network)))
 }
 
 /// The drivers of the agentless machines' APIs (7.3.12): the appliance forms poll with them.

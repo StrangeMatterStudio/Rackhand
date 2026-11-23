@@ -496,8 +496,18 @@ pub async fn main(paths: Paths) -> Result<i32, String> {
     let key_path = paths.data_dir.join("node.key");
     let key = rackhand_net::key::load_or_create(&key_path).map_err(|e| format!("{}: {e}", key_path.display()))?;
     let relays = rackhand_net::relays::RelayConfig { relays: cfg.hub.relays.clone(), ..Default::default() };
-    let endpoint_config = rackhand_net::endpoint::EndpointConfig { relays, alpns: Vec::new(), bind: None };
+    // remote mode (D60): the pinned hub may open tunnels to this machine's SSH server; a monitor probe accepts none
+    let section = cfg.machine.as_ref();
+    let remote = section.is_some_and(|m| m.mode == "remote");
+    let managed = section.is_none_or(|m| m.access == "managed");
+    let alpns = crate::remote::alpns(remote, managed);
+    let serves_tunnels = !alpns.is_empty();
+    let endpoint_config = rackhand_net::endpoint::EndpointConfig { relays, alpns, bind: None };
     let endpoint = rackhand_net::endpoint::bind(key, &endpoint_config).await.map_err(|e| e.to_string())?;
+    if serves_tunnels {
+        let ssh = std::net::SocketAddr::from(([127, 0, 0, 1], crate::remote::SSH_PORT));
+        crate::remote::spawn(endpoint.clone(), hub_id, machine_id, ssh);
+    }
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::default());
     let buffer_dir = paths.data_dir.join("buffer");
     let buffer = crate::buffer::segments::Buffer::open(&buffer_dir, Default::default(), clock.now_ms())

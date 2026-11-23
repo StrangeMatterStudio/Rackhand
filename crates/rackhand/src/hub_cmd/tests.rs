@@ -231,7 +231,7 @@ async fn join_server_waits_for_first_run_site() {
         counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         vec!["192.0.2.10:7443".into()]
     });
-    let join = joins::LazyJoin::new(db.clone(), registry, setup, addrs, tx);
+    let join = joins::LazyJoin::with_relays(db.clone(), registry, setup, addrs, tx, Vec::new());
     assert!(join.server().is_none(), "no join server before first run names the site");
     let site = rackhand_hub::registry::peers::local_site_row("home", "UTC");
     db.writer().send(rackhand_store::WriteCmd::Batch(vec![site])).await.unwrap();
@@ -295,7 +295,8 @@ async fn step_kinds_reach_their_systems() {
     let notify = rackhand_hub::notify::Notify::new(db.clone(), ingest.clone(), Vec::new());
     let server = ProbeServer::new(ingest.clone(), Arc::new(MachinesDirectory(db.clone())), ServerSettings::default());
     let vault = Arc::new(Vault::new(MasterKey::from_bytes([6u8; 32]), db.clone()));
-    let steps = steps(&db, &vault, &notify, &ingest, &server);
+    let network = Arc::new(rackhand_hub::peers::tunnel::Network::deferred(Vec::new()));
+    let steps = steps(&db, &vault, &notify, &ingest, &server, network);
     let ctx = StepCtx {
         job_id: "j1".into(),
         machine_id: "m1".into(),

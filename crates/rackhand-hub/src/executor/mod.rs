@@ -21,9 +21,16 @@ use crate::ssh::keys::{Identity, load_for};
 use crate::ssh::quote;
 use crate::vault::Vault;
 
+pub mod tunnel_step;
 pub use detached::POLL;
 pub use hub::{GuestEnrollment, GuestHost, HubSide};
 pub use reboot::{NO_REPORT, RebootFacts};
+
+/// Reaches a remote-mode machine's SSH server for the hub's own commands (7.3.7): a loopback address whose connections each
+/// go through a tunnel to the machine's probe. `None` for a machine that isn't in remote mode.
+pub trait RemoteReach: Send + Sync {
+    fn reach<'a>(&'a self, machine_id: &'a str) -> Option<BoxFuture<'a, Result<SocketAddr, String>>>;
+}
 
 /// Step kinds whose systems aren't wired to the Executor yet fail with `<kind>_unavailable`.
 #[derive(Debug, Default)]
@@ -84,6 +91,8 @@ pub struct Executor {
     other: Arc<dyn StepRunner>,
     reboot: Option<(Arc<dyn RebootFacts>, Duration)>,
     hub: Option<Arc<dyn HubSide>>,
+    /// How a remote-mode machine's SSH server is reached (through its probe).
+    remote: Option<Arc<dyn RemoteReach>>,
     poll: Duration,
     port: u16,
 }
@@ -116,7 +125,16 @@ fn from_output(command: String, out: Output) -> StepResult {
 
 impl Executor {
     pub fn new(vault: Arc<Vault>, host_keys: Arc<HostKeys>) -> Executor {
-        Executor { vault, host_keys, other: Arc::new(Unavailable), reboot: None, hub: None, poll: POLL, port: 22 }
+        Executor {
+            vault,
+            host_keys,
+            other: Arc::new(Unavailable),
+            reboot: None,
+            hub: None,
+            remote: None,
+            poll: POLL,
+            port: 22,
+        }
     }
 
     /// Runs `reboot_if_required` steps; a rebooted machine has `wait` to report again.
@@ -128,6 +146,12 @@ impl Executor {
     /// What `hub` steps ask of the hub itself.
     pub fn with_hub(mut self, hub: Arc<dyn HubSide>) -> Executor {
         self.hub = Some(hub);
+        self
+    }
+
+    /// How machines in remote mode are reached: through a tunnel to their probe (7.3.7).
+    pub fn with_remote(mut self, remote: Arc<dyn RemoteReach>) -> Executor {
+        self.remote = Some(remote);
         self
     }
 
@@ -186,7 +210,11 @@ impl Executor {
         input: Option<&[u8]>,
         timeout: Duration,
     ) -> Result<Output, SshError> {
-        let addr = self.addr(ctx).ok_or_else(|| SshError::Transport("the machine has no address".into()))?;
+        let through_probe = self.remote.as_ref().and_then(|r| r.reach(&ctx.machine_id));
+        let addr = match through_probe {
+            Some(reach) => reach.await.map_err(SshError::Transport)?,
+            None => self.addr(ctx).ok_or_else(|| SshError::Transport("the machine has no address".into()))?,
+        };
         run_with_input(addr, &ctx.machine_id, self.host_keys.clone(), id, key, line, input, timeout).await
     }
 

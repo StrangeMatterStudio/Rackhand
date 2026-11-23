@@ -121,6 +121,10 @@ timeout = "{timeout}"
     }
 
     pub(super) struct Lab {
+        /// The machine's id at the hub.
+        pub(super) id: String,
+        /// What keeps a remote-mode lab's relay and probe alive.
+        _keep: Vec<Box<dyn std::any::Any + Send>>,
         pub(super) db: Arc<Db>,
         pub(super) machine: Container,
         pub(super) actions: Actions,
@@ -212,6 +216,16 @@ timeout = "{timeout}"
     }
 
     pub(super) async fn lab(name: &str, slow_timeout: &str, lock_wait: Duration) -> Lab {
+        lab_with(name, slow_timeout, lock_wait, false).await
+    }
+
+    /// The machine of a lab in remote mode (D60): a ULID, since the hub names it to the probe.
+    const REMOTE_ID: &str = "01J1REM0TEAAAAAAAAAAAAAAAA";
+
+    /// The lab, with its machine in remote mode when `remote`: its probe runs in this process and splices to the machine's
+    /// SSH server, and the machine's own address is one nothing answers on, so only the tunnel reaches it.
+    pub(super) async fn lab_with(name: &str, slow_timeout: &str, lock_wait: Duration, remote: bool) -> Lab {
+        let id = if remote { REMOTE_ID } else { "m1" };
         let dir = std::env::temp_dir().join(format!("rackhand-it-exec-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -219,6 +233,35 @@ timeout = "{timeout}"
         let vault = Arc::new(Vault::new(MasterKey::from_bytes([5u8; 32]), db.clone()));
         let machine = Container::start_systemd("executor");
         let (ip, gateway) = machine.ip_and_gateway();
+        let mut keep: Vec<Box<dyn std::any::Any + Send>> = Vec::new();
+        let mut extra: Vec<(&'static str, Value)> = Vec::new();
+        let mut network = None;
+        if remote {
+            let (relay, relay_url) = rackhand_net::testing::local_relay().await;
+            let probe = rackhand_net::testing::endpoint(&relay_url, &[rackhand_proto::alpn::TUNNEL]).await;
+            let hub = rackhand_net::testing::endpoint(&relay_url, &[]).await;
+            let ssh: std::net::SocketAddr = format!("{ip}:22").parse().unwrap();
+            let machine_bytes = REMOTE_ID.parse::<ulid::Ulid>().unwrap().to_bytes();
+            keep.push(Box::new(rackhand_probe::remote::spawn(probe.clone(), hub.id(), machine_bytes, ssh)));
+            extra.push(("mode", Value::Text("remote".into())));
+            extra.push(("probe_endpoint_id", Value::Text(probe.id().to_string())));
+            network = Some(Arc::new(rackhand_hub::peers::tunnel::Network::new(hub, vec![relay_url])));
+            keep.push(Box::new(relay));
+            keep.push(Box::new(probe));
+        }
+        // a remote-mode machine's own address is one nothing answers on (a documentation address, RFC 5737)
+        let address = if remote { "192.0.2.1".to_string() } else { ip.clone() };
+        let mut machine_row = Row::from([
+            ("id", Value::Text(id.into())),
+            ("site_id", Value::Text("s".into())),
+            ("name", Value::Text("target".into())),
+            ("kind", Value::Text("linux".into())),
+            ("address", Value::Text(address)),
+            ("state", Value::Text("enrolled".into())),
+        ]);
+        for (column, value) in extra {
+            machine_row.insert(column, value);
+        }
         db.writer()
             .send(WriteCmd::Batch(vec![
                 RowWrite::insert(
@@ -227,19 +270,11 @@ timeout = "{timeout}"
                         ("id", Value::Text("s".into())),
                         ("name", Value::Text("home".into())),
                         ("timezone", Value::Text("UTC".into())),
+                        // this hub's own site: it opens tunnels only to machines of its site
+                        ("is_local", Value::Integer(i64::from(remote))),
                     ]),
                 ),
-                RowWrite::insert(
-                    "machines",
-                    Row::from([
-                        ("id", Value::Text("m1".into())),
-                        ("site_id", Value::Text("s".into())),
-                        ("name", Value::Text("target".into())),
-                        ("kind", Value::Text("linux".into())),
-                        ("address", Value::Text(ip.clone())),
-                        ("state", Value::Text("enrolled".into())),
-                    ]),
-                ),
+                RowWrite::insert("machines", machine_row),
             ]))
             .await
             .unwrap();
@@ -293,17 +328,21 @@ timeout = "{timeout}"
         let (host_keys, _alerts) = HostKeys::new(db.clone());
         let host =
             String::from_utf8_lossy(&machine.root("cat /etc/ssh/ssh_host_ed25519_key.pub").stdout).trim().to_string();
-        host_keys.pin_from_join("m1", &[PublicKey::from_openssh(&host).unwrap()], 1).await.unwrap();
+        host_keys.pin_from_join(id, &[PublicKey::from_openssh(&host).unwrap()], 1).await.unwrap();
         wait_listening(&format!("{ip}:22")).await;
         let bus = Bus::new();
         let events = bus.subscribe("test");
         let facts = Arc::new(Facts::default());
-        let executor = Executor::new(vault.clone(), host_keys.clone())
+        let mut executor = Executor::new(vault.clone(), host_keys.clone())
             .with_poll(Duration::from_millis(500))
             .with_hub(signer.clone())
             .with_reboot(facts.clone(), Duration::from_secs(6));
+        if let Some(network) = network {
+            let forwards = rackhand_hub::peers::tunnel::Forwards::new(db.clone(), network);
+            executor = executor.with_remote(Arc::new(forwards));
+        }
         let actions = Actions::new(db.clone(), audit, bus, Arc::new(executor)).with_lock_wait(lock_wait);
-        Lab { db, machine, actions, events, facts, vault, host_keys, signer }
+        Lab { id: id.into(), _keep: keep, db, machine, actions, events, facts, vault, host_keys, signer }
     }
 
     async fn wait_listening(addr: &str) {
@@ -1306,6 +1345,35 @@ id = "say"
 kind = "notify"
 message = "Backup of web finished"
 "#;
+
+    /// AC46, D60, D80: a runbook runs on a machine in remote mode through the tunnel to its probe, never directly.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn runbook_on_remote_mode_machine_through_the_probes_tunnel() {
+        const WHO: &str = r#"name = "who"
+description = "Who the hub is on the machine"
+identity = "automation"
+risk = "low"
+autonomy = 1
+[[step]]
+id = "id"
+kind = "ssh"
+cmd = ["id", "-un"]
+timeout = "20s"
+"#;
+        let lab = lab_with("remote", "60s", Duration::from_secs(5), true).await;
+        let audit = Audit::new(lab.db.writer());
+        let (library, _) = Library::new(lab.db.clone(), audit);
+        library.save(Kind::Runbook, "who", WHO, "admin", 1).await.unwrap();
+        let job = StartJob { params: BTreeMap::new(), machine_id: lab.id.clone(), ..start("who", ("unused", "")) };
+        let result = lab.actions.run(job).await.unwrap();
+        assert_eq!((result.outcome, result.reason.as_deref()), (JobOutcome::Succeeded, None), "{result:?}");
+        let s = step(&lab.db, &result.job_id);
+        assert_eq!(String::from_utf8_lossy(&s.stdout), "rackhand\n", "ran as the automation account on the machine");
+        assert_eq!(s.command.as_deref(), Some("id -un"));
+        // the machine's own address answers nothing, so the only way in was the tunnel to its probe
+        let direct = std::net::TcpStream::connect_timeout(&"192.0.2.1:22".parse().unwrap(), Duration::from_millis(500));
+        assert!(direct.is_err());
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn notify_step_sends_message() {

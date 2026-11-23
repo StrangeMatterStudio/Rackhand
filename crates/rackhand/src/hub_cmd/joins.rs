@@ -490,6 +490,8 @@ pub struct LazyJoin {
     /// The addresses joins hand out, read when the server is built.
     hub_addrs: HubAddrs,
     joined: UnboundedSender<Joined>,
+    /// The hub's own relays, which a join hands to the machine so that it can reach the hub through them.
+    relays: Vec<String>,
     server: Mutex<Option<Arc<JoinServer>>>,
 }
 
@@ -500,14 +502,15 @@ impl std::fmt::Debug for LazyJoin {
 }
 
 impl LazyJoin {
-    pub fn new(
+    pub fn with_relays(
         db: Arc<Db>,
         registry: Arc<Registry>,
         setup: Arc<dyn ManagedSetupSource>,
         hub_addrs: HubAddrs,
         joined: UnboundedSender<Joined>,
+        relays: Vec<String>,
     ) -> Arc<LazyJoin> {
-        Arc::new(LazyJoin { db, registry, setup, hub_addrs, joined, server: Mutex::new(None) })
+        Arc::new(LazyJoin { db, registry, setup, hub_addrs, joined, relays, server: Mutex::new(None) })
     }
 
     /// The server, built the first time this hub has a site; its joins are passed on to `joined`.
@@ -519,7 +522,7 @@ impl LazyJoin {
         let info = HubInfo {
             site: local_site(&self.db)?,
             version: env!("CARGO_PKG_VERSION").into(),
-            relays: Vec::new(),
+            relays: self.relays.clone(),
             hub_addrs: (self.hub_addrs)(),
             probe_config: probe_defaults(),
         };
