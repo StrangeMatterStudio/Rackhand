@@ -7,6 +7,7 @@
 pub mod endpoint;
 pub mod frames;
 pub mod key;
+pub mod paths;
 pub mod registry;
 pub mod relays;
 pub mod router;

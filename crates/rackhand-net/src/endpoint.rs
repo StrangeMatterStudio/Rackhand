@@ -31,11 +31,27 @@ pub fn transport() -> iroh::endpoint::QuicTransportConfig {
 }
 
 pub async fn bind(key: SecretKey, config: &EndpointConfig) -> Result<Endpoint, EndpointError> {
+    bind_inner(key, config, false).await
+}
+
+/// An endpoint that accepts any certificate from a relay: the network tier's relay has a self-signed one (tests only).
+#[cfg(feature = "testing")]
+pub async fn bind_trusting_relays(key: SecretKey, config: &EndpointConfig) -> Result<Endpoint, EndpointError> {
+    bind_inner(key, config, true).await
+}
+
+async fn bind_inner(key: SecretKey, config: &EndpointConfig, trust_any_relay: bool) -> Result<Endpoint, EndpointError> {
     let mut builder = Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(key)
         .transport_config(transport())
         .relay_mode(config.relays.relay_mode()?)
         .alpns(config.alpns.clone());
+    #[cfg(feature = "testing")]
+    if trust_any_relay {
+        builder = builder.ca_tls_config(iroh_relay::tls::CaTlsConfig::insecure_skip_verify());
+    }
+    #[cfg(not(feature = "testing"))]
+    let _ = trust_any_relay;
     if let Some(addr) = config.bind {
         builder = builder.bind_addr(addr).map_err(|e| EndpointError::Bind(e.to_string()))?;
     }

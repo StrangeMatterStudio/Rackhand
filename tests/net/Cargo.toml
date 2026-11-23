@@ -11,5 +11,15 @@ publish = false
 name = "net_tests"
 path = "src/lib.rs"
 
+[dev-dependencies]
+rackhand-net = { path = "../../crates/rackhand-net", features = ["testing"] }
+rackhand-relay = { path = "../../crates/rackhand-relay" }
+rackhand-hub = { path = "../../crates/rackhand-hub" }
+iroh = { workspace = true }
+iroh-relay = { workspace = true }
+rcgen = { workspace = true }
+rustix = { version = "1", default-features = false, features = ["std", "fs", "thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "sync"] }
+
 [lints]
 workspace = true

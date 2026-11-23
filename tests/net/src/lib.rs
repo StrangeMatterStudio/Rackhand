@@ -2,7 +2,11 @@
 //! `cargo xtask ci net`.
 
 #[cfg(test)]
+mod holepunch;
+#[cfg(test)]
 mod smoke;
+#[cfg(test)]
+mod topology;
 
 /// Panics unless the test runs inside the network tier's VM.
 #[cfg(test)]

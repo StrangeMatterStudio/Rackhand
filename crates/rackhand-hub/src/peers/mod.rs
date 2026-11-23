@@ -19,6 +19,7 @@
 pub mod deadman;
 pub mod election;
 mod link;
+pub mod path_status;
 mod queries;
 pub mod relay_lists;
 mod requests;

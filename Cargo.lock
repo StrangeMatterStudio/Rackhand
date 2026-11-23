@@ -3908,6 +3908,16 @@ dependencies = [
 [[package]]
 name = "rackhand-net-tests"
 version = "0.1.0"
+dependencies = [
+ "iroh",
+ "iroh-relay",
+ "rackhand-hub",
+ "rackhand-net",
+ "rackhand-relay",
+ "rcgen",
+ "rustix",
+ "tokio",
+]
 
 [[package]]
 name = "rackhand-operator"

@@ -600,3 +600,15 @@ async fn only_the_first_sorted_healthy_hub_calls_out_for_a_dead_peer() {
     env.peers.watch(&incidents, now).await;
     assert!(peer_incidents(&env.db).iter().any(|i| i.0 == "peer.down" && i.3), "{:?}", peer_incidents(&env.db));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_peer_link_reports_the_path_it_uses() {
+    use rackhand_hub::peers::path_status::PathStatus;
+    let env = env("path").await;
+    let peer = link(&env, &env.beta).await;
+    assert!(peer.query(&query_machine()).await.is_ok());
+    // on one machine the connection moves from the relay it started on to a direct path, and the page says so
+    eventually(|| peer.path(true).status == PathStatus::Direct).await;
+    let path = peer.path(true);
+    assert_eq!((path.label, path.detail), ("direct", None));
+}

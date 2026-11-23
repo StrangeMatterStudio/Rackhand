@@ -37,6 +37,11 @@ impl PeerLink {
         PeerLink { conn }
     }
 
+    /// The path this link uses now, as the dashboard shows it.
+    pub fn path(&self, relays_configured: bool) -> super::path_status::PeerPath {
+        super::path_status::PeerPath::of(&self.conn, relays_configured)
+    }
+
     pub async fn hello(&self, hello: &PeerHello) -> Result<(), String> {
         let mut send = self.conn.open_uni().await.map_err(|e| e.to_string())?;
         wire::write_kind(&mut send, kind::HELLO).await;
