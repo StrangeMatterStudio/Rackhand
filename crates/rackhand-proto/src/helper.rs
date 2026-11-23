@@ -66,6 +66,9 @@ pub struct AuthEvent {
     pub user: String,
     pub source_ip: Option<String>,
     pub method: Option<String>,
+    /// What else the line says that a severity depends on: the uid of a new user (`uid=0`), the group a user was added to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +104,9 @@ pub struct ProcInfo {
     pub exe: String,
     pub user: String,
     pub started_at_ms: i64,
+    /// The parent's executable, for telling a container runtime's own `memfd:` programs from others (7.6.6).
+    #[serde(default)]
+    pub parent_exe: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

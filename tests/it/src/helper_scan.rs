@@ -8,15 +8,23 @@ use crate::support::Container;
 
 const ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-/// A Docker engine as far as the helper asks: a socket that answers the two read calls it makes and records every request
-/// line.
-fn fake_engine(c: &Container) {
-    let list = format!(r#"[{{"Id":"{ID}","Names":["/web"],"Image":"nginx","State":"running","Labels":{{}}}}]"#);
+/// A Docker engine as far as the helper asks: a socket that answers the read calls it makes for these `(id, name)`
+/// containers and records every request line.
+pub(crate) fn fake_engine(c: &Container, containers: &[(&str, &str)]) {
+    let list: Vec<String> = containers
+        .iter()
+        .map(|(id, name)| {
+            format!(r#"{{"Id":"{id}","Names":["/{name}"],"Image":"nginx","State":"running","Labels":{{}}}}"#)
+        })
+        .collect();
+    let list = format!("[{}]", list.join(","));
     let detail = r#"{"State":{"StartedAt":"2026-01-01T00:00:00Z"},"RestartCount":0}"#;
+    let details: String =
+        containers.iter().map(|(id, _)| format!("\"GET /containers/{id}/json \"*) body='{detail}';;\n")).collect();
     let script = format!(
         "#!/bin/sh\nread -r req\necho \"$req\" >> /var/log/fake-docker.log\ncase \"$req\" in\n\
          \"GET /containers/json?all=1 \"*) body='{list}';;\n\
-         \"GET /containers/{ID}/json \"*) body='{detail}';;\n\
+         {details}\
          *) body='{{}}';;\nesac\n\
          printf 'HTTP/1.0 200 OK\\r\\nContent-Type: application/json\\r\\n\\r\\n%s' \"$body\"\n"
     );
@@ -81,7 +89,7 @@ fn inotify_change_reported_within_seconds() {
 #[test]
 fn containers_read_only_calls() {
     let c = machine();
-    fake_engine(&c);
+    fake_engine(&c, &[(ID, "web")]);
     start_helper(&c);
     let answer = ask_json(&c, r#"{"op":"containers"}"#);
     assert_eq!(answer["items"][0]["name"], "web", "{answer}");
@@ -95,7 +103,7 @@ fn containers_read_only_calls() {
 #[test]
 fn socket_owner_and_cgroup_to_container_name() {
     let c = machine();
-    fake_engine(&c);
+    fake_engine(&c, &[(ID, "web")]);
     start_helper(&c);
     c.root(&format!("systemd-run --unit=docker-{ID} socat TCP-LISTEN:9999,reuseaddr,fork /dev/null"));
     let deadline = Instant::now() + Duration::from_secs(20);

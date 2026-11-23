@@ -6,10 +6,16 @@
 
 mod clock;
 mod compact;
+mod conn;
+pub mod conn_score;
+pub mod conn_store;
 mod events;
+mod exemptions;
 pub mod probe_checks;
+mod probe_events;
 pub mod probe_server;
 mod replay_limits;
+mod security_events;
 mod series;
 mod staging;
 mod wait;
@@ -126,6 +132,8 @@ struct Inner {
     bus: Bus,
     disk: Arc<dyn DiskSpace>,
     limits: ReplayLimits,
+    /// The outside lists connections are judged by (7.8.5); none until the hub gives it them.
+    intel: Option<crate::intel::Intel>,
     state: Mutex<State>,
     /// One compaction at a time.
     compacting: tokio::sync::Mutex<()>,
@@ -162,6 +170,13 @@ struct Machine {
     last_seen_ms: Option<i64>,
     /// What the probe said it can do in its last `Hello`.
     capabilities: Vec<i32>,
+    /// When the last `conn.overflow` was kept, and how many events of an unknown kind were dropped.
+    last_overflow_ms: i64,
+    unknown_events: u64,
+    /// What its connections need between reports: the baseline and the day's row count.
+    conn: conn::ConnState,
+    /// Where its logins have come from, and its failures (7.6.6).
+    logins: security_events::Logins,
 }
 
 /// What the counted rules (7.6.1) need from a machine's live reports.
@@ -189,6 +204,10 @@ impl Default for Machine {
             counted: Counted::default(),
             last_seen_ms: None,
             capabilities: Vec::new(),
+            last_overflow_ms: i64::MIN / 2,
+            unknown_events: 0,
+            conn: conn::ConnState::default(),
+            logins: security_events::Logins::default(),
         }
     }
 }
@@ -203,12 +222,19 @@ impl Ingest {
                 bus,
                 disk,
                 limits: ReplayLimits::default(),
+                intel: None,
                 state: Mutex::default(),
                 compacting: tokio::sync::Mutex::new(()),
                 reports_total: std::sync::atomic::AtomicU64::new(0),
                 window_ready: std::sync::atomic::AtomicBool::new(false),
             }),
         }
+    }
+
+    /// Connections are judged by these lists (before the hub serves probes).
+    pub fn with_intel(self, intel: crate::intel::Intel) -> Ingest {
+        let inner = Arc::try_unwrap(self.inner).expect("the lists are set before the ingest is shared");
+        Ingest { inner: Arc::new(Inner { intel: Some(intel), ..inner }) }
     }
 
     /// Replaces the replay limits (before the hub serves probes).
@@ -267,6 +293,11 @@ impl Ingest {
     /// The machine's sample interval, for placing samples on their tick (default 15 s).
     pub fn set_interval(&self, machine: &str, interval_ms: i64) {
         self.state().machines.entry(machine.to_string()).or_default().interval_ms = interval_ms.max(1);
+    }
+
+    /// Events a probe reported of a kind the hub doesn't know, dropped, for a machine.
+    pub fn unknown_probe_events(&self, machine: &str) -> u64 {
+        self.state().machines.get(machine).map_or(0, |m| m.unknown_events)
     }
 
     pub fn reports_total(&self) -> u64 {

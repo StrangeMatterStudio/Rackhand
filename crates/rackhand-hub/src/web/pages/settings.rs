@@ -116,9 +116,23 @@ async fn change(
 
 pub(super) async fn sources(web: &Web, ctx: &Ctx) -> Response<Body> {
     let on = |k: &str| ctx.form.get(k).is_some_and(|v| v == "on");
-    let sources = Sources { feodo: on("source_feodo"), spamhaus: on("source_spamhaus"), dbip: on("source_dbip") };
+    let sources = Sources {
+        feodo: on("source_feodo"),
+        spamhaus: on("source_spamhaus"),
+        dbip: on("source_dbip"),
+        airgapped: on("source_airgapped"),
+        ..Sources::default()
+    };
     change(web, ctx, "settings.sources", |c| {
-        c.sources = sources;
+        // what this form doesn't show keeps its value
+        let kept = c.sources;
+        c.sources = Sources {
+            maxmind: kept.maxmind,
+            reputation: kept.reputation,
+            relay_lists: kept.relay_lists,
+            n0_relays: kept.n0_relays,
+            ..sources
+        };
         serde_json::to_value(sources).unwrap_or_default()
     })
     .await

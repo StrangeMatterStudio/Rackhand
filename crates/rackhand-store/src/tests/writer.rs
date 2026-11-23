@@ -64,8 +64,60 @@ async fn multi_table_command_is_one_transaction() {
     let conn = rusqlite::Connection::open(&path).unwrap();
     let sites: i64 = conn.query_row("SELECT count(*) FROM sites", [], |r| r.get(0)).unwrap();
     assert_eq!(sites, 0, "the first table is unchanged after the second failed");
-    let unimplemented = writer.send(WriteCmd::PutConnRecords(Vec::new())).await.unwrap_err();
-    assert!(matches!(unimplemented, StoreError::Unimplemented("PutConnRecords")), "{unimplemented:?}");
+}
+
+/// 7.4.1: connection rows accumulate: a row for a key that is there is added to, and what a later row knows fills in what an
+/// earlier one didn't; a baseline tuple seen again keeps its first time.
+#[tokio::test(flavor = "multi_thread")]
+async fn connection_rows_accumulate() {
+    let path = temp("conn-rows");
+    let db = Db::open(&path).unwrap();
+    let w = db.writer();
+    let row = |count: i64, bytes: i64, verdict: Option<&str>| {
+        Row::from([
+            ("machine_id", Value::Text("m".into())),
+            ("bucket_ms", Value::Integer(300_000)),
+            ("container", Value::Text("web".into())),
+            ("exe", Value::Text("/usr/bin/curl".into())),
+            ("dest_ip", Value::Text("203.0.113.9".into())),
+            ("dest_port", Value::Integer(443)),
+            ("proto", Value::Text("tcp".into())),
+            ("dest_asn", Value::Null),
+            ("dest_country", Value::Null),
+            ("verdict", verdict.map_or(Value::Null, |v| Value::Text(v.into()))),
+            ("bytes_out", Value::Integer(bytes)),
+            ("count", Value::Integer(count)),
+        ])
+    };
+    w.send(WriteCmd::PutConnRecords(vec![row(2, 100, None)])).await.unwrap();
+    w.send(WriteCmd::PutConnRecords(vec![row(3, 50, Some("new"))])).await.unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let (count, bytes, verdict): (i64, i64, Option<String>) = conn
+        .query_row("SELECT count, bytes_out, verdict FROM conn_records", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap();
+    assert_eq!((count, bytes, verdict.as_deref()), (5, 150, Some("new")));
+    let tuple = |first: i64, last: i64| {
+        Row::from([
+            ("machine_id", Value::Text("m".into())),
+            ("container", Value::Text("web".into())),
+            ("exe", Value::Text("/usr/bin/curl".into())),
+            ("dest_asn", Value::Integer(15133)),
+            ("dest_country", Value::Text("US".into())),
+            ("dest_port", Value::Integer(443)),
+            ("proto", Value::Text("tcp".into())),
+            ("first_seen_ms", Value::Integer(first)),
+            ("last_seen_ms", Value::Integer(last)),
+            ("count", Value::Integer(1)),
+        ])
+    };
+    w.send(WriteCmd::PutConnBaseline(vec![tuple(100, 100)])).await.unwrap();
+    w.send(WriteCmd::PutConnBaseline(vec![tuple(900, 900)])).await.unwrap();
+    let (first, last, n): (i64, i64, i64) = conn
+        .query_row("SELECT first_seen_ms, last_seen_ms, count FROM conn_baseline", [], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .unwrap();
+    assert_eq!((first, last, n), (100, 900, 2));
 }
 
 #[tokio::test(flavor = "multi_thread")]

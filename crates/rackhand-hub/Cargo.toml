@@ -52,6 +52,7 @@ base64 = { workspace = true }
 zstd = { workspace = true }
 rackhand-release = { path = "../rackhand-release" }
 webpki-roots = { workspace = true }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 qrcodegen = "1"
 
 [dev-dependencies]

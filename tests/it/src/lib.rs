@@ -24,6 +24,9 @@ mod patch_it;
 #[cfg(test)]
 mod probe_hub;
 #[cfg(test)]
+#[path = "sampling_it.rs"]
+mod sampling;
+#[cfg(test)]
 mod smoke;
 #[cfg(test)]
 mod ssh_it;

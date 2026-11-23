@@ -54,7 +54,19 @@ pub fn cursor_ok(cursor: &str) -> bool {
 }
 
 fn event(at_ms: i64, kind: AuthKind, user: &str, ip: Option<&str>, method: Option<&str>) -> AuthEvent {
-    AuthEvent { at_ms, kind, user: user.into(), source_ip: ip.map(str::to_string), method: method.map(str::to_string) }
+    AuthEvent {
+        at_ms,
+        kind,
+        user: user.into(),
+        source_ip: ip.map(str::to_string),
+        method: method.map(str::to_string),
+        detail: None,
+    }
+}
+
+fn with_detail(mut e: AuthEvent, detail: Option<String>) -> AuthEvent {
+    e.detail = detail;
+    e
 }
 
 /// The word after `marker` in `text`.
@@ -108,16 +120,26 @@ pub fn parse_message(program: &str, message: &str, at_ms: i64) -> Option<AuthEve
         }
         "useradd" | "adduser" => {
             // `new user: name=eve, UID=1001, GID=1001, home=/home/eve, shell=/bin/bash`
-            let name = m.strip_prefix("new user: name=")?.split(',').next()?;
-            Some(event(at_ms, AuthKind::UserAdded, name, None, None))
+            let rest = m.strip_prefix("new user: name=")?;
+            let name = rest.split(',').next()?;
+            let uid = rest.split(',').find_map(|p| p.trim().strip_prefix("UID=")).map(|u| format!("uid={u}"));
+            Some(with_detail(event(at_ms, AuthKind::UserAdded, name, None, None), uid))
         }
         "usermod" | "gpasswd" | "groupmod" | "groupadd" => {
             // `add 'eve' to group 'sudo'`, `user eve added by root to group sudo`
             if let Some(rest) = m.strip_prefix("add '") {
-                return Some(event(at_ms, AuthKind::GroupChanged, rest.split('\'').next()?, None, None));
+                let group = rest.split_once("to group '").and_then(|g| g.1.split('\'').next()).map(str::to_string);
+                return Some(with_detail(
+                    event(at_ms, AuthKind::GroupChanged, rest.split('\'').next()?, None, None),
+                    group,
+                ));
             }
             if let Some(rest) = m.strip_prefix("user ") {
-                return Some(event(at_ms, AuthKind::GroupChanged, rest.split_whitespace().next()?, None, None));
+                let group = rest.split_once(" group ").and_then(|g| g.1.split_whitespace().next()).map(str::to_string);
+                return Some(with_detail(
+                    event(at_ms, AuthKind::GroupChanged, rest.split_whitespace().next()?, None, None),
+                    group,
+                ));
             }
             if let Some(rest) = m.strip_prefix("new group: name=") {
                 return Some(event(at_ms, AuthKind::GroupChanged, rest.split(',').next()?, None, None));
@@ -288,8 +310,8 @@ not json at all
                 event(at + 2000, AuthKind::SshFailed, "guest", Some("198.51.100.9"), None),
                 event(at + 3000, AuthKind::Sudo, "alice", None, None),
                 event(at + 4000, AuthKind::Su, "alice", None, None),
-                event(at + 5000, AuthKind::UserAdded, "eve", None, None),
-                event(at + 6000, AuthKind::GroupChanged, "eve", None, None),
+                with_detail(event(at + 5000, AuthKind::UserAdded, "eve", None, None), Some("uid=1001".into())),
+                with_detail(event(at + 6000, AuthKind::GroupChanged, "eve", None, None), Some("sudo".into())),
             ]
         );
         assert_eq!(cursor.as_deref(), Some("s=a;i=8"), "the last entry read, matched or not");

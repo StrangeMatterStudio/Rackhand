@@ -7,6 +7,7 @@ use rackhand_probe::collect::{self, Config, RootHost, SelfUse, Stamp};
 
 const USAGE: &str = "usage: rackhand-probe --version
        rackhand-probe collect --once --json [--root <dir>] [--interval-ms <n>]
+       rackhand-probe security [--seconds <n>] [--every-ms <n>] [--socket <path>]
        rackhand-probe run [--config <probe.toml>] [--data-dir <dir>] [--state-file <path>] [--root <dir>]
        rackhand-probe helper [--socket <path>]
        rackhand-probe enroll --ticket <ticket> --token <token> [--monitor] [--remote] [--role <role>]
@@ -31,6 +32,8 @@ fn main() -> ExitCode {
         }
         Some("collect") => collect_once(&args[1..]),
         Some("run") => run(&args[1..]),
+        #[cfg(unix)]
+        Some("security") => security(&args[1..]),
         #[cfg(unix)]
         Some("enroll") => enroll(&args[1..]),
         #[cfg(unix)]
@@ -73,6 +76,69 @@ fn collect_once(args: &[String]) -> ExitCode {
     let at = Stamp { wall_ms: now, mono_ms: start.elapsed().as_millis() as i64 };
     let second = collect::collect_at(&host, Some(&first.snapshot), at, &cfg, self_use);
     println!("{}", collect::to_json(&second, now));
+    ExitCode::SUCCESS
+}
+
+/// `security`: the sampling capture for a few seconds, printed as one JSON object: the connection records and the events it
+/// would report (7.7.3). It asks the helper at `--socket` for who owns each socket.
+#[cfg(unix)]
+fn security(args: &[String]) -> ExitCode {
+    let (mut seconds, mut every_ms) = (10u64, 5000u64);
+    let mut socket = rackhand_probe::helper::SOCKET.to_string();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let Some(v) = it.next() else { return usage() };
+        match (a.as_str(), v.parse::<u64>()) {
+            ("--seconds", Ok(n)) => seconds = n,
+            ("--every-ms", Ok(n)) => every_ms = n.max(100),
+            ("--socket", _) => socket = v.clone(),
+            _ => return usage(),
+        }
+    }
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("rackhand-probe: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let helper = rackhand_probe::helper::client::HelperClient::new(socket, env!("CARGO_PKG_VERSION"));
+    let out = runtime.block_on(async move {
+        let host = RootHost::system();
+        let mut sampler = rackhand_probe::security::Sampler::default();
+        let mut pending = rackhand_probe::security::Pending::default();
+        let end = std::time::Instant::now() + Duration::from_secs(seconds);
+        let (mut records, mut events) = (Vec::new(), Vec::new());
+        loop {
+            let (seen, found) = sampler.tick(&host, Some(&helper), now_ms()).await;
+            pending.add(seen, found);
+            let (r, e) = pending.take(now_ms());
+            records.extend(r);
+            events.extend(e);
+            if std::time::Instant::now() >= end {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(every_ms)).await;
+        }
+        let records: Vec<serde_json::Value> = records
+            .iter()
+            .map(|c| {
+                let ip = match c.dest_ip.len() {
+                    4 => std::net::IpAddr::from(<[u8; 4]>::try_from(&c.dest_ip[..]).unwrap_or_default()).to_string(),
+                    16 => std::net::IpAddr::from(<[u8; 16]>::try_from(&c.dest_ip[..]).unwrap_or_default()).to_string(),
+                    _ => String::new(),
+                };
+                serde_json::json!({
+                    "container": c.container, "exe": c.exe, "dest_ip": ip, "dest_port": c.dest_port,
+                    "count": c.count, "user": c.user, "folded": c.folded,
+                })
+            })
+            .collect();
+        let events: Vec<serde_json::Value> =
+            events.iter().map(|e| serde_json::json!({ "kind": e.kind, "fields": e.fields })).collect();
+        serde_json::json!({ "connections": records, "events": events })
+    });
+    println!("{out}");
     ExitCode::SUCCESS
 }
 

@@ -193,7 +193,12 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let csrf_key: [u8; 32] = secret(&vault, "csrf_key")?.try_into().map_err(|_| "csrf_key is malformed")?;
     let audit = Audit::new(db.writer());
     let bus = Bus::new();
-    let ingest = Ingest::new(db.clone(), bus.clone(), Arc::new(Statvfs(config.data_dir.clone())));
+    // the outside lists (7.8.5): the last good downloads at once, then refreshed on their schedules from the settings as they
+    // are at the time (a source turned off, or air-gapped mode, makes no request)
+    let intel = rackhand_hub::intel::Intel::new(Some(config.data_dir.join("intel")));
+    intel.load_cache(now_ms());
+    let ingest =
+        Ingest::new(db.clone(), bus.clone(), Arc::new(Statvfs(config.data_dir.clone()))).with_intel(intel.clone());
     ingest.start(now_ms()).await.map_err(|e| e.to_string())?;
     let incidents = rackhand_hub::incidents::Incidents::new(db.clone(), ingest.clone(), bus.clone());
     let transports = notifiers(&db, &vault, None).unwrap_or_else(|e| {
@@ -209,6 +214,12 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         Ok(_) => {}
         Err(e) => tracing::warn!(error = %e, "built-in runbooks not seeded"),
     }
+    let sources_db = db.clone();
+    rackhand_hub::intel::spawn_refresh(
+        intel.clone(),
+        Arc::new(rackhand_hub::intel::fetch::Https),
+        Arc::new(move || rackhand_hub::library::config::hub(&sources_db).map(|c| c.sources).unwrap_or_default()),
+    );
     let (host_keys, host_alerts) = rackhand_hub::ssh::hostkeys::HostKeys::new(db.clone());
     let mirror = rackhand_hub::library::mirror::Mirror {
         db: db.clone(),

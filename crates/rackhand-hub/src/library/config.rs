@@ -16,11 +16,33 @@ pub struct Sources {
     pub feodo: bool,
     pub spamhaus: bool,
     pub dbip: bool,
+    /// Air-gapped mode: the hub makes no outside request at all (D65).
+    #[serde(default)]
+    pub airgapped: bool,
+    /// Off unless enabled: MaxMind GeoLite2 (own license key), online reputation lookups (send destinations out), relay
+    /// lists (URLs the admin adds) and n0's public relays and DNS discovery (7.8.5).
+    #[serde(default)]
+    pub maxmind: bool,
+    #[serde(default)]
+    pub reputation: bool,
+    #[serde(default)]
+    pub relay_lists: bool,
+    #[serde(default)]
+    pub n0_relays: bool,
 }
 
 impl Default for Sources {
     fn default() -> Self {
-        Sources { feodo: true, spamhaus: true, dbip: true }
+        Sources {
+            feodo: true,
+            spamhaus: true,
+            dbip: true,
+            airgapped: false,
+            maxmind: false,
+            reputation: false,
+            relay_lists: false,
+            n0_relays: false,
+        }
     }
 }
 

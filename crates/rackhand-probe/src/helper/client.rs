@@ -45,6 +45,45 @@ impl HelperClient {
         .map_err(|_| "the helper didn't answer".to_string())?
     }
 
+    /// The owners of these socket inodes (executable, user, container name).
+    pub async fn socket_owners(&self, inodes: &[u64]) -> Result<Vec<rackhand_proto::helper::SocketOwner>, String> {
+        match self.request(&HelperRequest::SocketOwners { inodes: inodes.to_vec() }).await? {
+            HelperResponse::SocketOwners { owners } => Ok(owners),
+            HelperResponse::Error { code, message } => Err(format!("{code}: {message}")),
+            _ => Err("not a socket-owners answer".into()),
+        }
+    }
+
+    /// The critical files' hashes (7.8.4).
+    pub async fn hash_files(&self) -> Result<Vec<rackhand_proto::helper::FileHash>, String> {
+        match self.request(&HelperRequest::HashFiles).await? {
+            HelperResponse::Hashes { files } => Ok(files),
+            HelperResponse::Error { code, message } => Err(format!("{code}: {message}")),
+            _ => Err("not a hashes answer".into()),
+        }
+    }
+
+    /// The authentication events after `cursor` (none the first time), and the cursor to ask from next.
+    pub async fn auth_events_since(
+        &self,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<rackhand_proto::helper::AuthEvent>, String), String> {
+        match self.request(&HelperRequest::AuthEventsSince { cursor: cursor.map(str::to_string) }).await? {
+            HelperResponse::AuthEvents { events, cursor } => Ok((events, cursor)),
+            HelperResponse::Error { code, message } => Err(format!("{code}: {message}")),
+            _ => Err("not an auth-events answer".into()),
+        }
+    }
+
+    /// The processes running from a temporary directory or a deleted file.
+    pub async fn process_scan(&self) -> Result<Vec<rackhand_proto::helper::ProcInfo>, String> {
+        match self.request(&HelperRequest::ProcessScan).await? {
+            HelperResponse::Processes { items } => Ok(items),
+            HelperResponse::Error { code, message } => Err(format!("{code}: {message}")),
+            _ => Err("not a process-scan answer".into()),
+        }
+    }
+
     /// The helper's version, then its containers and updates when it matches; nothing when it doesn't answer.
     pub async fn collect(&self) -> HelperData {
         match self.request(&HelperRequest::Ping).await {

@@ -12,4 +12,6 @@ pub mod probe_check;
 pub mod run;
 pub mod runcmd;
 #[cfg(unix)]
+pub mod security;
+#[cfg(unix)]
 pub mod uninstall;

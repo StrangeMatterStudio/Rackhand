@@ -55,7 +55,10 @@ pub fn scan(proc: &Path, passwd: &str, boot_ms: i64, ticks_per_second: i64) -> V
         let (ppid, ticks) =
             std::fs::read_to_string(dir.join("stat")).ok().and_then(|s| stat_fields(&s)).unwrap_or((0, 0));
         let started = boot_ms + (ticks as i64) * 1000 / ticks_per_second.max(1);
-        out.push(ProcInfo { pid, ppid, exe, user: user_name(passwd, uid), started_at_ms: started });
+        let parent_exe = std::fs::read_link(proc.join(ppid.to_string()).join("exe"))
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        out.push(ProcInfo { pid, ppid, exe, user: user_name(passwd, uid), started_at_ms: started, parent_exe });
     }
     out.sort_by_key(|p| p.pid);
     out.truncate(MAX_PROCESSES);

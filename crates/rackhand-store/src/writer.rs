@@ -808,12 +808,86 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
         WriteCmd::PutNotification(row) => upsert_one(conn, "notifications", "id", row),
         // a bucket row is the whole state of its bucket
         WriteCmd::UpdateBaselines(rows) => replace_rows(conn, "baseline_buckets", rows),
+        WriteCmd::PutConnRecords(rows) => put_conn_records(conn, rows),
+        WriteCmd::PutConnBaseline(rows) => put_conn_baseline(conn, rows),
         WriteCmd::PutPolicy(row) => upsert_one(conn, "policies", "id", row),
         WriteCmd::PutQuarantineRule(row) => upsert_one(conn, "quarantine_rules", "id", row),
         WriteCmd::PutScheduleState(row) => replace_one(conn, "schedule_state", row),
         WriteCmd::PutWindow(row) => replace_one(conn, "windows", row),
         other => Err(StoreError::Unimplemented(other.name())),
     }
+}
+
+/// Connection rows (7.4.1): a row for a key that is there is added to, so a bucket's counts and bytes accumulate over its
+/// reports; what a later row knows (the verdict, the ASN and country) fills in what an earlier one didn't.
+fn put_conn_records(conn: &mut Connection, rows: Vec<Row>) -> Result<usize, StoreError> {
+    const COLS: [&str; 12] = [
+        "machine_id",
+        "bucket_ms",
+        "container",
+        "exe",
+        "dest_ip",
+        "dest_port",
+        "proto",
+        "dest_asn",
+        "dest_country",
+        "verdict",
+        "bytes_out",
+        "count",
+    ];
+    let tx = conn.transaction()?;
+    let mut n = 0;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO conn_records (machine_id, bucket_ms, container, exe, dest_ip, dest_port, proto, dest_asn, dest_country,
+                                       verdict, bytes_out, count)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT (machine_id, bucket_ms, container, exe, dest_ip, dest_port, proto) DO UPDATE SET
+               bytes_out = bytes_out + excluded.bytes_out, count = count + excluded.count,
+               dest_asn = coalesce(excluded.dest_asn, dest_asn), dest_country = coalesce(excluded.dest_country, dest_country),
+               verdict = coalesce(excluded.verdict, verdict)",
+        )?;
+        for row in &rows {
+            let values: Vec<Value> = COLS.iter().map(|c| row.get(c).cloned().unwrap_or(Value::Null)).collect();
+            n += stmt.execute(rusqlite::params_from_iter(values.iter()))?;
+        }
+    }
+    tx.commit()?;
+    Ok(n)
+}
+
+/// Baseline rows: a tuple seen again keeps its first time, moves its last, and adds its count.
+fn put_conn_baseline(conn: &mut Connection, rows: Vec<Row>) -> Result<usize, StoreError> {
+    const COLS: [&str; 10] = [
+        "machine_id",
+        "container",
+        "exe",
+        "dest_asn",
+        "dest_country",
+        "dest_port",
+        "proto",
+        "first_seen_ms",
+        "last_seen_ms",
+        "count",
+    ];
+    let tx = conn.transaction()?;
+    let mut n = 0;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO conn_baseline (machine_id, container, exe, dest_asn, dest_country, dest_port, proto, first_seen_ms,
+                                         last_seen_ms, count)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT (machine_id, container, exe, dest_asn, dest_country, dest_port, proto) DO UPDATE SET
+               first_seen_ms = min(first_seen_ms, excluded.first_seen_ms), last_seen_ms = max(last_seen_ms, excluded.last_seen_ms),
+               count = count + excluded.count",
+        )?;
+        for row in &rows {
+            let values: Vec<Value> = COLS.iter().map(|c| row.get(c).cloned().unwrap_or(Value::Null)).collect();
+            n += stmt.execute(rusqlite::params_from_iter(values.iter()))?;
+        }
+    }
+    tx.commit()?;
+    Ok(n)
 }
 
 fn tier_from(tier: u8) -> Result<crate::series::chunk::Tier, StoreError> {

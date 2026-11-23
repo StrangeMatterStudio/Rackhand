@@ -167,3 +167,7 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-23 | T64 done: `provision-vm`, `provision-lxc` and `run install-guest` (D113, D114); the live pass is L4 |
 | 2026-11-23 | T65 done: jobs after a hub restart are adopted or interrupted (D115); the window gate on the rules |
 | 2026-11-23 | T66 done: the helper's file hashes, authentication events, socket owners, container names and process scan (D116) |
+| 2026-11-23 | T67 done: the sampling capture, its events and capabilities (D117) |
+| 2026-11-23 | T69 done: threat lists and GeoIP/ASN, their refresh, air-gapped mode and freshness (D118) |
+| 2026-11-23 | T70 done: connection scoring and storage (D119) |
+| 2026-11-23 | T71 done: security events, severities and exemptions (D120) |

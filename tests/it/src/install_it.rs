@@ -656,3 +656,199 @@ mod level {
         assert_eq!(machine_column(&hub, &id, "access"), "managed");
     }
 }
+
+/// Connections end to end (plan T70, AC14, AC55): a probe in a container, a hub with a threat list, and a destination the
+/// container really connects to.
+mod conn {
+    use std::net::TcpListener;
+
+    use super::*;
+
+    /// A hub whose Feodo list names `listed`, as a stored download would, and with its admin signed in.
+    fn hub_listing(name: &str, listed: &str) -> Hub {
+        let mut hub = Hub::init(name);
+        let dir = hub.data.join("intel");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("feodo.bin"), format!("{listed}\n")).unwrap();
+        hub.start();
+        hub.first_run();
+        hub
+    }
+
+    fn sql(hub: &Hub, statement: &str) {
+        let c = rusqlite::Connection::open(hub.data.join("hub.db")).unwrap();
+        c.busy_timeout(Duration::from_secs(10)).unwrap();
+        c.execute_batch(statement).unwrap();
+    }
+
+    fn count(hub: &Hub, query: &str) -> i64 {
+        let c = rusqlite::Connection::open(hub.data.join("hub.db")).unwrap();
+        c.busy_timeout(Duration::from_secs(10)).unwrap();
+        c.query_row(query, [], |r| r.get(0)).unwrap()
+    }
+
+    /// The container holds a connection open to `ip:port` for a while.
+    fn connect_out(c: &Container, ip: &str, port: u16) {
+        let script = format!("setsid bash -c 'exec 3<>/dev/tcp/{ip}/{port}; sleep 300' >/dev/null 2>&1 &");
+        ok(&c.root(&script));
+    }
+
+    fn listen() -> (TcpListener, u16) {
+        let l = TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        (l, port)
+    }
+
+    /// Serves what connects to `l` until the test ends, holding each connection open.
+    fn hold(l: TcpListener) {
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for s in l.incoming().flatten() {
+                held.push(s);
+            }
+        });
+    }
+
+    #[test]
+    fn threat_listed_destination_critical_within_60s() {
+        let release = Release::new("conn-bad", "current", false);
+        let c = Container::start_systemd_with("debian-install", &[]);
+        let (_, gateway) = c.ip_and_gateway();
+        let hub = hub_listing("conn-bad", &gateway);
+        let (id, token) = add_machine(&hub, Access::Monitor, &[]);
+        // the destination is the hub's own side of the bridge, a private address: the policy watches those
+        sql(&hub, "INSERT INTO policies (id, name, connections, watch_internal) VALUES ('watch', 'watch', 'full', 1)");
+        sql(&hub, &format!("UPDATE machines SET policy_id = 'watch' WHERE id = '{id}'"));
+        ok(&install(&c, &hub, &release, &release.script(None), &token, "--monitor"));
+        let (listener, port) = listen();
+        hold(listener);
+        connect_out(&c, &gateway, port);
+        let took = within(Duration::from_secs(90), "a conn.known_bad event", || {
+            count(&hub, "SELECT count(*) FROM events WHERE kind = 'conn.known_bad' AND severity = 'critical'") > 0
+        });
+        eprintln!("critical after {took:?}");
+        let data: String = rusqlite::Connection::open(hub.data.join("hub.db"))
+            .unwrap()
+            .query_row("SELECT data FROM events WHERE kind = 'conn.known_bad' LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            data.contains(&gateway) && data.contains("\"exe\":\"/usr/bin/"),
+            "names the destination and the program: {data}"
+        );
+        assert!(count(&hub, "SELECT count(*) FROM incidents WHERE kind = 'conn.known_bad'") >= 0);
+        assert!(
+            count(&hub, "SELECT count(*) FROM conn_records WHERE verdict = 'known_bad'") >= 1,
+            "and the row says so"
+        );
+    }
+
+    #[test]
+    fn desktop_summary_and_off_modes_end_to_end() {
+        let release = Release::new("conn-modes", "current", false);
+        let c = Container::start_systemd_with("debian-install", &[]);
+        let (_, gateway) = c.ip_and_gateway();
+        let hub = hub_listing("conn-modes", &gateway);
+        let (id, token) = add_machine(&hub, Access::Monitor, &["desktop"]);
+        sql(&hub, "INSERT INTO policies (id, name, watch_internal) VALUES ('watch', 'watch', 1)");
+        // a policy that watches private destinations and says nothing of connections is `full`: this one is the desktop's own
+        sql(&hub, "UPDATE policies SET connections = 'summary' WHERE id = 'watch'");
+        sql(&hub, &format!("UPDATE machines SET policy_id = 'watch' WHERE id = '{id}'"));
+        ok(&install(&c, &hub, &release, &release.script(None), &token, "--monitor"));
+        let (listener, port) = listen();
+        hold(listener);
+        connect_out(&c, &gateway, port);
+        within(Duration::from_secs(90), "the threat-listed destination named", || {
+            count(&hub, "SELECT count(*) FROM events WHERE kind = 'conn.known_bad'") > 0
+        });
+        within(Duration::from_secs(30), "a summary row", || count(&hub, "SELECT count(*) FROM conn_records") > 0);
+        let stored: String = rusqlite::Connection::open(hub.data.join("hub.db"))
+            .unwrap()
+            .query_row(
+                "SELECT group_concat(dest_ip || '|' || exe || '|' || container, ';') FROM conn_records",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!stored.contains(&gateway) && !stored.contains("bash"), "only counts per ASN: {stored}");
+        // off: nothing is stored from then on, and the threat list still speaks
+        sql(
+            &hub,
+            "DELETE FROM conn_records; UPDATE policies SET connections = 'off' WHERE id = 'watch'; DELETE FROM events",
+        );
+        connect_out(&c, &gateway, port);
+        within(Duration::from_secs(90), "the destination named again", || {
+            count(&hub, "SELECT count(*) FROM events WHERE kind = 'conn.known_bad'") > 0
+        });
+        assert_eq!(count(&hub, "SELECT count(*) FROM conn_records"), 0, "nothing stored with off");
+    }
+}
+
+/// Security events end to end (plan T71, AC15, AC16): a probe in a container reports what the helper sees, and the hub gives
+/// each its severity.
+mod security {
+    use super::*;
+
+    fn events(hub: &Hub, kind: &str) -> Vec<(String, String)> {
+        let c = rusqlite::Connection::open(hub.data.join("hub.db")).unwrap();
+        c.busy_timeout(Duration::from_secs(10)).unwrap();
+        let mut s = c.prepare("SELECT severity, data FROM events WHERE kind = ?1").unwrap();
+        s.query_map([kind], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect()
+    }
+
+    fn machine(name: &str) -> (Hub, Release, Container) {
+        let release = Release::new(name, "current", false);
+        let c = Container::start_systemd_with("debian-install", &[]);
+        // a user with a `.ssh` directory before the helper starts, so that a change in it is watched
+        ok(&c.root("useradd -m u1 && mkdir -p /home/u1/.ssh && chown u1:u1 /home/u1/.ssh && chmod 700 /home/u1/.ssh"));
+        let hub = hub(name);
+        let (_, token) = add_machine(&hub, Access::Monitor, &[]);
+        ok(&install(&c, &hub, &release, &release.script(None), &token, "--monitor"));
+        (hub, release, c)
+    }
+
+    #[test]
+    fn exec_from_tmp_critical_container_start_nothing() {
+        let (hub, _release, c) = machine("sec-exec");
+        within(Duration::from_secs(60), "the probe reporting", || hub.metrics().contains("machine=\"web1\""));
+        // let the first looks learn what is there
+        std::thread::sleep(Duration::from_secs(20));
+        ok(&c.root("cp /bin/sleep /tmp/evil && systemd-run --unit=evil /tmp/evil 600"));
+        within(Duration::from_secs(120), "proc.exec_from_tmp critical", || {
+            events(&hub, "proc.exec_from_tmp").iter().any(|e| e.0 == "critical" && e.1.contains("/tmp/evil"))
+        });
+        // the event names the program, and no incident is opened for a thing that isn't one
+        assert_eq!(events(&hub, "proc.exec_from_tmp").len(), 1, "once");
+        // starting a container, or any other ordinary process, is nothing
+        assert_eq!(events(&hub, "port.new_listener").len(), 0);
+    }
+
+    #[test]
+    fn authorized_keys_added_outside_job_critical_new_ip_login_warning() {
+        let (hub, _release, c) = machine("sec-keys");
+        within(Duration::from_secs(60), "the probe reporting", || hub.metrics().contains("machine=\"web1\""));
+        std::thread::sleep(Duration::from_secs(20));
+        // a key added to a person's file, outside any job
+        ok(&c.root("echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPLANTEDKEYPLANTEDKEYPLANTEDKEYPLANTED u1@evil' > /home/u1/.ssh/authorized_keys"));
+        within(Duration::from_secs(120), "auth.keys_changed critical", || {
+            events(&hub, "auth.keys_changed")
+                .iter()
+                .any(|e| e.0 == "critical" && e.1.contains("/home/u1/.ssh/authorized_keys"))
+        });
+        let changed = events(&hub, "file.changed");
+        assert!(
+            changed.iter().all(|e| !e.1.contains("PLANTEDKEY")),
+            "the probe never carries a file's contents: {changed:?}"
+        );
+        // a login from a source never seen, after one that teaches the machine its sources
+        ok(&c.root("logger -t sshd 'Accepted publickey for u1 from 192.0.2.50 port 40000 ssh2: ED25519 SHA256:x'"));
+        within(Duration::from_secs(60), "the first login stored", || !events(&hub, "auth.login").is_empty());
+        ok(&c.root("logger -t sshd 'Accepted publickey for u1 from 198.51.100.77 port 40001 ssh2: ED25519 SHA256:x'"));
+        within(Duration::from_secs(60), "a login from a new source", || {
+            events(&hub, "auth.login_new_source").iter().any(|e| e.0 == "warning" && e.1.contains("198.51.100.77"))
+        });
+        assert!(
+            events(&hub, "auth.login_new_source").iter().all(|e| !e.1.contains("192.0.2.50")),
+            "the first source is learned, not reported"
+        );
+    }
+}

@@ -503,3 +503,144 @@ async fn polled_points_in_the_recent_window() {
     );
     assert_eq!(ingest.last_seen(M1), None, "polled points aren't a probe's report");
 }
+
+/// D91, 7.3.2: the events a probe reports in a report are stored (as the hub's own events, with the severity the hub
+/// gives the kind and the fields in `data`) before compaction deletes the frame; a kind the hub doesn't know is counted
+/// and dropped; `conn.overflow` is kept once an hour.
+#[tokio::test(flavor = "multi_thread")]
+async fn probe_events_stored_before_compaction() {
+    use rackhand_proto::probe::ProbeEvent;
+    let env = Env::new("probe-events");
+    let ingest = env.ingest();
+    hello(&ingest, M1, 4).await;
+    let event = |kind: &str, at: i64, fields: &[(&str, &str)]| ProbeEvent {
+        kind: kind.into(),
+        at_ms: at,
+        fields: fields.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+    };
+    let mut r = report(4, 1, T0, 1.0);
+    r.events = vec![
+        event("proc.exec_from_tmp", T0, &[("exe", "/tmp/evil"), ("pid", "77")]),
+        event("port.new_listener", T0, &[("port", "4444")]),
+        event("conn.overflow", T0, &[("folded_tuples", "100")]),
+        event("kernel.panic", T0, &[]),
+        event("x.y", T0, &[]),
+    ];
+    live(&ingest, M1, r, T0).await;
+    // before any compaction: the report is still only in staging
+    assert_eq!(env.count("SELECT count(*) FROM series_chunks"), 0);
+    assert_eq!(env.events("proc.exec_from_tmp"), vec![("critical".to_string(), M1.to_string())]);
+    assert_eq!(env.events("port.new_listener"), vec![("warning".to_string(), M1.to_string())]);
+    assert_eq!(env.events("conn.overflow"), vec![("info".to_string(), M1.to_string())]);
+    assert_eq!(
+        env.count("SELECT count(*) FROM events WHERE kind IN ('kernel.panic', 'x.y')"),
+        0,
+        "an unknown kind is dropped"
+    );
+    assert_eq!(ingest.unknown_probe_events(M1), 2, "and counted");
+    let data: String = env
+        .db
+        .readers()
+        .with(|c| c.query_row("SELECT data FROM events WHERE kind = 'proc.exec_from_tmp'", [], |r| r.get(0)))
+        .unwrap();
+    let data: serde_json::Value = serde_json::from_str(&data).unwrap();
+    assert_eq!((data["exe"].as_str(), data["pid"].as_str()), (Some("/tmp/evil"), Some("77")));
+    // a second overflow within the hour isn't kept, one after it is
+    let mut r2 = report(4, 2, T0 + 15_000, 1.0);
+    r2.events = vec![event("conn.overflow", T0 + 15_000, &[])];
+    live(&ingest, M1, r2, T0 + 15_000).await;
+    let mut r3 = report(4, 3, T0 + 61 * MIN, 1.0);
+    r3.events = vec![event("conn.overflow", T0 + 61 * MIN, &[])];
+    live(&ingest, M1, r3, T0 + 61 * MIN).await;
+    assert_eq!(env.events("conn.overflow").len(), 2);
+}
+
+/// 7.3.2, 7.6.5, AC14, AC55: a report's connection records are scored and stored as the report arrives, before compaction
+/// deletes its frame: a threat-listed destination is a critical event naming it, a machine's records are kept by its
+/// policy (full rows, only counts per ASN, or nothing), and the baseline is learned.
+#[tokio::test(flavor = "multi_thread")]
+async fn connections_scored_and_stored_by_policy() {
+    use rackhand_proto::probe::{ConnRecord, Proto};
+    let env = Env::new("connections");
+    let intel = crate::intel::Intel::default();
+    let source = |id: &str| crate::intel::sources(T0).into_iter().find(|s| s.id == id).unwrap();
+    intel.load(&source("feodo"), b"203.0.113.9\n", T0).unwrap();
+    let ingest = env.ingest().with_intel(intel);
+    {
+        let c = rusqlite::Connection::open(&env.path).unwrap();
+        c.execute("INSERT INTO sites (id, name, timezone, is_local) VALUES ('s', 'home', 'UTC', 1)", []).unwrap();
+        c.execute("INSERT INTO policies (id, name, connections) VALUES ('quiet', 'desktops', 'summary')", []).unwrap();
+        c.execute("INSERT INTO policies (id, name, connections) VALUES ('none', 'private', 'off')", []).unwrap();
+        for (id, policy) in [(M1, None), (M2, Some("quiet"))] {
+            c.execute(
+                "INSERT INTO machines (id, site_id, name, kind, state, policy_id) VALUES (?1, 's', ?1, 'linux', 'enrolled', ?2)",
+                rusqlite::params![id, policy],
+            )
+            .unwrap();
+        }
+        c.execute("INSERT INTO machines (id, site_id, name, kind, state, policy_id) VALUES ('01JD0000000000000000000003', 's', 'off', 'linux', 'enrolled', 'none')", []).unwrap();
+    }
+    let record = |ip: [u8; 4], port: u32| ConnRecord {
+        container: "web".into(),
+        exe: "/usr/bin/curl".into(),
+        dest_ip: ip.to_vec(),
+        dest_port: port,
+        proto: Proto::Tcp as i32,
+        count: 2,
+        bytes: 100,
+        pid: 7,
+        user: "alice".into(),
+        folded: false,
+    };
+    for (machine, epoch) in [(M1, 1), (M2, 2), ("01JD0000000000000000000003", 3)] {
+        hello(&ingest, machine, epoch).await;
+        let mut r = report(epoch, 1, T0, 1.0);
+        r.connections =
+            vec![record([203, 0, 113, 9], 8080), record([93, 184, 216, 34], 443), record([10, 0, 0, 5], 22)];
+        live(&ingest, machine, r, T0).await;
+    }
+    // every machine, whatever its policy, is told of the threat-listed destination, naming it and the container
+    for machine in [M1, M2, "01JD0000000000000000000003"] {
+        let bad: Vec<(String, String)> = env
+            .db
+            .readers()
+            .with(|c| {
+                let mut st =
+                    c.prepare("SELECT severity, data FROM events WHERE kind = 'conn.known_bad' AND machine_id = ?1")?;
+                st.query_map([machine], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
+            })
+            .unwrap();
+        assert_eq!(bad.len(), 1, "{machine}");
+        assert_eq!(bad[0].0, "critical");
+        assert!(bad[0].1.contains("203.0.113.9") && bad[0].1.contains("\"container\":\"web\""), "{}", bad[0].1);
+    }
+    // full: a row for the listed one, the public one and (private skipped) nothing for 10.0.0.5; summary: counts per ASN only;
+    // off: nothing at all
+    let rows = |machine: &str| -> Vec<(String, i64, String)> {
+        env.db
+            .readers()
+            .with(|c| {
+                let mut st = c.prepare("SELECT dest_ip, count, coalesce(verdict, '') FROM conn_records WHERE machine_id = ?1 ORDER BY dest_ip")?;
+                st.query_map([machine], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect()
+            })
+            .unwrap()
+    };
+    let full = rows(M1);
+    assert_eq!(full.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), ["203.0.113.9", "93.184.216.34"], "{full:?}");
+    assert_eq!(full[0].2, "known_bad");
+    assert_eq!(
+        rows(M2).iter().map(|r| r.0.as_str()).collect::<Vec<_>>(),
+        ["AS0"],
+        "counts only, no address: {:?}",
+        rows(M2)
+    );
+    assert!(rows("01JD0000000000000000000003").is_empty(), "off stores nothing");
+    // only the full machine learns a baseline, and not from the bad destination
+    assert_eq!(env.count("SELECT count(*) FROM conn_baseline WHERE machine_id = '01JD0000000000000000000001'"), 1);
+    assert_eq!(env.count("SELECT count(*) FROM conn_baseline WHERE machine_id != '01JD0000000000000000000001'"), 0);
+    // the same bucket again adds to its rows
+    let mut again = report(1, 2, T0 + 15_000, 1.0);
+    again.connections = vec![record([93, 184, 216, 34], 443)];
+    live(&ingest, M1, again, T0 + 15_000).await;
+    assert_eq!(rows(M1).iter().find(|r| r.0 == "93.184.216.34").unwrap().1, 4, "2 and 2");
+}

@@ -118,6 +118,9 @@ struct Sampled {
     collection: Collection,
     sampled_at_ms: i64,
     helper: HelperData,
+    /// The connections and the new listeners and temp executions seen since the last collection.
+    connections: Vec<rackhand_proto::probe::ConnRecord>,
+    security_events: Vec<ProbeEvent>,
 }
 
 /// Aborts the replay task when the session ends.
@@ -350,6 +353,7 @@ impl Daemon {
             Some(_) => {}
             None => self.mismatch_reported = false,
         }
+        events.extend(sampled.security_events.iter().cloned());
         let containers = h
             .containers
             .iter()
@@ -380,7 +384,7 @@ impl Daemon {
             containers,
             updates,
             events,
-            ..Report::default()
+            connections: sampled.connections.clone(),
         }
     }
 
@@ -416,6 +420,20 @@ fn spawn_collector(
     settings: watch::Receiver<Settings>,
     tx: mpsc::Sender<Sampled>,
 ) {
+    // the sampling capture: the connection tables every 5 seconds, between the collections
+    let pending = Arc::new(std::sync::Mutex::new(crate::security::Pending::default()));
+    {
+        let (host, clock, helper, pending) = (host.clone(), clock.clone(), helper.clone(), pending.clone());
+        tokio::spawn(async move {
+            let mut sampler = crate::security::Sampler::default();
+            loop {
+                let now = clock.now_ms();
+                let (seen, events) = sampler.tick(host.as_ref(), helper.as_ref(), now).await;
+                pending.lock().unwrap_or_else(|e| e.into_inner()).add(seen, events);
+                tokio::time::sleep(crate::security::EVERY).await;
+            }
+        });
+    }
     tokio::spawn(async move {
         let mut prev: Option<Snapshot> = None;
         loop {
@@ -428,7 +446,9 @@ fn spawn_collector(
                 Some(h) => h.collect().await,
                 None => HelperData::default(),
             };
-            if tx.send(Sampled { collection, sampled_at_ms: at.wall_ms, helper }).await.is_err() {
+            let (connections, security_events) = pending.lock().unwrap_or_else(|e| e.into_inner()).take(at.wall_ms);
+            let sampled = Sampled { collection, sampled_at_ms: at.wall_ms, helper, connections, security_events };
+            if tx.send(sampled).await.is_err() {
                 return;
             }
             clock.sleep(interval).await;
@@ -491,6 +511,9 @@ pub async fn main(paths: Paths) -> Result<i32, String> {
     let mut link_cfg = crate::link::LinkConfig::new(hub, machine_id, version);
     // the MACs the hub compares with the guests' configurations (guest binding, 7.3.12)
     link_cfg.interfaces = collect::interfaces(host.as_ref());
+    // what this probe can do (E36): sampling until the eBPF capture is loaded, with the helper and the engine's socket
+    let containers = crate::helper::containers::SOCKETS.iter().any(|s| std::path::Path::new(s).exists());
+    link_cfg.capabilities = crate::security::capability::all(host.as_ref(), false, true, containers);
     let link = Link::new(endpoint, link_cfg, buffer, crate::buffer::epoch::EpochState::start(backlog));
     if let Some(dir) = paths.state_file.parent() {
         let _ = std::fs::create_dir_all(dir);

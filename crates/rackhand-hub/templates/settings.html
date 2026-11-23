@@ -10,6 +10,7 @@
 <div class="field check"><label><input type="checkbox" name="source_feodo"{% if sources.feodo %} checked{% endif %}> abuse.ch Feodo Tracker</label></div>
 <div class="field check"><label><input type="checkbox" name="source_spamhaus"{% if sources.spamhaus %} checked{% endif %}> Spamhaus DROP</label></div>
 <div class="field check"><label><input type="checkbox" name="source_dbip"{% if sources.dbip %} checked{% endif %}> DB-IP Lite</label></div>
+<div class="field check"><label><input type="checkbox" name="source_airgapped"{% if sources.airgapped %} checked{% endif %}> Air-gapped: the hub makes no outside request at all</label></div>
 <div class="actions"><button type="submit" class="primary">Save</button><button type="button" data-undo hidden>Undo changes</button></div>
 </form></section>
 <section class="card"><h2>Notifiers</h2><p class="hint">Where callouts go: {{ notifiers }} saved.</p><p><a class="btn" href="/settings/notifiers">Open notifiers</a></p></section>

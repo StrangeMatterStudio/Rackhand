@@ -2349,6 +2349,57 @@ mod level {
     }
 }
 
+/// 7.7.1, D65: the Settings page turns each outside source and air-gapped mode on and off; each change is audited, and what
+/// the form doesn't show (the sources that are off unless enabled) is kept.
+mod intel {
+    use super::*;
+
+    fn sources(app: &App) -> crate::library::config::Sources {
+        crate::library::config::hub(&app.db).unwrap().sources
+    }
+
+    async fn set(app: &App, admin: &str, fields: &[(&str, &str)]) {
+        let csrf = csrf_of(app, admin).await;
+        let mut all = vec![("csrf", csrf.as_str())];
+        all.extend_from_slice(fields);
+        let resp = send(&app.router, post("/settings/sources", admin, &all)).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn settings_toggle_each_source_and_air_gapped_mode() {
+        let app = app("intel-settings").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let page = shell::plain(&text(send(&app.router, get("/settings", &admin)).await).await);
+        for what in ["abuse.ch Feodo Tracker", "Spamhaus DROP", "DB-IP Lite", "Air-gapped"] {
+            assert!(page.contains(what), "{what}: {page}");
+        }
+        set(&app, &admin, &[("source_feodo", "on"), ("source_dbip", "on")]).await;
+        let s = sources(&app);
+        assert_eq!((s.feodo, s.spamhaus, s.dbip, s.airgapped), (true, false, true, false));
+        set(&app, &admin, &[("source_spamhaus", "on"), ("source_airgapped", "on")]).await;
+        let s = sources(&app);
+        assert_eq!((s.feodo, s.spamhaus, s.dbip, s.airgapped), (false, true, false, true));
+        assert!(!s.maxmind && !s.reputation && !s.relay_lists && !s.n0_relays, "the optional ones stay off");
+        let page = text(send(&app.router, get("/settings", &admin)).await).await;
+        assert!(page.contains("name=\"source_airgapped\" checked"), "the page shows the mode it is in");
+        set(&app, &admin, &[]).await;
+        assert!(!sources(&app).airgapped, "and turns it off again");
+        // each change is audited with what it set
+        let changes: Vec<String> = app
+            .db
+            .readers()
+            .with(|c| {
+                let mut st = c.prepare("SELECT data FROM audit_log WHERE action = 'settings.sources' ORDER BY seq")?;
+                st.query_map([], |r| r.get(0))?.collect()
+            })
+            .unwrap();
+        assert_eq!(changes.len(), 3, "{changes:?}");
+        assert!(changes[1].contains("\"airgapped\":true") && changes[2].contains("\"airgapped\":false"), "{changes:?}");
+    }
+}
+
 mod agentless {
     use super::*;
     use rackhand_drivers::{Driver, Proxmox, Redfish, Snmp, TrueNas};
