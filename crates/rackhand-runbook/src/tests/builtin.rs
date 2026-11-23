@@ -140,6 +140,9 @@ fn all_parse_and_have_design_risk() {
         ("quarantine", High),
         ("quarantine-release", High),
         ("conntrack-flush", High),
+        ("zfs-replicate", Normal),
+        ("pbs-sync", Normal),
+        ("restic-backup", Normal),
     ];
     for (name, source) in builtin::runbooks() {
         let r = Runbook::parse(source).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -453,4 +456,37 @@ fn seven_playbooks_parse() {
         assert_eq!(!p.incident_kinds.is_empty(), for_incidents, "{name}");
         assert_eq!(p.hosts, if for_incidents { Hosts::Incident } else { Hosts::Site }, "{name}");
     }
+}
+
+/// The backup runbooks (7.3.11, 7.8.7): a stream goes from the wrapper's `zfs-send` to the wrapper's `zfs-recv`, and the
+/// other two run their tool through the wrapper, detached, with every parameter held to a pattern.
+#[test]
+fn backup_runbooks_stream_or_run_through_the_wrapper() {
+    use crate::params::check_value;
+    let parsed = |name: &str| Runbook::parse(builtin::runbook(name).unwrap()).unwrap();
+    let replicate = parsed("zfs-replicate");
+    assert_eq!(replicate.steps.len(), 1);
+    let step = &replicate.steps[0];
+    assert_eq!(step.kind, StepKind::Transfer);
+    assert_eq!(step.cmd.as_deref(), Some(&["zfs-send".to_string(), "{{snapshot}}".to_string()][..]));
+    assert_eq!(step.dest.as_deref(), Some("{{site}}/{{machine}}:zfs-recv {{target_dataset}}"));
+    let ok = |rb: &Runbook, param: &str, value: &str| check_value(&rb.params[param], value).is_ok();
+    assert!(ok(&replicate, "snapshot", "tank/data@weekly-2026-11-23"));
+    for bad in ["tank/data", "-r tank@x", "tank/data@x y", "tank;id@x", "@x"] {
+        assert!(!ok(&replicate, "snapshot", bad), "{bad:?}");
+    }
+    assert!(ok(&replicate, "site", "offsite") && !ok(&replicate, "site", "Off Site"));
+    for name in ["pbs-sync", "restic-backup"] {
+        let rb = parsed(name);
+        let ssh: Vec<&Step> = rb.steps.iter().filter(|s| s.kind == StepKind::Ssh).collect();
+        assert_eq!(ssh.len(), 1, "{name}");
+        assert_eq!(&ssh[0].cmd.clone().unwrap()[..2], ["sudo", WRAPPER], "{name}: through the wrapper");
+        assert!(ssh[0].detached, "{name}: a long tool isn't cut off with the connection");
+    }
+    let restic = parsed("restic-backup");
+    assert!(
+        ok(&restic, "repo", "sftp:backup@offsite.example:/srv/restic") && ok(&restic, "repo", "/mnt/backup/restic")
+    );
+    assert!(!ok(&restic, "repo", "-o sftp.command=x") && !ok(&restic, "path", "/etc/../root"));
+    assert!(ok(&parsed("pbs-sync"), "job", "daily-offsite") && !ok(&parsed("pbs-sync"), "job", "x;y"));
 }

@@ -29,6 +29,7 @@ mod unlink;
 mod watch;
 mod wire;
 pub mod xfer;
+pub mod xfer_machine;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};

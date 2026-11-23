@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 
 use crate::vault::master_key::{MasterKey, Sealed};
 
+pub mod peer;
+
 const MAGIC: &[u8] = b"RHBK1\n";
 const CHUNK: usize = 1024 * 1024;
 /// Local copies kept (D58).

@@ -27,7 +27,7 @@ fn key(seed: u8) -> SecretKey {
 }
 
 /// The relay in its namespace, with a certificate it made for itself, and the rate (none unless given).
-async fn start_relay(rt: &NsRuntime, rate_bits: Option<u32>, mode: Mode) -> iroh_relay::server::Server {
+pub(crate) async fn start_relay(rt: &NsRuntime, rate_bits: Option<u32>, mode: Mode) -> iroh_relay::server::Server {
     let dir = std::env::temp_dir().join(format!("rackhand-net-relay-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("a directory");
     let cert = rcgen::generate_simple_self_signed(vec![RELAY_IP.to_string()]).expect("a certificate");
@@ -50,9 +50,14 @@ async fn start_relay(rt: &NsRuntime, rate_bits: Option<u32>, mode: Mode) -> iroh
 
 /// A hub's endpoint in a namespace: with the relay or without one, on a fixed port or any.
 async fn hub(rt: &NsRuntime, seed: u8, relay: bool, port: Option<u16>) -> Endpoint {
+    hub_with(rt, seed, relay, port, &[ALPN]).await
+}
+
+/// The same, accepting these ALPNs.
+pub(crate) async fn hub_with(rt: &NsRuntime, seed: u8, relay: bool, port: Option<u16>, alpns: &[&[u8]]) -> Endpoint {
     let config = EndpointConfig {
         relays: RelayConfig { relays: if relay { vec![relay_url()] } else { Vec::new() }, ..RelayConfig::default() },
-        alpns: vec![ALPN.to_vec()],
+        alpns: alpns.iter().map(|a| a.to_vec()).collect(),
         bind: port.map(|p| SocketAddr::from(([0, 0, 0, 0], p))),
     };
     rt.run(async move { bind_trusting_relays(key(seed), &config).await.expect("an endpoint") }).await
@@ -74,7 +79,7 @@ fn serve(rt: &NsRuntime, endpoint: Endpoint, sink: bool) {
     });
 }
 
-fn via_relay(id: iroh::EndpointId) -> EndpointAddr {
+pub(crate) fn via_relay(id: iroh::EndpointId) -> EndpointAddr {
     let mut addr = EndpointAddr::new(id);
     addr.addrs.insert(TransportAddr::Relay(relay_url().parse().expect("a relay URL")));
     addr

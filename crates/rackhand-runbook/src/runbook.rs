@@ -126,6 +126,9 @@ pub struct Step {
     /// `tunnel`: the port on the target.
     #[serde(default)]
     pub port: Option<u16>,
+    /// `transfer`: a bulk transfer waits for a direct path unless this is set (7.3.11, E29).
+    #[serde(default)]
+    pub allow_relay: bool,
     #[serde(default)]
     pub timeout: Option<String>,
     #[serde(default)]

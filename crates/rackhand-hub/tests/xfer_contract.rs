@@ -234,6 +234,10 @@ async fn chunk_hash_mismatch_rejected_and_resent() {
         XferChunk { index: 1, blake3: blake3::hash(&data[CHUNK..]).as_bytes().to_vec(), data: data[CHUNK..].to_vec() };
     frames::write_msg(&mut send, &ahead).await.unwrap();
     assert_eq!(resume_of(&answer(&mut recv).await), Some(0));
+    // the right bytes under the wrong index are not the chunk that is due
+    let mislabelled = XferChunk { index: 1, ..good.clone() };
+    frames::write_msg(&mut send, &mislabelled).await.unwrap();
+    assert_eq!(resume_of(&answer(&mut recv).await), Some(0));
     let short =
         XferChunk { index: 0, blake3: blake3::hash(&data[..10]).as_bytes().to_vec(), data: data[..10].to_vec() };
     frames::write_msg(&mut send, &short).await.unwrap();

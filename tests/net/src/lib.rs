@@ -7,6 +7,8 @@ mod holepunch;
 mod smoke;
 #[cfg(test)]
 mod topology;
+#[cfg(test)]
+mod xfer;
 
 /// Panics unless the test runs inside the network tier's VM.
 #[cfg(test)]

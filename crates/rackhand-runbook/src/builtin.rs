@@ -21,6 +21,9 @@ const RUNBOOKS: &[(&str, &str)] = &[
     ("quarantine", include_str!("../builtin/quarantine.toml")),
     ("quarantine-release", include_str!("../builtin/quarantine-release.toml")),
     ("conntrack-flush", include_str!("../builtin/conntrack-flush.toml")),
+    ("zfs-replicate", include_str!("../builtin/zfs-replicate.toml")),
+    ("pbs-sync", include_str!("../builtin/pbs-sync.toml")),
+    ("restic-backup", include_str!("../builtin/restic-backup.toml")),
 ];
 
 const PLAYBOOKS: &[(&str, &str)] = &[

@@ -296,7 +296,8 @@ async fn step_kinds_reach_their_systems() {
     let server = ProbeServer::new(ingest.clone(), Arc::new(MachinesDirectory(db.clone())), ServerSettings::default());
     let vault = Arc::new(Vault::new(MasterKey::from_bytes([6u8; 32]), db.clone()));
     let network = Arc::new(rackhand_hub::peers::tunnel::Network::deferred(Vec::new()));
-    let steps = steps(&db, &vault, &notify, &ingest, &server, network);
+    let transfer = Arc::new(rackhand_hub::executor::transfer_step::TransferStep::new(db.clone(), network.clone()));
+    let steps = steps(&db, &vault, &notify, &ingest, &server, network, transfer);
     let ctx = StepCtx {
         job_id: "j1".into(),
         machine_id: "m1".into(),

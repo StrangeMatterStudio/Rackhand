@@ -21,6 +21,7 @@ const USAGE: &str = "usage: rackhand hub init [--config-dir <dir>] [--data-dir <
        rackhand hub restore-library <checkout> [--db <path>]
        rackhand hub backup [--config <hub.toml>]
        rackhand hub metrics-token [--config <hub.toml>]
+       rackhand hub peer-backup export <site> <file> [--config <hub.toml>]
        rackhand hub restore <file> --master-key <path> [--config-dir <dir>] [--data-dir <dir>]
        rackhand operator join|run|mcp-bridge ... (rackhand operator for the options)
        rackhand relay run|key create ... (rackhand relay for the options)";
@@ -43,6 +44,7 @@ fn main() -> ExitCode {
         ["hub", "restore-library", checkout, rest @ ..] => restore_library(checkout, rest),
         ["hub", "backup", rest @ ..] => hub_backup(rest),
         ["hub", "metrics-token", rest @ ..] => hub_metrics_token(rest),
+        ["hub", "peer-backup", "export", site, file, rest @ ..] => peer_backup_export(site, file, rest),
         ["hub", "restore", file, rest @ ..] => hub_restore(file, rest),
         #[cfg(feature = "lab-build")]
         ["hub", "lab-token", rest @ ..] => hub_lab_token(rest),
@@ -279,6 +281,34 @@ fn hub_metrics_token(rest: &[&str]) -> ExitCode {
     match hub_cmd::HubConfig::load(&path).and_then(|config| hub_cmd::metrics_token(&config)) {
         Ok(token) => {
             println!("{token}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `hub peer-backup export <site> <file>`: the backup this hub keeps for a peer, to copy to the machine that restores it (9).
+fn peer_backup_export(site: &str, file: &str, rest: &[&str]) -> ExitCode {
+    let Some(o) = options(rest, &["config"]) else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    let path = PathBuf::from(o.get("config").copied().unwrap_or("/etc/rackhand/hub.toml"));
+    let result = hub_cmd::HubConfig::load(&path).and_then(|config| {
+        rackhand_hub::backup::peer::export(
+            &rackhand_hub::backup::peer::dir(&config.data_dir),
+            site,
+            std::path::Path::new(file),
+        )
+    });
+    match result {
+        Ok(bytes) => {
+            println!(
+                "Wrote {file} ({bytes} bytes). Restore it on a new machine with `rackhand hub restore {file} --master-key <path>`."
+            );
             ExitCode::SUCCESS
         }
         Err(e) => {

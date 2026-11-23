@@ -1,0 +1,33 @@
+name = "zfs-replicate"
+description = "Send a ZFS snapshot of this machine to a dataset on another machine, here or at a linked site, as a stream with no file in between"
+targets = { kinds = ["linux", "hypervisor"] }
+identity = "automation"
+risk = "normal"
+autonomy = 1
+
+# The snapshot to send, as `<dataset>@<snapshot>`.
+[params.snapshot]
+type = "string"
+pattern = "[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,100}@[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,100}"
+
+# Where it goes: a site of this hub or a linked one, its machine, and the dataset that receives it.
+[params.site]
+type = "string"
+pattern = "[a-z0-9-]{1,32}"
+
+[params.machine]
+type = "string"
+pattern = "[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}"
+
+[params.target_dataset]
+type = "string"
+pattern = "[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,200}"
+
+# `zfs-send` and `zfs-recv` are the wrapper's own commands (7.3.11): the stream is piped from one to the other through the hub,
+# or to a peer hub over `rackhand/xfer/1`, which waits for a direct path unless `allow_relay` is set.
+[[step]]
+id = "replicate"
+kind = "transfer"
+cmd = ["zfs-send", "{{snapshot}}"]
+dest = "{{site}}/{{machine}}:zfs-recv {{target_dataset}}"
+timeout = "12h"

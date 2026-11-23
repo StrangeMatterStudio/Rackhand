@@ -18,6 +18,9 @@ rackhand-hub = { path = "../../crates/rackhand-hub" }
 iroh = { workspace = true }
 iroh-relay = { workspace = true }
 rcgen = { workspace = true }
+rackhand-store = { path = "../../crates/rackhand-store" }
+rackhand-proto = { path = "../../crates/rackhand-proto" }
+rusqlite = { workspace = true }
 rustix = { version = "1", default-features = false, features = ["std", "fs", "thread"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "sync"] }
 

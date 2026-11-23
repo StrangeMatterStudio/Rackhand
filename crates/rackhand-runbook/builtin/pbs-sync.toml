@@ -1,0 +1,18 @@
+name = "pbs-sync"
+description = "Run a Proxmox Backup Server sync job, which pulls from the remote the job names"
+targets = { kinds = ["linux"] }
+identity = "automation"
+risk = "normal"
+autonomy = 1
+
+[params.job]
+type = "string"
+pattern = "[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}"
+
+# The sync job (its remote and what it pulls) is configured on the server itself; this runs it and waits.
+[[step]]
+id = "sync"
+kind = "ssh"
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/sbin/proxmox-backup-manager", "sync-job", "run", "{{job}}"]
+detached = true
+timeout = "12h"

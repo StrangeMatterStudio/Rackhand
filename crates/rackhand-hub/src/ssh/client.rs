@@ -37,7 +37,7 @@ pub struct Output {
     pub stderr: Vec<u8>,
 }
 
-struct Checker {
+pub(crate) struct Checker {
     machine_id: String,
     keys: Arc<HostKeys>,
     verdict: Arc<std::sync::Mutex<Option<HostKeyError>>>,
@@ -74,6 +74,115 @@ fn append_capped(buf: &mut Vec<u8>, data: &[u8], truncated: &mut bool) {
     }
 }
 
+/// A session as `identity`, with the host key checked against the pin.
+async fn connect(
+    addr: SocketAddr,
+    machine_id: &str,
+    keys: Arc<HostKeys>,
+    identity: Identity,
+    key: &PrivateKey,
+    timeout: Duration,
+) -> Result<client::Handle<Checker>, SshError> {
+    let verdict = Arc::new(std::sync::Mutex::new(None));
+    let checker = Checker { machine_id: machine_id.into(), keys, verdict: verdict.clone() };
+    let config = Arc::new(client::Config { inactivity_timeout: Some(timeout), ..client::Config::default() });
+    let connected = tokio::time::timeout(Duration::from_secs(20), client::connect(config, addr, checker)).await;
+    let mut session = match connected {
+        Err(_) => return Err(SshError::Timeout),
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            return Err(match verdict.lock().ok().and_then(|v| v.clone()) {
+                Some(HostKeyError::NotPinned) => SshError::HostKeyNotPinned,
+                Some(HostKeyError::Changed) => SshError::HostKeyChanged,
+                None => SshError::Transport(e.to_string()),
+            });
+        }
+    };
+    let auth = session
+        .authenticate_publickey(identity.user(), PrivateKeyWithHashAlg::new(Arc::new(key.clone()), None))
+        .await
+        .map_err(|e| SshError::Transport(e.to_string()))?;
+    if !matches!(auth, AuthResult::Success) {
+        return Err(SshError::AuthRefused(identity.user()));
+    }
+    Ok(session)
+}
+
+/// A command that is running, whose standard input is written and whose standard output is read as it goes (a transfer's
+/// chunks into `run receive`, a backup tool's output out of `run zfs-send`).
+pub struct Exec {
+    session: client::Handle<Checker>,
+    channel: russh::Channel<client::Msg>,
+    stderr: Vec<u8>,
+    cut_err: bool,
+    exit_code: Option<u32>,
+}
+
+impl std::fmt::Debug for Exec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Exec")
+    }
+}
+
+/// Starts `command` (an already-quoted command line) and returns it running.
+pub async fn start(
+    addr: SocketAddr,
+    machine_id: &str,
+    keys: Arc<HostKeys>,
+    identity: Identity,
+    key: &PrivateKey,
+    command: &str,
+    timeout: Duration,
+) -> Result<Exec, SshError> {
+    let session = connect(addr, machine_id, keys, identity, key, timeout).await?;
+    let channel = session.channel_open_session().await.map_err(|e| SshError::Transport(e.to_string()))?;
+    channel.exec(true, command).await.map_err(|e| SshError::Transport(e.to_string()))?;
+    Ok(Exec { session, channel, stderr: Vec::new(), cut_err: false, exit_code: None })
+}
+
+impl Exec {
+    pub async fn write(&mut self, data: &[u8]) -> Result<(), SshError> {
+        self.channel.data(data).await.map_err(|e| SshError::Transport(e.to_string()))
+    }
+
+    /// No more standard input.
+    pub async fn close_stdin(&mut self) -> Result<(), SshError> {
+        self.channel.eof().await.map_err(|e| SshError::Transport(e.to_string()))
+    }
+
+    /// The next piece of standard output; `None` once the command has closed it.
+    pub async fn read(&mut self) -> Option<Vec<u8>> {
+        while let Some(msg) = self.channel.wait().await {
+            match msg {
+                ChannelMsg::Data { data } => return Some(data.to_vec()),
+                ChannelMsg::ExtendedData { data, ext: 1 } => append_capped(&mut self.stderr, &data, &mut self.cut_err),
+                ChannelMsg::ExitStatus { exit_status } => self.exit_code = Some(exit_status),
+                ChannelMsg::Eof | ChannelMsg::Close => return None,
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Waits for the command to end: its exit status and what it said on standard error (standard output is the caller's).
+    pub async fn finish(mut self, timeout: Duration) -> Result<Output, SshError> {
+        let wait = async {
+            while let Some(msg) = self.channel.wait().await {
+                match msg {
+                    ChannelMsg::ExtendedData { data, ext: 1 } => {
+                        append_capped(&mut self.stderr, &data, &mut self.cut_err);
+                    }
+                    ChannelMsg::ExitStatus { exit_status } => self.exit_code = Some(exit_status),
+                    _ => {}
+                }
+            }
+        };
+        tokio::time::timeout(timeout, wait).await.map_err(|_| SshError::Timeout)?;
+        let _ = self.session.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+        Ok(Output { exit_code: self.exit_code, stdout: Vec::new(), stderr: self.stderr })
+    }
+}
+
 /// Connects as `identity` and runs `command` (an already-quoted command line).
 pub async fn run(
     addr: SocketAddr,
@@ -99,28 +208,7 @@ pub async fn run_with_input(
     input: Option<&[u8]>,
     timeout: Duration,
 ) -> Result<Output, SshError> {
-    let verdict = Arc::new(std::sync::Mutex::new(None));
-    let checker = Checker { machine_id: machine_id.into(), keys, verdict: verdict.clone() };
-    let config = Arc::new(client::Config { inactivity_timeout: Some(timeout), ..client::Config::default() });
-    let connected = tokio::time::timeout(Duration::from_secs(20), client::connect(config, addr, checker)).await;
-    let mut session = match connected {
-        Err(_) => return Err(SshError::Timeout),
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => {
-            return Err(match verdict.lock().ok().and_then(|v| v.clone()) {
-                Some(HostKeyError::NotPinned) => SshError::HostKeyNotPinned,
-                Some(HostKeyError::Changed) => SshError::HostKeyChanged,
-                None => SshError::Transport(e.to_string()),
-            });
-        }
-    };
-    let auth = session
-        .authenticate_publickey(identity.user(), PrivateKeyWithHashAlg::new(Arc::new(key.clone()), None))
-        .await
-        .map_err(|e| SshError::Transport(e.to_string()))?;
-    if !matches!(auth, AuthResult::Success) {
-        return Err(SshError::AuthRefused(identity.user()));
-    }
+    let session = connect(addr, machine_id, keys, identity, key, timeout).await?;
     let mut channel = session.channel_open_session().await.map_err(|e| SshError::Transport(e.to_string()))?;
     channel.exec(true, command).await.map_err(|e| SshError::Transport(e.to_string()))?;
     if let Some(bytes) = input {

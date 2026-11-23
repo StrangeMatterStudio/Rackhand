@@ -3915,8 +3915,11 @@ dependencies = [
  "iroh-relay",
  "rackhand-hub",
  "rackhand-net",
+ "rackhand-proto",
  "rackhand-relay",
+ "rackhand-store",
  "rcgen",
+ "rusqlite",
  "rustix",
  "tokio",
 ]

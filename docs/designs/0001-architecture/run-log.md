@@ -181,3 +181,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-23 | T82 done: the relay (keys, admission, limits), `rackhand relay run` and `key create`, relay lists (D139 to D142) |
 | 2026-11-23 | T83 done: path detection, the peer path status, and the network tier's NAT topology with its hole punching and relay rate tests (D143 to D144) |
 | 2026-11-23 | T84 done: tunnels for devices, the remote-mode probe's splice, the hub's SSH to remote-mode machines, and the tunnel step (D145 to D148) |
+| 2026-11-23 | T85 done: transfers (chunks, resume, streams), peer backups and export, the transfer step and the backup runbooks (D149 to D153) |

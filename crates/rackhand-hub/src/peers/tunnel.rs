@@ -105,6 +105,16 @@ impl Network {
         let _ = self.endpoint.set(endpoint);
     }
 
+    /// The hub's endpoint, once it is bound.
+    pub fn endpoint(&self) -> Option<Endpoint> {
+        self.endpoint.get().cloned()
+    }
+
+    /// The relays a peer or probe may be reached through.
+    pub fn relays(&self) -> &[iroh::RelayUrl] {
+        &self.relays
+    }
+
     async fn to_probe(&self, target: &Target, port: u16) -> Result<Box<dyn Io>, TunnelError> {
         // a probe at access level `monitor` has no account for the hub to use and accepts no tunnel (7.3.2)
         if target.access == "monitor" {
@@ -255,10 +265,26 @@ pub(crate) fn policy_ports(db: &Db, machine_id: &str) -> Vec<u16> {
 
 /// Who is asking: a device, and the account it belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Person {
-    user: String,
-    device: String,
-    role: String,
+pub(crate) struct Person {
+    pub(crate) user: String,
+    pub(crate) device: String,
+    pub(crate) role: String,
+}
+
+/// The account a device belongs to, if the device and the account are both in use.
+pub(crate) fn person(db: &Db, caller: EndpointId) -> Option<Person> {
+    db.readers()
+        .with(|c| {
+            c.query_row(
+                "SELECT u.name, d.name, u.role FROM devices d JOIN users u ON u.id = d.user_id
+                 WHERE d.endpoint_id = ?1 AND d.revoked_at IS NULL AND u.disabled_at IS NULL",
+                [caller.to_string()],
+                |r| Ok(Person { user: r.get(0)?, device: r.get(1)?, role: r.get(2)? }),
+            )
+            .optional()
+        })
+        .ok()
+        .flatten()
 }
 
 pub struct Tunnels {
@@ -295,19 +321,7 @@ impl Tunnels {
     }
 
     fn person(&self, caller: EndpointId) -> Option<Person> {
-        self.db
-            .readers()
-            .with(|c| {
-                c.query_row(
-                    "SELECT u.name, d.name, u.role FROM devices d JOIN users u ON u.id = d.user_id
-                     WHERE d.endpoint_id = ?1 AND d.revoked_at IS NULL AND u.disabled_at IS NULL",
-                    [caller.to_string()],
-                    |r| Ok(Person { user: r.get(0)?, device: r.get(1)?, role: r.get(2)? }),
-                )
-                .optional()
-            })
-            .ok()
-            .flatten()
+        person(&self.db, caller)
     }
 
     /// Whether this caller may open a tunnel to the machine and port, and the machine.

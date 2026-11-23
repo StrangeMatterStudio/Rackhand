@@ -126,6 +126,8 @@ timeout = "{timeout}"
         /// What keeps a remote-mode lab's relay and probe alive.
         _keep: Vec<Box<dyn std::any::Any + Send>>,
         pub(super) db: Arc<Db>,
+        /// The Executor Actions runs steps with, for what drives the machine directly (transfers).
+        pub(super) executor: Arc<Executor>,
         pub(super) machine: Container,
         pub(super) actions: Actions,
         pub(super) events: Subscription,
@@ -333,7 +335,15 @@ timeout = "{timeout}"
         let bus = Bus::new();
         let events = bus.subscribe("test");
         let facts = Arc::new(Facts::default());
+        let transfer = Arc::new(rackhand_hub::executor::transfer_step::TransferStep::new(
+            db.clone(),
+            network.clone().unwrap_or_else(|| Arc::new(rackhand_hub::peers::tunnel::Network::deferred(Vec::new()))),
+        ));
         let mut executor = Executor::new(vault.clone(), host_keys.clone())
+            .with_other(Arc::new(
+                rackhand_hub::executor::ByKind::default()
+                    .with(rackhand_runbook::runbook::StepKind::Transfer, transfer.clone()),
+            ))
             .with_poll(Duration::from_millis(500))
             .with_hub(signer.clone())
             .with_reboot(facts.clone(), Duration::from_secs(6));
@@ -341,8 +351,15 @@ timeout = "{timeout}"
             let forwards = rackhand_hub::peers::tunnel::Forwards::new(db.clone(), network);
             executor = executor.with_remote(Arc::new(forwards));
         }
-        let actions = Actions::new(db.clone(), audit, bus, Arc::new(executor)).with_lock_wait(lock_wait);
-        Lab { id: id.into(), _keep: keep, db, machine, actions, events, facts, vault, host_keys, signer }
+        let executor = Arc::new(executor);
+        let machines = rackhand_hub::peers::xfer_machine::MachineOpener::new(
+            db.clone(),
+            Audit::new(db.writer()),
+            executor.clone(),
+        );
+        transfer.bind(executor.clone(), Arc::new(machines));
+        let actions = Actions::new(db.clone(), audit, bus, executor.clone()).with_lock_wait(lock_wait);
+        Lab { id: id.into(), _keep: keep, db, executor, machine, actions, events, facts, vault, host_keys, signer }
     }
 
     async fn wait_listening(addr: &str) {
@@ -1373,6 +1390,329 @@ timeout = "20s"
         // the machine's own address answers nothing, so the only way in was the tunnel to its probe
         let direct = std::net::TcpStream::connect_timeout(&"192.0.2.1:22".parse().unwrap(), Duration::from_millis(500));
         assert!(direct.is_err());
+    }
+
+    /// Transfers to a machine (7.3.11, FR-19, E30, AC29) over the hub's xfer server and real SSH.
+    mod transfers {
+        use super::*;
+        use rackhand_hub::peers::xfer::Xfer;
+        use rackhand_hub::peers::xfer_machine::MachineOpener;
+        use rackhand_net::xfer::{CHUNK, XferError, send_file, send_stream};
+        use rackhand_proto::alpn;
+
+        const INCOMING: &str = "/var/lib/rackhand-run/incoming";
+
+        struct Send {
+            lab: Lab,
+            client: iroh::Endpoint,
+            addr: iroh::EndpointAddr,
+            dir: std::path::PathBuf,
+            _relay: Box<dyn std::any::Any + std::marker::Send>,
+        }
+
+        /// A machine in remote mode (so a transfer also goes through its probe) and a responder's device that may send.
+        async fn env(name: &str, role: &str) -> Send {
+            let lab = lab_with(name, "60s", Duration::from_secs(5), true).await;
+            let (relay, relay_url) = rackhand_net::testing::local_relay().await;
+            let server = rackhand_net::testing::endpoint(&relay_url, &[alpn::XFER]).await;
+            let client = rackhand_net::testing::endpoint(&relay_url, &[]).await;
+            let t = |s: &str| Value::Text(s.into());
+            let who = if role == "peer" {
+                // a linked peer: its endpoint is the peer's, and the machine's policy decides what it may ask
+                vec![
+                    RowWrite::insert(
+                        "peers",
+                        Row::from([
+                            ("id", t("p1")),
+                            ("site", t("beta")),
+                            ("endpoint_id", t(&client.id().to_string())),
+                            ("added_at", Value::Integer(1)),
+                        ]),
+                    ),
+                    RowWrite::insert(
+                        "policies",
+                        Row::from([("id", t("p-auto")), ("name", t("auto")), ("peer_requests", t("auto"))]),
+                    ),
+                ]
+            } else {
+                vec![
+                    RowWrite::insert(
+                        "users",
+                        Row::from([
+                            ("id", t("u1")),
+                            ("name", t("riley")),
+                            ("role", t(role)),
+                            ("created_at", Value::Integer(1)),
+                        ]),
+                    ),
+                    RowWrite::insert(
+                        "devices",
+                        Row::from([
+                            ("id", t("d1")),
+                            ("user_id", t("u1")),
+                            ("name", t("laptop")),
+                            ("endpoint_id", t(&client.id().to_string())),
+                            ("created_at", Value::Integer(1)),
+                        ]),
+                    ),
+                ]
+            };
+            lab.db.writer().send(WriteCmd::Batch(who)).await.unwrap();
+            let registry = Arc::new(rackhand_net::registry::MemoryRegistry::default());
+            registry.allow(alpn::XFER, client.id());
+            let audit = Audit::new(lab.db.writer());
+            let opener = MachineOpener::new(lab.db.clone(), audit, lab.executor.clone());
+            let xfer = Xfer::new(Arc::new(opener));
+            let router = rackhand_net::router::Router::new(server.clone(), registry).route(alpn::XFER, xfer.handler());
+            tokio::spawn(router.serve());
+            let mut addr = server.addr();
+            addr.addrs.insert(iroh::TransportAddr::Relay(relay_url));
+            let dir = std::env::temp_dir().join(format!("rackhand-it-xfer-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Send { lab, client, addr, dir, _relay: Box::new(relay) }
+        }
+
+        impl Send {
+            fn machine_id(&self) -> Vec<u8> {
+                REMOTE_ID.parse::<ulid::Ulid>().unwrap().to_bytes().to_vec()
+            }
+
+            fn file(&self, name: &str, len: usize) -> (std::path::PathBuf, Vec<u8>) {
+                let data: Vec<u8> = (0..len).map(|i| ((i * 31 + i / 4096) % 251) as u8).collect();
+                let path = self.dir.join(name);
+                std::fs::write(&path, &data).unwrap();
+                (path, data)
+            }
+
+            async fn connect(&self) -> iroh::endpoint::Connection {
+                self.client.connect(self.addr.clone(), alpn::XFER).await.unwrap()
+            }
+
+            fn sha_on_machine(&self, path: &str) -> String {
+                let out = self.lab.machine.root(&format!("sha256sum {path} | cut -d' ' -f1"));
+                String::from_utf8_lossy(&out.stdout).trim().to_string()
+            }
+
+            fn size_on_machine(&self, path: &str) -> u64 {
+                let out = self.lab.machine.root(&format!("stat -c %s {path} 2>/dev/null || echo 0"));
+                String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0)
+            }
+
+            /// Waits until the machine has no `receive` running, so its partial file has stopped changing.
+            async fn settled(&self) {
+                for _ in 0..60 {
+                    if !self.lab.machine.root("pgrep -f '[r]un receive'").status.success() {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                panic!("receive never ended");
+            }
+        }
+
+        fn sha256(data: &[u8]) -> String {
+            use sha2::{Digest, Sha256};
+            Sha256::digest(data).iter().map(|b| format!("{b:02x}")).collect()
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_file_arrives_on_the_machine_with_its_hash_and_mode() {
+            let env = env("xfer-file", "responder").await;
+            let (path, data) = env.file("a.bin", 3 * CHUNK + 4321);
+            let conn = env.connect().await;
+            let dest = format!("{INCOMING}/a.bin");
+            send_file(&conn, &env.machine_id(), &dest, &path, &mut |_, _| {}).await.unwrap();
+            assert_eq!(env.sha_on_machine(&dest), sha256(&data));
+            let mode = env.lab.machine.root(&format!("stat -c '%a %U' {dest}"));
+            assert_eq!(String::from_utf8_lossy(&mode.stdout).trim(), "640 root", "root's, mode 0640 (7.3.11)");
+            assert_eq!(env.size_on_machine(&format!("{dest}.rackhand-partial")), 0, "no partial file is left behind");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn send_interrupted_midway_resumes_from_the_partial_file() {
+            let env = env("xfer-resume", "responder").await;
+            let (path, data) = env.file("b.bin", 5 * CHUNK + 99);
+            let dest = format!("{INCOMING}/b.bin");
+            let conn = env.connect().await;
+            let result = send_file(&conn, &env.machine_id(), &dest, &path, &mut |done, _| {
+                if done == 2 {
+                    conn.close(1u32.into(), b"cut");
+                }
+            })
+            .await;
+            assert!(matches!(result, Err(XferError::Broken(_))), "{result:?}");
+            env.settled().await;
+            let partial = env.size_on_machine(&format!("{dest}.rackhand-partial"));
+            assert!(partial >= 2 * CHUNK as u64, "the machine kept what it was given: {partial}");
+            // the next attempt asks the machine how far it got and sends only the rest
+            let conn = env.connect().await;
+            let mut first = None;
+            send_file(&conn, &env.machine_id(), &dest, &path, &mut |done, _| {
+                first.get_or_insert(done);
+            })
+            .await
+            .unwrap();
+            assert_eq!(first, Some(partial / CHUNK as u64), "it went on from the last whole chunk");
+            assert_eq!(env.sha_on_machine(&dest), sha256(&data));
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_partial_file_ending_inside_a_chunk_is_continued_not_repeated() {
+            let env = env("xfer-torn", "responder").await;
+            let (path, data) = env.file("c.bin", 3 * CHUNK + 5);
+            let dest = format!("{INCOMING}/c.bin");
+            // the machine has the first chunk and half of the next (a write cut in the middle)
+            let prefix = env.dir.join("prefix");
+            std::fs::write(&prefix, &data[..CHUNK + CHUNK / 2]).unwrap();
+            let sh = &env.lab.machine;
+            sh.root(&format!("mkdir -p {INCOMING} && chmod 755 /var/lib/rackhand-run {INCOMING}"));
+            sh.copy_in(&prefix, &format!("{dest}.rackhand-partial"));
+            let conn = env.connect().await;
+            let mut first = None;
+            send_file(&conn, &env.machine_id(), &dest, &path, &mut |done, _| {
+                first.get_or_insert(done);
+            })
+            .await
+            .unwrap();
+            assert_eq!(first, Some(1), "it goes on in the second chunk");
+            assert_eq!(env.sha_on_machine(&dest), sha256(&data), "and the half chunk was neither lost nor sent twice");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_partial_file_of_other_content_starts_over_on_the_next_try() {
+            let env = env("xfer-stale", "responder").await;
+            let (path, data) = env.file("d.bin", 2 * CHUNK + 7);
+            let dest = format!("{INCOMING}/d.bin");
+            let stale = env.dir.join("stale");
+            std::fs::write(&stale, vec![0xAAu8; CHUNK + 10]).unwrap();
+            env.lab.machine.root(&format!("mkdir -p {INCOMING} && chmod 755 /var/lib/rackhand-run {INCOMING}"));
+            env.lab.machine.copy_in(&stale, &format!("{dest}.rackhand-partial"));
+            let conn = env.connect().await;
+            let first = send_file(&conn, &env.machine_id(), &dest, &path, &mut |_, _| {}).await;
+            assert!(matches!(&first, Err(XferError::Refused(why)) if why.contains("starts over")), "{first:?}");
+            send_file(&conn, &env.machine_id(), &dest, &path, &mut |_, _| {}).await.unwrap();
+            assert_eq!(env.sha_on_machine(&dest), sha256(&data));
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn refusals_a_viewer_a_path_outside_the_roots_and_a_stream_to_anything_else() {
+            let viewer = env("xfer-viewer", "viewer").await;
+            let (path, _) = viewer.file("e.bin", 10);
+            let conn = viewer.connect().await;
+            let e = send_file(&conn, &viewer.machine_id(), &format!("{INCOMING}/e.bin"), &path, &mut |_, _| {}).await;
+            assert!(matches!(&e, Err(XferError::Refused(why)) if why.contains("responder")), "{e:?}");
+            let env = env("xfer-refuse", "responder").await;
+            let (path, _) = env.file("f.bin", 10);
+            let conn = env.connect().await;
+            for dest in ["/etc/cron.d/evil", "/var/lib/rackhand-run/incoming/../../../etc/x", "relative"] {
+                let e = send_file(&conn, &env.machine_id(), dest, &path, &mut |_, _| {}).await;
+                assert!(matches!(&e, Err(XferError::Refused(why)) if why.contains("transfer roots")), "{dest}: {e:?}");
+            }
+            let mut input = tokio::io::empty();
+            let e = send_stream(&conn, &env.machine_id(), "sh -c id", &mut input).await;
+            assert!(matches!(&e, Err(XferError::Refused(why)) if why.contains("zfs-recv")), "{e:?}");
+            assert!(
+                env.lab.machine.root("ls /etc/cron.d/evil").status.code() != Some(0),
+                "nothing was written outside"
+            );
+        }
+
+        const FAKE_ZFS: &str = "printf '#!/bin/sh\\nif [ \"$1\" = send ]; then head -c 2500000 /dev/zero | tr '\"'\"'\\\\000'\"'\"' x; fi\\nif [ \"$1\" = recv ]; then echo \"$@\" > /tmp/zfs-args; cat > /tmp/zfs-recv.out; fi\\n' > /usr/bin/zfs && chmod 755 /usr/bin/zfs";
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn zfs_replicate_runbook_pipes_between_two_machines_of_this_hub() {
+            let env = env("xfer-replicate", "responder").await;
+            env.lab.machine.root(FAKE_ZFS);
+            let audit = Audit::new(env.lab.db.writer());
+            let (library, _) = Library::new(env.lab.db.clone(), audit);
+            library
+                .save(
+                    Kind::Runbook,
+                    "zfs-replicate",
+                    rackhand_runbook::builtin::runbook("zfs-replicate").unwrap(),
+                    "admin",
+                    1,
+                )
+                .await
+                .unwrap();
+            let params = BTreeMap::from([
+                ("snapshot".to_string(), "tank/data@weekly-1".to_string()),
+                ("site".to_string(), "home".to_string()),
+                ("machine".to_string(), "target".to_string()),
+                ("target_dataset".to_string(), "tank/replica".to_string()),
+            ]);
+            let job = StartJob { params, machine_id: env.lab.id.clone(), ..start("zfs-replicate", ("unused", "")) };
+            let result = env.lab.actions.run(job).await.unwrap();
+            assert_eq!((result.outcome, result.reason.as_deref()), (JobOutcome::Succeeded, None), "{result:?}");
+            let sent = env.lab.machine.root("head -c 2500000 /dev/zero | tr '\\000' x | sha256sum | cut -d' ' -f1");
+            assert_eq!(
+                env.sha_on_machine("/tmp/zfs-recv.out"),
+                String::from_utf8_lossy(&sent.stdout).trim(),
+                "what `zfs-send` wrote is what `zfs-recv` was given"
+            );
+            let args = env.lab.machine.root("cat /tmp/zfs-args");
+            assert_eq!(String::from_utf8_lossy(&args.stdout).trim(), "recv -u tank/replica");
+            // a destination that isn't a receiving command is refused before anything is sent
+            let params = BTreeMap::from([
+                ("snapshot".to_string(), "tank/data@weekly-1".to_string()),
+                ("site".to_string(), "home".to_string()),
+                ("machine".to_string(), "nowhere".to_string()),
+                ("target_dataset".to_string(), "tank/replica".to_string()),
+            ]);
+            let job = StartJob { params, machine_id: env.lab.id.clone(), ..start("zfs-replicate", ("unused", "")) };
+            let result = env.lab.actions.run(job).await.unwrap();
+            assert_eq!(
+                (result.outcome, result.reason.as_deref()),
+                (JobOutcome::Failed, Some("no_such_machine: nowhere"))
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_peers_stream_is_taken_only_where_the_policy_takes_peer_requests() {
+            let env = env("xfer-peer", "peer").await;
+            env.lab.machine.root(FAKE_ZFS);
+            let conn = env.connect().await;
+            let mut input = std::io::Cursor::new(vec![b'z'; 1000]);
+            // the machine's policy asks for an approval of what a peer wants: nothing is run
+            let e = send_stream(&conn, &env.machine_id(), "zfs-recv tank/replica", &mut input).await;
+            assert!(matches!(&e, Err(XferError::Refused(why)) if why.contains("needs_approval")), "{e:?}");
+            assert_eq!(env.size_on_machine("/tmp/zfs-recv.out"), 0);
+            // a policy that takes them without one: the stream arrives
+            let set = Row::from([("policy_id", Value::Text("p-auto".into()))]);
+            let update =
+                rackhand_store::RowUpdate { table: "machines", key: ("id", Value::Text(env.lab.id.clone())), set };
+            let change = rackhand_store::RegistryChange { updates: vec![update], ..Default::default() };
+            env.lab.db.writer().send(WriteCmd::RegistryChange(change)).await.unwrap();
+            let mut input = std::io::Cursor::new(vec![b'z'; 1000]);
+            send_stream(&conn, &env.machine_id(), "zfs-recv tank/replica", &mut input).await.unwrap();
+            assert_eq!(env.size_on_machine("/tmp/zfs-recv.out"), 1000);
+            // and a peer sends no file to a machine, whatever the policy
+            let (path, _) = env.file("g.bin", 10);
+            let e = send_file(&conn, &env.machine_id(), &format!("{INCOMING}/g.bin"), &path, &mut |_, _| {}).await;
+            assert!(matches!(&e, Err(XferError::Refused(why)) if why.contains("backup to this hub")), "{e:?}");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn zfs_style_stream_pipes_through_the_wrapper() {
+            let env = env("xfer-zfs", "responder").await;
+            // a stand-in `zfs`: `recv` writes its input where the test can read it
+            env.lab.machine.root(
+                "printf '#!/bin/sh\\nif [ \"$1\" = recv ]; then echo \"$@\" > /tmp/zfs-args; cat > /tmp/zfs-recv.out; fi\\n' > /usr/bin/zfs && chmod 755 /usr/bin/zfs",
+            );
+            let data: Vec<u8> = (0..(2 * CHUNK + 13)).map(|i| ((i * 7) % 253) as u8).collect();
+            let conn = env.connect().await;
+            let mut input = std::io::Cursor::new(data.clone());
+            let sent = send_stream(&conn, &env.machine_id(), "zfs-recv tank/backup", &mut input).await.unwrap();
+            assert_eq!(sent, data.len() as u64);
+            assert_eq!(
+                env.sha_on_machine("/tmp/zfs-recv.out"),
+                sha256(&data),
+                "the receiving command was given every byte"
+            );
+            let args = env.lab.machine.root("cat /tmp/zfs-args");
+            assert_eq!(String::from_utf8_lossy(&args.stdout).trim(), "recv -u tank/backup");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

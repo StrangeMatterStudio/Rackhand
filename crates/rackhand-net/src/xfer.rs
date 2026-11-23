@@ -110,7 +110,7 @@ pub async fn send_file(
     target: &[u8],
     dest: &str,
     path: &Path,
-    progress: &mut dyn FnMut(u64, u64),
+    progress: &mut (dyn FnMut(u64, u64) + Send),
 ) -> Result<(), XferError> {
     let size =
         tokio::fs::metadata(path).await.map_err(|e| XferError::Source(format!("{}: {e}", path.display())))?.len();
@@ -134,7 +134,7 @@ pub async fn send(
     conn: &Connection,
     offer: &XferOffer,
     source: &mut dyn Source,
-    progress: &mut dyn FnMut(u64, u64),
+    progress: &mut (dyn FnMut(u64, u64) + Send),
 ) -> Result<(), XferError> {
     let (mut tx, mut rx) = conn.open_bi().await.map_err(broken)?;
     write(&mut tx, offer).await?;

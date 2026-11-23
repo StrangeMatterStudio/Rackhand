@@ -21,6 +21,7 @@ use crate::ssh::keys::{Identity, load_for};
 use crate::ssh::quote;
 use crate::vault::Vault;
 
+pub mod transfer_step;
 pub mod tunnel_step;
 pub use detached::POLL;
 pub use hub::{GuestEnrollment, GuestHost, HubSide};
@@ -216,6 +217,24 @@ impl Executor {
             None => self.addr(ctx).ok_or_else(|| SshError::Transport("the machine has no address".into()))?,
         };
         run_with_input(addr, &ctx.machine_id, self.host_keys.clone(), id, key, line, input, timeout).await
+    }
+
+    /// A command started on the machine whose input and output the caller drives (7.3.11): how a transfer writes a file and a
+    /// backup stream goes in and out. `line` is already quoted.
+    pub async fn stream(
+        &self,
+        ctx: &StepCtx,
+        id: Identity,
+        line: &str,
+        timeout: Duration,
+    ) -> Result<crate::ssh::client::Exec, SshError> {
+        let key = load_for(&self.vault, id, &ctx.machine_id).await.map_err(|e| SshError::Transport(e.to_string()))?;
+        let through_probe = self.remote.as_ref().and_then(|r| r.reach(&ctx.machine_id));
+        let addr = match through_probe {
+            Some(reach) => reach.await.map_err(SshError::Transport)?,
+            None => self.addr(ctx).ok_or_else(|| SshError::Transport("the machine has no address".into()))?,
+        };
+        crate::ssh::client::start(addr, &ctx.machine_id, self.host_keys.clone(), id, &key, line, timeout).await
     }
 
     async fn plain(&self, ctx: &StepCtx, id: Identity, argv: &[String]) -> StepResult {

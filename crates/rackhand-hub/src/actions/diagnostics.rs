@@ -156,6 +156,7 @@ fn step_for(name: &str, argv: &[String]) -> Step {
         source: None,
         dest: None,
         port: None,
+        allow_relay: false,
         timeout: Some(format!("{}s", TIMEOUT.as_secs())),
         on_failure: None,
         retries: 0,

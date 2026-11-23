@@ -1,0 +1,22 @@
+name = "restic-backup"
+description = "Back up a directory of this machine with restic to a repository the machine can reach"
+targets = { kinds = ["linux"] }
+identity = "automation"
+risk = "normal"
+autonomy = 1
+
+[params.path]
+type = "string"
+pattern = "(/[a-zA-Z0-9_][a-zA-Z0-9_.-]*)+"
+
+# A repository: a path, or `sftp:user@host:/path`; its password is in `/etc/restic/password`, which only root reads.
+[params.repo]
+type = "string"
+pattern = "(/|sftp:)[a-zA-Z0-9_./:@-]{1,200}"
+
+[[step]]
+id = "backup"
+kind = "ssh"
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/bin/restic", "backup", "--quiet", "--repo", "{{repo}}", "--password-file", "/etc/restic/password", "{{path}}"]
+detached = true
+timeout = "12h"

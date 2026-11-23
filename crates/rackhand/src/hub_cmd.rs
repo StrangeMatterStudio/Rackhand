@@ -278,12 +278,14 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let relay_urls: Vec<iroh::RelayUrl> = config.relays.iter().filter_map(|r| r.parse().ok()).collect();
     let network = Arc::new(rackhand_hub::peers::tunnel::Network::deferred(relay_urls));
     let forwards = Arc::new(rackhand_hub::peers::tunnel::Forwards::new(db.clone(), network.clone()));
+    let transfer = Arc::new(rackhand_hub::executor::transfer_step::TransferStep::new(db.clone(), network.clone()));
     let executor = rackhand_hub::executor::Executor::new(vault.clone(), host_keys.clone())
-        .with_other(Arc::new(steps(&db, &vault, &notify, &ingest, &probe_server, network.clone())))
+        .with_other(Arc::new(steps(&db, &vault, &notify, &ingest, &probe_server, network.clone(), transfer.clone())))
         .with_remote(forwards)
         .with_hub(Arc::new(signer))
         .with_reboot(machines.clone(), REBOOT_WAIT);
-    let actions = rackhand_hub::actions::Actions::new(db.clone(), audit.clone(), bus.clone(), Arc::new(executor))
+    let executor = Arc::new(executor);
+    let actions = rackhand_hub::actions::Actions::new(db.clone(), audit.clone(), bus.clone(), executor.clone())
         .with_gate(Arc::new(ingest.clone()));
     // a job the hub's own reboot interrupted goes on (7.5.3 step 8)
     if let Err(e) = actions.resume().await {
@@ -362,6 +364,7 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         rackhand_proto::alpn::OPERATOR.to_vec(),
         rackhand_proto::alpn::PEER.to_vec(),
         rackhand_proto::alpn::TUNNEL.to_vec(),
+        rackhand_proto::alpn::XFER.to_vec(),
         rackhand_proto::alpn::JOIN.to_vec(),
     ];
     let relays = rackhand_net::relays::RelayConfig { relays: config.relays.clone(), ..Default::default() };
@@ -369,6 +372,20 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let endpoint = rackhand_net::endpoint::bind(node_key, &endpoint_config).await.map_err(|e| e.to_string())?;
     network.bind(endpoint.clone());
     let tunnels = rackhand_hub::peers::tunnel::Tunnels::new(db.clone(), audit.clone(), network);
+    // transfers: a device's files and streams go to a machine, a peer's backup is kept here (7.3.11, D58)
+    let devices =
+        Arc::new(rackhand_hub::peers::xfer_machine::MachineOpener::new(db.clone(), audit.clone(), executor.clone()));
+    transfer.bind(executor, devices.clone());
+    let kept = rackhand_hub::backup::peer::PeerBackups::new(
+        db.clone(),
+        audit.clone(),
+        rackhand_hub::backup::peer::dir(&config.data_dir),
+    );
+    let xfer = rackhand_hub::peers::xfer::Xfer::new(Arc::new(rackhand_hub::peers::xfer::ByCaller::new(
+        db.clone(),
+        Arc::new(kept),
+        devices,
+    )));
     let (ep, quic) = (endpoint.clone(), config.clone());
     let addrs: joins::HubAddrs = Arc::new(move || hub_addrs(&quic, &ep.addr().ip_addrs().copied().collect::<Vec<_>>()));
     let id_hex: String = endpoint.id().as_bytes().iter().map(|b| format!("{b:02x}")).collect();
@@ -385,6 +402,7 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         .route(rackhand_proto::alpn::OPERATOR, assist.handler())
         .route(rackhand_proto::alpn::PEER, peers.handler())
         .route(rackhand_proto::alpn::TUNNEL, tunnels.handler())
+        .route(rackhand_proto::alpn::XFER, xfer.handler())
         .route(rackhand_proto::alpn::JOIN, join.handler());
     tokio::spawn(router.serve());
     let watch = Arc::new(self_watch(config, &db, &ingest, &notify));
@@ -395,7 +413,21 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         Arc::new(move || rackhand_hub::library::config::hub(&deadman_db).ok().and_then(|c| c.deadman_url)),
         Arc::new(rackhand_hub::peers::deadman::Https),
     );
-    spawn_loops(ingest.clone(), incidents, notify, db.clone(), Nightly { config: config.clone(), watch });
+    spawn_loops(
+        ingest.clone(),
+        incidents,
+        notify,
+        db.clone(),
+        Nightly {
+            config: config.clone(),
+            watch,
+            peers: Some(PeerSend {
+                endpoint: endpoint.clone(),
+                audit: audit.clone(),
+                relays: config.relays.iter().filter_map(|r| r.parse().ok()).collect(),
+            }),
+        },
+    );
     patching::spawn(db.clone(), windows, patching::WINDOW_POLL);
     // the service checks of config/checks.toml, each at its interval (FR-9), and the agentless machines' polls (FR-10)
     rackhand_hub::checks::Checks::new(db.clone(), ingest.clone())
@@ -486,6 +518,7 @@ pub fn steps(
     ingest: &Ingest,
     probes: &ProbeServer,
     network: Arc<rackhand_hub::peers::tunnel::Network>,
+    transfer: Arc<rackhand_hub::executor::transfer_step::TransferStep>,
 ) -> rackhand_hub::executor::ByKind {
     use rackhand_hub::checks::steps::{Api, Hypervisor, Verify};
     use rackhand_runbook::runbook::StepKind;
@@ -500,6 +533,7 @@ pub fn steps(
         .with(StepKind::Rollback, hypervisor)
         .with(StepKind::ProbeCheck, Arc::new(probes.probe_checks()))
         .with(StepKind::Tunnel, Arc::new(rackhand_hub::executor::tunnel_step::TunnelStep::new(db.clone(), network)))
+        .with(StepKind::Transfer, transfer)
 }
 
 /// The drivers of the agentless machines' APIs (7.3.12): the appliance forms poll with them.
@@ -549,6 +583,14 @@ fn reachable(ip: std::net::IpAddr) -> bool {
 struct Nightly {
     config: HubConfig,
     watch: Arc<rackhand_hub::selfwatch::SelfWatch>,
+    /// What sends the new backup to the peers that gave this hub space.
+    peers: Option<PeerSend>,
+}
+
+struct PeerSend {
+    endpoint: iroh::Endpoint,
+    audit: rackhand_hub::audit::Audit,
+    relays: Vec<iroh::RelayUrl>,
 }
 
 /// The self-watch's checks for this hub: its database, its binary against the release manifest beside `hub.toml`
@@ -608,7 +650,23 @@ fn spawn_loops(
             if backup && !ingest.integrity_failed() {
                 let config = nightly.config.clone();
                 match tokio::task::spawn_blocking(move || backups::backup_now(&config, now)).await {
-                    Ok(Ok(path)) => tracing::info!(path = %path.display(), "nightly backup"),
+                    Ok(Ok(path)) => {
+                        tracing::info!(path = %path.display(), "nightly backup");
+                        if let Some(p) = nightly.peers.as_ref() {
+                            let (endpoint, audit, relays) = (p.endpoint.clone(), p.audit.clone(), p.relays.clone());
+                            let (db, dir) = (db.clone(), backups::backups_dir(&nightly.config));
+                            // direct paths only, as bulk transfers are (E29): a peer reached only through a relay waits
+                            tokio::spawn(async move {
+                                let sent = rackhand_hub::backup::peer::send_to_peers(
+                                    &endpoint, &db, &audit, &relays, &dir, false,
+                                )
+                                .await;
+                                for (site, result) in sent {
+                                    tracing::info!(%site, result = ?result, "backup sent to a peer");
+                                }
+                            });
+                        }
+                    }
                     Ok(Err(e)) => tracing::error!(error = %e, "nightly backup"),
                     Err(e) => tracing::error!(error = %e, "nightly backup"),
                 }

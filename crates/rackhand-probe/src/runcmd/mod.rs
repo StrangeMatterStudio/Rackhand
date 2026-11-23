@@ -8,6 +8,7 @@ pub mod install;
 pub mod matcher;
 pub mod quarantine;
 pub mod receive;
+pub mod zfs;
 
 use std::io::Read;
 use std::path::Path;
@@ -42,6 +43,8 @@ pub fn main(args: &[String]) -> ExitCode {
             Some(list) => detached::start(&list, rest),
             None => no_list(),
         },
+        Some("zfs-send") => zfs::send(rest),
+        Some("zfs-recv") => zfs::recv(rest),
         Some("job-supervise") => detached::supervise(rest),
         Some("job-status") => detached::status(rest),
         Some("job-stop") => detached::stop(rest),

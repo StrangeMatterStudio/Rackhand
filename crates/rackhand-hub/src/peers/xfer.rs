@@ -32,6 +32,45 @@ pub trait Opener: Send + Sync {
     fn open<'a>(&'a self, caller: EndpointId, offer: &'a XferOffer) -> BoxFuture<'a, Result<Box<dyn Sink>, String>>;
 }
 
+/// Linked peers send backups; everyone else is a person's device sending to a machine.
+pub struct ByCaller {
+    db: Arc<rackhand_store::Db>,
+    peers: Arc<dyn Opener>,
+    devices: Arc<dyn Opener>,
+}
+
+impl std::fmt::Debug for ByCaller {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ByCaller")
+    }
+}
+
+impl ByCaller {
+    pub fn new(db: Arc<rackhand_store::Db>, peers: Arc<dyn Opener>, devices: Arc<dyn Opener>) -> ByCaller {
+        ByCaller { db, peers, devices }
+    }
+}
+
+impl Opener for ByCaller {
+    fn open<'a>(&'a self, caller: EndpointId, offer: &'a XferOffer) -> BoxFuture<'a, Result<Box<dyn Sink>, String>> {
+        let is_peer = self
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row("SELECT count(*) FROM peers WHERE endpoint_id = ?1", [caller.to_string()], |r| {
+                    r.get::<_, i64>(0)
+                })
+            })
+            .is_ok_and(|n| n > 0);
+        // a peer's stream is an action on a machine, judged with the machine's policy; its backup is kept here
+        if is_peer && offer.kind != XferKind::Stream as i32 {
+            self.peers.open(caller, offer)
+        } else {
+            self.devices.open(caller, offer)
+        }
+    }
+}
+
 pub struct Xfer {
     opener: Arc<dyn Opener>,
 }
