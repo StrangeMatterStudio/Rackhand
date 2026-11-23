@@ -293,6 +293,21 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let starter = Arc::new(ActionsStarter(actions.clone()));
     // an incident no runbook takes, or whose runbook failed, goes to an assistant job through Assist (7.5.2)
     let assist = rackhand_hub::assist::Assist::new(db.clone(), audit.clone(), actions.clone());
+    // linked hubs (7.3.4): their summaries, queries and requests
+    let site_name: String = db
+        .readers()
+        .with(|c| c.query_row("SELECT name FROM sites WHERE is_local = 1", [], |r| r.get(0)))
+        .unwrap_or_else(|_| "hub".to_string());
+    let peers = rackhand_hub::peers::Peers::new(
+        db.clone(),
+        audit.clone(),
+        actions.clone(),
+        ingest.clone(),
+        &site_name,
+        env!("CARGO_PKG_VERSION"),
+    )
+    .with_registry(registry.clone());
+    peers.clone().spawn(bus.subscribe("peers"));
     rackhand_hub::incidents::routing::Routing::new(incidents.clone(), starter)
         .with_assist(Arc::new(AssistStarter(assist.clone())))
         .spawn(bus.subscribe("routing"));
@@ -336,6 +351,7 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         rackhand_proto::alpn::PROBE.to_vec(),
         rackhand_proto::alpn::MCP.to_vec(),
         rackhand_proto::alpn::OPERATOR.to_vec(),
+        rackhand_proto::alpn::PEER.to_vec(),
         rackhand_proto::alpn::JOIN.to_vec(),
     ];
     let endpoint_config =
@@ -354,6 +370,7 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         .route(rackhand_proto::alpn::PROBE, probe_server.handler())
         .route(rackhand_proto::alpn::MCP, mcp.handler())
         .route(rackhand_proto::alpn::OPERATOR, assist.handler())
+        .route(rackhand_proto::alpn::PEER, peers.handler())
         .route(rackhand_proto::alpn::JOIN, join.handler());
     tokio::spawn(router.serve());
     let watch = Arc::new(self_watch(config, &db, &ingest, &notify));

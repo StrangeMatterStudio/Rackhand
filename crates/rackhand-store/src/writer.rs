@@ -812,6 +812,8 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
         WriteCmd::PutConnBaseline(rows) => put_conn_baseline(conn, rows),
         WriteCmd::PutPolicy(row) => upsert_one(conn, "policies", "id", row),
         WriteCmd::PutQuarantineRule(row) => upsert_one(conn, "quarantine_rules", "id", row),
+        // the latest summary of each peer, one row
+        WriteCmd::PutPeerSummary(row) => upsert_one(conn, "peer_summaries", "peer_id", row),
         WriteCmd::PutScheduleState(row) => replace_one(conn, "schedule_state", row),
         WriteCmd::PutWindow(row) => replace_one(conn, "windows", row),
         other => Err(StoreError::Unimplemented(other.name())),
