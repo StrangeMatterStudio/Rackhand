@@ -59,7 +59,7 @@ fn substitute_text(text: &str, params: &BTreeMap<String, String>) -> String {
     out
 }
 
-fn with_params(step: &Step, params: &BTreeMap<String, String>) -> Step {
+pub(crate) fn with_params(step: &Step, params: &BTreeMap<String, String>) -> Step {
     let mut s = step.clone();
     s.checks = s.checks.map(|c| c.iter().map(|x| substitute_text(x, params)).collect());
     s.call = s.call.map(|c| substitute_text(&c, params));

@@ -3,6 +3,7 @@
 //! shell). Its paths are fixed: nothing a caller passes through sudo can point it at another list.
 
 pub mod detached;
+pub mod guest;
 pub mod install;
 pub mod matcher;
 pub mod receive;
@@ -34,6 +35,7 @@ pub fn main(args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
         Some("install-commands") => install_commands(),
         Some("install-keys") => install_keys(),
+        Some("install-guest") => install_guest(),
         Some("job-start") => match load_list() {
             Some(list) => detached::start(&list, rest),
             None => no_list(),
@@ -83,6 +85,29 @@ fn install_keys() -> ExitCode {
     match result {
         Ok(version) => {
             println!("applied key update version {version}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("run: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// `run install-guest` (7.3.12): enrolls a guest the hub is provisioning, from a payload signed by the pinned hub.
+fn install_guest() -> ExitCode {
+    use prost::Message;
+    let mut payload = Vec::new();
+    if std::io::stdin().take(16 * 1024).read_to_end(&mut payload).is_err() {
+        eprintln!("run: couldn't read the payload");
+        return ExitCode::from(2);
+    }
+    let result = rackhand_proto::common::SignedPayload::decode(payload.as_slice())
+        .map_err(|_| guest::GuestError::Malformed)
+        .and_then(|signed| guest::apply(&guest::GuestFiles::default(), &guest::System, &signed, now_ms()));
+    match result {
+        Ok(answer) => {
+            println!("{answer}");
             ExitCode::SUCCESS
         }
         Err(e) => {

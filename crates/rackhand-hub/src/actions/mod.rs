@@ -8,6 +8,7 @@ pub mod hypervisor_guard;
 pub mod jobs;
 mod locks;
 pub mod patching;
+pub mod provision;
 mod reboots;
 mod recovery;
 pub mod runner;

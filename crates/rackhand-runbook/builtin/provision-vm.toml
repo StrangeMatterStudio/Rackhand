@@ -1,0 +1,68 @@
+name = "provision-vm"
+description = "Clone a VM from a template on a Proxmox host with cloud-init that enrolls it, start it, bind it and wait for it"
+targets = { kinds = ["hypervisor"] }
+identity = "automation"
+risk = "normal"
+autonomy = 1
+
+[params.template]
+type = "int"
+description = "The VM id of the template to clone"
+
+[params.newid]
+type = "int"
+description = "The VM id of the new guest"
+
+[params.name]
+type = "string"
+pattern = "[A-Za-z0-9][A-Za-z0-9._-]{0,63}"
+description = "The machine's name; the guest's name too"
+
+[params.storage]
+type = "string"
+pattern = "[A-Za-z0-9][A-Za-z0-9_.-]{0,39}"
+description = "The storage the clone's disks go on"
+
+# The machine as the dashboard's Add would make it, with its one-time token.
+[[step]]
+id = "machine"
+kind = "hub"
+call = "provision_machine name={{name}}"
+timeout = "1m"
+
+[[step]]
+id = "clone"
+kind = "api"
+call = "clone vmid={{template}} newid={{newid}} name={{name}} storage={{storage}}"
+timeout = "20m"
+
+# The hypervisor's wrapper writes the cloud-init user data that runs the installer with that token.
+[[step]]
+id = "seed"
+kind = "hub"
+call = "send_guest kind=qemu vmid={{newid}}"
+timeout = "2m"
+
+[[step]]
+id = "cloud-init"
+kind = "api"
+call = "config_set kind=qemu vmid={{newid}} set.cicustom=user=local:snippets/rackhand-{{newid}}.yml set.agent=1"
+timeout = "2m"
+
+[[step]]
+id = "start"
+kind = "api"
+call = "power kind=qemu vmid={{newid}} action=start"
+timeout = "5m"
+
+[[step]]
+id = "bind"
+kind = "hub"
+call = "bind_guest kind=qemu vmid={{newid}} name={{name}}"
+timeout = "1m"
+
+[[step]]
+id = "enrolled"
+kind = "hub"
+call = "await_machine name={{name}}"
+timeout = "20m"

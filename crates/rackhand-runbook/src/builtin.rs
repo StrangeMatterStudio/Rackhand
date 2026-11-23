@@ -16,6 +16,8 @@ const RUNBOOKS: &[(&str, &str)] = &[
     ("service-restart", include_str!("../builtin/service-restart.toml")),
     ("compose-restart", include_str!("../builtin/compose-restart.toml")),
     ("compose-update", include_str!("../builtin/compose-update.toml")),
+    ("provision-vm", include_str!("../builtin/provision-vm.toml")),
+    ("provision-lxc", include_str!("../builtin/provision-lxc.toml")),
 ];
 
 /// Every built-in runbook, as `(name, content)`.

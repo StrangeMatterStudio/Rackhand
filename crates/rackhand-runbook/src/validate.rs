@@ -70,7 +70,7 @@ fn step_rules(rb: &Runbook, step: &Step) -> Result<(), String> {
         return Err("only `ssh` steps can be `detached`".into());
     }
     if step.kind == StepKind::Hub {
-        if !step.call.as_deref().is_some_and(|c| HUB_CALLS.contains(&c)) {
+        if !step.call.as_deref().is_some_and(|c| HUB_CALLS.contains(&crate::runbook::call_parts(c).0)) {
             return Err(format!("a `hub` step needs `call` to be one of {}", HUB_CALLS.join(", ")));
         }
         if step.cmd.is_some() || step.windows_script.is_some() {

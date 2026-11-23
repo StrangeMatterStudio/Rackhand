@@ -26,6 +26,8 @@ struct Guest {
     snapshots: Vec<Value>,
     /// Its configuration doesn't load (a 500).
     broken: bool,
+    /// A guest made through the API: its name, and whether it runs (the recorded two come from the fixtures).
+    made: Option<(String, bool)>,
 }
 
 #[derive(Debug)]
@@ -231,11 +233,57 @@ fn answer(state: &Mutex<State>, req: Request) -> (&'static str, String) {
             }
             ok(list)
         }
-        ("GET", ["nodes", n, kind @ ("lxc" | "qemu")]) if *n == node => ok(data(kind)),
+        ("GET", ["nodes", n, kind @ ("lxc" | "qemu")]) if *n == node => {
+            let mut list = data(kind);
+            for ((k, vmid), g) in &s.guests {
+                if let (true, Some((name, running))) = (k == kind, &g.made) {
+                    let status = if *running { "running" } else { "stopped" };
+                    list.as_array_mut()
+                        .into_iter()
+                        .for_each(|l| l.push(json!({ "vmid": vmid, "name": name, "status": status })));
+                }
+            }
+            ok(list)
+        }
+        ("POST", ["nodes", n, "lxc"]) if *n == node => {
+            let f: BTreeMap<String, String> = form(&req.body).into_iter().collect();
+            let vmid = f.get("vmid").and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+            let config = f.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect();
+            let g = Guest {
+                config,
+                made: Some((f.get("hostname").cloned().unwrap_or_default(), false)),
+                ..Guest::default()
+            };
+            s.guests.insert(("lxc".to_string(), vmid), g);
+            ok(json!("UPID:sim:create"))
+        }
+        ("POST", ["nodes", n, "qemu", vmid, "clone"]) if *n == node => {
+            let f: BTreeMap<String, String> = form(&req.body).into_iter().collect();
+            let source =
+                s.guests.get(&("qemu".to_string(), vmid.parse::<u32>().unwrap_or(0))).map(|g| g.config.clone());
+            let newid = f.get("newid").and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+            let g = Guest {
+                config: source.unwrap_or_default(),
+                made: Some((f.get("name").cloned().unwrap_or_default(), false)),
+                ..Guest::default()
+            };
+            s.guests.insert(("qemu".to_string(), newid), g);
+            ok(json!("UPID:sim:clone"))
+        }
+        ("POST", ["nodes", n, kind @ ("lxc" | "qemu"), vmid, "status", action]) if *n == node => {
+            let key = (kind.to_string(), vmid.parse::<u32>().unwrap_or(0));
+            if let Some((_, running)) = s.guests.get_mut(&key).and_then(|g| g.made.as_mut()) {
+                *running = *action == "start" || *action == "reboot";
+            }
+            ok(json!(format!("UPID:sim:{action}")))
+        }
         ("GET", ["nodes", n, kind, _, "status", "current"]) if *n == node => ok(data(&format!("{kind}_status"))),
         ("GET", ["nodes", n, "tasks", upid, "status"]) if *n == node => {
             let upid = url::form_urlencoded::parse(format!("u={upid}").as_bytes()).next().map(|(_, v)| v.into_owned());
             let upid = upid.unwrap_or_default();
+            if upid.starts_with("UPID:sim:") {
+                return ok(json!({ "status": "stopped", "exitstatus": "OK", "upid": upid }));
+            }
             let task = ["snapshot_create", "snapshot_rollback", "snapshot_delete", "failed_delete"]
                 .into_iter()
                 .find(|t| data(t).as_str() == Some(upid.as_str()))

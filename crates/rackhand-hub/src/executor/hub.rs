@@ -5,6 +5,9 @@
 //! - `rotate_keys`: the machine gets a key of its own for the automation user. The hub makes it, has the machine take it
 //!   beside the old one (`run install-keys`, a payload signed with the node key), logs in with it, keeps it, and has the
 //!   machine drop the old one, which it then finds refused. Stopped halfway, the same key is taken up again.
+//! - `provision_machine`, `send_guest`, `bind_guest`, `await_machine`: the hub's side of `provision-vm` and
+//!   `provision-lxc` (T64): the guest's machine and token; the hypervisor's wrapper giving the guest its enrollment
+//!   (`run install-guest`, a payload signed with the node key); the guest's binding; and waiting for it to enroll.
 //! - `revoke`: waits until the machine refuses the hub's key (its accounts are gone, which is how the hub knows an
 //!   uninstall happened), then revokes the machine. A machine at access level `monitor` has no such account: it is
 //!   revoked at once.
@@ -19,8 +22,53 @@ use crate::actions::runner::{BoxFuture, StepCtx, StepOutcome, StepResult};
 use crate::ssh::client::SshError;
 use crate::ssh::keys::{Identity, commit_next, load_for, next_for};
 
+/// How a guest being provisioned finds the installer: its address and arguments, with the guest's one-time token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuestEnrollment {
+    pub script_url: String,
+    pub args: Vec<String>,
+    /// The installer is fetched from the hub's own certificate (the offline variant).
+    pub self_signed: bool,
+}
+
+fn not_provisioning<'a, T: Send + 'a>() -> BoxFuture<'a, Result<T, String>> {
+    Box::pin(async { Err("provisioning_unavailable".to_string()) })
+}
+
 /// What the hub knows that a `hub` step needs, which the Executor doesn't.
 pub trait HubSide: Send + Sync {
+    /// Makes the machine named `name` on the hypervisor's site, pending, and its token, for the job's guest.
+    fn provision_machine<'a>(
+        &'a self,
+        _job: &'a str,
+        _host: &'a str,
+        _name: &'a str,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        not_provisioning()
+    }
+    /// The installer's address and arguments for the guest this job is making.
+    fn guest_enrollment(&self, _job: &str) -> Option<GuestEnrollment> {
+        None
+    }
+    /// The protobuf bytes of a guest request with this JSON `body`, signed with the node key.
+    fn signed_guest(&self, _now_ms: i64, _body: &[u8]) -> Vec<u8> {
+        Vec::new()
+    }
+    /// Binds the machine `name` to the guest the job made, confirmed.
+    fn bind_guest<'a>(
+        &'a self,
+        _job: &'a str,
+        _host: &'a str,
+        _name: &'a str,
+        _kind: &'a str,
+        _vmid: u64,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        not_provisioning()
+    }
+    /// Whether the machine `name` on the hypervisor's site has enrolled.
+    fn machine_enrolled(&self, _host: &str, _name: &str) -> bool {
+        false
+    }
     /// The protobuf bytes of the signed command list for the runbooks enabled now, versioned by `now_ms` as the list in a
     /// join is, so that the machine finds it newer.
     fn signed_commands(&self, now_ms: i64) -> Vec<u8>;
@@ -41,7 +89,44 @@ const ROTATE_STEP: std::time::Duration = std::time::Duration::from_secs(30);
 impl Executor {
     pub(super) async fn hub_step(&self, ctx: &StepCtx, step: &Step) -> StepResult {
         let Some(hub) = &self.hub else { return StepResult::failed("hub_unavailable") };
-        match step.call.as_deref() {
+        let call = step.call.as_deref().unwrap_or("");
+        let (name, args) = rackhand_runbook::runbook::call_parts(call);
+        let arg = |key: &str| args.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+        match step.call.is_some().then_some(name) {
+            Some("provision_machine") => {
+                let Some(guest) = arg("name") else { return StepResult::failed("no_name") };
+                match hub.provision_machine(&ctx.job_id, &ctx.machine_id, guest).await {
+                    Ok(()) => {
+                        succeeded_text(format!("made the machine {guest}, pending, with a token for its installer\n"))
+                    }
+                    Err(e) => StepResult::failed(e),
+                }
+            }
+            Some("send_guest") => self.send_guest(ctx, hub.as_ref(), arg("kind"), arg("vmid")).await,
+            Some("bind_guest") => {
+                let (Some(guest), Some(kind), Some(vmid)) =
+                    (arg("name"), arg("kind"), arg("vmid").and_then(|v| v.parse().ok()))
+                else {
+                    return StepResult::failed("bind_needs_name_kind_vmid");
+                };
+                match hub.bind_guest(&ctx.job_id, &ctx.machine_id, guest, kind, vmid).await {
+                    Ok(()) => succeeded_text(format!("bound {guest} to {kind} {vmid}\n")),
+                    Err(e) => StepResult::failed(e),
+                }
+            }
+            Some("await_machine") => {
+                let Some(guest) = arg("name") else { return StepResult::failed("no_name") };
+                let deadline = tokio::time::Instant::now() + ctx.timeout;
+                loop {
+                    if hub.machine_enrolled(&ctx.machine_id, guest) {
+                        return succeeded_text(format!("{guest} has enrolled\n"));
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        return StepResult::failed("machine_not_enrolled");
+                    }
+                    tokio::time::sleep(AWAIT_EVERY.min(ctx.timeout)).await;
+                }
+            }
             Some("send_commands") => {
                 let payload = hub.signed_commands(now_ms());
                 let command = format!("sudo {WRAPPER} install-commands");
@@ -54,6 +139,36 @@ impl Executor {
             Some("revoke") => self.revoke_machine(ctx, hub.as_ref()).await,
             Some(other) => StepResult::failed(format!("hub_call_unavailable:{other}")),
             None => StepResult::failed("no_call"),
+        }
+    }
+}
+
+/// How often `await_machine` looks.
+const AWAIT_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn succeeded_text(out: String) -> StepResult {
+    StepResult { outcome: StepOutcome::Succeeded, stdout: out.into_bytes(), ..StepResult::failed("") }
+}
+
+impl Executor {
+    /// `send_guest`: the hypervisor's wrapper gives the guest its enrollment (a VM's user data, or the installer run in
+    /// the container); the step's output is what the wrapper answered, a VM's `cicustom` value.
+    async fn send_guest(&self, ctx: &StepCtx, hub: &dyn HubSide, kind: Option<&str>, vmid: Option<&str>) -> StepResult {
+        let (Some(kind), Some(vmid)) = (kind, vmid.and_then(|v| v.parse::<u64>().ok())) else {
+            return StepResult::failed("send_guest_needs_kind_and_vmid");
+        };
+        let Some(enrollment) = hub.guest_enrollment(&ctx.job_id) else {
+            return StepResult::failed("no_provisioned_machine");
+        };
+        let body = serde_json::json!({
+            "kind": kind, "vmid": vmid, "script_url": enrollment.script_url, "args": enrollment.args,
+            "self_signed": enrollment.self_signed,
+        });
+        let payload = hub.signed_guest(now_ms(), body.to_string().as_bytes());
+        let command = format!("sudo {WRAPPER} install-guest");
+        match self.ssh_input(ctx, Identity::Automation, &command, &payload, ctx.timeout).await {
+            Ok(out) => from_output(command, out),
+            Err(e) => StepResult { command: Some(command), ..StepResult::failed(ssh_failure(&e)) },
         }
     }
 }

@@ -582,7 +582,13 @@ async fn refresh_sends_the_enabled_runbooks_signed_and_newer() {
     library.seed(rackhand_runbook::builtin::runbooks(), 1).await.unwrap();
     let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
     let registry = rackhand_hub::registry::Registry::load(db.clone()).unwrap();
-    let signer = joins::CommandSigner { db, signing: key.clone(), addrs: Default::default(), registry };
+    let signer = joins::CommandSigner {
+        db,
+        signing: key.clone(),
+        addrs: Default::default(),
+        registry,
+        provisioning: Default::default(),
+    };
     let (now, later) = (1_795_000_000_000i64, 1_795_000_500_000i64);
     let bytes = signer.signed_commands(now);
     let signed = rackhand_proto::common::SignedPayload::decode(bytes.as_slice()).unwrap();
@@ -628,6 +634,7 @@ async fn key_updates_name_the_addresses_the_hub_connects_from() {
         signing: ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]),
         addrs: Default::default(),
         registry,
+        provisioning: Default::default(),
     };
     assert!(signer.ssh_from("local").is_empty(), "no address known before the endpoint is up");
     let addrs: joins::HubAddrs =
@@ -662,6 +669,7 @@ async fn the_hub_revokes_through_its_registry_and_knows_which_machines_have_acco
         signing: ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]),
         addrs: Default::default(),
         registry,
+        provisioning: Default::default(),
     };
     assert!(signer.managed("managed") && !signer.managed("monitor") && !signer.managed("nobody"));
     signer.revoke("monitor").await.unwrap();
@@ -670,4 +678,118 @@ async fn the_hub_revokes_through_its_registry_and_knows_which_machines_have_acco
     };
     assert_eq!((state("monitor"), state("managed")), ("revoked".to_string(), "enrolled".to_string()));
     assert!(signer.revoke("nobody").await.is_err());
+}
+
+/// What `provision-vm` and `provision-lxc` ask of the hub (plan T64): the guest's machine and token, the installer's
+/// address with the hub's ticket and that token, a request signed by the node key, the binding, and whether it enrolled.
+#[tokio::test(flavor = "multi_thread")]
+async fn provisioning_gives_the_guest_its_token_ticket_and_installer() {
+    use prost::Message;
+    use rackhand_hub::actions::patching::hypervisor::{HostGuest, HostView, Hosts};
+    use rackhand_hub::actions::runner::BoxFuture;
+    use rackhand_hub::executor::HubSide;
+    #[derive(Debug)]
+    struct Pve;
+    impl Hosts for Pve {
+        fn view<'a>(&'a self, _host: &'a str) -> BoxFuture<'a, Result<HostView, String>> {
+            Box::pin(async {
+                Ok(HostView {
+                    node: "pve9".into(),
+                    nodes: vec!["pve9".into()],
+                    guests: vec![HostGuest { vmid: 300, kind: "qemu".into(), name: "web-new".into(), running: true }],
+                })
+            })
+        }
+    }
+    let dir = std::env::temp_dir().join(format!("rackhand-signer-provision-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("release")).unwrap();
+    let db = Arc::new(Db::open(&dir.join("hub.db")).unwrap());
+    {
+        let c = rusqlite::Connection::open(dir.join("hub.db")).unwrap();
+        c.execute("INSERT INTO sites (id, name, timezone, is_local) VALUES ('s', 'home', 'UTC', 1)", []).unwrap();
+        c.execute(
+            "INSERT INTO machines (id, site_id, name, kind, state) VALUES ('host', 's', 'pve', 'hypervisor', 'enrolled')",
+            [],
+        )
+        .unwrap();
+    }
+    let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+    let registry = rackhand_hub::registry::Registry::load(db.clone()).unwrap();
+    let signer = joins::CommandSigner {
+        db: db.clone(),
+        signing: key.clone(),
+        addrs: Default::default(),
+        registry,
+        provisioning: joins::Provisioning { hosts: Some(Arc::new(Pve)), ..Default::default() },
+    };
+    let addrs: joins::HubAddrs = Arc::new(|| vec!["192.0.2.10:7443".into(), "198.51.100.7:7443".into()]);
+    signer.addrs.set(("ab".repeat(32), addrs)).ok().unwrap();
+    assert!(signer.guest_enrollment("j1").is_none(), "nothing made for the job yet");
+    signer.provision_machine("j1", "host", "web-new").await.unwrap();
+    assert!(signer.provision_machine("j2", "host", "web-new").await.is_err(), "a name that is taken");
+    assert!(signer.provision_machine("j3", "nobody", "other").await.is_err(), "a host that isn't one");
+
+    // the release's own installer, its TLS checked, with the hub's ticket and the machine's one-time token
+    let e = signer.guest_enrollment("j1").unwrap();
+    assert!(!e.self_signed && e.script_url.starts_with("https://github.com/"), "{e:?}");
+    let ticket = format!("rackhand1:{}@192.0.2.10:7443,198.51.100.7:7443", "ab".repeat(32));
+    assert_eq!(e.args[..2], ["--ticket".to_string(), ticket], "{e:?}");
+    assert_eq!(e.args[2], "--token");
+    assert_eq!(e.args.len(), 4, "a machine joins at the access level its token names");
+    let hash: Vec<u8> = db
+        .readers()
+        .with(|c| c.query_row("SELECT hash FROM join_tokens ORDER BY rowid DESC LIMIT 1", [], |r| r.get(0)))
+        .unwrap();
+    assert_eq!(hash, rackhand_hub::registry::tokens::hash(&rackhand_hub::registry::tokens::Token::parse(&e.args[3])));
+    // a hub that holds its own release serves the installer itself, to a guest that has no way to GitHub
+    let offline = joins::Provisioning {
+        hosts: Some(Arc::new(Pve)),
+        release_dir: Some(dir.join("release")),
+        web_port: 8443,
+        ..Default::default()
+    };
+    std::fs::write(dir.join("release/install.sh"), "#!/bin/sh\n").unwrap();
+    let registry = rackhand_hub::registry::Registry::load(db.clone()).unwrap();
+    let signer2 = joins::CommandSigner {
+        db: db.clone(),
+        signing: key.clone(),
+        addrs: signer.addrs.clone(),
+        registry,
+        provisioning: offline,
+    };
+    signer2.provision_machine("j4", "host", "second").await.unwrap();
+    let o = signer2.guest_enrollment("j4").unwrap();
+    assert!(o.self_signed && o.script_url == "https://192.0.2.10:8443/install.sh", "{o:?}");
+    assert!(o.args.windows(2).any(|w| w == ["--release-url", "https://192.0.2.10:8443/release"]), "{o:?}");
+    assert!(o.args.contains(&"--self-signed".to_string()));
+
+    // the request is the node key's, of its own kind
+    let (now, later) = (1_795_000_000_000i64, 1_795_000_500_000i64);
+    let signed = rackhand_proto::common::SignedPayload::decode(signer.signed_guest(now, b"{}").as_slice()).unwrap();
+    let env = rackhand_proto::signed::verify(&signed, &key.verifying_key(), "guest", now as u64 - 1, now + 1).unwrap();
+    assert_eq!((env.version, env.expires_at_ms - env.signed_at_ms), (now as u64, 600_000));
+    assert!(rackhand_proto::signed::verify(&signed, &key.verifying_key(), "keys", 0, now).is_err());
+    let again = rackhand_proto::common::SignedPayload::decode(signer.signed_guest(later, b"{}").as_slice()).unwrap();
+    assert!(rackhand_proto::signed::verify(&again, &key.verifying_key(), "guest", now as u64, later).is_ok(), "newer");
+
+    // bound by the runbook, on the node the hypervisor named; then enrolled once its join and SSH test are done
+    assert!(!signer.machine_enrolled("host", "web-new"));
+    signer.bind_guest("j1", "host", "web-new", "qemu", 300).await.unwrap();
+    let (state, by, reference): (String, String, String) = db
+        .readers()
+        .with(|c| {
+            c.query_row(
+                "SELECT proxmox_ref_state, proxmox_ref_confirmed_by, proxmox_ref FROM machines WHERE name = 'web-new'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+        })
+        .unwrap();
+    assert_eq!((state.as_str(), by.as_str()), ("confirmed", "job:j1"));
+    assert!(reference.contains("\"node\":\"pve9\"") && reference.contains("\"vmid\":300"), "{reference}");
+    assert!(signer.bind_guest("j1", "host", "web-new", "qemu", 301).await.is_err(), "fixed once bound");
+    let c = rusqlite::Connection::open(dir.join("hub.db")).unwrap();
+    c.execute("UPDATE machines SET state = 'enrolled' WHERE name = 'web-new'", []).unwrap();
+    assert!(signer.machine_enrolled("host", "web-new"));
 }

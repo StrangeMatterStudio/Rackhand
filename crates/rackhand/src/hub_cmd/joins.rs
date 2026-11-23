@@ -66,6 +66,26 @@ pub struct CommandSigner {
     pub addrs: Arc<std::sync::OnceLock<(String, HubAddrs)>>,
     /// What `unenroll` revokes machines through.
     pub registry: Arc<rackhand_hub::registry::Registry>,
+    pub provisioning: Provisioning,
+}
+
+/// What `provision-vm` and `provision-lxc` need beyond the registry (T64).
+#[derive(Default)]
+pub struct Provisioning {
+    /// Reads a hypervisor's node, for the binding.
+    pub hosts: Option<Arc<dyn rackhand_hub::actions::patching::hypervisor::Hosts>>,
+    /// The release the hub holds; a guest takes its installer from the hub then, not from GitHub.
+    pub release_dir: Option<std::path::PathBuf>,
+    /// The dashboard's port, for the installer's address (8443 when not set).
+    pub web_port: u16,
+    /// The token of the machine each job made, until the guest has its enrollment.
+    pub made: std::sync::Mutex<std::collections::HashMap<String, String>>,
+}
+
+impl std::fmt::Debug for Provisioning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Provisioning").finish_non_exhaustive()
+    }
 }
 
 impl std::fmt::Debug for CommandSigner {
@@ -75,6 +95,94 @@ impl std::fmt::Debug for CommandSigner {
 }
 
 impl rackhand_hub::executor::HubSide for CommandSigner {
+    fn provision_machine<'a>(
+        &'a self,
+        job: &'a str,
+        host: &'a str,
+        name: &'a str,
+    ) -> rackhand_hub::actions::runner::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let now = rackhand_store::ids::now_ms();
+            let (_, token) =
+                rackhand_hub::actions::provision::pending_guest(&self.registry, host, name, &format!("job:{job}"), now)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            self.provisioning.made.lock().unwrap_or_else(|e| e.into_inner()).insert(job.into(), token.as_str().into());
+            Ok(())
+        })
+    }
+
+    /// The installer's line for the guest: this hub's ticket and the machine's token, from the release (or, when the hub
+    /// holds one, from the hub itself, whose own certificate the download then trusts).
+    fn guest_enrollment(&self, job: &str) -> Option<rackhand_hub::executor::GuestEnrollment> {
+        let token = self.provisioning.made.lock().unwrap_or_else(|e| e.into_inner()).get(job)?.clone();
+        let (id, addrs) = self.addrs.get()?;
+        let addrs = addrs();
+        let ticket = format!("rackhand1:{id}@{}", addrs.join(","));
+        let mut args = vec!["--ticket".to_string(), ticket, "--token".into(), token];
+        let held = self.provisioning.release_dir.as_ref().is_some_and(|d| d.join("install.sh").is_file());
+        let ip = addrs.first().and_then(|a| a.parse::<std::net::SocketAddr>().ok()).map(|a| a.ip());
+        if let (true, Some(ip)) = (held, ip) {
+            let port = if self.provisioning.web_port == 0 { 8443 } else { self.provisioning.web_port };
+            let hub = std::net::SocketAddr::new(ip, port);
+            args.extend(["--release-url".into(), format!("https://{hub}/release"), "--self-signed".into()]);
+            return Some(rackhand_hub::executor::GuestEnrollment {
+                script_url: format!("https://{hub}/install.sh"),
+                args,
+                self_signed: true,
+            });
+        }
+        let url = format!(
+            "https://github.com/StrangeMatterStudio/Rackhand/releases/download/v{}/install.sh",
+            env!("CARGO_PKG_VERSION")
+        );
+        Some(rackhand_hub::executor::GuestEnrollment { script_url: url, args, self_signed: false })
+    }
+
+    fn signed_guest(&self, now_ms: i64, body: &[u8]) -> Vec<u8> {
+        use prost::Message;
+        rackhand_proto::signed::sign(
+            &self.signing,
+            "guest",
+            now_ms.max(0) as u64,
+            now_ms,
+            now_ms + REFRESH_COMMANDS_TTL_MS,
+            body,
+        )
+        .encode_to_vec()
+    }
+
+    fn bind_guest<'a>(
+        &'a self,
+        job: &'a str,
+        host: &'a str,
+        name: &'a str,
+        kind: &'a str,
+        vmid: u64,
+    ) -> rackhand_hub::actions::runner::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let hosts = self.provisioning.hosts.as_ref().ok_or("no_hypervisor_api")?;
+            let node = hosts.view(host).await?.node;
+            let (machine, _) = rackhand_hub::actions::provision::machine_named(&self.db, host, name)
+                .ok_or_else(|| "no_such_machine".to_string())?;
+            rackhand_hub::actions::provision::bind_guest(
+                &self.db,
+                host,
+                &node,
+                &machine,
+                kind,
+                vmid,
+                &format!("job:{job}"),
+            )
+            .await
+            .map_err(|e| e.to_string())
+        })
+    }
+
+    fn machine_enrolled(&self, host: &str, name: &str) -> bool {
+        rackhand_hub::actions::provision::is_enrolled(&self.db, host, name)
+    }
+
     fn signed_keys(&self, now_ms: i64, body: &[u8]) -> Vec<u8> {
         use prost::Message;
         rackhand_proto::signed::sign(

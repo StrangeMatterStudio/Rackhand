@@ -168,6 +168,28 @@ timeout = "{timeout}"
             self.from.clone()
         }
 
+        fn guest_enrollment(&self, _job: &str) -> Option<rackhand_hub::executor::GuestEnrollment> {
+            Some(rackhand_hub::executor::GuestEnrollment {
+                script_url: "https://example.net/rackhand/install.sh".into(),
+                args: ["--ticket", "rackhand1:ab@192.0.2.10:7443", "--token", "01JDTOKEN0123456789ABCDEF"]
+                    .map(String::from)
+                    .to_vec(),
+                self_signed: false,
+            })
+        }
+
+        fn signed_guest(&self, now_ms: i64, body: &[u8]) -> Vec<u8> {
+            let key = if self.forged.load(std::sync::atomic::Ordering::SeqCst) {
+                SigningKey::from_bytes(&[9u8; 32])
+            } else {
+                self.key.clone()
+            };
+            let signed = rackhand_proto::signed::sign(&key, "guest", now_ms as u64, now_ms, now_ms + 600_000, body);
+            let mut out = Vec::new();
+            prost::Message::encode(&signed, &mut out).unwrap();
+            out
+        }
+
         fn managed(&self, _machine: &str) -> bool {
             true
         }
@@ -845,6 +867,82 @@ timeout = "20s"
             let done = lab.actions.run(StartJob::runbook("keys-rotate", "m1", "user:admin")).await.unwrap();
             assert_eq!(done.outcome, JobOutcome::Succeeded, "{done:?}");
             assert!(!accepts(&lab, &hub_key).await);
+        }
+    }
+
+    /// `send_guest` (T64): a hypervisor's wrapper gives a guest its enrollment: a VM's cloud-init user data, or the
+    /// installer run inside a container.
+    mod provision {
+        use super::*;
+
+        const VM: &str = "name = \"seed-vm\"\ndescription = \"d\"\ntargets = { kinds = [\"linux\"] }\nidentity = \"automation\"\n\
+            risk = \"normal\"\nautonomy = 1\n[[step]]\nid = \"seed\"\nkind = \"hub\"\ncall = \"send_guest kind=qemu vmid=300\"\ntimeout = \"1m\"\n";
+
+        async fn save(lab: &Lab) {
+            let (library, _) = Library::new(lab.db.clone(), Audit::new(lab.db.writer()));
+            library.save(Kind::Runbook, "seed-vm", VM, "admin", 1).await.unwrap();
+            let lxc = VM.replace("seed-vm", "seed-lxc").replace("kind=qemu vmid=300", "kind=lxc vmid=400");
+            library.save(Kind::Runbook, "seed-lxc", &lxc, "admin", 1).await.unwrap();
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn send_guest_writes_the_vms_user_data_and_answers_with_its_cicustom() {
+            let lab = lab("seed-vm", "60s", Duration::from_secs(5)).await;
+            save(&lab).await;
+            let r = lab.actions.run(StartJob::runbook("seed-vm", "m1", "user:admin")).await.unwrap();
+            let log = String::from_utf8_lossy(&step(&lab.db, &r.job_id).stderr).to_string();
+            assert_eq!(r.outcome, JobOutcome::Succeeded, "{r:?}\n{log}");
+            let out = String::from_utf8_lossy(&step(&lab.db, &r.job_id).stdout).to_string();
+            assert!(out.contains("user=local:snippets/rackhand-300.yml"), "{out}");
+            let file = "/var/lib/vz/snippets/rackhand-300.yml";
+            let data = String::from_utf8_lossy(&lab.machine.root(&format!("cat {file}")).stdout).to_string();
+            assert!(data.starts_with("#cloud-config\nruncmd:\n"), "{data}");
+            assert!(
+                data.contains("https://example.net/rackhand/install.sh")
+                    && data.contains("--token 01JDTOKEN0123456789ABCDEF"),
+                "{data}"
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&lab.machine.root(&format!("stat -c '%a %U' {file}")).stdout).trim(),
+                "644 root"
+            );
+            // the hub's request of a minute ago isn't one to take again: the second is newer and goes through
+            let again = lab.actions.run(StartJob::runbook("seed-vm", "m1", "user:admin")).await.unwrap();
+            assert_eq!(again.outcome, JobOutcome::Succeeded);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn send_guest_runs_the_installer_inside_the_container() {
+            let lab = lab("seed-lxc", "60s", Duration::from_secs(5)).await;
+            save(&lab).await;
+            // `pct` as a hypervisor has it, which only records what it was asked to run
+            sh(
+                &lab.machine,
+                "printf '#!/bin/sh\\ncase \"$1\" in status) echo \"status: running\";; exec) shift; echo \"$@\" > /tmp/pct-exec.log; echo enrolled as machine 01JD;; esac\\n' > /usr/sbin/pct && chmod 755 /usr/sbin/pct",
+            );
+            let r = lab.actions.run(StartJob::runbook("seed-lxc", "m1", "user:admin")).await.unwrap();
+            let log = String::from_utf8_lossy(&step(&lab.db, &r.job_id).stderr).to_string();
+            assert_eq!(r.outcome, JobOutcome::Succeeded, "{r:?}\n{log}");
+            let out = String::from_utf8_lossy(&step(&lab.db, &r.job_id).stdout).to_string();
+            assert!(out.contains("enrolled as machine"), "what the installer printed: {out}");
+            let asked = String::from_utf8_lossy(&lab.machine.root("cat /tmp/pct-exec.log").stdout).to_string();
+            assert!(asked.starts_with("400 -- sh -c "), "{asked}");
+            assert!(
+                asked.contains("https://example.net/rackhand/install.sh")
+                    && asked.contains("--ticket rackhand1:ab@192.0.2.10:7443"),
+                "{asked}"
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_request_the_pinned_hub_didnt_sign_does_nothing() {
+            let lab = lab("seed-forged", "60s", Duration::from_secs(5)).await;
+            save(&lab).await;
+            lab.signer.forged.store(true, std::sync::atomic::Ordering::SeqCst);
+            let r = lab.actions.run(StartJob::runbook("seed-vm", "m1", "user:admin")).await.unwrap();
+            assert_eq!(r.outcome, JobOutcome::Failed, "{r:?}");
+            assert!(String::from_utf8_lossy(&step(&lab.db, &r.job_id).stderr).contains("signature"));
+            assert!(!lab.machine.root("test -e /var/lib/vz/snippets/rackhand-300.yml").status.success());
         }
     }
 

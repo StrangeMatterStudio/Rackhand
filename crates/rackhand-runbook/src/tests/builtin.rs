@@ -1,7 +1,7 @@
 //! The built-in runbooks (7.8.7, plan T59c): shipped with the hub and seeded into the Library.
 
 use crate::builtin;
-use crate::runbook::{Runbook, StepKind};
+use crate::runbook::{Runbook, Step, StepKind};
 
 const WRAPPER: &str = "/usr/local/lib/rackhand/run";
 
@@ -135,6 +135,8 @@ fn all_parse_and_have_design_risk() {
         ("sudoers-refresh", High),
         ("keys-rotate", High),
         ("unenroll", High),
+        ("provision-vm", Normal),
+        ("provision-lxc", Normal),
     ];
     for (name, source) in builtin::runbooks() {
         let r = Runbook::parse(source).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -258,4 +260,88 @@ fn unenroll_uninstalls_then_revokes() {
     assert_eq!(r.steps[1].call.as_deref(), Some("revoke"));
     assert!(r.params.is_empty() && r.triggers.is_none());
     assert!(!r.steps[1].needs_account(), "revoking needs no account on the machine");
+}
+
+/// A `hub` step's `call` is a name and then `key=value` words (T64): `parse` checks the name against the fixed list.
+#[test]
+fn a_call_is_a_name_and_key_value_words() {
+    use crate::runbook::call_parts;
+    assert_eq!(call_parts("revoke"), ("revoke", vec![]));
+    let (name, args) = call_parts("clone vmid=9000 newid=120 name=web-1 set.cicustom=user=local:snippets/x.yml");
+    assert_eq!(name, "clone");
+    assert_eq!(
+        args,
+        [("vmid", "9000"), ("newid", "120"), ("name", "web-1"), ("set.cicustom", "user=local:snippets/x.yml")]
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+    );
+    assert_eq!(call_parts("  a   b=c ").0, "a", "extra spaces make no empty word");
+    assert_eq!(call_parts("a b c=d").1, [("c".to_string(), "d".to_string())], "a word without `=` is no argument");
+    let source = |call: &str| {
+        format!(
+            "name = \"r\"
+description = \"d\"
+identity = \"automation\"
+risk = \"normal\"
+autonomy = 1
+             [[step]]
+id = \"s\"
+kind = \"hub\"
+call = \"{call}\"
+"
+        )
+    };
+    assert!(Runbook::parse(&source("bind_guest kind=qemu vmid=1 name=web")).is_ok());
+    assert!(Runbook::parse(&source("format_disk vmid=1")).is_err(), "the name is checked, not the whole text");
+}
+
+/// `provision-vm` and `provision-lxc` (FR-23): the guest is made on the hypervisor, enrolls itself, and is bound by the
+/// runbook that made it. Each parameter is a whole value of a known shape, so nothing in a call can be widened.
+#[test]
+fn provision_runbooks_make_start_enroll_and_bind() {
+    use crate::params::check_value;
+    use StepKind::{Api, Hub};
+    let parsed = |name: &str| Runbook::parse(builtin::runbook(name).unwrap_or_else(|| panic!("{name}"))).unwrap();
+    let calls = |r: &Runbook| {
+        r.steps
+            .iter()
+            .map(|s| s.call.as_deref().unwrap_or("").split(' ').next().unwrap_or("").to_string())
+            .collect::<Vec<_>>()
+    };
+    let vm = parsed("provision-vm");
+    assert_eq!(vm.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), [Hub, Api, Hub, Api, Api, Hub, Hub]);
+    assert_eq!(
+        calls(&vm),
+        ["provision_machine", "clone", "send_guest", "config_set", "power", "bind_guest", "await_machine"]
+    );
+    let lxc = parsed("provision-lxc");
+    assert_eq!(lxc.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), [Hub, Api, Api, Hub, Hub, Hub]);
+    assert_eq!(calls(&lxc), ["provision_machine", "create_lxc", "power", "send_guest", "bind_guest", "await_machine"]);
+    let needs = |r: &Runbook| r.steps.iter().map(Step::needs_account).collect::<Vec<_>>();
+    assert_eq!(
+        needs(&vm),
+        [false, false, true, false, false, false, false],
+        "only the guest's enrollment uses an account"
+    );
+    assert_eq!(needs(&lxc), [false, false, false, true, false, false]);
+    for r in [&vm, &lxc] {
+        assert_eq!((r.risk, r.autonomy), (crate::runbook::Risk::Normal, 1));
+        assert_eq!(r.targets.kinds, ["hypervisor"]);
+        assert!(r.triggers.is_none(), "an incident never makes a guest");
+        assert!(r.steps.iter().all(|s| !s.always && !s.detached));
+    }
+    for (value, ok) in [("web-1", true), ("a.b_c", true), ("-x", false), ("a b", false), ("a;b", false), ("", false)] {
+        assert_eq!(check_value(&vm.params["name"], value).is_ok(), ok, "name {value:?}");
+    }
+    for (value, ok) in [("120", true), ("x", false), ("1 2", false), ("-1", false)] {
+        assert_eq!(check_value(&vm.params["newid"], value).is_ok(), ok, "newid {value:?}");
+    }
+    for (value, ok) in [
+        ("local:vztmpl/alpine-3.20-default_20240908_amd64.tar.xz", true),
+        ("tank:vztmpl/debian-12.tar.zst", true),
+        ("local:iso/x.iso", false),
+        ("local:vztmpl/../../etc", false),
+        ("x", false),
+    ] {
+        assert_eq!(check_value(&lxc.params["template"], value).is_ok(), ok, "template {value:?}");
+    }
 }

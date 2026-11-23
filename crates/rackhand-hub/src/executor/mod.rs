@@ -21,7 +21,7 @@ use crate::ssh::quote;
 use crate::vault::Vault;
 
 pub use detached::POLL;
-pub use hub::HubSide;
+pub use hub::{GuestEnrollment, HubSide};
 pub use reboot::{NO_REPORT, RebootFacts};
 
 /// Step kinds whose systems aren't wired to the Executor yet fail with `<kind>_unavailable`.

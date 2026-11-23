@@ -1,0 +1,62 @@
+name = "provision-lxc"
+description = "Create an LXC container on a Proxmox host from a template, start it, enroll it, bind it and wait for it"
+targets = { kinds = ["hypervisor"] }
+identity = "automation"
+risk = "normal"
+autonomy = 1
+
+[params.template]
+type = "string"
+pattern = "[A-Za-z0-9][A-Za-z0-9_.-]{0,39}:vztmpl/[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}"
+description = "The container template, as storage:vztmpl/file"
+
+[params.newid]
+type = "int"
+description = "The container id of the new guest"
+
+[params.name]
+type = "string"
+pattern = "[A-Za-z0-9][A-Za-z0-9._-]{0,63}"
+description = "The machine's name; the container's hostname too"
+
+[params.storage]
+type = "string"
+pattern = "[A-Za-z0-9][A-Za-z0-9_.-]{0,39}"
+description = "The storage the root disk goes on"
+
+[[step]]
+id = "machine"
+kind = "hub"
+call = "provision_machine name={{name}}"
+timeout = "1m"
+
+[[step]]
+id = "create"
+kind = "api"
+call = "create_lxc vmid={{newid}} hostname={{name}} ostemplate={{template}} storage={{storage}}"
+timeout = "20m"
+
+[[step]]
+id = "start"
+kind = "api"
+call = "power kind=lxc vmid={{newid}} action=start"
+timeout = "5m"
+
+# The hypervisor's wrapper runs the installer with that token inside the container once it is up.
+[[step]]
+id = "enroll"
+kind = "hub"
+call = "send_guest kind=lxc vmid={{newid}}"
+timeout = "10m"
+
+[[step]]
+id = "bind"
+kind = "hub"
+call = "bind_guest kind=lxc vmid={{newid}} name={{name}}"
+timeout = "1m"
+
+[[step]]
+id = "enrolled"
+kind = "hub"
+call = "await_machine name={{name}}"
+timeout = "20m"

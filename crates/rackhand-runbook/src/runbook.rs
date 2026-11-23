@@ -41,9 +41,20 @@ pub enum StepKind {
     Hub,
 }
 
-/// What a `hub` step may ask the hub to do: send a machine its signed command list, replace its hub keys, or revoke its
-/// endpoint.
-pub const HUB_CALLS: [&str; 3] = ["send_commands", "rotate_keys", "revoke"];
+/// What a `hub` step may ask the hub to do: send a machine its signed command list, replace its hub keys, revoke its
+/// endpoint, or take a guest through provisioning: make its machine and token, have the hypervisor's wrapper give it its
+/// enrollment, bind it to the guest, and wait until it has enrolled.
+pub const HUB_CALLS: [&str; 7] =
+    ["send_commands", "rotate_keys", "revoke", "provision_machine", "send_guest", "bind_guest", "await_machine"];
+
+/// A step's `call` as a name and its `key=value` words (`clone vmid=9000 newid=120`). A word without `=` is no
+/// argument. Parameters have been put in by then, and a parameter's pattern holds no space.
+pub fn call_parts(call: &str) -> (&str, Vec<(String, String)>) {
+    let mut words = call.split_whitespace();
+    let name = words.next().unwrap_or("");
+    let args = words.filter_map(|w| w.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    (name, args)
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -127,7 +138,12 @@ impl Step {
     pub fn needs_account(&self) -> bool {
         match self.kind {
             StepKind::Ssh | StepKind::Transfer => true,
-            StepKind::Hub => self.call.as_deref() != Some("revoke"),
+            StepKind::Hub => {
+                // revoking and the bookkeeping of a provisioning are the hub's own; only what goes through the
+                // machine's wrapper (the command list, the keys, a guest's enrollment) needs its account
+                let call = call_parts(self.call.as_deref().unwrap_or("")).0;
+                !["revoke", "provision_machine", "bind_guest", "await_machine"].contains(&call)
+            }
             _ => false,
         }
     }

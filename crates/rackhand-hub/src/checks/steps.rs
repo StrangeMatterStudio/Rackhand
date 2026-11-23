@@ -174,9 +174,33 @@ impl StepRunner for Verify {
     }
 }
 
+/// The arguments of a step's `call` (`clone vmid=9000 name=web`) as the driver takes them: the numbers the drivers read
+/// as numbers, `set.<key>=<value>` collected into `set`, the rest text; with no argument, `Null`.
+fn call_args(call: &str) -> (String, serde_json::Value) {
+    const NUMBERS: [&str; 5] = ["vmid", "newid", "memory", "cores", "disk_gb"];
+    let (name, words) = rackhand_runbook::runbook::call_parts(call);
+    if words.is_empty() {
+        return (name.to_string(), serde_json::Value::Null);
+    }
+    let mut args = serde_json::Map::new();
+    for (key, value) in words {
+        if let Some(inner) = key.strip_prefix("set.") {
+            let set = args.entry("set").or_insert_with(|| serde_json::json!({}));
+            set[inner] = serde_json::Value::String(value);
+        } else if let (true, Ok(n)) = (NUMBERS.contains(&key.as_str()), value.parse::<u64>()) {
+            args.insert(key, serde_json::json!(n));
+        } else {
+            args.insert(key, serde_json::Value::String(value));
+        }
+    }
+    (name.to_string(), serde_json::Value::Object(args))
+}
+
 pub struct Api {
     db: Arc<Db>,
     drivers: BTreeMap<&'static str, Arc<dyn Driver>>,
+    /// Where a machine's API credentials are kept (`driver.<machine id>`), when it has them.
+    vault: Option<Arc<crate::vault::Vault>>,
 }
 
 impl std::fmt::Debug for Api {
@@ -187,7 +211,13 @@ impl std::fmt::Debug for Api {
 
 impl Api {
     pub fn new(db: Arc<Db>) -> Api {
-        Api { db, drivers: BTreeMap::new() }
+        Api { db, drivers: BTreeMap::new(), vault: None }
+    }
+
+    /// The machine's API credentials come from the Vault (`driver.<machine id>`).
+    pub fn with_vault(mut self, vault: Arc<crate::vault::Vault>) -> Api {
+        self.vault = Some(vault);
+        self
     }
 
     /// Adds the driver for its kind (the API drivers arrive with their own steps, T47 to T49).
@@ -220,12 +250,15 @@ impl StepRunner for Api {
             let Some(driver) = self.drivers.get(kind.as_str()) else {
                 return StepResult::failed(format!("no_driver:{kind}"));
             };
-            let target = DriverTarget {
-                target: address.unwrap_or_default(),
-                settings: serde_json::Value::Null,
-                timeout: ctx.timeout,
-            };
-            let op = DriverOp { name: call.clone(), args: serde_json::Value::Null };
+            let settings = self
+                .vault
+                .as_ref()
+                .and_then(|v| v.get(&format!("driver.{}", ctx.machine_id)).ok())
+                .and_then(|s| serde_json::from_slice(s.expose()).ok())
+                .unwrap_or(serde_json::Value::Null);
+            let target = DriverTarget { target: address.unwrap_or_default(), settings, timeout: ctx.timeout };
+            let (name, args) = call_args(&call);
+            let op = DriverOp { name, args };
             let command = Some(format!("{kind} {call}"));
             match driver.call(&target, op).await {
                 Ok(result) => {

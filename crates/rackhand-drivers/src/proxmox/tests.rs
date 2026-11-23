@@ -234,3 +234,73 @@ async fn host_lists_its_guests_and_the_clusters_nodes() {
     let which = Proxmox.call(&target(None), op()).await;
     assert!(which.is_err_and(|e| e.to_string().contains("`node`")), "which of the cluster's nodes this host is");
 }
+
+/// What the provisioning runbooks ask of Proxmox (plan T64): a clone of the template, cloud-init settings on it, a start,
+/// and for a container its creation; each waits for its task, and each new guest shows in the host's list.
+#[tokio::test]
+async fn provisioning_operations_make_and_start_guests() {
+    let sim = Sim::start("pve9").await;
+    let p = Proxmox::new();
+    let t = target(&sim);
+    p.call(&t, op("clone", json!({ "vmid": 200, "newid": 300, "name": "web-new", "storage": "tank" }))).await.unwrap();
+    let set = json!({ "cicustom": "user=local:snippets/rackhand-300.yml", "agent": "1", "ciuser": "debian" });
+    p.call(&t, op("config_set", json!({ "kind": "qemu", "vmid": 300, "set": set }))).await.unwrap();
+    p.call(&t, op("power", json!({ "kind": "qemu", "vmid": 300, "action": "start" }))).await.unwrap();
+    let lxc = json!({
+        "vmid": 400, "hostname": "ct-new", "ostemplate": "local:vztmpl/alpine-3.20-default_20240908_amd64.tar.xz",
+        "storage": "tank", "memory": 512, "cores": 1
+    });
+    p.call(&t, op("create_lxc", lxc)).await.unwrap();
+    p.call(&t, op("power", json!({ "kind": "lxc", "vmid": 400, "action": "start" }))).await.unwrap();
+
+    let posts: Vec<(String, String)> = sim
+        .requests()
+        .into_iter()
+        .filter(|q| q.method != "GET")
+        .map(|q| (format!("{} {}", q.method, q.path), q.body))
+        .collect();
+    let find =
+        |what: &str| posts.iter().find(|(p, _)| p.ends_with(what)).unwrap_or_else(|| panic!("{what} in {posts:?}"));
+    let clone = &find("/qemu/200/clone").1;
+    for part in ["newid=300", "full=1", "name=web-new", "storage=tank"] {
+        assert!(clone.contains(part), "{part} in {clone}");
+    }
+    let config = &find("/qemu/300/config").1;
+    assert!(
+        config.contains("cicustom=user%3Dlocal%3Asnippets%2Frackhand-300.yml") && config.contains("agent=1"),
+        "{config}"
+    );
+    assert!(find("/qemu/300/status/start").0.starts_with("POST"));
+    let create = &find("/lxc").1;
+    for part in ["vmid=400", "hostname=ct-new", "unprivileged=1", "rootfs=tank%3A8", "ostemplate=local%3Avztmpl"] {
+        assert!(create.contains(part), "{part} in {create}");
+    }
+    assert!(find("/lxc/400/status/start").0.starts_with("POST"));
+
+    let host = p.call(&t, op("host", json!({}))).await.unwrap().output;
+    let guests: Vec<(u64, bool)> = host["guests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| (g["vmid"].as_u64().unwrap(), g["running"].as_bool().unwrap()))
+        .collect();
+    assert!(guests.contains(&(300, true)) && guests.contains(&(400, true)), "{guests:?}");
+    let name = host["guests"].as_array().unwrap().iter().find(|g| g["vmid"] == 300).unwrap()["name"].clone();
+    assert_eq!(name, "web-new");
+}
+
+/// A configuration key that can run code on the host (a hook script, raw QEMU arguments, LXC's own keys) is never set
+/// through `config_set`, whatever the runbook says.
+#[tokio::test]
+async fn config_set_takes_only_keys_that_cannot_run_code_on_the_host() {
+    let sim = Sim::start("pve9").await;
+    let p = Proxmox::new();
+    for key in ["hookscript", "args", "lxc.mount.entry", "cicustom ", "delete", "net0;rm"] {
+        let set = json!({ key: "x" });
+        let refused = p.call(&target(&sim), op("config_set", json!({ "kind": "qemu", "vmid": 200, "set": set }))).await;
+        assert!(matches!(refused, Err(DriverError::Invalid(_))), "{key}: {refused:?}");
+    }
+    let empty = p.call(&target(&sim), op("config_set", json!({ "kind": "qemu", "vmid": 200, "set": {} }))).await;
+    assert!(matches!(empty, Err(DriverError::Invalid(_))), "nothing to set");
+    assert!(sim.requests().iter().all(|q| q.method == "GET"), "no write reached the API: {:?}", sim.requests());
+}

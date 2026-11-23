@@ -5,6 +5,9 @@
 //! - `firewall_restore`: `{kind, vmid, saved}` puts a `firewall_read` back exactly;
 //! - `power`: `{kind, vmid, action}` with `start`, `stop`, `shutdown` or `reboot`;
 //! - `clone`: `{vmid, newid, name, storage?}` (a full clone of a VM);
+//! - `create_lxc`: `{vmid, hostname, ostemplate, storage, memory?, cores?, disk_gb?, bridge?}` (an unprivileged
+//!   container on DHCP);
+//! - `config_set`: `{kind, vmid, set}` with the cloud-init and sizing keys of [`SETTABLE`] only;
 //! - `config`: `{kind, vmid}`;
 //! - `snapshots`: `{kind, vmid}` gives the guest's snapshots, `[{name, snaptime}]`, without Proxmox's `current`;
 //! - `snapshot_room`: `{kind, vmid}` gives `{storages: [{storage, type, avail, total, snapshots}]}`, each storage the
@@ -216,8 +219,8 @@ async fn guests(c: &Client) -> Result<Value, DriverError> {
     Ok(Value::Array(out))
 }
 
-/// This host: its node, its cluster's nodes (online or not) and the guests on its node (7.5.3 step 7).
-async fn host(c: &Client) -> Result<Value, DriverError> {
+/// This host's node and its cluster's nodes (the host's own alone when it has none).
+async fn nodes_of(c: &Client) -> Result<(String, Vec<String>), DriverError> {
     let list = c.call("GET", "/nodes", &[]).await?;
     let mut nodes: Vec<String> =
         list.as_array().into_iter().flatten().filter_map(|n| n["node"].as_str().map(str::to_string)).collect();
@@ -228,6 +231,16 @@ async fn host(c: &Client) -> Result<Value, DriverError> {
         (None, [only]) => only.clone(),
         _ => return Err(DriverError::Failed("the cluster has several nodes: set `node` to this host's".into())),
     };
+    Ok((node, nodes))
+}
+
+async fn node_of(c: &Client) -> Result<String, DriverError> {
+    Ok(nodes_of(c).await?.0)
+}
+
+/// This host: its node, its cluster's nodes (online or not) and the guests on its node (7.5.3 step 7).
+async fn host(c: &Client) -> Result<Value, DriverError> {
+    let (node, nodes) = nodes_of(c).await?;
     let mut guests = Vec::new();
     for kind in ["lxc", "qemu"] {
         let list = c.call("GET", &format!("/nodes/{}/{kind}", segment(&node)), &[]).await?;
@@ -304,6 +317,27 @@ async fn snapshot_room(c: &Client, g: &Guest) -> Result<Value, DriverError> {
     Ok(json!({ "storages": out }))
 }
 
+/// What `config_set` may change: cloud-init and sizing. Nothing that runs code on the host (hook scripts, raw QEMU
+/// arguments, LXC's own keys) and nothing that deletes.
+pub(super) const SETTABLE: &[&str] = &[
+    "cicustom",
+    "ciuser",
+    "cipassword",
+    "sshkeys",
+    "ipconfig0",
+    "nameserver",
+    "searchdomain",
+    "ciupgrade",
+    "agent",
+    "name",
+    "hostname",
+    "memory",
+    "cores",
+    "net0",
+    "description",
+    "onboot",
+];
+
 pub(super) async fn run(c: &Client, target: &DriverTarget, op: DriverOp) -> Result<DriverOpResult, DriverError> {
     let a = &op.args;
     let limit = target.timeout.max(Duration::from_secs(10));
@@ -352,6 +386,36 @@ pub(super) async fn run(c: &Client, target: &DriverTarget, op: DriverOp) -> Resu
             }
             let upid = c.call("POST", &g.path("/clone"), &form).await?;
             wait(c, &g.node, &upid, limit).await?
+        }
+        "create_lxc" => {
+            let field = |k: &str| a[k].as_str().filter(|v| !v.is_empty()).ok_or_else(|| bad(&format!("`{k}`")));
+            let vmid = a["vmid"].as_u64().ok_or_else(|| bad("`vmid` is a number"))?;
+            let (hostname, template, storage) = (field("hostname")?, field("ostemplate")?, field("storage")?);
+            let size = |k: &str, default: u64| a[k].as_u64().unwrap_or(default);
+            let bridge = a["bridge"].as_str().unwrap_or("vmbr0");
+            let form = vec![
+                ("vmid".to_string(), vmid.to_string()),
+                ("hostname".into(), hostname.into()),
+                ("ostemplate".into(), template.into()),
+                ("rootfs".into(), format!("{storage}:{}", size("disk_gb", 8))),
+                ("memory".into(), size("memory", 512).to_string()),
+                ("cores".into(), size("cores", 1).to_string()),
+                ("net0".into(), format!("name=eth0,bridge={bridge},ip=dhcp")),
+                ("unprivileged".into(), "1".into()),
+            ];
+            let node = node_of(c).await?;
+            let upid = c.call("POST", &format!("/nodes/{}/lxc", segment(&node)), &form).await?;
+            wait(c, &node, &upid, limit).await?
+        }
+        "config_set" => {
+            let g = guest(c, a).await?;
+            let set = a["set"].as_object().filter(|m| !m.is_empty()).ok_or_else(|| bad("`set` names what to set"))?;
+            if let Some(key) = set.keys().find(|k| !SETTABLE.contains(&k.as_str())) {
+                return Err(bad(&format!("`{key}` isn't a setting a runbook may change")));
+            }
+            let form: Vec<(String, String)> = set.iter().map(|(k, v)| (k.clone(), form_value(v))).collect();
+            c.call("PUT", &g.path("/config"), &form).await?;
+            json!({ "set": set.keys().collect::<Vec<_>>() })
         }
         "config" => c.call("GET", &guest(c, a).await?.path("/config"), &[]).await?,
         "snapshots" => {

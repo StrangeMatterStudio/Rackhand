@@ -241,6 +241,15 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         signing: ed25519_dalek::SigningKey::from_bytes(&node_key.to_bytes()),
         addrs: ticket_addrs.clone(),
         registry: registry.clone(),
+        provisioning: joins::Provisioning {
+            hosts: Some(Arc::new(
+                rackhand_hub::checks::steps::Hypervisor::new(db.clone(), vault.clone())
+                    .with_driver(Arc::new(rackhand_drivers::Proxmox::new())),
+            )),
+            release_dir: Some(config.data_dir.join("release")),
+            web_port: config.web.port(),
+            ..Default::default()
+        },
     };
     let executor = rackhand_hub::executor::Executor::new(vault.clone(), host_keys.clone())
         .with_other(Arc::new(steps(&db, &vault, &notify, &ingest, &probe_server)))
@@ -388,7 +397,7 @@ pub fn steps(
         .with(StepKind::Notify, Arc::new(notify.clone()))
         .with(StepKind::WaitReport, Arc::new(ingest.clone()))
         .with(StepKind::Verify, Arc::new(Verify::new(db.clone(), ingest.clone())))
-        .with(StepKind::Api, Arc::new(Api::new(db.clone()).with_driver(proxmox.clone())))
+        .with(StepKind::Api, Arc::new(Api::new(db.clone()).with_driver(proxmox.clone()).with_vault(vault.clone())))
         .with(StepKind::Snapshot, hypervisor.clone())
         .with(StepKind::Rollback, hypervisor)
         .with(StepKind::ProbeCheck, Arc::new(probes.probe_checks()))
