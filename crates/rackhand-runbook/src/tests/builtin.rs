@@ -139,6 +139,7 @@ fn all_parse_and_have_design_risk() {
         ("provision-lxc", Normal),
         ("quarantine", High),
         ("quarantine-release", High),
+        ("conntrack-flush", High),
     ];
     for (name, source) in builtin::runbooks() {
         let r = Runbook::parse(source).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -369,4 +370,38 @@ fn quarantine_runbooks_isolate_snapshot_and_release() {
         }
         assert!(!r.targets.kinds.iter().any(|k| k == "hypervisor"), "a hypervisor is never quarantined");
     }
+}
+
+/// `conntrack-flush` (7.5.6, D112): what a quarantine of a Proxmox guest runs on the hypervisor through its managed enrollment;
+/// the command is in the hypervisor's list because this runbook is, and its one parameter is an address and nothing else.
+#[test]
+fn conntrack_flush_takes_one_address_for_the_hypervisor() {
+    use crate::params::check_value;
+    let r = Runbook::parse(builtin::runbook("conntrack-flush").expect("built in")).unwrap();
+    assert_eq!(r.targets.kinds, ["hypervisor"]);
+    assert_eq!((r.risk, r.autonomy), (crate::runbook::Risk::High, 1));
+    assert!(r.triggers.is_none());
+    let lines: Vec<String> = r.steps.iter().map(|s| s.cmd.as_ref().unwrap()[1..].join(" ")).collect();
+    assert_eq!(
+        lines,
+        [
+            format!("{WRAPPER} /usr/sbin/conntrack -D -s {{{{addr}}}}"),
+            format!("{WRAPPER} /usr/sbin/conntrack -D -d {{{{addr}}}}"),
+        ]
+    );
+    for (value, ok) in [
+        ("192.0.2.151", true),
+        ("2001:db8::10", true),
+        ("fe80::1", true),
+        ("192.0.2.1 -F", false),
+        ("-F", false),
+        ("a;b", false),
+        ("", false),
+        ("192.0.2.1/24", false),
+    ] {
+        assert_eq!(check_value(&r.params["addr"], value).is_ok(), ok, "{value:?}");
+    }
+    // the hypervisor's list has both commands
+    let list = crate::templates::command_list(&[r]);
+    assert_eq!(list.commands.len(), 2);
 }

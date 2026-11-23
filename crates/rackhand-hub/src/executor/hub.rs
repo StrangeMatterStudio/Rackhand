@@ -33,6 +33,18 @@ pub struct GuestEnrollment {
     pub self_signed: bool,
 }
 
+/// Where a Proxmox guest's tracked connections are dropped when it is quarantined (D112): its hypervisor, as the hub reaches it,
+/// and the guest's addresses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuestHost {
+    pub host_id: String,
+    /// The address the hub logs in to (SSH), not the API's.
+    pub host_address: Option<String>,
+    /// Whether the hypervisor has the hub's accounts (access level `managed`).
+    pub managed: bool,
+    pub addresses: Vec<String>,
+}
+
 fn not_provisioning<'a, T: Send + 'a>() -> BoxFuture<'a, Result<T, String>> {
     Box::pin(async { Err("provisioning_unavailable".to_string()) })
 }
@@ -106,6 +118,10 @@ pub trait HubSide: Send + Sync {
         _timeout: std::time::Duration,
     ) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async { Err("not_a_proxmox_guest".to_string()) })
+    }
+    /// The hypervisor of the machine's guest, and the guest's addresses, for flushing its connection tracking.
+    fn guest_host(&self, _machine: &str) -> Option<GuestHost> {
+        None
     }
     /// What the machine's quarantine recorded when it isolated the machine, and that hasn't been released: `{method,
     /// enforced, saved, applied}`.

@@ -181,6 +181,41 @@ impl rackhand_hub::executor::HubSide for CommandSigner {
         })
     }
 
+    fn guest_host(&self, machine: &str) -> Option<rackhand_hub::executor::GuestHost> {
+        let ip = |a: &str| {
+            a.parse::<std::net::SocketAddr>()
+                .map(|s| s.ip().to_string())
+                .or_else(|_| a.parse::<std::net::IpAddr>().map(|i| i.to_string()))
+                .ok()
+        };
+        let (reference, address): (Option<String>, Option<String>) = self
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row("SELECT proxmox_ref, address FROM machines WHERE id = ?1", [machine], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+            })
+            .ok()?;
+        let reference: serde_json::Value = serde_json::from_str(&reference?).ok()?;
+        let host_id = reference["cluster"].as_str()?.to_string();
+        let (host_address, access): (Option<String>, String) = self
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row("SELECT address, access FROM machines WHERE id = ?1", [&host_id], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+            })
+            .ok()?;
+        Some(rackhand_hub::executor::GuestHost {
+            host_id,
+            host_address: host_address.as_deref().and_then(ip),
+            managed: access == "managed",
+            addresses: address.as_deref().and_then(ip).into_iter().collect(),
+        })
+    }
+
     fn quarantine_addrs(&self) -> Vec<String> {
         self.addrs.get().map(|(_, addrs)| addrs()).unwrap_or_default()
     }

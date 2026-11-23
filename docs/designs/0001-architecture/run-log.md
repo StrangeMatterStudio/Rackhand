@@ -171,3 +171,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-23 | T69 done: threat lists and GeoIP/ASN, their refresh, air-gapped mode and freshness (D118) |
 | 2026-11-23 | T70 done: connection scoring and storage (D119) |
 | 2026-11-23 | T71 done: security events, severities and exemptions (D120) |
+| 2026-11-23 | T72 done: quarantine, release, the rules and the proposals (D121 to D126) |

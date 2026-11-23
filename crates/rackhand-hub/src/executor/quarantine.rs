@@ -50,6 +50,16 @@ fn addresses_and_port(addrs: &[String]) -> Option<(Vec<String>, u16)> {
     Some((ips, port))
 }
 
+/// How long one `conntrack` command has.
+const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The commands that drop the tracked connections of each of these addresses, as the `conntrack-flush` runbook lists them;
+/// anything that isn't an address is left out.
+pub fn conntrack_lines(addresses: &[String]) -> Vec<String> {
+    let ips = addresses.iter().filter_map(|a| a.parse::<std::net::IpAddr>().ok());
+    ips.flat_map(|ip| ["-s", "-d"].map(|flag| format!("sudo {WRAPPER} /usr/sbin/conntrack -D {flag} {ip}"))).collect()
+}
+
 impl Executor {
     pub(super) async fn quarantine_isolate(&self, ctx: &StepCtx, hub: &dyn HubSide) -> StepResult {
         let addrs = hub.quarantine_addrs();
@@ -61,17 +71,50 @@ impl Executor {
         }
         let args = json!({ "hub_addrs": ips, "hub_port": port });
         match hub.guest_firewall(&ctx.machine_id, "firewall_isolate", args, ctx.timeout).await {
-            Ok(out) => record_text(&json!({
-                "method": "proxmox",
-                "enforced": true,
-                "saved": out["saved"],
-                "applied": out["applied"],
+            Ok(out) => {
                 // the API can't flush connection tracking; the hypervisor's own enrollment does (D112)
-                "conntrack": "not_flushed",
-            })),
+                let flushed = self.flush_conntrack(ctx, hub).await;
+                record_text(&json!({
+                    "method": "proxmox",
+                    "enforced": true,
+                    "saved": out["saved"],
+                    "applied": out["applied"],
+                    "conntrack": if flushed.is_ok() { "flushed" } else { "conntrack_not_flushed" },
+                    "conntrack_why": flushed.err(),
+                }))
+            }
             Err(e) if e == NOT_A_GUEST => self.isolate_in_guest(ctx, hub, &addrs).await,
             Err(e) => failure(e),
         }
+    }
+
+    /// Drops the guest's tracked connections on its hypervisor (`conntrack -D`, from and to each address), through the
+    /// hypervisor's managed enrollment. `Err` says why it wasn't done; the quarantine stands either way, and established
+    /// sessions then last until they time out.
+    async fn flush_conntrack(&self, ctx: &StepCtx, hub: &dyn HubSide) -> Result<(), String> {
+        let found = hub.guest_host(&ctx.machine_id).ok_or("hypervisor_unknown")?;
+        if !found.managed {
+            return Err("hypervisor_not_managed".into());
+        }
+        let lines = conntrack_lines(&found.addresses);
+        if lines.is_empty() {
+            return Err("no_guest_address".into());
+        }
+        let host = StepCtx {
+            machine_id: found.host_id,
+            machine_kind: "hypervisor".into(),
+            address: found.host_address,
+            ..ctx.clone()
+        };
+        for line in lines {
+            match self.ssh(&host, Identity::Automation, &line, ctx.timeout.min(FLUSH_TIMEOUT)).await {
+                // `conntrack` exits 1 when no entry matched, which is as good as a flush
+                Ok(out) if matches!(out.exit_code, Some(0 | 1)) => {}
+                Ok(out) => return Err(format!("exit_code {}", out.exit_code.map_or(-1, i64::from))),
+                Err(e) => return Err(ssh_failure(&e).into()),
+            }
+        }
+        Ok(())
     }
 
     async fn isolate_in_guest(&self, ctx: &StepCtx, hub: &dyn HubSide, addrs: &[String]) -> StepResult {

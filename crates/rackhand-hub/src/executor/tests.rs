@@ -665,6 +665,7 @@ mod quarantine {
         record: Mutex<Option<Value>>,
         addrs: Vec<String>,
         managed: bool,
+        host: Mutex<Option<crate::executor::GuestHost>>,
     }
 
     impl HubSide for Hub {
@@ -711,6 +712,9 @@ mod quarantine {
         fn quarantine_record(&self, _machine: &str) -> Option<Value> {
             self.record.lock().unwrap().clone()
         }
+        fn guest_host(&self, _machine: &str) -> Option<crate::executor::GuestHost> {
+            self.host.lock().unwrap().clone()
+        }
     }
 
     struct Q {
@@ -727,6 +731,7 @@ mod quarantine {
             record: Mutex::new(None),
             addrs: addrs.iter().map(|a| a.to_string()).collect(),
             managed,
+            host: Mutex::new(None),
         });
         let vault = Arc::new(Vault::new(MasterKey::from_bytes([4u8; 32]), e.db.clone()));
         let (host_keys, _) = HostKeys::new(e.db.clone());
@@ -862,6 +867,52 @@ mod quarantine {
         let r = none.call("quarantine_isolate", "linux").await;
         assert_eq!(r.outcome, StepOutcome::Failed("hub_addresses_unknown".into()));
         assert_eq!(none.writes(), 0);
+    }
+
+    fn host(managed: bool, address: Option<&str>, guest: &[&str]) -> crate::executor::GuestHost {
+        crate::executor::GuestHost {
+            host_id: M1.into(),
+            host_address: address.map(str::to_string),
+            managed,
+            addresses: guest.iter().map(|a| a.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn the_flush_runs_the_listed_commands_for_each_address_and_nothing_else() {
+        use crate::executor::quarantine::conntrack_lines;
+        let ips = ["192.0.2.151", "2001:db8::10", "not an address", "192.0.2.9 -F"];
+        assert_eq!(
+            conntrack_lines(&ips.map(str::to_string)),
+            [
+                "sudo /usr/local/lib/rackhand/run /usr/sbin/conntrack -D -s 192.0.2.151",
+                "sudo /usr/local/lib/rackhand/run /usr/sbin/conntrack -D -d 192.0.2.151",
+                "sudo /usr/local/lib/rackhand/run /usr/sbin/conntrack -D -s 2001:db8::10",
+                "sudo /usr/local/lib/rackhand/run /usr/sbin/conntrack -D -d 2001:db8::10",
+            ]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn established_sessions_are_flushed_through_the_hypervisor_or_the_record_says_why_not() {
+        let cases = [
+            (None, "hypervisor_unknown"),
+            (Some(host(false, Some("192.0.2.51"), &["192.0.2.151"])), "hypervisor_not_managed"),
+            (Some(host(true, Some("192.0.2.51"), &[])), "no_guest_address"),
+            // managed, but not reachable from here: no address to log in to
+            (Some(host(true, None, &["192.0.2.151"])), "machine_unreachable"),
+        ];
+        for (n, (found, why)) in cases.into_iter().enumerate() {
+            let q = q(&format!("q-flush{n}"), &[HUB], true).await;
+            *q.hub.host.lock().unwrap() = found;
+            let r = q.call("quarantine_isolate", "linux").await;
+            assert_eq!(r.outcome, StepOutcome::Succeeded, "the quarantine applies anyway: {r:?}");
+            let text = String::from_utf8_lossy(&r.stdout).to_string();
+            let v: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+            assert_eq!(v["conntrack"], "conntrack_not_flushed", "{why}: {v}");
+            assert_eq!(v["conntrack_why"], why);
+            assert_eq!(q.firewall().await["options"]["policy_in"], "DROP", "isolated all the same");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

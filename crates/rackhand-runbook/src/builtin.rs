@@ -20,6 +20,7 @@ const RUNBOOKS: &[(&str, &str)] = &[
     ("provision-lxc", include_str!("../builtin/provision-lxc.toml")),
     ("quarantine", include_str!("../builtin/quarantine.toml")),
     ("quarantine-release", include_str!("../builtin/quarantine-release.toml")),
+    ("conntrack-flush", include_str!("../builtin/conntrack-flush.toml")),
 ];
 
 /// Every built-in runbook, as `(name, content)`.

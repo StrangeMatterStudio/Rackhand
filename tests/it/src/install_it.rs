@@ -871,7 +871,9 @@ mod quarantine {
         });
         ok(&install(&c, &hub, &release, &release.script(None), &token, ""));
         reporting(&hub);
-        within(Duration::from_secs(120), "the SSH test enrolls it", || machine_column(&hub, &id, "state") == "enrolled");
+        within(Duration::from_secs(120), "the SSH test enrolls it", || {
+            machine_column(&hub, &id, "state") == "enrolled"
+        });
         // the machine is in the dmz, its policy watches private destinations (the listed address is the hub's side of the
         // bridge), and the rule is on: enabled by a person with step-up, as a stored row
         sql(&hub, "INSERT INTO policies (id, name, connections, watch_internal) VALUES ('watch', 'watch', 'full', 1)");

@@ -1,0 +1,25 @@
+name = "conntrack-flush"
+description = "Drop the tracked connections of one address on a Proxmox host, so a quarantined guest's open sessions end"
+targets = { kinds = ["hypervisor"] }
+identity = "automation"
+risk = "high"
+autonomy = 1
+
+# The API can't do this (spike S4); the host's own managed enrollment can. A quarantine of a guest runs these two commands
+# for each of the guest's addresses. `conntrack` exits 1 when nothing matched, which is not a failure of the quarantine.
+[params.addr]
+type = "string"
+pattern = "[0-9a-fA-F:.]{2,45}"
+description = "The guest's IPv4 or IPv6 address"
+
+[[step]]
+id = "from"
+kind = "ssh"
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/sbin/conntrack", "-D", "-s", "{{addr}}"]
+timeout = "1m"
+
+[[step]]
+id = "to"
+kind = "ssh"
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/sbin/conntrack", "-D", "-d", "{{addr}}"]
+timeout = "1m"
