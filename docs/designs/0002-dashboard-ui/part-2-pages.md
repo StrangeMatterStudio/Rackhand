@@ -90,6 +90,32 @@ can't add a machine; left as it was.)
 
 Not walked there: the step-up return and the live vitals, which need a machine (their tests cover them).
 
+## Explanations for someone new
+
+Asked by the owner on 2026-11-23: every page read as someone new would, with a short explanation wherever a question
+would come up. The wording follows the design's glossary (section 20) and lifecycle (7.5.2).
+
+| Page | What it explains now |
+| --- | --- |
+| Add | Adding (what Rackhand watches) against inviting (what works with this hub); a machine and its probe; what an appliance is, and each driver's kind of device; that an invite is a command that works once for 24 hours; a device, an operator host (and that it is added as a machine too, to watch its health), a peer hub; when a new site needs its own hub |
+| Add a machine | Managed against monitor only; a local against a remote probe; that the machine shows on the Overview once its probe connects |
+| Incidents | What an incident is and how it ends; states in words ("Needs a person", not "Human") |
+| Approvals | Who asks, that an approval covers exactly what it shows, and that high risk asks for a fresh code |
+| Jobs, Library, Audit | What a job is; runbooks against playbooks against configuration; drafts; what the audit chain is |
+| Patching | That a policy sets how and when (and the default times), and that a maintenance window pauses patching and silence alerts; each policy choice, quarantine and peer requests |
+| Users | Each role, as a hint (a responder can't approve high risk, AC40); what a device is |
+| System settings, Notifiers | What outside sources are and that nothing is sent; the git mirror; OIDC; that callouts are alerts for warning and critical incidents |
+| Site | What a site is |
+
+Found on the way and fixed: the Patching page said "Nothing is patched by itself without one" of maintenance windows.
+Patches install in a policy's own windows, and a maintenance window stops them (AC20). Choices too long for a phone's
+select ("Responder: also handles incidents and normal approvals", "Local: it reaches the hub on this network", "Through
+the identity provider (OIDC)") are now a few words, with the rest in the field's hint.
+
+Test: `web::tests::shell::a_newcomer_is_told_what_each_thing_is`, seen failing on 2026-11-23 (no explanations; then
+choices longer than 32 characters) and passing. Measured again: 865 screens, scripts on and off, 0 problems. axe-core
+wasn't run again (only text in existing styles changed).
+
 ## Deviations and limits
 
 - The overview's machine list has CPU and memory, not disk: a machine has several disks and the page has no rule for
@@ -97,6 +123,8 @@ Not walked there: the step-up return and the live vitals, which need a machine (
 - The proposal named an incident filter; the two lists (open, resolved) stay, with one search, because live tests and
   people read them by those names.
 - There is no way yet to delete a policy or a window (Policy has no such command), so their lists have none.
+- Nothing in the dashboard or the command line gives a machine a policy or tags yet (`machines.policy_id` and `tags` are
+  only read), so a new policy applies to no machine and the explanations don't say where to set one.
 - The Add page posts operator and peer invites straight from a button, as before: they have no fields.
 - Not checked: Safari and Firefox, and real phones.
 - A hub makes a new certificate each time it starts, so a browser warns again after every restart. That isn't

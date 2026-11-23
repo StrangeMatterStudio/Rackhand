@@ -51,19 +51,25 @@ struct Page<'a> {
 }
 
 const PATCH: Choices =
-    &[("approve-only", "Ask for approval first"), ("auto", "Automatically, in its windows"), ("hold", "Never (hold)")];
+    &[("approve-only", "Ask for approval first"), ("auto", "Automatically"), ("hold", "Never (hold)")];
 const SNAPSHOT: Choices = &[("optional", "Optional"), ("required", "Required")];
 const QUARANTINE: Choices = &[("approval", "After approval"), ("never", "Never")];
 const PEER_REQUESTS: Choices = &[("approval", "After approval"), ("auto", "Automatically")];
 
 const POLICY: &[Spec] = &[
     Spec::text("name", "Name").hint("1 to 64 characters. Saving a name that exists changes that policy.").length(1, 64),
-    Spec::select("patch", "Patch", PATCH),
+    Spec::select("patch", "Patch", PATCH).hint(
+        "Approval first: each patch waits on the Approvals page. Automatically: security updates install daily at \
+         04:00 and the rest on Sundays at 03:00, in the site's timezone. Never: nothing is installed.",
+    ),
     Spec::checkbox("auto_reboot", "Reboot when needed"),
     Spec::checkbox("auto_rollback", "Roll back after a failed patch"),
     Spec::select("snapshot", "Snapshot", SNAPSHOT).hint("Whether a patch needs a snapshot taken first."),
-    Spec::select("quarantine", "Quarantine", QUARANTINE),
-    Spec::select("peer_requests", "Peer requests", PEER_REQUESTS).hint("What a linked hub's requests need."),
+    Spec::select("quarantine", "Quarantine", QUARANTINE).hint(
+        "Whether the hub may cut a machine off its network, all but its path to the hub, when a threat is found.",
+    ),
+    Spec::select("peer_requests", "Peer requests", PEER_REQUESTS)
+        .hint("What another site's hub needs before a runbook it asks for runs here."),
 ];
 
 impl Page<'_> {

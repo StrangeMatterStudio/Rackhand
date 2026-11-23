@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">The last 200 runs, newest first.</p></div></div>
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">Work the hub ran: runbooks, patches and the assistant's jobs. The last 200, newest first.</p></div></div>
 <section class="card list"><div class="bar"><h2>Runs</h2>{{ crate::web::ui::search("/jobs", q, "jobs")|safe }}</div>
 {% if runs.is_empty() %}{{ crate::web::ui::none(q, "jobs", "No jobs yet. A runbook, a patch window or an approval starts one.")|safe }}{% else %}<table><thead><tr><th scope="col">Job</th><th scope="col">State</th><th scope="col">Kind</th><th scope="col">Target</th><th scope="col">Outcome</th><th scope="col">Requested by</th></tr></thead><tbody>
 {% for r in runs %}<tr><td class="t"><a href="/jobs/{{ r.id }}">{{ r.name }}</a></td><td class="state">{{ crate::web::ui::badge(r.state)|safe }}</td><td data-label="Kind">{{ crate::web::ui::word(r.kind) }}</td><td data-label="Target">{% if r.target.is_empty() %}None{% else %}{{ r.target }}{% endif %}</td><td data-label="Outcome">{% if r.outcome.is_empty() %}None yet{% else %}{{ crate::web::ui::word(r.outcome) }}{% endif %}</td><td data-label="Requested by">{{ r.requested_by }}</td></tr>

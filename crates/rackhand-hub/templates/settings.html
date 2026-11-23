@@ -4,7 +4,7 @@
 {% if let Some(n) = notice %}{% include "notice.html" %}{% endif %}
 <div class="cols pair trio">
 <section class="card"><h2>Outside sources</h2>
-<p class="hint">Downloaded by the hub to score connections.</p>
+<p class="hint">Lists of known-bad addresses, and the country and network an address belongs to. The hub downloads them to flag a machine talking to a known-bad address; nothing about your machines is sent.</p>
 <form method="post" action="/settings/sources" data-check data-edit novalidate>
 <input type="hidden" name="csrf" value="{{ csrf }}">
 <div class="field check"><label><input type="checkbox" name="source_feodo"{% if sources.feodo %} checked{% endif %}> abuse.ch Feodo Tracker</label></div>
@@ -12,8 +12,9 @@
 <div class="field check"><label><input type="checkbox" name="source_dbip"{% if sources.dbip %} checked{% endif %}> DB-IP Lite</label></div>
 <div class="actions"><button type="submit" class="primary">Save</button><button type="button" data-undo hidden>Undo changes</button></div>
 </form></section>
-<section class="card"><h2>Notifiers</h2><p class="hint">Where callouts go: {{ notifiers }} saved.</p><p><a class="btn" href="/settings/notifiers">Open notifiers</a></p></section>
+<section class="card"><h2>Notifiers</h2><p class="hint">Where alerts for incidents are sent: {{ notifiers }} saved.</p><p><a class="btn" href="/settings/notifiers">Open notifiers</a></p></section>
 <section class="card"><h2>Git mirror</h2>
+<p class="hint">Every change to runbooks, playbooks and configuration is pushed to this repository: a copy and a history outside the hub.</p>
 <form method="post" action="/settings/git-mirror" novalidate data-check data-edit>
 {{ mirror.hidden(csrf)|safe }}
 {{ mirror.problems()|safe }}
@@ -26,6 +27,7 @@
 <div class="actions"><button type="submit" class="primary">Save</button><button type="button" data-undo hidden>Undo changes</button></div>
 </form></section>
 <section class="card"><h2>Sign-in with an identity provider (OIDC)</h2>
+<p class="hint">Lets people sign in with an account they already have at your identity provider. They still add an authenticator here.</p>
 <form method="post" action="/settings/oidc" novalidate data-check data-edit>
 {{ oidc.hidden(csrf)|safe }}
 {{ oidc.problems()|safe }}

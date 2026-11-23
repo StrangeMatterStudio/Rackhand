@@ -250,6 +250,16 @@ pub(crate) fn badge(state: &str) -> String {
 }
 
 /// A stored word as it is read: `approve-only` is `Approve only`.
+/// An incident's state (7.5.2), as someone new reads it.
+pub(crate) fn incident_state(stored: &str) -> String {
+    match stored {
+        "automation" => "A runbook is on it".into(),
+        "assistant" => "The assistant is on it".into(),
+        "human" => "Needs a person".into(),
+        other => word(other),
+    }
+}
+
 pub(crate) fn word(stored: &str) -> String {
     let spaced = stored.replace(['_', '-'], " ");
     let mut chars = spaced.chars();

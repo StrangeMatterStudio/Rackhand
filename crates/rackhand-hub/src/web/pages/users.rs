@@ -26,19 +26,17 @@ struct Created<'a> {
     qr: String,
 }
 
-const ROLES: Choices = &[
-    ("viewer", "Viewer: sees everything, changes nothing"),
-    ("responder", "Responder: also handles incidents and normal approvals"),
-    ("admin", "Admin: everything"),
-];
-const SIGN_IN: Choices = &[("local", "With a password"), ("oidc", "Through the identity provider (OIDC)")];
+const ROLES: Choices = &[("viewer", "Viewer"), ("responder", "Responder"), ("admin", "Admin")];
+const ROLES_HINT: &str = "Viewer: sees everything, changes nothing. Responder: also handles incidents and approvals \
+                          that aren't high risk. Admin: everything, including users and settings.";
+const SIGN_IN: Choices = &[("local", "With a password"), ("oidc", "Identity provider (OIDC)")];
 
 const USER: &[Spec] = &[
     Spec::text("name", "Name")
         .hint("1 to 64 letters, digits, dots, dashes, underscores or @.")
         .pattern(r"[A-Za-z0-9._@\-]{1,64}", "Use 1 to 64 letters, digits or . _ @ -, with no spaces")
         .attrs("autocomplete=\"off\" autocapitalize=\"none\" spellcheck=\"false\""),
-    Spec::select("role", "Role", ROLES),
+    Spec::select("role", "Role", ROLES).hint(ROLES_HINT),
     Spec::select("auth", "Signs in", SIGN_IN)
         .hint("Either way the account gets an authenticator key on the next page."),
     Spec::secret("password", "Password")
@@ -54,7 +52,7 @@ const USER: &[Spec] = &[
     Spec::text("subject", "OIDC subject").hint("The provider's `sub` for this person.").when("auth=oidc"),
 ];
 
-const ROLE: &[Spec] = &[Spec::select("role", "Role", ROLES)];
+const ROLE: &[Spec] = &[Spec::select("role", "Role", ROLES).hint(ROLES_HINT)];
 
 struct UserLine {
     id: String,

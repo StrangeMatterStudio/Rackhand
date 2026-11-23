@@ -953,3 +953,110 @@ async fn counts_and_offers_are_worded_right() {
     let html = see(&app, "/sites/home", &admin).await;
     assert!(html.contains("<a href=\"/add\">Add a machine</a>"), "{html}");
 }
+
+/// Someone new can tell what each choice is for, and what a page's words mean, without leaving the page.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_newcomer_is_told_what_each_thing_is() {
+    let (app, admin) = ready("shell-help").await;
+    machine(&app, "01JD00000000000000000000H1", "web1").await;
+    insert(
+        &app,
+        "incidents",
+        Row::from([
+            ("id", Value::Text("01JD00000000000000000000H1".into())),
+            ("machine_id", Value::Text("01JD00000000000000000000H1".into())),
+            ("rule_id", Value::Text("x".into())),
+            ("dedupe_key", Value::Text("h1".into())),
+            ("kind", Value::Text("x".into())),
+            ("severity", Value::Text("warning".into())),
+            ("state", Value::Text("human".into())),
+            ("title", Value::Text("Waits for someone".into())),
+            ("opened_at", Value::Integer(now_ms())),
+        ]),
+    )
+    .await;
+    let says = |path: &'static str, html: String, all: &[&str]| {
+        let text = plain(&html);
+        for what in all {
+            assert!(text.contains(what), "{path} says {what:?}: {text}");
+        }
+    };
+    let pages: &[(&str, &[&str])] = &[
+        (
+            "/add",
+            &[
+                "Add what Rackhand should watch; invite what should work with this hub.",
+                "It gets the probe, a small program that reports its health.",
+                "For what you can't install software on",
+                "Virtualization hosts and clusters",
+                "A server's management board",
+                "Switches, routers, printers and UPSes",
+                "An invite connects something that works with this hub",
+                "it works once, for 24 hours",
+                "to use the rackhand command line with this hub",
+                "an AI that works incidents through Rackhand's tools",
+                "To watch its health too, add it as a machine as well.",
+                "Linked hubs share summaries, watch each other",
+                "A place with its own network gets its own hub.",
+            ],
+        ),
+        (
+            "/add?add=machine",
+            &[
+                "Monitor only: it is watched, and the hub can run nothing on it.",
+                "Remote for a machine at a place with no hub of its own",
+            ],
+        ),
+        ("/incidents", &["An incident is a problem the hub tracks until its cause clears.", "Needs a person"]),
+        ("/incidents/01JD00000000000000000000H1", &["State: Needs a person"]),
+        ("/approvals", &["Actions that wait for a person to say yes", "Each approval covers exactly what it shows"]),
+        ("/jobs", &["Work the hub ran: runbooks, patches and the assistant's jobs."]),
+        (
+            "/library",
+            &["Runbooks are steps the hub runs by itself.", "Playbooks guide the assistant.", "Nothing changes until"],
+        ),
+        (
+            "/patching",
+            &[
+                "security updates daily at 04:00 and the rest on Sundays at 03:00",
+                "A maintenance window pauses patching and silence alerts",
+                "No windows yet. Add one for times you work on machines yourself.",
+            ],
+        ),
+        (
+            "/patching?add=policy",
+            &["each patch waits on the Approvals page", "cut a machine off its network", "another site's hub"],
+        ),
+        ("/patching?add=window", &["a machine going quiet raises no alert"]),
+        ("/audit", &["a changed or removed entry breaks the chain"]),
+        ("/users", &["A device acts as its person"]),
+        ("/users?add=user", &["Responder: also handles incidents and approvals that aren't high risk."]),
+        (
+            "/settings",
+            &["known-bad addresses", "nothing about your machines is sent", "a copy and a history outside the hub"],
+        ),
+        ("/settings/notifiers", &["warning and critical incidents are sent to every notifier"]),
+        ("/sites/home", &["A site is a place with its own network and its own hub."]),
+    ];
+    for (path, all) in pages {
+        says(path, see(&app, path, &admin).await, all);
+    }
+    let incidents = see(&app, "/incidents", &admin).await;
+    assert!(!plain(&incidents).contains("| Human |"), "a stored state isn't shown as it is stored");
+    let patching = plain(&see(&app, "/patching", &admin).await);
+    assert!(
+        !patching.contains("Nothing is patched by itself without one"),
+        "patches don't wait for a maintenance window"
+    );
+    let fields = [("name", "web9"), ("os", "linux"), ("access", "managed"), ("mode", "local")];
+    let (_, html) = submit(&app, &admin, "/add/machine", &fields).await;
+    says("/add/machine", html, &["It shows on the Overview once its probe connects."]);
+    // a choice says what it is in a few words, so it isn't cut off on a phone; its field's hint says the rest
+    for path in ["/add?add=machine", "/users?add=user", "/patching?add=policy"] {
+        let html = see(&app, path, &admin).await;
+        for option in html.split("<option").skip(1) {
+            let label = plain(&option[option.find('>').unwrap() + 1..option.find("</option>").unwrap()]);
+            assert!(label.chars().count() <= 32, "{path}: {label}");
+        }
+    }
+}

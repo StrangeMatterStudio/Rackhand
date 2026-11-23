@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">{{ machines.len() }} machine{% if machines.len() != 1 %}s{% endif %}.</p></div></div>
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">{{ machines.len() }} machine{% if machines.len() != 1 %}s{% endif %}. A site is a place with its own network and its own hub.</p></div></div>
 <section class="card list"><div class="bar"><h2>Machines</h2>{{ crate::web::ui::search(shell.path.as_str(), q, "machines")|safe }}</div>
 {% if machines.is_empty() %}{{ crate::web::ui::none(q, "machines", "No machines at this site yet. <a href=\"/add\">Add a machine</a>")|safe }}{% else %}
 <table><thead><tr><th scope="col">Machine</th><th scope="col">State</th><th scope="col">Kind</th><th scope="col">CPU</th><th scope="col" class="x">Memory</th><th scope="col">Updates</th><th scope="col" class="x">Policy</th><th scope="col">Last seen</th></tr></thead><tbody>
