@@ -21,7 +21,8 @@ fn security_kind(kind: &str) -> bool {
 }
 
 impl Routing {
-    /// Whether the finding was dealt with here (so ordinary routing doesn't look at it).
+    /// Whether the finding was dealt with here (so ordinary routing does not look at it). A proposal for an approval is not the
+    /// end of it: an assistant may still look into the finding while the approval waits.
     pub(super) async fn quarantine_route(
         &self,
         inc: &IncidentRow,
@@ -97,16 +98,16 @@ impl Routing {
                     auto_rollback: false,
                 };
                 if decide(&request) != Decision::Allow {
-                    return self.propose_quarantine(inc, machine_id, now_ms).await.map(|()| true);
+                    return self.propose_quarantine(inc, machine_id, now_ms).await.map(|()| false);
                 }
                 let mut job = StartJob::runbook(RUNBOOK, machine_id, &format!("rule:{rule}"));
                 job.incident_id = Some(inc.id.clone());
                 self.start(inc.clone(), job, now_ms).await?;
                 Ok(true)
             }
-            Auto::NeedsApproval { .. } => self.propose_quarantine(inc, machine_id, now_ms).await.map(|()| true),
+            Auto::NeedsApproval { .. } => self.propose_quarantine(inc, machine_id, now_ms).await.map(|()| false),
             Auto::NoMatch if severity == RuleSeverity::Critical => {
-                self.propose_quarantine(inc, machine_id, now_ms).await.map(|()| true)
+                self.propose_quarantine(inc, machine_id, now_ms).await.map(|()| false)
             }
             _ => Ok(false),
         }

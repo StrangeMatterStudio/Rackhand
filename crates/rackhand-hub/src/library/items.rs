@@ -175,15 +175,24 @@ impl Library {
     /// Library doesn't have, or a newer built-in where nobody has edited the item since the last one. An admin's edit
     /// is kept, and from then on the item is theirs to keep up to date.
     pub async fn seed(&self, builtins: &[(&str, &str)], now_ms: i64) -> Result<Vec<String>, SaveError> {
+        self.seed_kind(Kind::Runbook, builtins, now_ms).await
+    }
+
+    /// The same for the built-in playbooks.
+    pub async fn seed_playbooks(&self, builtins: &[(&str, &str)], now_ms: i64) -> Result<Vec<String>, SaveError> {
+        self.seed_kind(Kind::Playbook, builtins, now_ms).await
+    }
+
+    async fn seed_kind(&self, kind: Kind, builtins: &[(&str, &str)], now_ms: i64) -> Result<Vec<String>, SaveError> {
         let mut seeded = Vec::new();
         for (name, content) in builtins {
-            let take = match self.current(Kind::Runbook, name)? {
+            let take = match self.current(kind, name)? {
                 None => true,
                 Some((_, current)) if current == *content => false,
-                Some(_) => self.history(Kind::Runbook, name)?.first().is_some_and(|h| h.author == BUILTIN_AUTHOR),
+                Some(_) => self.history(kind, name)?.first().is_some_and(|h| h.author == BUILTIN_AUTHOR),
             };
             if take {
-                self.store(Kind::Runbook, name, content, BUILTIN_AUTHOR, "builtin", now_ms).await?;
+                self.store(kind, name, content, BUILTIN_AUTHOR, "builtin", now_ms).await?;
                 seeded.push(name.to_string());
             }
         }

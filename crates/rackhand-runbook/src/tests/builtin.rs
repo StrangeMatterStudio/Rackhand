@@ -405,3 +405,52 @@ fn conntrack_flush_takes_one_address_for_the_hypervisor() {
     let list = crate::templates::command_list(&[r]);
     assert_eq!(list.commands.len(), 2);
 }
+
+/// 7.8.8: the seven built-in playbooks parse, name the tools a job may use (and only real ones), and the ones an incident
+/// starts say which kinds they are for.
+#[test]
+fn seven_playbooks_parse() {
+    use crate::playbook::{Hosts, Playbook};
+    const TOOLS: [&str; 18] = [
+        "list_machines",
+        "get_machine",
+        "get_vitals",
+        "list_incidents",
+        "get_incident",
+        "list_security_events",
+        "get_connections",
+        "run_diagnostic",
+        "exec",
+        "list_runbooks",
+        "get_runbook",
+        "run_runbook",
+        "list_playbooks",
+        "get_playbook",
+        "propose_library_change",
+        "get_approval",
+        "add_incident_note",
+        "finish_job",
+    ];
+    let names = [
+        "patch-failure",
+        "service-down",
+        "disk-filling",
+        "security-finding",
+        "machine-silent",
+        "backup-stale",
+        "guided-install",
+    ];
+    assert_eq!(builtin::playbooks().iter().map(|(n, _)| *n).collect::<Vec<_>>(), names);
+    for (name, source) in builtin::playbooks() {
+        let p = Playbook::parse(source).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(p.name, *name);
+        assert_eq!(p.autonomy, 1, "{name}: a playbook starts at level 1, a policy raises it");
+        assert!(p.tools.iter().all(|t| TOOLS.contains(&t.as_str())), "{name}: {:?}", p.tools);
+        assert!(p.tools.contains(&"finish_job".to_string()), "{name}: a job must be able to end itself");
+        assert!(p.max_runtime_s().is_some_and(|s| s <= 1800), "{name}");
+        assert!(!p.tools.contains(&"approve".to_string()), "no tool approves anything");
+        let for_incidents = *name != "guided-install";
+        assert_eq!(!p.incident_kinds.is_empty(), for_incidents, "{name}");
+        assert_eq!(p.hosts, if for_incidents { Hosts::Incident } else { Hosts::Site }, "{name}");
+    }
+}

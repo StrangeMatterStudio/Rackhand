@@ -666,3 +666,45 @@ async fn monitor_machine_hub_step_needs_an_account_only_to_send() {
     assert_eq!(revoked.outcome, JobOutcome::Succeeded, "{revoked:?}");
     assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
 }
+
+/// 7.3.5: an assistant job whose operator never reports ends `timed_out` a while after its deadline, and one still inside its
+/// deadline or its grace is left alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn assistant_job_without_report_ends_after_deadline() {
+    let (db, actions, _bus) = setup("sweep", "managed", Arc::new(Fake::default())).await;
+    let operator = Row::from([
+        ("id", Value::Text("op1".into())),
+        ("name", Value::Text("lab".into())),
+        ("endpoint_id", Value::Text("ab".repeat(32))),
+        ("order", Value::Integer(0)),
+    ]);
+    db.writer().send(WriteCmd::Batch(vec![RowWrite::insert("operators", operator)])).await.unwrap();
+    let now = rackhand_store::ids::now_ms();
+    let mut jobs = Vec::new();
+    for deadline in [now - 20 * 60_000, now - 2 * 60_000, now + 20 * 60_000] {
+        let job = actions.open_assistant_job("service-down", "incidents", None).await.unwrap();
+        crate::mcp::keys::issue_job_token(&db, &job, "op1", &[], &[], deadline).await.unwrap();
+        jobs.push(job);
+    }
+    let state = |id: &str| -> (String, Option<String>) {
+        db.readers()
+            .with(|c| {
+                c.query_row("SELECT state, outcome FROM jobs WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+            })
+            .unwrap()
+    };
+    assert_eq!(actions.sweep_assistant_jobs(now, 5 * 60_000).await.unwrap(), 1);
+    assert_eq!(
+        state(&jobs[0]),
+        ("timed_out".to_string(), Some("timed_out".to_string())),
+        "20 minutes past its deadline"
+    );
+    assert_eq!(state(&jobs[1]).0, "running", "inside the grace");
+    assert_eq!(state(&jobs[2]).0, "running", "inside its deadline");
+    assert_eq!(actions.sweep_assistant_jobs(now, 5 * 60_000).await.unwrap(), 0, "once");
+    assert_eq!(
+        actions.sweep_assistant_jobs(now + 10 * 60_000, 5 * 60_000).await.unwrap(),
+        1,
+        "the one in its grace, later"
+    );
+}

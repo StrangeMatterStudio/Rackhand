@@ -668,3 +668,281 @@ mod quarantine {
         }
     }
 }
+
+/// Routing to playbooks (7.5.2, 7.5.4, D76, D96, E15, E21).
+mod playbook_routing {
+    use super::*;
+    use crate::incidents::routing::playbook_routing::{AssistStarter, PlaybookRequest, PlaybookStart};
+
+    /// Records what routing asks the assistant for, and answers as told.
+    #[derive(Debug)]
+    struct Assist {
+        asked: Mutex<Vec<PlaybookRequest>>,
+        answer: Mutex<PlaybookStart>,
+    }
+
+    impl AssistStarter for Assist {
+        fn start(&self, req: PlaybookRequest) -> super::super::BoxFuture<PlaybookStart> {
+            self.asked.lock().unwrap().push(req);
+            let answer = self.answer.lock().unwrap().clone();
+            Box::pin(async move { answer })
+        }
+    }
+
+    fn playbook(name: &str, kinds: &str, autonomy: u8) -> String {
+        format!(
+            "+++\nname = \"{name}\"\nincident_kinds = [{kinds}]\nautonomy = {autonomy}\nrisk = \"normal\"\ntools = [\"get_incident\", \"finish_job\"]\nhosts = \"incident\"\nmax_runtime = \"20m\"\n+++\n## When\nIt is down.\n## Read first\nThe incident.\n## Do\nLook.\n## Done when\nFixed.\n## Stop and ask if\nUnsure.\n"
+        )
+    }
+
+    struct Pb {
+        env: Env,
+        assist: Arc<Assist>,
+    }
+
+    async fn pb(name: &str) -> Pb {
+        let mut env = Env::new(name).await;
+        let assist = Arc::new(Assist {
+            asked: Mutex::new(Vec::new()),
+            answer: Mutex::new(PlaybookStart::Accepted { job_id: "01JASSISTJOB0000000000000A".into() }),
+        });
+        env.routing = env.routing.clone().with_assist(assist.clone());
+        Pb { env, assist }
+    }
+
+    impl Pb {
+        async fn book(&self, name: &str, kinds: &str, autonomy: u8) {
+            self.env.library.save(Kind::Playbook, name, &playbook(name, kinds, autonomy), "admin", T0).await.unwrap();
+        }
+
+        fn asked(&self) -> Vec<PlaybookRequest> {
+            std::mem::take(&mut *self.assist.asked.lock().unwrap())
+        }
+
+        async fn open(&self, kind: &str, severity: Severity, now: i64) -> String {
+            let o = Opening {
+                machine_id: Some(M1.into()),
+                rule_id: None,
+                dedupe_key: format!("{M1}:{kind}:x"),
+                kind: kind.into(),
+                severity,
+                title: format!("{kind} on web"),
+            };
+            let inc = self.env.incidents.open(o, now).await.unwrap().unwrap();
+            self.env.routing.route(&inc.id, now).await.unwrap();
+            inc.id
+        }
+
+        fn events(&self, id: &str, kind: &str) -> i64 {
+            self.env
+                .db
+                .readers()
+                .with(|c| {
+                    c.query_row(
+                        "SELECT count(*) FROM incident_events WHERE incident_id = ?1 AND kind = ?2",
+                        [id, kind],
+                        |r| r.get(0),
+                    )
+                })
+                .unwrap()
+        }
+
+        /// An assistant job for the incident that ended as `outcome` with `reason`, and its `JobFinished`.
+        async fn assistant_ends(&self, incident: &str, playbook: &str, outcome: JobOutcome, reason: &str, now: i64) {
+            let state = if outcome == JobOutcome::Succeeded { "succeeded" } else { "failed" };
+            let row = Row::from([
+                ("id", t("01JASSISTJOB0000000000000A")),
+                ("kind", t("assistant")),
+                ("name", t(playbook)),
+                ("requested_by", t("incidents")),
+                ("incident_id", t(incident)),
+                ("state", t(state)),
+                ("outcome", t(reason)),
+            ]);
+            self.env.db.writer().send(WriteCmd::Batch(vec![RowWrite::insert("jobs", row)])).await.unwrap();
+            self.env.routing.job_finished("01JASSISTJOB0000000000000A", outcome, now).await.unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_playbook_takes_an_incident_no_runbook_does_with_a_brief_and_its_hosts() {
+        let p = pb("pb-takes").await;
+        p.book("service-down", "\"service.not_active\"", 1).await;
+        let id = p.open(KIND, Severity::Warning, T0).await;
+        let asked = p.asked();
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        let req = &asked[0];
+        assert_eq!(
+            (req.playbook.as_str(), req.incident_id.as_str(), req.hosts.as_slice()),
+            ("service-down", id.as_str(), &[M1.to_string()][..])
+        );
+        assert_eq!(req.deadline_ms, T0 + 20 * MIN, "the playbook's `max_runtime`");
+        for part in ["## The rule", "## Incident", "## This job", "autonomy level: 1", "untrusted_output"] {
+            assert!(req.brief.contains(part), "{part}: {}", req.brief);
+        }
+        assert_eq!(p.env.state(&id), "assistant");
+        assert_eq!(p.events(&id, "assistant.started"), 1);
+        // a kind no playbook is for goes to a person, as it did before playbooks
+        let other = p.open("cpu.busy", Severity::Warning, T0).await;
+        assert!(p.asked().is_empty());
+        assert_eq!(p.env.state(&other), "human");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn one_assistant_job_per_incident_per_24h() {
+        let p = pb("pb-limit").await;
+        p.book("service-down", "\"service.not_active\"", 1).await;
+        let id = p.open(KIND, Severity::Warning, T0).await;
+        assert_eq!(p.asked().len(), 1);
+        p.env.resolve(&id, T0 + 5 * MIN).await;
+        // the same incident again within the day: the second goes to a person with the note
+        let again = p.open(KIND, Severity::Warning, T0 + 30 * MIN).await;
+        assert_eq!(again, id, "a reopen is the same incident");
+        assert!(p.asked().is_empty(), "no second assistant job");
+        assert_eq!(p.env.state(&id), "human");
+        assert!(p.env.notes(&id).iter().any(|n| n.contains("attempt limit reached")), "{:?}", p.env.notes(&id));
+        // a day after the first, one is allowed again
+        p.env.resolve(&id, T0 + 40 * MIN).await;
+        p.open(KIND, Severity::Warning, T0 + 24 * 60 * MIN + MIN).await;
+        assert_eq!(p.asked().len(), 1, "the first start is outside the 24 hours");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_step_names_the_playbook_and_kinds_are_skipped() {
+        let p = pb("pb-onfail").await;
+        p.book("service-down", "\"service.not_active\"", 1).await;
+        p.book("careful", "", 1).await;
+        let runbook = "name = \"nginx-restart\"\ndescription = \"t\"\nidentity = \"automation\"\nrisk = \"low\"\nautonomy = 2\n\
+             triggers = { incident_kinds = [\"service.not_active\"], auto = true }\n[[step]]\nid = \"restart\"\nkind = \"ssh\"\n\
+             cmd = [\"sudo\", \"/usr/local/lib/rackhand/run\", \"/usr/bin/systemctl\", \"restart\", \"nginx.service\"]\n\
+             on_failure = { playbook = \"careful\" }\n";
+        p.env.library.save(Kind::Runbook, "nginx-restart", runbook, "admin", T0).await.unwrap();
+        let id = p.open(KIND, Severity::Warning, T0).await;
+        let start = p.env.starts.taken().pop().expect("the runbook starts first");
+        assert_eq!(start.name, "nginx-restart");
+        assert!(p.asked().is_empty(), "a runbook is tried before a playbook");
+        // it fails at its step
+        let job = "01JJOB0000000000000000000F";
+        let step = Row::from([
+            ("job_id", t(job)),
+            ("step_id", t("restart")),
+            ("state", t("failed")),
+            ("started_at", Value::Integer(T0)),
+        ]);
+        let row = Row::from([
+            ("id", t(job)),
+            ("kind", t("runbook")),
+            ("name", t("nginx-restart")),
+            ("target", t(M1)),
+            ("requested_by", t(&format!("incident:{id}"))),
+            ("incident_id", t(&id)),
+            ("state", t("failed")),
+        ]);
+        p.env
+            .db
+            .writer()
+            .send(WriteCmd::Batch(vec![RowWrite::insert("jobs", row), RowWrite::insert("job_steps", step)]))
+            .await
+            .unwrap();
+        p.env.routing.job_finished(job, JobOutcome::Failed, T0 + MIN).await.unwrap();
+        let asked = p.asked();
+        assert_eq!(
+            asked.iter().map(|r| r.playbook.as_str()).collect::<Vec<_>>(),
+            ["careful"],
+            "the named one, not the kind's"
+        );
+        assert_eq!(p.env.state(&id), "assistant");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn no_operator_or_declines_go_human_with_callout() {
+        for reason in ["no_operator", "declined"] {
+            let p = pb(&format!("pb-{reason}")).await;
+            p.book("service-down", "\"service.not_active\"", 1).await;
+            *p.assist.answer.lock().unwrap() = PlaybookStart::ToPerson { reason: reason.into() };
+            let id = p.open(KIND, Severity::Warning, T0).await;
+            assert_eq!(p.env.state(&id), "human", "{reason}");
+            assert!(p.env.notes(&id).iter().any(|n| n.contains("operator")), "{reason}: {:?}", p.env.notes(&id));
+            let callouts: i64 = p
+                .env
+                .db
+                .readers()
+                .with(|c| {
+                    c.query_row(
+                        "SELECT count(*) FROM incident_events WHERE incident_id = ?1 AND kind = 'human' AND json_extract(data, '$.callout') = 1",
+                        [&id],
+                        |r| r.get(0),
+                    )
+                })
+                .unwrap();
+            assert_eq!(callouts, 1, "{reason}: a callout says so");
+            // the job's own end arrives too, and changes nothing more
+            p.assistant_ends(&id, "service-down", JobOutcome::Failed, reason, T0 + MIN).await;
+            assert_eq!(p.events(&id, "human"), 1, "{reason}");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn level_0_tells_a_person_what_would_run() {
+        let p = pb("pb-level0").await;
+        p.book("service-down", "\"service.not_active\"", 0).await;
+        let id = p.open(KIND, Severity::Warning, T0).await;
+        assert!(p.asked().is_empty());
+        assert_eq!(p.env.state(&id), "human");
+        assert!(p.env.notes(&id).iter().any(|n| n.contains("level 0")), "{:?}", p.env.notes(&id));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn assistant_resolves_event_incident_only_level_2_3_warning() {
+        // (autonomy, severity) -> the incident after the assistant says resolved
+        for (n, (level, severity, resolved)) in [
+            (1u8, Severity::Warning, false),
+            (2, Severity::Warning, true),
+            (2, Severity::Critical, false),
+            (3, Severity::Critical, false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let p = pb(&format!("pb-event{n}")).await;
+            p.book("security-finding", "\"auth.keys_changed\"", level).await;
+            let id = p.open("auth.keys_changed", severity, T0).await;
+            assert_eq!(p.asked().len(), 1, "an assistant looks at it at any level");
+            p.assistant_ends(&id, "security-finding", JobOutcome::Succeeded, "resolved", T0 + 5 * MIN).await;
+            let state = p.env.state(&id);
+            assert_eq!(state == "resolved", resolved, "level {level}, {severity:?}: {state}");
+            if !resolved {
+                assert_eq!(state, "human", "a person closes it");
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_condition_incident_waits_for_the_condition_after_resolved_then_goes_to_a_person() {
+        let p = pb("pb-wait").await;
+        p.book("service-down", "\"service.not_active\"", 1).await;
+        let id = p.open(KIND, Severity::Warning, T0).await;
+        p.assistant_ends(&id, "service-down", JobOutcome::Succeeded, "resolved", T0 + 5 * MIN).await;
+        assert_eq!(p.env.state(&id), "assistant", "waiting to see the condition clear");
+        p.env.routing.tick(T0 + 10 * MIN).await.unwrap();
+        assert_eq!(p.env.state(&id), "assistant", "not yet");
+        p.env.routing.tick(T0 + 16 * MIN).await.unwrap();
+        assert_eq!(p.env.state(&id), "human");
+        assert!(
+            p.env.notes(&id).iter().any(|n| n.contains("persists 10 minutes after the assistant")),
+            "{:?}",
+            p.env.notes(&id)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_assistant_that_hands_over_or_runs_out_of_time_goes_to_a_person() {
+        for (n, reason) in ["needs_human", "timed_out", "failed"].iter().enumerate() {
+            let p = pb(&format!("pb-end{n}")).await;
+            p.book("service-down", "\"service.not_active\"", 1).await;
+            let id = p.open(KIND, Severity::Warning, T0).await;
+            p.assistant_ends(&id, "service-down", JobOutcome::Failed, reason, T0 + 5 * MIN).await;
+            assert_eq!(p.env.state(&id), "human", "{reason}");
+        }
+    }
+}

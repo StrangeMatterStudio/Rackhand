@@ -214,6 +214,12 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         Ok(_) => {}
         Err(e) => tracing::warn!(error = %e, "built-in runbooks not seeded"),
     }
+    // and the built-in playbooks (7.8.8)
+    match library.seed_playbooks(rackhand_runbook::builtin::playbooks(), now_ms()).await {
+        Ok(seeded) if !seeded.is_empty() => tracing::info!(?seeded, "built-in playbooks"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "built-in playbooks not seeded"),
+    }
     let sources_db = db.clone();
     rackhand_hub::intel::spawn_refresh(
         intel.clone(),
@@ -285,7 +291,13 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     );
     // incidents start runbooks through StartJob and hear back on the bus (7.5.2)
     let starter = Arc::new(ActionsStarter(actions.clone()));
-    rackhand_hub::incidents::routing::Routing::new(incidents.clone(), starter).spawn(bus.subscribe("routing"));
+    // an incident no runbook takes, or whose runbook failed, goes to an assistant job through Assist (7.5.2)
+    let assist = rackhand_hub::assist::Assist::new(db.clone(), audit.clone(), actions.clone());
+    rackhand_hub::incidents::routing::Routing::new(incidents.clone(), starter)
+        .with_assist(Arc::new(AssistStarter(assist.clone())))
+        .spawn(bus.subscribe("routing"));
+    // an assistant job whose operator never reports ends a while after its deadline
+    assist.clone().spawn_sweep();
     let web_config = rackhand_hub::web::WebConfig {
         setup_code_hash: setup_hash,
         csrf_key,
@@ -334,7 +346,6 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let _ = ticket_addrs.set((id_hex, addrs.clone()));
     let join = joins::LazyJoin::new(db.clone(), registry.clone(), setup, addrs, joined_tx);
     let observations = Arc::new(crate::observations::FromIngest(ingest.clone()));
-    let assist = rackhand_hub::assist::Assist::new(db.clone(), audit.clone(), actions.clone());
     let mcp = rackhand_hub::mcp::Mcp::new(db.clone(), audit.clone(), observations)
         .with_actions(actions)
         .with_library(library);
@@ -379,6 +390,36 @@ impl rackhand_hub::incidents::routing::JobStarter for ActionsStarter {
     ) -> rackhand_hub::incidents::routing::BoxFuture<Result<(), String>> {
         let actions = self.0.clone();
         Box::pin(async move { actions.run(job).await.map(|_| ()).map_err(|e| e.to_string()) })
+    }
+}
+
+/// Incident routing's ask for an assistant job, through Assist.
+#[derive(Debug)]
+struct AssistStarter(rackhand_hub::assist::Assist);
+
+impl rackhand_hub::incidents::routing::playbook_routing::AssistStarter for AssistStarter {
+    fn start(
+        &self,
+        req: rackhand_hub::incidents::routing::playbook_routing::PlaybookRequest,
+    ) -> rackhand_hub::incidents::routing::BoxFuture<rackhand_hub::incidents::routing::playbook_routing::PlaybookStart>
+    {
+        use rackhand_hub::assist::{AssistRequest, AssistResult};
+        use rackhand_hub::incidents::routing::playbook_routing::PlaybookStart;
+        let assist = self.0.clone();
+        Box::pin(async move {
+            let request = AssistRequest {
+                incident_id: req.incident_id,
+                playbook: req.playbook,
+                brief: req.brief,
+                hosts: req.hosts,
+                deadline_ms: Some(req.deadline_ms),
+                max_turns: None,
+            };
+            match assist.start(request).await {
+                AssistResult::Accepted { job_id, .. } => PlaybookStart::Accepted { job_id },
+                AssistResult::ToPerson { reason, .. } => PlaybookStart::ToPerson { reason: reason.to_string() },
+            }
+        })
     }
 }
 

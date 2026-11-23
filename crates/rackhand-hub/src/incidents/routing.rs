@@ -85,6 +85,8 @@ pub fn choose<'a>(runbooks: &'a [Runbook], kind: &str, m: &MachineFacts) -> Opti
 pub struct Routing {
     incidents: Incidents,
     starter: Arc<dyn JobStarter>,
+    /// What starts an assistant job for a playbook; without it an incident no runbook takes goes to a person.
+    assist: Option<Arc<dyn playbook_routing::AssistStarter>>,
 }
 
 struct Machine {
@@ -102,7 +104,13 @@ fn requester(incident_id: &str) -> String {
 
 impl Routing {
     pub fn new(incidents: Incidents, starter: Arc<dyn JobStarter>) -> Routing {
-        Routing { incidents, starter }
+        Routing { incidents, starter, assist: None }
+    }
+
+    /// Playbooks (7.5.2): an incident no runbook takes, or whose runbook failed, goes to an assistant job.
+    pub fn with_assist(mut self, assist: Arc<dyn playbook_routing::AssistStarter>) -> Routing {
+        self.assist = Some(assist);
+        self
     }
 
     fn db(&self) -> &Db {
@@ -188,7 +196,7 @@ impl Routing {
         }
         let runbooks = self.runbooks();
         let Some(rb) = choose(&runbooks, &inc.kind, &machine.facts) else {
-            return self.incidents.set_state(incident_id, State::Human, now_ms).await;
+            return self.to_playbook(&inc, &machine_id, None, "", now_ms).await;
         };
         if self.attempts(incident_id, now_ms)? >= MAX_AUTOMATIC_STARTS {
             let why = format!(
@@ -286,6 +294,10 @@ impl Routing {
     /// A job ended. One routing started moves its incident on; any job that timed out opens an incident on its
     /// machine (E55).
     pub async fn job_finished(&self, job_id: &str, outcome: JobOutcome, now_ms: i64) -> Result<(), IncidentsError> {
+        // an assistant job's end moves its incident on
+        if self.assistant_finished(job_id, outcome, now_ms).await? {
+            return Ok(());
+        }
         type JobRow = (String, Option<String>, String, Option<String>);
         let row: Option<JobRow> = self.db().readers().with(|c| {
             c.query_row("SELECT name, target, requested_by, incident_id FROM jobs WHERE id = ?1", [job_id], |r| {
@@ -324,7 +336,15 @@ impl Routing {
             JobOutcome::Interrupted => "was interrupted",
             _ => "failed",
         };
-        self.to_person(&incident_id, &format!("runbook `{name}` {ended} (job {job_id})"), now_ms).await
+        // a failed runbook goes to the playbook its failed step names, else the one for the incident's kind (7.5.2)
+        let why = format!("runbook `{name}` {ended} (job {job_id})");
+        match target {
+            Some(machine) if self.assist.is_some() => {
+                let on_failure = self.on_failure_of(job_id);
+                self.to_playbook(&inc, &machine, on_failure.as_deref(), &why, now_ms).await
+            }
+            _ => self.to_person(&incident_id, &why, now_ms).await,
+        }
     }
 
     /// 7.5.3 step 6: a patch job that didn't succeed opens `patch_failed` on its machine (one a person cancelled
@@ -434,8 +454,13 @@ impl Routing {
         })?;
         for (id, runbook) in waiting {
             let why = format!("the condition persists 10 minutes after runbook `{runbook}` succeeded");
-            self.to_person(&id, &why, now_ms).await?;
+            let inc = by_id(self.db(), &id)?;
+            match inc.machine_id.clone() {
+                Some(machine) if self.assist.is_some() => self.to_playbook(&inc, &machine, None, &why, now_ms).await?,
+                _ => self.to_person(&id, &why, now_ms).await?,
+            }
         }
+        self.assistant_waits(now_ms).await?;
         self.expire_pending(now_ms).await?;
         Ok(())
     }
@@ -485,6 +510,8 @@ impl Routing {
     }
 }
 
+#[path = "playbook_routing.rs"]
+pub mod playbook_routing;
 #[path = "quarantine_routing.rs"]
 mod quarantine_route;
 

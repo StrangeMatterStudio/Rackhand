@@ -392,6 +392,22 @@ impl Actions {
         Ok(job_id)
     }
 
+    /// Assistant jobs whose token's deadline passed more than `grace_ms` ago and that nobody has ended: the operator never
+    /// reported, so they end `timed_out`. Returns how many it ended.
+    pub async fn sweep_assistant_jobs(&self, now_ms: i64, grace_ms: i64) -> Result<usize, ActionsError> {
+        let stale: Vec<String> = self.inner.db.readers().with(|c| {
+            let mut s = c.prepare(
+                "SELECT j.id FROM jobs j JOIN job_tokens t ON t.job_id = j.id
+                 WHERE j.kind = 'assistant' AND j.state = 'running' AND t.expires_at + ?1 < ?2",
+            )?;
+            s.query_map(rusqlite::params![grace_ms, now_ms], |r| r.get(0))?.collect()
+        })?;
+        for id in &stale {
+            self.finish(id, "hub", JobOutcome::TimedOut, Some("timed_out")).await?;
+        }
+        Ok(stale.len())
+    }
+
     /// One assistant transcript event (7.3.5): Actions stores them, as it owns `assistant_transcripts`.
     pub async fn append_transcript(
         &self,

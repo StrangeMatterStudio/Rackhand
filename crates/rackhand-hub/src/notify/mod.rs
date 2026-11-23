@@ -166,7 +166,7 @@ impl Notify {
             let data: serde_json::Value = serde_json::from_str(&data).unwrap_or_default();
             let callout = data["callout"].as_bool().unwrap_or(false);
             match kind.as_str() {
-                "opened" | "reopened" | "severity" if callout => self.call_out(&incident, now_ms).await?,
+                "opened" | "reopened" | "severity" | "human" if callout => self.call_out(&incident, now_ms).await?,
                 "resolved" => self.resolved(&incident, now_ms).await?,
                 _ => {}
             }

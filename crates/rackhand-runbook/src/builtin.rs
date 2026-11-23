@@ -23,6 +23,21 @@ const RUNBOOKS: &[(&str, &str)] = &[
     ("conntrack-flush", include_str!("../builtin/conntrack-flush.toml")),
 ];
 
+const PLAYBOOKS: &[(&str, &str)] = &[
+    ("patch-failure", include_str!("../builtin/playbooks/patch-failure.md")),
+    ("service-down", include_str!("../builtin/playbooks/service-down.md")),
+    ("disk-filling", include_str!("../builtin/playbooks/disk-filling.md")),
+    ("security-finding", include_str!("../builtin/playbooks/security-finding.md")),
+    ("machine-silent", include_str!("../builtin/playbooks/machine-silent.md")),
+    ("backup-stale", include_str!("../builtin/playbooks/backup-stale.md")),
+    ("guided-install", include_str!("../builtin/playbooks/guided-install.md")),
+];
+
+/// Every built-in playbook (7.8.8), as `(name, content)`.
+pub fn playbooks() -> &'static [(&'static str, &'static str)] {
+    PLAYBOOKS
+}
+
 /// Every built-in runbook, as `(name, content)`.
 pub fn runbooks() -> &'static [(&'static str, &'static str)] {
     RUNBOOKS

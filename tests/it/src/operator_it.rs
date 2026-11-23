@@ -94,13 +94,17 @@ mod operator {
         }
     }
 
-    /// Every step of a runbook succeeds.
+    /// Every step of a runbook succeeds, except one named `verify` when told to fail it.
     #[derive(Debug)]
-    struct Works;
+    struct Works(bool);
 
     impl StepRunner for Works {
-        fn run<'a>(&'a self, _c: &'a StepCtx, _s: &'a Step, _a: Option<&'a [String]>) -> BoxFuture<'a, StepResult> {
-            Box::pin(async {
+        fn run<'a>(&'a self, _c: &'a StepCtx, step: &'a Step, _a: Option<&'a [String]>) -> BoxFuture<'a, StepResult> {
+            let fail = self.0 && step.id == "verify";
+            Box::pin(async move {
+                if fail {
+                    return StepResult::failed("required_mounts");
+                }
                 StepResult {
                     outcome: StepOutcome::Succeeded,
                     command: None,
@@ -124,6 +128,8 @@ mod operator {
     struct InHub {
         db: Arc<Db>,
         assist: Assist,
+        actions: Actions,
+        bus: Bus,
         machine: String,
         ticket: rackhand_net::ticket::Ticket,
         _server: iroh::Endpoint,
@@ -131,6 +137,10 @@ mod operator {
 
     /// A hub with one machine, an open incident, the playbook and two runbooks, and the operator at `operator_id`.
     async fn in_hub(name: &str, machine_name: &str, operator_id: &str) -> InHub {
+        in_hub_with(name, machine_name, operator_id, false).await
+    }
+
+    async fn in_hub_with(name: &str, machine_name: &str, operator_id: &str, fail_verify: bool) -> InHub {
         let dir = temp(name);
         let db = Arc::new(Db::open(&dir.join("hub.db")).unwrap());
         let machine = format!("01JMACH{}", name.to_uppercase().replace('-', ""))
@@ -181,9 +191,10 @@ mod operator {
         for rb in ["step-one", "step-two"] {
             library.save(Kind::Runbook, rb, &runbook(rb), "admin", 1).await.unwrap();
         }
-        let actions = Actions::new(db.clone(), audit.clone(), Bus::new(), Arc::new(Works));
+        let bus = Bus::new();
+        let actions = Actions::new(db.clone(), audit.clone(), bus.clone(), Arc::new(Works(fail_verify)));
         let assist = Assist::new(db.clone(), audit.clone(), actions.clone());
-        let mcp = Mcp::new(db.clone(), audit, Arc::new(Nothing)).with_actions(actions).with_library(library);
+        let mcp = Mcp::new(db.clone(), audit, Arc::new(Nothing)).with_actions(actions.clone()).with_library(library);
         let key = rackhand_net::key::load_or_create(&dir.join("hub.key")).unwrap();
         let config = rackhand_net::endpoint::EndpointConfig {
             relays: Default::default(),
@@ -199,7 +210,7 @@ mod operator {
         let addrs: Vec<std::net::SocketAddr> =
             server.addr().ip_addrs().copied().filter(|a| a.ip().is_loopback() || a.is_ipv4()).collect();
         let ticket = rackhand_net::ticket::Ticket { hub_id: *server.id().as_bytes(), addrs, relays: vec![] };
-        InHub { db, assist, machine, ticket, _server: server }
+        InHub { db, assist, actions, bus, machine, ticket, _server: server }
     }
 
     struct OperatorProcess {
@@ -401,5 +412,119 @@ mod operator {
         assert_eq!(order, ["step-one", "step-two"]);
         let states: Vec<String> = approvals(&hub.db).into_iter().map(|a| a.2).collect();
         assert_eq!(states, ["used", "used"], "each approval was used once, by the call it was for");
+    }
+
+    /// Routing, as the hub's composition wires it: runbooks through Actions, playbooks through Assist.
+    #[derive(Debug)]
+    struct Starter(Actions);
+
+    impl rackhand_hub::incidents::routing::JobStarter for Starter {
+        fn start(
+            &self,
+            job: rackhand_hub::actions::StartJob,
+        ) -> rackhand_hub::incidents::routing::BoxFuture<Result<(), String>> {
+            let actions = self.0.clone();
+            Box::pin(async move { actions.run(job).await.map(|_| ()).map_err(|e| e.to_string()) })
+        }
+    }
+
+    #[derive(Debug)]
+    struct ToAssist(Assist);
+
+    impl rackhand_hub::incidents::routing::playbook_routing::AssistStarter for ToAssist {
+        fn start(
+            &self,
+            req: rackhand_hub::incidents::routing::playbook_routing::PlaybookRequest,
+        ) -> rackhand_hub::incidents::routing::BoxFuture<
+            rackhand_hub::incidents::routing::playbook_routing::PlaybookStart,
+        > {
+            use rackhand_hub::incidents::routing::playbook_routing::PlaybookStart;
+            let assist = self.0.clone();
+            Box::pin(async move {
+                let request = AssistRequest {
+                    incident_id: req.incident_id,
+                    playbook: req.playbook,
+                    brief: req.brief,
+                    hosts: req.hosts,
+                    deadline_ms: Some(req.deadline_ms),
+                    max_turns: None,
+                };
+                match assist.start(request).await {
+                    AssistResult::Accepted { job_id, .. } => PlaybookStart::Accepted { job_id },
+                    AssistResult::ToPerson { reason, .. } => PlaybookStart::ToPerson { reason: reason.to_string() },
+                }
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct Roomy;
+
+    impl rackhand_hub::ingest::DiskSpace for Roomy {
+        fn free_fraction(&self) -> f64 {
+            0.5
+        }
+    }
+
+    /// AC21: a patch job fails its verify step for a mount that is missing; the incident routes to `patch-failure`, and the
+    /// operator is offered the job, within 60 seconds of the failure.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn patch_failure_offer_within_60s() {
+        let host = host("patch-failure");
+        let hub = in_hub_with("hub-patch", "web", &host.id, true).await;
+        // the built-in playbooks are in the Library, and a one-step patch runbook that fails its `verify`
+        let audit = Audit::new(hub.db.writer());
+        let (library, _) = Library::new(hub.db.clone(), audit);
+        library.seed_playbooks(rackhand_runbook::builtin::playbooks(), 1).await.unwrap();
+        let patch = "name = \"patch-test\"\ndescription = \"t\"\nidentity = \"automation\"\nrisk = \"normal\"\nautonomy = 2\n\
+                     [[step]]\nid = \"verify\"\nkind = \"notify\"\nmessage = \"mounts\"\n";
+        library.save(Kind::Runbook, "patch-test", patch, "admin", 1).await.unwrap();
+        let ingest = rackhand_hub::ingest::Ingest::new(hub.db.clone(), hub.bus.clone(), Arc::new(Roomy));
+        let incidents = rackhand_hub::incidents::Incidents::new(hub.db.clone(), ingest, hub.bus.clone());
+        rackhand_hub::incidents::routing::Routing::new(incidents, Arc::new(Starter(hub.actions.clone())))
+            .with_assist(Arc::new(ToAssist(hub.assist.clone())))
+            .spawn(hub.bus.subscribe("routing"));
+        let script = serde_json::json!([
+            { "say": "the mount is missing" },
+            { "finish": { "outcome": "unresolved", "summary": "needs a person to mount /srv" } }
+        ]);
+        let op = run_operator(&host, &[(&hub, "home")], &script);
+        when_connected(&hub, &op).await;
+        // the patch job fails
+        let failed_at = std::time::Instant::now();
+        let result = hub
+            .actions
+            .run(rackhand_hub::actions::StartJob::runbook("patch-test", &hub.machine, "scheduler"))
+            .await
+            .unwrap();
+        assert_eq!(result.reason.as_deref(), Some("required_mounts"), "{result:?}");
+        // an assistant job for `patch-failure` is offered to the operator and runs
+        let db = hub.db.clone();
+        until(Duration::from_secs(60), &format!("the patch-failure job: {}", op.log()), || {
+            db.readers()
+                .with(|c| {
+                    c.query_row(
+                        "SELECT count(*) FROM jobs j JOIN assistant_transcripts t ON t.job_id = j.id
+                         WHERE j.kind = 'assistant' AND j.name = 'patch-failure'",
+                        [],
+                        |r| r.get::<_, i64>(0),
+                    )
+                })
+                .unwrap()
+                > 0
+        })
+        .await;
+        let took = failed_at.elapsed();
+        eprintln!("offered and running after {took:?}");
+        assert!(took < Duration::from_secs(60), "{took:?}");
+        // and the brief the operator got named the failed step
+        let brief_seen: i64 = hub
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row("SELECT count(*) FROM incident_events WHERE kind = 'assistant.started'", [], |r| r.get(0))
+            })
+            .unwrap();
+        assert_eq!(brief_seen, 1);
     }
 }
