@@ -14,6 +14,7 @@ pub mod router;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod ticket;
+pub mod xfer;
 
 use iroh::endpoint::ConnectionError;
 use rackhand_proto::close::CloseCode;

@@ -28,6 +28,7 @@ pub mod tunnel;
 mod unlink;
 mod watch;
 mod wire;
+pub mod xfer;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
