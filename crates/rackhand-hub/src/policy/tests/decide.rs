@@ -265,7 +265,7 @@ mod guard {
     #[test]
     fn monitor_guest_hypervisor_action_needs_approval() {
         let risk_of = |name: &str| {
-            let runbook = rackhand_runbook::runbook::Runbook::parse(&rackhand_runbook::builtin::runbook(name).unwrap());
+            let runbook = rackhand_runbook::runbook::Runbook::parse(rackhand_runbook::builtin::runbook(name).unwrap());
             runbook.unwrap().risk
         };
         let requesters =

@@ -48,6 +48,9 @@ struct MachinePage {
     policy: String,
     confirm: String,
     can_confirm: bool,
+    /// The level the admin may change it to, and the form's token.
+    change_to: Option<&'static str>,
+    csrf: String,
     /// What went wrong with one of its buttons.
     notice: Option<String>,
     id: String,
@@ -223,6 +226,12 @@ pub(super) fn show_machine(web: &Web, ctx: &Ctx, id: &str, code: StatusCode, not
         policy: row.as_ref().map(|r| r.policy.clone()).unwrap_or_default(),
         confirm,
         can_confirm,
+        change_to: ctx
+            .user
+            .as_ref()
+            .filter(|u| allowed(u.role, Permission::Administer) && state == "enrolled" && kind != "appliance")
+            .map(|_| if access == "monitor" { "managed" } else { "monitor" }),
+        csrf: ctx.csrf.clone(),
         notice: notice.map(str::to_string),
         silent_since: silent_since(web, &id),
         id,

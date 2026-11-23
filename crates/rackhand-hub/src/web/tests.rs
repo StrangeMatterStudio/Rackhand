@@ -2238,6 +2238,117 @@ mod add {
     }
 }
 
+/// 7.3.12, D89, AC59: the dashboard issues a one-time command that changes a machine's access level; it changes nothing
+/// itself, and the command works only on the machine it names.
+mod level {
+    use super::*;
+
+    const TICKET: &str = "rackhand1:0000000000000000000000000000000000000000000000000000000000000001@192.0.2.10:7443";
+    const ID: &str = "01JD0000000000000000000009";
+
+    async fn level_app(name: &str, access: &str) -> App {
+        let app = app_with(name, move |web| {
+            let registry = crate::registry::Registry::load(web.db().clone()).unwrap();
+            web.with_registry(registry).with_ticket(Arc::new(|| Some(TICKET.to_string())))
+        })
+        .await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let site: String =
+            app.db.readers().with(|c| c.query_row("SELECT id FROM sites LIMIT 1", [], |r| r.get(0))).unwrap();
+        let row = Row::from([
+            ("id", Value::Text(ID.into())),
+            ("site_id", Value::Text(site)),
+            ("name", Value::Text("web1".into())),
+            ("kind", Value::Text("linux".into())),
+            ("access", Value::Text(access.into())),
+            ("state", Value::Text("enrolled".into())),
+        ]);
+        app.db.writer().send(WriteCmd::Batch(vec![RowWrite::insert("machines", row)])).await.unwrap();
+        app
+    }
+
+    fn access(app: &App) -> String {
+        app.db.readers().with(|c| c.query_row("SELECT access FROM machines WHERE id = ?1", [ID], |r| r.get(0))).unwrap()
+    }
+
+    fn tokens(app: &App) -> i64 {
+        app.db.readers().with(|c| c.query_row("SELECT count(*) FROM join_tokens", [], |r| r.get(0))).unwrap()
+    }
+
+    async fn ask(app: &App, cookie: &str, to: &str) -> (StatusCode, String) {
+        let csrf = csrf_of(app, cookie).await;
+        let path = format!("/machines/{ID}/level");
+        let resp = send(&app.router, post(&path, cookie, &[("csrf", csrf.as_str()), ("access", to)])).await;
+        let code = resp.status();
+        (code, text(resp).await.replace("&#x2F;", "/").replace("&#38;", "&").replace("&#x27;", "'"))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn level_command_binds_a_token_to_the_machine_and_changes_nothing() {
+        let app = level_app("level-command", "managed").await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let before = tokens(&app);
+        let (code, page) = ask(&app, &admin, "monitor").await;
+        assert_eq!(code, StatusCode::OK, "{page}");
+        assert!(page.contains(&format!("--ticket {TICKET}")) && page.contains("--monitor"), "{page}");
+        assert!(page.contains("--token "), "{page}");
+        assert_eq!(access(&app), "managed", "the dashboard changes no level");
+        assert_eq!(tokens(&app), before + 1);
+        let (bound, life): (String, i64) = app
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row("SELECT bound, expires_at FROM join_tokens ORDER BY rowid DESC LIMIT 1", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+            })
+            .unwrap();
+        let bound: serde_json::Value = serde_json::from_str(&bound).unwrap();
+        assert_eq!(
+            (bound["access"].as_str(), bound["machine_id"].as_str(), bound["level_change"].as_bool()),
+            (Some("monitor"), Some(ID), Some(true)),
+            "bound to this machine and the new level"
+        );
+        assert!((life - now_ms() - 3_600_000).abs() < 60_000, "60 minutes");
+        let audit: i64 = app
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row("SELECT count(*) FROM audit_log WHERE action = 'machine.level_change_issued'", [], |r| {
+                    r.get(0)
+                })
+            })
+            .unwrap();
+        assert_eq!(audit, 1, "recorded");
+        // the other direction: no `--monitor`
+        let app = level_app("level-command-up", "monitor").await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let (_, page) = ask(&app, &admin, "managed").await;
+        assert!(page.contains("--token ") && !page.contains("--monitor"), "{page}");
+        assert_eq!(access(&app), "monitor");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn only_an_admin_asks_and_only_for_a_change() {
+        let app = level_app("level-refused", "managed").await;
+        let responder = session_for(&app.db, Role::Responder).await;
+        let before = tokens(&app);
+        assert_eq!(ask(&app, &responder, "monitor").await.0, StatusCode::FORBIDDEN);
+        let admin = session_for(&app.db, Role::Admin).await;
+        let (code, page) = ask(&app, &admin, "managed").await;
+        assert_eq!(code, StatusCode::BAD_REQUEST, "{page}");
+        assert!(page.contains("already managed"), "{page}");
+        let (code, _) = ask(&app, &admin, "root").await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        assert_eq!(tokens(&app), before, "no token for any of them");
+        // the machine page offers the change to an admin, and not to a responder
+        let page = shell::plain(&text(send(&app.router, get(&format!("/machines/{ID}"), &admin)).await).await);
+        assert!(page.contains("Change to monitor"), "{page}");
+        let page = shell::plain(&text(send(&app.router, get(&format!("/machines/{ID}"), &responder)).await).await);
+        assert!(!page.contains("Change to monitor"), "{page}");
+    }
+}
+
 mod agentless {
     use super::*;
     use rackhand_drivers::{Driver, Proxmox, Redfish, Snmp, TrueNas};

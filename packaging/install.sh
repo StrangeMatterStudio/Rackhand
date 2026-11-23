@@ -144,13 +144,30 @@ if [ "$ACCESS" = managed ]; then
   rm -rf "$E"
 fi
 
-# 7. the services: the helper first (root), then the probe (its own user)
+# 6b. a monitor machine has no hub account (7.3.12, D89): a machine changing from managed to monitor loses them, with
+# their keys, the sudoers file and the command list. Nothing else is touched: other users and files stay.
+if [ "$ACCESS" = monitor ]; then
+  for name in rackhand rackhand-ai; do
+    id "$name" >/dev/null 2>&1 || continue
+    if command -v userdel >/dev/null 2>&1; then
+      userdel --force --remove "$name" >/dev/null 2>&1 || userdel -f -r "$name" >/dev/null 2>&1 || true
+    else
+      deluser --remove-home "$name" >/dev/null 2>&1 || true
+    fi
+  done
+  rm -f /etc/sudoers.d/rackhand /etc/rackhand/commands.json
+  rm -rf /var/lib/rackhand-run/enroll
+fi
+
+# 7. the services: the helper first (root), then the probe (its own user). A machine changing level has them running
+# already, and they read their configuration at start.
 case "$INIT" in
   systemd)
     install -m 0644 "$WORK/rackhand-probe-helper.service" /etc/systemd/system/rackhand-probe-helper.service
     install -m 0644 "$WORK/rackhand-probe.service" /etc/systemd/system/rackhand-probe.service
     systemctl daemon-reload
-    systemctl enable --now rackhand-probe-helper.service rackhand-probe.service >/dev/null 2>&1 \
+    systemctl enable rackhand-probe-helper.service rackhand-probe.service >/dev/null 2>&1 \
+      && systemctl restart rackhand-probe-helper.service && systemctl restart rackhand-probe.service \
       || die "the services didn't start"
     ;;
   openrc)
@@ -158,7 +175,7 @@ case "$INIT" in
     install -m 0755 "$WORK/rackhand-probe.openrc" /etc/init.d/rackhand-probe
     rc-update add rackhand-probe-helper default >/dev/null
     rc-update add rackhand-probe default >/dev/null
-    rc-service rackhand-probe-helper start >/dev/null && rc-service rackhand-probe start >/dev/null \
+    rc-service rackhand-probe-helper restart >/dev/null && rc-service rackhand-probe restart >/dev/null \
       || die "the services didn't start"
     ;;
 esac

@@ -532,3 +532,127 @@ mod runcmd {
         assert!(!refused.status.success(), "a command outside the list is refused");
     }
 }
+
+/// 7.3.12, D89, AC59: the one-time command the dashboard issues changes a machine's level in place, run as root on it.
+mod level {
+    use super::*;
+
+    /// The command's token, as the machine page issues it (T62).
+    fn level_token(hub: &Hub, id: &str, to: Access) -> String {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let db = std::sync::Arc::new(rackhand_store::Db::open(&hub.data.join("hub.db")).unwrap());
+            let registry = rackhand_hub::registry::Registry::load(db).unwrap();
+            let ulid = id.parse().unwrap();
+            let token = registry.level_change_token(ulid, to, "admin", rackhand_store::ids::now_ms()).await.unwrap();
+            token.as_str().to_string()
+        })
+    }
+
+    /// What the machine has reported to the hub so far: staged reports, stored chunks and events.
+    fn history(hub: &Hub, id: &str) -> i64 {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let _in = rt.enter();
+        let db = rackhand_store::Db::open(&hub.data.join("hub.db")).unwrap();
+        db.readers()
+            .with(|c| {
+                c.query_row(
+                    "SELECT (SELECT count(*) FROM report_staging WHERE machine_id = ?1)
+                          + (SELECT count(*) FROM series_chunks WHERE machine_id = ?1)
+                          + (SELECT count(*) FROM events WHERE machine_id = ?1)",
+                    [id],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap()
+    }
+
+    fn has_no_hub_way_in(c: &Container) {
+        let left = sh(
+            c,
+            "id rackhand 2>/dev/null; id rackhand-ai 2>/dev/null; ls -d /home/rackhand /home/rackhand-ai \
+             /etc/sudoers.d/rackhand /etc/rackhand/commands.json 2>/dev/null",
+        );
+        assert_eq!(left, "", "no hub users, home, keys, sudoers file or command list");
+        assert_eq!(sh(c, "systemctl is-active rackhand-probe rackhand-probe-helper | sort -u"), "active");
+    }
+
+    #[test]
+    fn monitor_to_managed_keeps_id_and_history() {
+        let hub = hub("level-up");
+        let release = Release::new("level-up", "current", false);
+        let (id, token) = add_machine(&hub, Access::Monitor, &[]);
+        let c = Container::start_systemd_with("debian-install", &[]);
+        ok(&install(&c, &hub, &release, &release.script(None), &token, "--monitor"));
+        reporting(&hub);
+        within(Duration::from_secs(60), "something stored", || history(&hub, &id) > 0);
+        has_no_hub_way_in(&c);
+        let before = history(&hub, &id);
+        assert_eq!(machine_column(&hub, &id, "access"), "monitor");
+        let endpoint = machine_column(&hub, &id, "probe_endpoint_id");
+
+        let change = level_token(&hub, &id, Access::Managed);
+        assert_eq!(machine_column(&hub, &id, "access"), "monitor", "issuing the command changes nothing");
+        ok(&install(&c, &hub, &release, &release.script(None), &change, ""));
+        assert_managed(&c, &c.ip_and_gateway().1, true);
+        assert!(sh(&c, "cat /etc/rackhand-probe/probe.toml").contains("access = \"managed\""));
+        assert_eq!(machine_column(&hub, &id, "access"), "managed");
+        assert_eq!(machine_column(&hub, &id, "state"), "enrolled");
+        assert_eq!(machine_column(&hub, &id, "probe_endpoint_id"), endpoint, "the same machine");
+        assert!(history(&hub, &id) >= before, "its history is kept");
+        // the probe now runs as a managed machine's, and goes on reporting
+        assert_eq!(sh(&c, "systemctl is-active rackhand-probe rackhand-probe-helper | sort -u"), "active");
+        reporting(&hub);
+        // the one-time command works once
+        let again = install(&c, &hub, &release, &release.script(None), &change, "--monitor");
+        assert!(!again.status.success(), "a used command is refused");
+        assert_eq!(machine_column(&hub, &id, "access"), "managed");
+    }
+
+    #[test]
+    fn managed_to_monitor_removes_everything() {
+        let hub = hub("level-down");
+        let release = Release::new("level-down", "current", false);
+        let (id, token) = add_machine(&hub, Access::Managed, &[]);
+        let c = Container::start_systemd_with("debian-install-sshd", &[]);
+        within(Duration::from_secs(30), "systemd up", || {
+            matches!(sh(&c, "systemctl is-system-running 2>/dev/null || true").as_str(), "running" | "degraded")
+        });
+        ok(&install(&c, &hub, &release, &release.script(None), &token, ""));
+        assert_managed(&c, &c.ip_and_gateway().1, true);
+        reporting(&hub);
+        within(Duration::from_secs(120), "the hub's SSH test enrolls it", || {
+            machine_column(&hub, &id, "state") == "enrolled"
+        });
+        sh(&c, "touch /etc/rackhand/keepme-not-ours; useradd -m owner; true");
+        let before = history(&hub, &id);
+
+        let change = level_token(&hub, &id, Access::Monitor);
+        ok(&install(&c, &hub, &release, &release.script(None), &change, "--monitor"));
+        has_no_hub_way_in(&c);
+        assert_eq!(sh(&c, "id owner >/dev/null 2>&1 && echo yes"), "yes", "another user stays");
+        assert!(sh(&c, "cat /etc/rackhand-probe/probe.toml").contains("access = \"monitor\""));
+        assert_eq!(machine_column(&hub, &id, "access"), "monitor");
+        assert!(history(&hub, &id) >= before);
+        reporting(&hub);
+    }
+
+    /// A token for one machine and level is no key to another or to the other level.
+    #[test]
+    fn a_level_command_is_bound_to_its_machine_and_level() {
+        let hub = hub("level-bound");
+        let release = Release::new("level-bound", "current", false);
+        let (id, token) = add_machine(&hub, Access::Monitor, &[]);
+        let c = Container::start_systemd_with("debian-install", &[]);
+        ok(&install(&c, &hub, &release, &release.script(None), &token, "--monitor"));
+        let to_managed = level_token(&hub, &id, Access::Managed);
+        // asking for the other level than the token names is refused, and nothing changes on the machine or the hub
+        let wrong = install(&c, &hub, &release, &release.script(None), &to_managed, "--monitor");
+        assert!(!wrong.status.success(), "a token for managed doesn't make a monitor machine");
+        assert_eq!(machine_column(&hub, &id, "access"), "monitor");
+        has_no_hub_way_in(&c);
+        // and the real command still works afterwards (a refused join uses nothing up)
+        ok(&install(&c, &hub, &release, &release.script(None), &to_managed, ""));
+        assert_eq!(machine_column(&hub, &id, "access"), "managed");
+    }
+}

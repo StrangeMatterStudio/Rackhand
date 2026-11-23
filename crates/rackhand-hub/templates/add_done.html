@@ -6,5 +6,5 @@
 <p><button type="button" data-copy="line-{{ loop.index }}" hidden>Copy</button></p></section>
 {% endfor %}
 <p>{{ note }}</p>
-<p><a class="btn" href="/add">Back to Add</a></p>
+<p><a class="btn" href="{{ back.0 }}">{{ back.1 }}</a></p>
 {% endblock %}

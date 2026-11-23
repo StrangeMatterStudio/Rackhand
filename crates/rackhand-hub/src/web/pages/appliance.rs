@@ -169,14 +169,6 @@ struct Accept<'a> {
     form: Form,
 }
 
-#[derive(Template)]
-#[template(path = "add_done.html")]
-struct Done {
-    shell: Shell,
-    lines: Vec<(String, String)>,
-    note: String,
-}
-
 /// `https://host[:port][/...]` (or without the scheme) as the URL the drivers take, with its host and port.
 fn https_address(address: &str, default_port: u16) -> Option<(String, String, u16)> {
     let rest = address.strip_prefix("https://").unwrap_or(address);
@@ -411,10 +403,11 @@ pub(super) async fn accept(web: &Web, ctx: &Ctx) -> Response<Body> {
     if let Err(e) = web.0.audit.append(&user.name, action, Some(&form.machine_id), &data.to_string()).await {
         tracing::error!(error = %e, "audit");
     }
-    let page = Done {
+    let page = super::add::AddDone {
         shell: Shell::at(web, ctx, &title, "/add"),
         lines: vec![],
         note: "Rackhand checks it through its API from now on.".into(),
+        back: ("/add".into(), "Back to Add".into()),
     };
     html(StatusCode::OK, page.render())
 }
