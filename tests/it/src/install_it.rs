@@ -665,7 +665,7 @@ mod conn {
     use super::*;
 
     /// A hub whose Feodo list names `listed`, as a stored download would, and with its admin signed in.
-    fn hub_listing(name: &str, listed: &str) -> Hub {
+    pub(super) fn hub_listing(name: &str, listed: &str) -> Hub {
         let mut hub = Hub::init(name);
         let dir = hub.data.join("intel");
         std::fs::create_dir_all(&dir).unwrap();
@@ -675,32 +675,32 @@ mod conn {
         hub
     }
 
-    fn sql(hub: &Hub, statement: &str) {
+    pub(super) fn sql(hub: &Hub, statement: &str) {
         let c = rusqlite::Connection::open(hub.data.join("hub.db")).unwrap();
         c.busy_timeout(Duration::from_secs(10)).unwrap();
         c.execute_batch(statement).unwrap();
     }
 
-    fn count(hub: &Hub, query: &str) -> i64 {
+    pub(super) fn count(hub: &Hub, query: &str) -> i64 {
         let c = rusqlite::Connection::open(hub.data.join("hub.db")).unwrap();
         c.busy_timeout(Duration::from_secs(10)).unwrap();
         c.query_row(query, [], |r| r.get(0)).unwrap()
     }
 
     /// The container holds a connection open to `ip:port` for a while.
-    fn connect_out(c: &Container, ip: &str, port: u16) {
+    pub(super) fn connect_out(c: &Container, ip: &str, port: u16) {
         let script = format!("setsid bash -c 'exec 3<>/dev/tcp/{ip}/{port}; sleep 300' >/dev/null 2>&1 &");
         ok(&c.root(&script));
     }
 
-    fn listen() -> (TcpListener, u16) {
+    pub(super) fn listen() -> (TcpListener, u16) {
         let l = TcpListener::bind("0.0.0.0:0").unwrap();
         let port = l.local_addr().unwrap().port();
         (l, port)
     }
 
     /// Serves what connects to `l` until the test ends, holding each connection open.
-    fn hold(l: TcpListener) {
+    pub(super) fn hold(l: TcpListener) {
         std::thread::spawn(move || {
             let mut held = Vec::new();
             for s in l.incoming().flatten() {
@@ -850,5 +850,59 @@ mod security {
             events(&hub, "auth.login_new_source").iter().all(|e| !e.1.contains("192.0.2.50")),
             "the first source is learned, not reported"
         );
+    }
+}
+
+/// Automatic quarantine end to end (plan T72, AC18): a managed machine tagged `dmz` in a container, a hub with a threat list and
+/// an enabled rule, and a connection the container really makes to a listed address.
+mod quarantine {
+    use super::conn::{connect_out, count, hold, hub_listing, listen, sql};
+    use super::*;
+
+    #[test]
+    fn auto_rule_dmz_known_bad_quarantines_end_to_end() {
+        let release = Release::new("q-auto", "current", false);
+        let c = Container::start_systemd_with("debian-install-sshd", &[]);
+        let (_, gateway) = c.ip_and_gateway();
+        let hub = hub_listing("q-auto", &gateway);
+        let (id, token) = add_machine(&hub, Access::Managed, &[]);
+        within(Duration::from_secs(30), "systemd up", || {
+            matches!(sh(&c, "systemctl is-system-running 2>/dev/null || true").as_str(), "running" | "degraded")
+        });
+        ok(&install(&c, &hub, &release, &release.script(None), &token, ""));
+        reporting(&hub);
+        within(Duration::from_secs(120), "the SSH test enrolls it", || machine_column(&hub, &id, "state") == "enrolled");
+        // the machine is in the dmz, its policy watches private destinations (the listed address is the hub's side of the
+        // bridge), and the rule is on: enabled by a person with step-up, as a stored row
+        sql(&hub, "INSERT INTO policies (id, name, connections, watch_internal) VALUES ('watch', 'watch', 'full', 1)");
+        sql(&hub, &format!("UPDATE machines SET policy_id = 'watch', tags = '[\"dmz\"]' WHERE id = '{id}'"));
+        sql(
+            &hub,
+            "INSERT INTO quarantine_rules (id, name, severity_at_least, event_kinds, match, enabled, enabled_by, enabled_at)
+             VALUES ('dmz', 'dmz known bad', 'critical', '[\"conn.known_bad\"]', '{\"tags\":[\"dmz\"]}', 1, 'admin', 1)",
+        );
+        let (listener, port) = listen();
+        hold(listener);
+        connect_out(&c, &gateway, port);
+        let took = within(Duration::from_secs(240), "the machine quarantined", || {
+            machine_column(&hub, &id, "quarantine") == "active"
+        });
+        eprintln!("quarantined after {took:?}");
+        // without an approval, by the rule, and the job says so
+        assert_eq!(count(&hub, "SELECT count(*) FROM approvals"), 0);
+        let requester: String = rusqlite::Connection::open(hub.data.join("hub.db"))
+            .unwrap()
+            .query_row("SELECT requested_by FROM jobs WHERE name = 'quarantine'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(requester, "rule:dmz");
+        assert_eq!(count(&hub, "SELECT count(*) FROM jobs WHERE name = 'quarantine' AND state = 'succeeded'"), 1);
+        assert_eq!(count(&hub, "SELECT count(*) FROM events WHERE kind = 'quarantine.active'"), 1);
+        // in the machine: the table is there, and a new connection to anywhere but the hub's paths is cut
+        assert!(sh(&c, "nft list tables").contains("rackhand_quarantine"), "{}", sh(&c, "nft list ruleset"));
+        let cut = c.root(&format!("timeout 4 bash -c 'exec 3<>/dev/tcp/{gateway}/{port}'"));
+        assert!(!cut.status.success(), "a new connection to the listed address went through");
+        // and the hub still reaches it: the probe keeps reporting through its allowed path
+        let before = hub.metrics();
+        assert!(before.contains("machine=\"web1\""));
     }
 }

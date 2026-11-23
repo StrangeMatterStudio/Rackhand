@@ -3,7 +3,7 @@
 FROM debian:12-slim
 ENV container=docker
 RUN apt-get update \
- && apt-get install -y --no-install-recommends systemd systemd-sysv dbus sudo procps curl ca-certificates openssh-server \
+ && apt-get install -y --no-install-recommends systemd systemd-sysv dbus sudo procps curl ca-certificates openssh-server nftables \
  && rm -rf /var/lib/apt/lists/* \
  && printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitRootLogin no\n' > /etc/ssh/sshd_config.d/rackhand.conf
 STOPSIGNAL SIGRTMIN+3
