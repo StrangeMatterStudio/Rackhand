@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use crate::support::{Container, musl_binary};
 
 /// A container with the probe binary, both units, the probe user, and `other`, a user in the probe's group.
-fn machine() -> Container {
+pub(crate) fn machine() -> Container {
     let c = Container::start_systemd("systemd");
     c.copy_in(&musl_binary("rackhand-probe", "rackhand-probe"), "/usr/local/lib/rackhand/rackhand-probe");
     let units = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/systemd");
@@ -18,7 +18,7 @@ fn machine() -> Container {
     c
 }
 
-fn start_helper(c: &Container) {
+pub(crate) fn start_helper(c: &Container) {
     let out = c.root("systemctl start rackhand-probe-helper");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -33,7 +33,7 @@ fn journal(c: &Container) -> String {
 }
 
 /// One request line to the helper as `user`; the answer line (empty when there is none).
-fn ask(c: &Container, user: &str, request: &str) -> String {
+pub(crate) fn ask(c: &Container, user: &str, request: &str) -> String {
     let script = format!("echo '{request}' | socat -t 3 - UNIX-CONNECT:/run/rackhand-helper/helper.sock");
     let out = c.exec(Some(user), &["sh", "-c", &script], None);
     String::from_utf8_lossy(&out.stdout).trim().to_string()

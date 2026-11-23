@@ -101,6 +101,9 @@ pub fn run(args: &[String]) -> Result<()> {
             );
             Ok(())
         }
+        // the release files of this build, signed with the test keys, into `~/.cache/rackhand-lab/release` (for a hub that
+        // isn't one of the lab's machines)
+        Some("release") => deploy::build_release(&deploy::release_dir(), false),
         Some("destroy") => destroy(&lab),
         Some("record-proxmox") => record::record_proxmox(&lab),
         Some("deploy") => {

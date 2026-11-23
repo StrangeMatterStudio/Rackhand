@@ -12,6 +12,8 @@ mod executor_it;
 #[cfg(test)]
 mod helper_it;
 #[cfg(test)]
+mod helper_scan;
+#[cfg(test)]
 mod install_it;
 #[cfg(test)]
 mod jobs;

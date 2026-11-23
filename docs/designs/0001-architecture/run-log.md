@@ -166,3 +166,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-23 | Dashboard branch merged (fast tier 611 passed). T62 done: access-level changes by a one-time command, the store's level guard, the hypervisor guard (D110 to D112) |
 | 2026-11-23 | T64 done: `provision-vm`, `provision-lxc` and `run install-guest` (D113, D114); the live pass is L4 |
 | 2026-11-23 | T65 done: jobs after a hub restart are adopted or interrupted (D115); the window gate on the rules |
+| 2026-11-23 | T66 done: the helper's file hashes, authentication events, socket owners, container names and process scan (D116) |

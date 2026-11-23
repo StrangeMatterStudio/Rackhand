@@ -2,15 +2,23 @@
 //! user on a local socket with what needs root (container states, package lists, and in later steps file hashes, auth
 //! events and socket owners), never file contents, and takes no paths or URLs.
 
+#[cfg(unix)]
+pub mod auth;
 pub mod client;
 #[cfg(unix)]
 pub mod containers;
 #[cfg(target_os = "linux")]
 pub mod daemon;
+#[cfg(unix)]
+pub mod hash;
 pub mod keys;
 #[cfg(unix)]
 pub mod layout;
 pub mod packages;
+#[cfg(unix)]
+pub mod procscan;
 pub mod server;
+#[cfg(unix)]
+pub mod sockets;
 
 pub const SOCKET: &str = "/run/rackhand-helper/helper.sock";
