@@ -24,6 +24,9 @@ mod patch_it;
 #[cfg(test)]
 mod probe_hub;
 #[cfg(test)]
+#[path = "quarantine_it.rs"]
+mod quarantine;
+#[cfg(test)]
 #[path = "sampling_it.rs"]
 mod sampling;
 #[cfg(test)]

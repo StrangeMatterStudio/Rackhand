@@ -6,6 +6,7 @@ pub mod detached;
 pub mod guest;
 pub mod install;
 pub mod matcher;
+pub mod quarantine;
 pub mod receive;
 
 use std::io::Read;
@@ -36,6 +37,7 @@ pub fn main(args: &[String]) -> ExitCode {
         Some("install-commands") => install_commands(),
         Some("install-keys") => install_keys(),
         Some("install-guest") => install_guest(),
+        Some("quarantine") => quarantine::main(rest),
         Some("job-start") => match load_list() {
             Some(list) => detached::start(&list, rest),
             None => no_list(),
