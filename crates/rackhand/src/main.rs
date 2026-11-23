@@ -4,6 +4,7 @@ mod hub_cmd;
 mod logging;
 mod observations;
 mod operator_cmd;
+mod relay_cmd;
 
 #[cfg(test)]
 #[path = "hub_tests.rs"]
@@ -21,7 +22,8 @@ const USAGE: &str = "usage: rackhand hub init [--config-dir <dir>] [--data-dir <
        rackhand hub backup [--config <hub.toml>]
        rackhand hub metrics-token [--config <hub.toml>]
        rackhand hub restore <file> --master-key <path> [--config-dir <dir>] [--data-dir <dir>]
-       rackhand operator join|run|mcp-bridge ... (rackhand operator for the options)";
+       rackhand operator join|run|mcp-bridge ... (rackhand operator for the options)
+       rackhand relay run|key create ... (rackhand relay for the options)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -32,6 +34,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         ["operator", rest @ ..] => operator_cmd::main(rest),
+        ["relay", rest @ ..] => relay_cmd::main(rest),
         ["hub", "init", rest @ ..] => hub_init(rest),
         ["hub", "run", rest @ ..] => hub_run(rest),
         ["hub", "detect", "replay", rest @ ..] => detect_replay(rest),

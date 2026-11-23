@@ -3747,6 +3747,7 @@ dependencies = [
  "rackhand-operator",
  "rackhand-probe",
  "rackhand-proto",
+ "rackhand-relay",
  "rackhand-release",
  "rackhand-runbook",
  "rackhand-store",
@@ -3975,6 +3976,20 @@ dependencies = [
 [[package]]
 name = "rackhand-relay"
 version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek 2.2.0",
+ "iroh",
+ "iroh-relay",
+ "n0-future",
+ "rackhand-net",
+ "rustls",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "rackhand-release"

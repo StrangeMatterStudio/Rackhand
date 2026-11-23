@@ -24,6 +24,7 @@ thiserror = "2"
 # Pinned to the version spikes S2 and S3 measured (T08, T09); iroh's API moves between 1.x minors.
 iroh = { version = "=1.5.0", default-features = false, features = ["tls-ring"] }
 iroh-relay = { version = "=1.5.0", features = ["server", "test-utils"] }
+n0-future = "0.3"
 tokio = { version = "1", features = ["rt", "net", "time", "sync", "macros", "io-util", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "env-filter", "std"] }

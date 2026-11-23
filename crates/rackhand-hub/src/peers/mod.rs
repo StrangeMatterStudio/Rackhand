@@ -20,6 +20,7 @@ pub mod deadman;
 pub mod election;
 mod link;
 mod queries;
+pub mod relay_lists;
 mod requests;
 mod summary;
 mod unlink;
