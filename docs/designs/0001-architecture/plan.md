@@ -284,7 +284,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T70 | Connection scoring and connection storage | T67, T69 | unit + integration | done |
 | T71 | Security events, severities and exemptions | T70, T61 | unit + integration | done |
 | T72 | Quarantine | T71, T55, T47 | unit + integration + live (L5, L9) | done |
-| T73 | Dashboard: security pages | T71, T72 | unit (HTTP) | todo |
+| T73 | Dashboard: security pages | T71, T72 | unit (HTTP) | done |
 | L5 | Live pass for M4: security watch and quarantine | T73, L4 | live (local lab) | todo |
 | T74 | MCP server and read tools | T17, T54 | contract | done |
 | T75 | MCP gated tools and approval binding | T74, T55, T63 | contract | done |
@@ -3595,6 +3595,9 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-23 | T73: cargo nextest run -p rackhand-hub -E 'test(pages::security)' | 4 passed (written beside the code; the plan's filter `test(pages::security) | test(pages::machine_connections) | test(pages::quarantine)` names the four tests by module paths that differ here, so the one filter above runs all four, in `web::tests::pages::security`): `security_lists_not_downloaded_empty_state` ("Lists not downloaded yet" and "No security events yet" while nothing is there; once a list is loaded each source shows its name and what it holds; the feed shows only security events, with their severity and machine; a machine learning for two days says "Learning, 5 days left"), `machine_connections_grouped_by_container_with_verdicts` (the machine's own connections first, then each container by name, each connection with its program, destination, country and verdict), `quarantine_kind_enforced_or_advisory_shown` (a quarantine recorded by the hypervisor's firewall says "Enforced by the hypervisor's firewall", an in-guest one "Advisory: an attacker with root on the machine can undo it", a machine that isn't quarantined says neither), `quarantine_rule_edit_admin_only_with_step_up` (a viewer and a responder get 403; an admin saves a rule that stays off with no step-up; turning it on without a fresh one is sent to the step-up and nothing changes; with one it is saved with who turned it on, audited; the edit button is shown to the admin only) |
+  | 2026-11-23 | T73: planted faults, each in a copy of the tree | four, each failed one test: the step-up taken as fresh, the feed listing every event, an in-guest quarantine shown as enforced, connections not grouped by container |
+  | 2026-11-23 | T73: cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo xtask ci fast; cargo xtask arch-check | fmt, clippy, arch-check clean; fast tier 735 passed, 1 skipped |
 
 ### L5: Live pass for M4: security watch and quarantine
 - **Design refs:** 14, D107, AC15, AC16, AC17, AC58, AC72, E24, E37, E66
@@ -5047,6 +5050,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D124 | 2026-11-23 | T72 | a failed or repeated isolation | A write that fails while isolating a guest puts the saved configuration back (and says whether that worked), so a retry never takes a half-isolated one for the original; a retry after a failure takes up the record of the oldest isolation since the last release; a quarantine job that was running when the hub restarted is `failed` with a critical event | Otherwise release would restore the wrong thing | plan | - |
 | D125 | 2026-11-23 | T72 | proposals | Only security findings (kinds from the probe and the hub's scans) at `critical`, or at any severity when an enabled rule names the kind, are judged for quarantine; a machine whose policy is missing is `approval`; `pending` ends when its approval is rejected, or when no approval is left to decide (checked every 30 seconds, so up to that long after it expired); a machine already quarantined or pending gets only the incident; a rule that matches a monitor machine asks for an approval, as AC58 says | Not every incident is a security finding | plan | - |
 | D126 | 2026-11-23 | T72 | what isn't done | A VM's forensic snapshot is taken without its RAM (the design says with RAM when the storage supports it) and a Windows machine's in-guest quarantine waits for T90; the lab passes (L5, MV11) are with the other live passes at the end | Smaller; the lab is last | plan | - |
+| D127 | 2026-11-23 | T73 | page files and what they show | One page file, `web/pages/security.rs` (with `templates/security.html`), instead of three: the machine page's Connections and Quarantine are in `monitoring.rs` and its template, since that page is built there; a new Security entry (shortcut `e`) in the sidebar; `Web::with_intel` gives the page the lists' freshness; the rules are edited in a dialog like policies are, with the rule's id made from its name; the record of how a quarantine was done moved from the hub's composition into `policy::quarantine::record` so the page and the executor read the same thing; badges for the connection verdicts; the machine page lists the last day's connections, at most 200 rows | One page and one dialog pattern fit the existing ones | plan | - |
 
 ## Follow-ups (out of scope)
 

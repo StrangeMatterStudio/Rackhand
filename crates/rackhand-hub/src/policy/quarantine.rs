@@ -282,6 +282,57 @@ pub async fn put_rule(
     Ok(())
 }
 
+/// What the probe and the hub raise as security findings (7.6.6): the event kinds a quarantine is judged for and the Security
+/// page lists.
+pub const SECURITY_PREFIXES: [&str; 7] = ["conn.", "proc.", "port.", "file.", "auth.", "user.", "group."];
+
+/// Who stops a quarantined machine's traffic, which the dashboard says (D77).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Enforcement {
+    /// The hypervisor's firewall, outside the machine.
+    Hypervisor,
+    /// A table in the machine, which an attacker with root there can undo.
+    InGuest,
+}
+
+/// What a quarantine recorded when it isolated the machine, if it hasn't been released: the output of the `isolate` step of
+/// the oldest `quarantine` job since the last release that got that far (a retry after a failure goes back to the original).
+pub fn record(db: &Db, machine: &str) -> Option<serde_json::Value> {
+    let rows: Vec<(String, String, Option<Vec<u8>>)> = db
+        .readers()
+        .with(|c| {
+            let mut s = c.prepare(
+                "SELECT j.name, j.state, s.stdout FROM jobs j
+                 LEFT JOIN job_steps s ON s.job_id = j.id AND s.step_id = 'isolate' AND s.state = 'succeeded'
+                 WHERE j.target = ?1 AND j.name IN ('quarantine', 'quarantine-release')
+                 ORDER BY j.started_at DESC, j.id DESC",
+            )?;
+            s.query_map([machine], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect()
+        })
+        .ok()?;
+    let mut found = None;
+    for (name, state, stdout) in rows {
+        if name == "quarantine-release" {
+            if state == "succeeded" {
+                break;
+            }
+            continue;
+        }
+        if let Some(out) = stdout {
+            let text = String::from_utf8_lossy(&out);
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(text.lines().next().unwrap_or("")) {
+                found = Some(v);
+            }
+        }
+    }
+    found
+}
+
+/// Which kind a record is.
+pub fn enforcement(record: &serde_json::Value) -> Enforcement {
+    if record["method"] == "proxmox" { Enforcement::Hypervisor } else { Enforcement::InGuest }
+}
+
 /// Writes a machine's quarantine state.
 pub async fn set_state(db: &Db, machine: &str, to: State) -> Result<(), QuarantineError> {
     let set = Row::from([("quarantine", Value::Text(to.as_str().into()))]);

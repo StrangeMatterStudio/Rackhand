@@ -246,38 +246,9 @@ impl rackhand_hub::executor::HubSide for CommandSigner {
         })
     }
 
-    /// What the machine's quarantine recorded when it isolated it: the output of the `isolate` step of the oldest
-    /// `quarantine` job since the last release that got that far (a retry after a failure goes back to the original).
+    /// What the machine's quarantine recorded when it isolated it.
     fn quarantine_record(&self, machine: &str) -> Option<serde_json::Value> {
-        let rows: Vec<(String, String, Option<Vec<u8>>)> = self
-            .db
-            .readers()
-            .with(|c| {
-                let mut s = c.prepare(
-                    "SELECT j.name, j.state, s.stdout FROM jobs j
-                     LEFT JOIN job_steps s ON s.job_id = j.id AND s.step_id = 'isolate' AND s.state = 'succeeded'
-                     WHERE j.target = ?1 AND j.name IN ('quarantine', 'quarantine-release')
-                     ORDER BY j.started_at DESC, j.id DESC",
-                )?;
-                s.query_map([machine], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect()
-            })
-            .ok()?;
-        let mut record = None;
-        for (name, state, stdout) in rows {
-            if name == "quarantine-release" {
-                if state == "succeeded" {
-                    break;
-                }
-                continue;
-            }
-            if let Some(out) = stdout {
-                let line = String::from_utf8_lossy(&out);
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line.lines().next().unwrap_or("")) {
-                    record = Some(v);
-                }
-            }
-        }
-        record
+        rackhand_hub::policy::quarantine::record(&self.db, machine)
     }
 
     fn machine_enrolled(&self, host: &str, name: &str) -> bool {

@@ -78,6 +78,8 @@ struct Inner {
     oidc_flows: Mutex<HashMap<String, auth::oidc::Flow>>,
     library: Option<crate::library::items::Library>,
     ingest: Option<crate::ingest::Ingest>,
+    /// The threat lists and GeoIP, for the Security page's freshness.
+    intel: Option<crate::intel::Intel>,
     notify: Option<crate::notify::Notify>,
     bus: Option<crate::bus::Bus>,
     first_run: pages::FirstRunDrafts,
@@ -132,6 +134,7 @@ impl Web {
             oidc_flows: Mutex::new(HashMap::new()),
             library: None,
             ingest: None,
+            intel: None,
             notify: None,
             bus: None,
             first_run: pages::FirstRunDrafts::default(),
@@ -151,6 +154,14 @@ impl Web {
     pub fn with_ingest(mut self, ingest: crate::ingest::Ingest) -> Web {
         if let Some(inner) = Arc::get_mut(&mut self.0) {
             inner.ingest = Some(ingest);
+        }
+        self
+    }
+
+    /// The threat lists and GeoIP, for the Security page; before the router is built.
+    pub fn with_intel(mut self, intel: crate::intel::Intel) -> Web {
+        if let Some(inner) = Arc::get_mut(&mut self.0) {
+            inner.intel = Some(intel);
         }
         self
     }

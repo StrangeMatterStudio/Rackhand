@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+{% if open == "rule" %}{{ crate::web::ui::dialog("Add a quarantine rule", "/security")|safe }}
+<form method="post" action="/security/rules" novalidate data-check>
+<div class="d-b">
+{{ rule.hidden(csrf)|safe }}
+{{ rule.problems()|safe }}
+{{ rule.all_fields()|safe }}
+</div>
+<div class="d-f"><button type="submit" class="primary">Add the rule</button><a class="btn" href="/security" data-close>Cancel</a></div>
+</form></dialog>{% endif %}
+{% if open == "edit" %}{{ crate::web::ui::dialog("Edit a quarantine rule", "/security")|safe }}
+<form method="post" action="/security/rules" novalidate data-check data-edit>
+<div class="d-b">
+{{ rule.hidden(csrf)|safe }}
+{{ rule.problems()|safe }}
+{{ rule.all_fields()|safe }}
+</div>
+<div class="d-f"><button type="submit" class="primary">Save</button><button type="button" data-undo hidden>Undo changes</button><a class="btn" href="/security" data-close>Cancel</a></div>
+</form></dialog>{% endif %}
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">What the machines' probes and the hub's scans found, and what the hub does about it.</p></div>{% if can_edit %}<a class="btn primary" href="/security?add=rule">{{ crate::web::ui::icon("add")|safe }}Add a quarantine rule</a>{% endif %}</div>
+<div class="cols sided">
+<section class="card list"><div class="bar"><h2>Events</h2></div>
+{% if events.is_empty() %}<p class="empty">No security events yet.</p>{% else %}
+<table><thead><tr><th scope="col">When</th><th scope="col">Machine</th><th scope="col">Severity</th><th scope="col">Event</th></tr></thead><tbody>
+{% for e in events %}<tr><td class="t" data-label="When">{{ e.at|safe }}</td><td data-label="Machine">{% if let Some(id) = e.machine_id %}<a href="/machines/{{ id }}">{{ e.machine }}</a>{% else %}the hub{% endif %}</td><td data-label="Severity">{{ crate::web::ui::badge(e.severity)|safe }}</td><td data-label="Event"><b>{{ e.kind }}</b>{% if !e.subject.is_empty() %} <small>{{ e.subject }}</small>{% endif %}</td></tr>
+{% endfor %}</tbody></table>{% endif %}</section>
+<div class="stack">
+<section class="card list"><div class="bar"><h2>Quarantine rules</h2>{% if can_edit %}<a class="btn" href="/security?add=rule">Add a rule</a>{% endif %}</div>
+{% if rules.is_empty() %}<p class="empty">No rules. A quarantine always waits for an approval with step-up.</p>{% else %}
+<table><thead><tr><th scope="col">Rule</th><th scope="col">On</th><th scope="col">Applies to</th><th scope="col"><span class="sr">Edit</span></th></tr></thead><tbody>
+{% for r in rules %}<tr><td class="t"><b>{{ r.name }}</b><small>{{ r.severity }} or worse: {{ r.kinds }}</small></td><td data-label="On">{% if r.enabled %}On, by {{ r.by }}{% else %}Off{% endif %}</td><td data-label="Applies to">{{ r.applies_to }}</td><td class="act">{% if can_edit %}<a class="btn" href="/security?edit={{ r.name|urlencode }}" aria-label="Edit {{ r.name }}">Edit</a>{% endif %}</td></tr>
+{% endfor %}</tbody></table>{% endif %}</section>
+<section class="card list"><div class="bar"><h2>Threat lists and GeoIP</h2></div>
+{% if none_downloaded %}<p class="empty">Lists not downloaded yet. The hub fetches them daily once it is online.</p>{% endif %}
+{% if !lists.is_empty() %}<table><thead><tr><th scope="col">List</th><th scope="col">Last worked</th><th scope="col">Holds</th></tr></thead><tbody>
+{% for l in lists %}<tr><td class="t"><b>{{ l.label }}</b></td><td data-label="Last worked">{% if let Some(t) = l.last_ok %}{{ t|safe }}{% else %}Never{% endif %}{% if let Some(e) = l.error %} <small>Last try failed: {{ e }}</small>{% endif %}</td><td data-label="Holds">{{ l.entries }} entries</td></tr>
+{% endfor %}</tbody></table>{% endif %}</section>
+<section class="card list"><div class="bar"><h2>Connection baselines</h2></div>
+{% if baselines.is_empty() %}<p class="empty">No enrolled machines yet.</p>{% else %}
+<table><thead><tr><th scope="col">Machine</th><th scope="col">Baseline</th></tr></thead><tbody>
+{% for b in baselines %}<tr><td class="t"><a href="/machines/{{ b.id }}">{{ b.name }}</a></td><td data-label="Baseline">{{ b.status }}</td></tr>
+{% endfor %}</tbody></table>{% endif %}</section>
+</div></div>
+{% endblock %}

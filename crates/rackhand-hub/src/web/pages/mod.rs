@@ -14,6 +14,7 @@ mod monitoring;
 mod notifiers;
 mod overview;
 mod patching;
+mod security;
 mod settings;
 mod users;
 
@@ -100,6 +101,8 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
         Page::Incidents => monitoring::incidents(web, ctx),
         Page::Incident => monitoring::incident(web, ctx),
         Page::Audit => audit::page(web, ctx),
+        Page::Security => security::page(web, ctx),
+        Page::SecurityRuleSave => security::save_rule(web, ctx).await,
         Page::SettingsNotifiers => notifiers::page(web, ctx),
         Page::NotifierSave => notifiers::save(web, ctx).await,
         Page::NotifierTest => notifiers::test(web, ctx).await,

@@ -14,12 +14,10 @@ use rackhand_detect::rules::Severity as FindingSeverity;
 use super::*;
 use crate::policy::quarantine::{self, Auto, Severity as RuleSeverity, State as QState, Target as QTarget};
 
-/// What the probe and the hub raise as security findings (7.6.6).
-const SECURITY_PREFIXES: [&str; 7] = ["conn.", "proc.", "port.", "file.", "auth.", "user.", "group."];
 const RUNBOOK: &str = "quarantine";
 
 fn security_kind(kind: &str) -> bool {
-    SECURITY_PREFIXES.iter().any(|p| kind.starts_with(p))
+    quarantine::SECURITY_PREFIXES.iter().any(|p| kind.starts_with(p))
 }
 
 impl Routing {

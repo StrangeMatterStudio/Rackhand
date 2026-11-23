@@ -1681,6 +1681,255 @@ mod pages {
                 .unwrap();
         assert_eq!((file.discord.len(), file.smtp.len()), (1, 1), "nothing refused was saved");
     }
+
+    /// 7.7.1, 7.8.2, D77 (plan T73): the Security page and what the Machine page shows of connections and quarantine.
+    mod security {
+        use super::*;
+
+        const SEC: &str = "01JD0000000000000000000001";
+
+        fn intel_app(name: &str, intel: crate::intel::Intel) -> impl std::future::Future<Output = App> {
+            app_with(name, move |web| web.with_intel(intel))
+        }
+
+        async fn insert(app: &App, table: &'static str, row: Row) {
+            app.db.writer().send(WriteCmd::Batch(vec![RowWrite::insert(table, row)])).await.unwrap();
+        }
+
+        async fn guest(app: &App, id: &str, name: &str, set: &[(&'static str, Value)]) {
+            let mut row = Row::from([
+                ("id", Value::Text(id.into())),
+                ("site_id", Value::Text(site_id(&app.db))),
+                ("name", Value::Text(name.into())),
+                ("kind", Value::Text("linux".into())),
+                ("state", Value::Text("enrolled".into())),
+            ]);
+            row.extend(set.iter().cloned());
+            insert(app, "machines", row).await;
+        }
+
+        async fn page(app: &App, path: &str, cookie: &str) -> String {
+            shell::plain(&text(send(&app.router, get(path, cookie)).await).await)
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn security_lists_not_downloaded_empty_state() {
+            let intel = crate::intel::Intel::default();
+            let app = intel_app("sec-lists", intel.clone()).await;
+            complete_first_run(&app, SETUP_CODE).await;
+            let viewer = session_for(&app.db, Role::Viewer).await;
+            let html = page(&app, "/security", &viewer).await;
+            assert!(html.contains("Lists not downloaded yet"), "{html}");
+            assert!(html.contains("No security events yet"), "the feed's own empty state: {html}");
+            // once a list is in, each source says what it holds and when it last worked
+            let now = now_ms();
+            let feodo = crate::intel::sources(now).into_iter().find(|s| s.id == "feodo").unwrap();
+            intel.load(&feodo, b"203.0.113.9\n198.51.100.7\n", now).unwrap();
+            let html = page(&app, "/security", &viewer).await;
+            assert!(!html.contains("Lists not downloaded yet"), "{html}");
+            assert!(html.contains("abuse.ch Feodo Tracker") && html.contains("2 entries"), "{html}");
+            // what the feed shows, and what each machine has learned
+            guest(&app, SEC, "web", &[]).await;
+            let event = |id: &str, kind: &str, severity: &str, at: i64| {
+                Row::from([
+                    ("id", Value::Text(id.into())),
+                    ("machine_id", Value::Text(SEC.into())),
+                    ("at_ms", Value::Integer(at)),
+                    ("kind", Value::Text(kind.into())),
+                    ("severity", Value::Text(severity.into())),
+                    ("subject", Value::Text("203.0.113.9".into())),
+                    ("data", Value::Text("{}".into())),
+                ])
+            };
+            insert(&app, "events", event("e1", "conn.known_bad", "critical", now - 60_000)).await;
+            insert(&app, "events", event("e2", "service.not_active", "warning", now - 30_000)).await;
+            let baseline = |first: i64| {
+                Row::from([
+                    ("machine_id", Value::Text(SEC.into())),
+                    ("exe", Value::Text("/usr/bin/curl".into())),
+                    ("dest_asn", Value::Integer(15169)),
+                    ("dest_country", Value::Text("US".into())),
+                    ("dest_port", Value::Integer(443)),
+                    ("proto", Value::Text("tcp".into())),
+                    ("first_seen_ms", Value::Integer(first)),
+                    ("last_seen_ms", Value::Integer(now)),
+                ])
+            };
+            insert(&app, "conn_baseline", baseline(now - 2 * 86_400_000)).await;
+            let html = page(&app, "/security", &viewer).await;
+            assert!(
+                html.contains("conn.known_bad") && html.contains("203.0.113.9") && html.contains("Critical"),
+                "{html}"
+            );
+            assert!(!html.contains("service.not_active"), "only security events are in the feed: {html}");
+            assert!(html.contains("Learning, 5 days left"), "{html}");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn machine_connections_grouped_by_container_with_verdicts() {
+            let app = app("sec-conns").await;
+            complete_first_run(&app, SETUP_CODE).await;
+            guest(&app, SEC, "web", &[]).await;
+            let at = now_ms() - 600_000;
+            let conn = |container: &str, exe: &str, ip: &str, port: i64, verdict: &str, count: i64| {
+                Row::from([
+                    ("machine_id", Value::Text(SEC.into())),
+                    ("bucket_ms", Value::Integer(at)),
+                    ("container", Value::Text(container.into())),
+                    ("exe", Value::Text(exe.into())),
+                    ("dest_ip", Value::Text(ip.into())),
+                    ("dest_port", Value::Integer(port)),
+                    ("proto", Value::Text("tcp".into())),
+                    ("dest_country", Value::Text("US".into())),
+                    ("verdict", Value::Text(verdict.into())),
+                    ("count", Value::Integer(count)),
+                ])
+            };
+            insert(&app, "conn_records", conn("shop-web-1", "/usr/bin/curl", "203.0.113.9", 443, "known_bad", 3)).await;
+            insert(&app, "conn_records", conn("shop-db-1", "/usr/sbin/postgres", "192.0.2.5", 5432, "known", 8)).await;
+            insert(&app, "conn_records", conn("", "/usr/bin/apt", "198.51.100.20", 80, "new", 1)).await;
+            let viewer = session_for(&app.db, Role::Viewer).await;
+            let html = page(&app, &format!("/machines/{SEC}"), &viewer).await;
+            let at_of = |needle: &str| html.find(needle).unwrap_or_else(|| panic!("no {needle}: {html}"));
+            // one heading per container, the host's own first, and under each what it connected to with the verdict
+            let (host, db, web) = (at_of("On the machine itself"), at_of("shop-db-1"), at_of("shop-web-1"));
+            assert!(host < db && db < web, "{html}");
+            let web_part = &html[web..];
+            assert!(web_part.contains("203.0.113.9:443") && web_part.contains("curl"), "{html}");
+            assert!(html[at_of("203.0.113.9:443")..].starts_with("203.0.113.9:443"), "{html}");
+            for verdict in ["Known bad", "Known", "New"] {
+                assert!(html.contains(verdict), "{verdict}: {html}");
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn quarantine_kind_enforced_or_advisory_shown() {
+            let app = app("sec-kind").await;
+            complete_first_run(&app, SETUP_CODE).await;
+            let viewer = session_for(&app.db, Role::Viewer).await;
+            // two quarantined machines: one isolated by its hypervisor's firewall, one by a table in the machine
+            let record = |job: &str, machine: &str, method: &str, enforced: bool| {
+                let out = serde_json::json!({ "method": method, "enforced": enforced }).to_string() + "\n";
+                (
+                    Row::from([
+                        ("id", Value::Text(job.into())),
+                        ("kind", Value::Text("runbook".into())),
+                        ("name", Value::Text("quarantine".into())),
+                        ("target", Value::Text(machine.into())),
+                        ("requested_by", Value::Text("user:admin".into())),
+                        ("state", Value::Text("succeeded".into())),
+                        ("started_at", Value::Integer(now_ms())),
+                    ]),
+                    Row::from([
+                        ("job_id", Value::Text(job.into())),
+                        ("step_id", Value::Text("isolate".into())),
+                        ("state", Value::Text("succeeded".into())),
+                        ("stdout", Value::Blob(out.into_bytes())),
+                    ]),
+                )
+            };
+            for (id, name, method, enforced) in [
+                ("01JD00000000000000000000A1", "guest", "proxmox", true),
+                ("01JD00000000000000000000A2", "plain", "in_guest", false),
+            ] {
+                guest(&app, id, name, &[("quarantine", Value::Text("active".into()))]).await;
+                let (job, step) = record(&format!("01JOB{name}"), id, method, enforced);
+                insert(&app, "jobs", job).await;
+                insert(&app, "job_steps", step).await;
+            }
+            let enforced = page(&app, "/machines/01JD00000000000000000000A1", &viewer).await;
+            assert!(
+                enforced.contains("Quarantine") && enforced.contains("Enforced by the hypervisor's firewall"),
+                "{enforced}"
+            );
+            assert!(!enforced.contains("Advisory"), "{enforced}");
+            let advisory = page(&app, "/machines/01JD00000000000000000000A2", &viewer).await;
+            assert!(
+                advisory.contains("Advisory") && advisory.contains("root on the machine can undo it"),
+                "{advisory}"
+            );
+            assert!(!advisory.contains("Enforced by"), "{advisory}");
+            // a machine that isn't quarantined says nothing of it
+            guest(&app, SEC, "free", &[]).await;
+            let free = page(&app, &format!("/machines/{SEC}"), &viewer).await;
+            assert!(!free.contains("Advisory") && !free.contains("Enforced by"), "{free}");
+        }
+
+        async fn save(app: &App, cookie: &str, fields: &[(&str, &str)]) -> Response<Body> {
+            let csrf = csrf_of(app, cookie).await;
+            let mut all = vec![("csrf", csrf.as_str())];
+            all.extend_from_slice(fields);
+            send(&app.router, post("/security/rules", cookie, &all)).await
+        }
+
+        fn rules(app: &App) -> Vec<(String, bool, Option<String>)> {
+            crate::policy::quarantine::rules(&app.db)
+                .unwrap()
+                .into_iter()
+                .map(|r| (r.name, r.enabled, r.enabled_by))
+                .collect()
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn quarantine_rule_edit_admin_only_with_step_up() {
+            let app = app("sec-rule").await;
+            complete_first_run(&app, SETUP_CODE).await;
+            let fields = |enabled: bool| {
+                let mut f = vec![
+                    ("name", "dmz known bad"),
+                    ("severity", "critical"),
+                    ("kinds", "conn.known_bad"),
+                    ("tags", "dmz"),
+                    ("roles", ""),
+                ];
+                if enabled {
+                    f.push(("enabled", "on"));
+                }
+                f
+            };
+            // only an admin edits
+            for role in [Role::Viewer, Role::Responder] {
+                let cookie = session_for(&app.db, role).await;
+                assert_eq!(save(&app, &cookie, &fields(false)).await.status(), StatusCode::FORBIDDEN, "{role:?}");
+            }
+            assert!(rules(&app).is_empty());
+            let admin = session_for(&app.db, Role::Admin).await;
+            // a rule that stays off needs nothing more
+            assert_eq!(save(&app, &admin, &fields(false)).await.status(), StatusCode::SEE_OTHER);
+            assert_eq!(rules(&app), [("dmz known bad".to_string(), false, None)]);
+            // turning it on needs a fresh step-up first, and nothing changes until it has one
+            let resp = save(&app, &admin, &fields(true)).await;
+            assert_eq!((resp.status(), location(&resp).as_deref()), (StatusCode::SEE_OTHER, Some("/step-up")));
+            assert!(!rules(&app)[0].1);
+            let token = admin.split_once('=').unwrap().1;
+            let hash: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+            session::set_step_up(&app.db, &hash, now_ms()).await.unwrap();
+            let resp = save(&app, &admin, &fields(true)).await;
+            assert_eq!((resp.status(), location(&resp).as_deref()), (StatusCode::SEE_OTHER, Some("/security")));
+            let stored = rules(&app);
+            assert!(stored[0].1 && stored[0].2.as_deref().is_some_and(|by| by.starts_with("admin-")), "{stored:?}");
+            let audited: i64 = app
+                .db
+                .readers()
+                .with(|c| {
+                    c.query_row("SELECT count(*) FROM audit_log WHERE action = 'quarantine.rule_saved'", [], |r| {
+                        r.get(0)
+                    })
+                })
+                .unwrap();
+            assert_eq!(audited, 2, "each save is recorded");
+            // the page shows the rule, who turned it on, and the edit button to an admin only
+            let html = page(&app, "/security", &admin).await;
+            assert!(
+                html.contains("dmz known bad") && html.contains("conn.known_bad") && html.contains("dmz"),
+                "{html}"
+            );
+            let viewer = session_for(&app.db, Role::Viewer).await;
+            let seen = text(send(&app.router, get("/security", &viewer)).await).await;
+            assert!(seen.contains("dmz known bad") && !seen.contains("/security?edit="), "{seen}");
+            assert!(text(send(&app.router, get("/security", &admin)).await).await.contains("/security?edit="));
+        }
+    }
 }
 
 mod metrics {
