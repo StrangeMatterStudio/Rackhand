@@ -1,12 +1,13 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">Runbooks, playbooks and the configuration files, each with its revisions.</p></div></div>
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">Runbooks are steps the hub runs by itself. Playbooks guide the assistant. Configuration files hold the hub's own settings. Every save is a new revision.</p></div></div>
 {% if let Some(n) = notice %}{% include "notice.html" %}{% endif %}
 <section class="card list"><div class="bar"><h2>Items</h2>{{ crate::web::ui::search("/library", q, "items")|safe }}</div>
 {% if items.is_empty() %}{{ crate::web::ui::none(q, "items", "Nothing in the library yet.")|safe }}{% else %}<table><thead><tr><th scope="col">Item</th><th scope="col">Kind</th><th scope="col">Revision</th></tr></thead><tbody>
 {% for i in items %}<tr><td class="t"><a href="/library/{{ i.kind }}/{{ i.name }}">{{ i.name }}</a></td><td data-label="Kind">{{ crate::web::ui::word(i.kind) }}</td><td class="num" data-label="Revision">{{ i.rev }}</td></tr>
 {% endfor %}</tbody></table>{% endif %}</section>
 <h2>Drafts</h2>
+<p class="hint">Changes the assistant or a device proposed. Nothing changes until someone applies one here.</p>
 {% if drafts.is_empty() %}<p class="hint">No drafts waiting.</p>{% endif %}
 {% for d in drafts %}
 <section class="card draft"><h2>{{ crate::web::ui::word(d.kind) }} {{ d.name }}</h2>

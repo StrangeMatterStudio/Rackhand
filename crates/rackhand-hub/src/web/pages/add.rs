@@ -37,6 +37,17 @@ struct AddPage<'a> {
     recent: Vec<(String, String, String)>,
 }
 
+/// What an appliance of a driver is, on the Add page.
+pub(super) fn about(driver: &str) -> &'static str {
+    match driver {
+        "proxmox" => "Virtualization hosts and clusters",
+        "truenas" => "Storage servers",
+        "redfish" => "A server's management board (BMC)",
+        "snmp" => "Switches, routers, printers and UPSes",
+        _ => "Through its API",
+    }
+}
+
 /// What a machine or an appliance is called.
 pub(super) const NAME_HINT: &str = "1 to 64 letters, digits, dots, dashes and underscores; not used here yet.";
 pub(super) const NAME_PATTERN: &str = r"[A-Za-z0-9._\-]{1,64}";
@@ -44,17 +55,20 @@ pub(super) const NAME_RULE: &str = "Use 1 to 64 letters, digits, dots, dashes an
 pub(super) const PLAIN: &str = "autocomplete=\"off\" autocapitalize=\"none\" spellcheck=\"false\"";
 
 const SYSTEMS: Choices = &[("linux", "Linux"), ("alpine", "Alpine"), ("windows", "Windows")];
-const ACCESS: Choices = &[("managed", "Managed: Rackhand can also act on it"), ("monitor", "Monitor only")];
-const MODES: Choices = &[("local", "Local: it reaches the hub on this network"), ("remote", "Remote")];
+const ACCESS: Choices = &[("managed", "Managed"), ("monitor", "Monitor only")];
+const ACCESS_HINT: &str = "Managed: the hub can also patch it and run runbooks on it. Monitor only: it is watched, and the hub can run nothing on it.";
+const MODES: Choices = &[("local", "Local"), ("remote", "Remote")];
+const MODES_HINT: &str = "Local when it is on this hub's network. Remote for a machine at a place with no hub of its own: its probe reports over the internet, and the hub reaches it through the probe.";
 
 const MACHINE: &[Spec] = &[
     Spec::text("name", "Name").hint(NAME_HINT).pattern(NAME_PATTERN, NAME_RULE).attrs(PLAIN),
     Spec::select("os", "System", SYSTEMS),
-    Spec::select("access", "Access", ACCESS),
-    Spec::select("mode", "Probe", MODES),
+    Spec::select("access", "Access", ACCESS).hint(ACCESS_HINT),
+    Spec::select("mode", "Probe", MODES).hint(MODES_HINT),
 ];
 
-const DEVICE: &[Spec] = &[Spec::select("user", "Device of", &[]).hint("The person whose laptop or phone it is.")];
+const DEVICE: &[Spec] = &[Spec::select("user", "Device of", &[])
+    .hint("The person whose laptop or phone it is. The device acts as them, with their role.")];
 
 /// The people a device can belong to.
 fn user_options(web: &Web) -> forms::Groups {
@@ -245,7 +259,8 @@ pub(super) async fn machine(web: &Web, ctx: &Ctx) -> Response<Body> {
     let page = AddDone {
         shell: Shell::at(web, ctx, &format!("Install the probe on {name}"), "/add"),
         lines,
-        note: "The command works once, for 60 minutes. Run it on the machine.".into(),
+        note: "The command works once, for 60 minutes. Run it on the machine. It shows on the Overview once its probe connects."
+            .into(),
         back: ("/add".into(), "Back to Add".into()),
     };
     html(StatusCode::OK, page.render())

@@ -26,19 +26,17 @@ struct Created<'a> {
     qr: String,
 }
 
-const ROLES: Choices = &[
-    ("viewer", "Viewer: sees everything, changes nothing"),
-    ("responder", "Responder: also handles incidents and normal approvals"),
-    ("admin", "Admin: everything"),
-];
-const SIGN_IN: Choices = &[("local", "With a password"), ("oidc", "Through the identity provider (OIDC)")];
+const ROLES: Choices = &[("viewer", "Viewer"), ("responder", "Responder"), ("admin", "Admin")];
+const ROLES_HINT: &str = "Viewer: sees everything, changes nothing. Responder: also handles incidents and approvals \
+                          that aren't high risk. Admin: everything, including users and settings.";
+const SIGN_IN: Choices = &[("local", "With a password"), ("oidc", "Identity provider (OIDC)")];
 
 const USER: &[Spec] = &[
     Spec::text("name", "Name")
         .hint("1 to 64 letters, digits, dots, dashes, underscores or @.")
         .pattern(r"[A-Za-z0-9._@\-]{1,64}", "Use 1 to 64 letters, digits or . _ @ -, with no spaces")
         .attrs("autocomplete=\"off\" autocapitalize=\"none\" spellcheck=\"false\""),
-    Spec::select("role", "Role", ROLES),
+    Spec::select("role", "Role", ROLES).hint(ROLES_HINT),
     Spec::select("auth", "Signs in", SIGN_IN)
         .hint("Either way the account gets an authenticator key on the next page."),
     Spec::secret("password", "Password")
@@ -54,7 +52,7 @@ const USER: &[Spec] = &[
     Spec::text("subject", "OIDC subject").hint("The provider's `sub` for this person.").when("auth=oidc"),
 ];
 
-const ROLE: &[Spec] = &[Spec::select("role", "Role", ROLES)];
+const ROLE: &[Spec] = &[Spec::select("role", "Role", ROLES).hint(ROLES_HINT)];
 
 struct UserLine {
     id: String,
@@ -180,9 +178,18 @@ pub(super) async fn create(web: &Web, ctx: &Ctx) -> Response<Body> {
         form.set("password_again", "");
     }
     form.check();
+    // a name that is taken is said with every other problem; the store refuses one taken meanwhile
+    let mut code = StatusCode::BAD_REQUEST;
+    if !form.has_error("name") && matches!(users::find(&web.0.db, form.value("name")), Ok(Some(_))) {
+        if form.ok() {
+            code = StatusCode::CONFLICT;
+        }
+        let why = format!("`{}` is taken by another account", form.value("name"));
+        form.refuse("name", why);
+    }
     let (true, Some(role)) = (form.ok(), parse_role(form.value("role"))) else {
         form.hold(&web.0.held, ctx);
-        return show(web, ctx, StatusCode::BAD_REQUEST, Some(form), None);
+        return show(web, ctx, code, Some(form), None);
     };
     let Ok(secret) = totp::new_secret() else { return status(StatusCode::INTERNAL_SERVER_ERROR, "No randomness") };
     let auth = form.value("auth").to_string();

@@ -1,9 +1,9 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">{{ open.len() }} open, {{ resolved.len() }} resolved in the last 7 days.</p></div></div>
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">{{ open.len() }} open, {{ resolved.len() }} resolved in the last 7 days. An incident is a problem the hub tracks until its cause clears. A runbook or the assistant may work on it first; what they can't fix waits for a person.</p></div></div>
 <section class="card list"><div class="bar"><h2>Open</h2>{{ crate::web::ui::search("/incidents", q, "incidents")|safe }}</div>
 {% if open.is_empty() %}{{ crate::web::ui::none(q, "open incidents", "No open incidents.")|safe }}{% else %}<table><thead><tr><th scope="col">Incident</th><th scope="col">Machine</th><th scope="col">Severity</th><th scope="col">State</th><th scope="col">Opened</th></tr></thead><tbody>
-{% for i in open %}<tr><td class="t"><a href="/incidents/{{ i.id }}">{{ i.title }}</a></td><td data-label="Machine">{{ i.machine }}</td><td class="state">{{ crate::web::ui::badge(i.severity)|safe }}</td><td data-label="State">{{ crate::web::ui::word(i.state) }}</td><td data-label="Opened">{{ i.opened|safe }}</td></tr>
+{% for i in open %}<tr><td class="t"><a href="/incidents/{{ i.id }}">{{ i.title }}</a></td><td data-label="Machine">{{ i.machine }}</td><td class="state">{{ crate::web::ui::badge(i.severity)|safe }}</td><td data-label="State">{{ crate::web::ui::incident_state(i.state) }}</td><td data-label="Opened">{{ i.opened|safe }}</td></tr>
 {% endfor %}</tbody></table>{% endif %}</section>
 <section class="card list"><div class="bar"><h2>Resolved in the last 7 days</h2></div>
 {% if resolved.is_empty() %}{{ crate::web::ui::none(q, "resolved incidents", "None in the last 7 days.")|safe }}{% else %}<table><thead><tr><th scope="col">Incident</th><th scope="col">Machine</th><th scope="col">Severity</th><th scope="col">Opened</th></tr></thead><tbody>
