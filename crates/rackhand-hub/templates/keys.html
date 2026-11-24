@@ -14,7 +14,7 @@
 <form method="post" action="/account/keys" novalidate>
 <input type="hidden" name="csrf" value="{{ csrf }}">
 <div class="field"><label for="key-device">Device</label><select id="key-device" name="device">{% for d in devices %}<option value="{{ d.0 }}">{{ d.1 }}</option>{% endfor %}</select></div>
-<div class="field"><label for="key-scope">It may</label><select id="key-scope" name="scope"><option value="read">Read</option>{% if can_request %}<option value="read_request">Read and ask for changes (each waits for an approval)</option>{% endif %}</select></div>
+<div class="field"><label for="key-scope">It may</label>{% if can_request %}<p class="hint" id="key-scope-hint">Read and ask: it may also ask for changes, and each waits for an approval.</p>{% endif %}<select id="key-scope" name="scope"{% if can_request %} aria-describedby="key-scope-hint"{% endif %}><option value="read">Read</option>{% if can_request %}<option value="read_request">Read and ask</option>{% endif %}</select></div>
 <div class="field"><label for="key-days">Lasts (days)</label><input id="key-days" name="days" type="number" min="1" max="{{ max_days }}" value="{{ default_days }}"><p class="hint">At most {{ max_days }}.</p></div>
 <button type="submit" class="primary">Make the key</button>
 </form>{% endif %}</section>

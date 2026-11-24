@@ -224,6 +224,12 @@ async fn add_user_shows_every_problem_and_the_new_key_has_a_qr_code() {
     let (code, html) = submit(&app, &admin, "/settings/users", &again).await;
     assert_eq!(code, StatusCode::CONFLICT);
     assert!(error_of(&html, "user", "name").contains("taken"), "{html}");
+    // and said with every other problem, not after they are fixed
+    let both = [("name", "alice"), ("role", "viewer"), ("auth", "local"), ("password", typed), ("password_again", "x")];
+    let (code, html) = submit(&app, &admin, "/settings/users", &both).await;
+    assert_eq!(code, StatusCode::BAD_REQUEST);
+    wrong(&html, "user", &["name", "password_again"]);
+    assert!(error_of(&html, "user", "name").contains("taken"), "{html}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

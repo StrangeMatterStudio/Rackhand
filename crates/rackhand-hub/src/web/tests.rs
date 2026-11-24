@@ -2129,8 +2129,9 @@ mod pages {
                 assert_eq!(make_key(&app, &viewer, &dev, "read", days).await.0, StatusCode::BAD_REQUEST, "{days:?}");
             }
             assert_eq!(key_count(&app), 0);
-            let page = shell::plain(&text(send(&app.router, get("/account/keys", &viewer)).await).await);
-            assert!(!page.contains("Read and ask for changes"), "the option isn't offered: {page}");
+            let page = text(send(&app.router, get("/account/keys", &viewer)).await).await;
+            assert!(page.contains("name=\"scope\""), "the form is there: {page}");
+            assert!(!page.contains("value=\"read_request\""), "the option isn't offered: {page}");
             // a read key for 90 days: the token is shown once
             let (code, page) = make_key(&app, &viewer, &dev, "read", "90").await;
             assert_eq!(code, StatusCode::OK, "{page}");

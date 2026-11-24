@@ -184,6 +184,23 @@ impl Shell {
         }
     }
 
+    /// The menu button's name on a phone, where it carries the counts: "Menu: 1 open incident and 2 approvals waiting".
+    pub fn menu_name(&self) -> String {
+        let say = |n: i64, one: &str, many: &str| match n {
+            0 => None,
+            1 => Some(format!("1 {one}")),
+            n => Some(format!("{n} {many}")),
+        };
+        let what: Vec<String> = [
+            say(self.incidents, "open incident", "open incidents"),
+            say(self.approvals, "approval waiting", "approvals waiting"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if what.is_empty() { "Menu".into() } else { format!("Menu: {}", what.join(" and ")) }
+    }
+
     pub fn initial(&self) -> String {
         self.user.chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_default()
     }
@@ -243,6 +260,16 @@ pub(crate) fn badge(state: &str) -> String {
 }
 
 /// A stored word as it is read: `approve-only` is `Approve only`.
+/// An incident's state (7.5.2), as someone new reads it.
+pub(crate) fn incident_state(stored: &str) -> String {
+    match stored {
+        "automation" => "A runbook is on it".into(),
+        "assistant" => "The assistant is on it".into(),
+        "human" => "Needs a person".into(),
+        other => word(other),
+    }
+}
+
 pub(crate) fn word(stored: &str) -> String {
     let spaced = stored.replace(['_', '-'], " ");
     let mut chars = spaced.chars();

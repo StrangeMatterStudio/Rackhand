@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 {{ confirm|safe }}
-<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">{% if waiting.is_empty() && q.is_empty() %}Actions that need a person are asked for here.{% else %}{{ waiting.len() }} waiting.{% endif %}</p></div></div>
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">{% if !waiting.is_empty() || !q.is_empty() %}{{ waiting.len() }} waiting. {% endif %}Actions that wait for a person to say yes, asked for by runbooks, the assistant, devices or other hubs. Each approval covers exactly what it shows; anything different asks again. High risk ones also ask for a fresh code.</p></div></div>
 {% if let Some(n) = notice %}{% include "notice.html" %}{% endif %}
 {% if waiting.len() > 3 || !q.is_empty() %}<div class="bar">{{ crate::web::ui::search("/approvals", q, "approvals")|safe }}</div>{% endif %}
 {% if waiting.is_empty() %}<section class="card">{{ crate::web::ui::none(q, "approvals", "Nothing waiting.")|safe }}</section>{% endif %}

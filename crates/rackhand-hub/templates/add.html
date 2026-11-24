@@ -25,19 +25,21 @@
 </div>
 <div class="d-f"><button type="submit" class="primary">Make the invite</button><a class="btn" href="/add" data-close>Cancel</a></div>
 </form></dialog>{% endif %}
-<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">Machines, appliances, people's devices, other hubs.</p></div></div>
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">Add what Rackhand should watch; invite what should work with this hub.</p></div></div>
 <h2>Add a machine</h2>
-<ul class="choices"><li><a href="/add?add=machine">{{ crate::web::ui::icon("computer")|safe }}<b>Machine</b><small>Linux, Alpine or Windows, with a probe</small></a></li></ul>
+<ul class="choices"><li><a href="/add?add=machine">{{ crate::web::ui::icon("computer")|safe }}<b>Machine</b><small>A server, VM, LXC or desktop running Linux, Alpine or Windows. It gets the probe, a small program that reports its health.</small></a></li></ul>
 <h2>Add an appliance</h2>
-<p class="hint">Rackhand checks these through their API; nothing is installed on them.</p>
-<ul class="choices">{% for (driver, title, _) in appliances %}<li><a href="/add?add={{ driver }}">{{ crate::web::ui::icon("dns")|safe }}<b>{{ title }}</b><small>Through its API</small></a></li>{% endfor %}</ul>
+<p class="hint">For what you can't install software on. Rackhand reads these through their API; nothing is installed on them.</p>
+<ul class="choices">{% for (driver, title, _) in appliances %}<li><a href="/add?add={{ driver }}">{{ crate::web::ui::icon("dns")|safe }}<b>{{ title }}</b><small>{{ crate::web::pages::add::about(driver) }}</small></a></li>{% endfor %}</ul>
 <h2>Invite</h2>
-<ul class="choices"><li><a href="/add?add=device">{{ crate::web::ui::icon("devices")|safe }}<b>Device</b><small>A person's laptop or phone</small></a></li></ul>
+<p class="hint">An invite connects something that works with this hub, rather than something it watches. Each is a command to run there; it works once, for 24 hours.</p>
+<ul class="choices"><li><a href="/add?add=device">{{ crate::web::ui::icon("devices")|safe }}<b>Device</b><small>A person's laptop or phone, to use the rackhand command line with this hub.</small></a></li></ul>
 <div class="cols pair">
-<section class="card"><h2>Operator host</h2><p class="hint">A machine that runs the assistant.</p><form method="post" action="/add/invite"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="operator"><button type="submit">Invite an operator host</button></form></section>
-<section class="card"><h2>Peer hub</h2><p class="hint">A hub at another site.</p><form method="post" action="/add/invite"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="peer"><button type="submit">Invite a peer hub</button></form></section>
+<section class="card"><h2>Operator host</h2><p class="hint">A machine that runs the assistant, an AI that works incidents through Rackhand's tools when a playbook matches. It never runs on the hub. To watch its health too, add it as a machine as well.</p><form method="post" action="/add/invite"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="operator"><button type="submit">Invite an operator host</button></form></section>
+<section class="card"><h2>Peer hub</h2><p class="hint">The hub of another site. Linked hubs share summaries, watch each other and can ask each other to run a runbook.</p><form method="post" action="/add/invite"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="peer"><button type="submit">Invite a peer hub</button></form></section>
 </div>
 <h2>A new site</h2>
+<p class="hint">A place with its own network gets its own hub. Install one there, then invite it here as a peer hub.</p>
 <div class="cols pair">
 <section class="card"><h2>On Debian</h2><p class="hint">A fresh Debian 12 or later machine, as a user with sudo. Then invite it as a peer from here.</p><pre id="bootstrap">{{ bootstrap }}</pre><p><button type="button" data-copy="bootstrap" hidden>Copy</button></p></section>
 <section class="card"><h2>On a Proxmox host</h2><p class="hint">Makes a Debian LXC for the hub.</p><pre id="lxc">{{ lxc }}</pre><p><button type="button" data-copy="lxc" hidden>Copy</button></p></section>

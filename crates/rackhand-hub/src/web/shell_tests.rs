@@ -85,17 +85,23 @@ async fn machine(app: &App, id: &str, name: &str) {
     insert(app, "machines", row).await;
 }
 
+/// How many of `PAGES`, from the first, are in the side navigation.
+const NAV: usize = 9;
+
 /// Every page a signed-in admin opens by its address, and the heading it has.
-const PAGES: [(&str, &str); 14] = [
+const PAGES: [(&str, &str); 17] = [
     ("/", "Overview"),
     ("/incidents", "Incidents"),
     ("/approvals", "Approvals"),
     ("/jobs", "Jobs"),
+    ("/security", "Security"),
     ("/library", "Library"),
     ("/patching", "Patching"),
     ("/add", "Add"),
     ("/audit", "Audit"),
     ("/account", "Account"),
+    ("/account/keys", "MCP keys"),
+    ("/settings/assistant", "Assistant"),
     ("/users", "Users"),
     ("/settings", "System settings"),
     ("/settings/notifiers", "Notifiers"),
@@ -126,11 +132,11 @@ async fn every_page_has_the_shell() {
             assert!(html.contains(part), "{path}: {part}");
         }
         let nav = block(&html, "<nav", "</nav>");
-        for (to, name) in &PAGES[..8] {
+        for (to, name) in &PAGES[..NAV] {
             assert!(nav.contains(&format!("href=\"{to}\"")) && nav.contains(name), "{path}: {name} in the navigation");
         }
         assert!(nav.matches("aria-current=\"page\"").count() <= 1, "{path}");
-        if PAGES[..8].iter().any(|(p, _)| *p == path) {
+        if PAGES[..NAV].iter().any(|(p, _)| *p == path) {
             let at = nav.find("aria-current=\"page\"").unwrap_or_else(|| panic!("{path} is marked in the navigation"));
             let link = &nav[nav[..at].rfind("<a").unwrap()..];
             assert!(link[..link.find('>').unwrap()].contains(&format!("href=\"{path}\"")), "{path}: {link}");
@@ -837,6 +843,7 @@ async fn pages_for_measuring() {
         ("dialog-proxmox", "/add?add=proxmox".into()),
         ("dialog-device", "/add?add=device".into()),
         ("dialog-reject", format!("/approvals?confirm=reject:{approval}")),
+        ("dialog-rule", "/security?add=rule".into()),
         ("none-found", "/?q=nothing+like+it".into()),
     ] {
         pages.push((name.into(), path, admin.clone()));
@@ -923,4 +930,164 @@ async fn each_dialog_is_named_by_its_own_heading() {
     names.sort();
     names.dedup();
     assert_eq!(names.len(), 3, "{names:?}");
+}
+
+/// What waits is counted in words a screen reader says right, and an empty list offers what its page's button does.
+#[tokio::test(flavor = "multi_thread")]
+async fn counts_and_offers_are_worded_right() {
+    let (app, admin) = ready("shell-words").await;
+    let html = see(&app, "/", &admin).await;
+    assert!(html.contains("aria-label=\"Menu\""), "nothing waits: {}", block(&html, "<header", "</header>"));
+    assert!(html.contains("No machines yet. <a href=\"/add\">Add a machine</a>"), "{html}");
+    insert(
+        &app,
+        "incidents",
+        Row::from([
+            ("id", Value::Text("01JD00000000000000000000W1".into())),
+            ("machine_id", Value::Text("01JD00000000000000000000W1".into())),
+            ("rule_id", Value::Text("x".into())),
+            ("dedupe_key", Value::Text("w1".into())),
+            ("kind", Value::Text("x".into())),
+            ("severity", Value::Text("warning".into())),
+            ("state", Value::Text("open".into())),
+            ("title", Value::Text("One".into())),
+            ("opened_at", Value::Integer(now_ms())),
+        ]),
+    )
+    .await;
+    let html = see(&app, "/", &admin).await;
+    assert!(html.contains("aria-label=\"Menu: 1 open incident\""), "{}", block(&html, "<header", "</header>"));
+    let html = see(&app, "/sites/home", &admin).await;
+    assert!(html.contains("<a href=\"/add\">Add a machine</a>"), "{html}");
+}
+
+/// Someone new can tell what each choice is for, and what a page's words mean, without leaving the page.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_newcomer_is_told_what_each_thing_is() {
+    let (app, admin) = ready("shell-help").await;
+    machine(&app, "01JD00000000000000000000H1", "web1").await;
+    insert(
+        &app,
+        "incidents",
+        Row::from([
+            ("id", Value::Text("01JD00000000000000000000H1".into())),
+            ("machine_id", Value::Text("01JD00000000000000000000H1".into())),
+            ("rule_id", Value::Text("x".into())),
+            ("dedupe_key", Value::Text("h1".into())),
+            ("kind", Value::Text("x".into())),
+            ("severity", Value::Text("warning".into())),
+            ("state", Value::Text("human".into())),
+            ("title", Value::Text("Waits for someone".into())),
+            ("opened_at", Value::Integer(now_ms())),
+        ]),
+    )
+    .await;
+    let says = |path: &'static str, html: String, all: &[&str]| {
+        let text = plain(&html);
+        for what in all {
+            assert!(text.contains(what), "{path} says {what:?}: {text}");
+        }
+    };
+    let pages: &[(&str, &[&str])] = &[
+        (
+            "/add",
+            &[
+                "Add what Rackhand should watch; invite what should work with this hub.",
+                "It gets the probe, a small program that reports its health.",
+                "For what you can't install software on",
+                "Virtualization hosts and clusters",
+                "A server's management board",
+                "Switches, routers, printers and UPSes",
+                "An invite connects something that works with this hub",
+                "it works once, for 24 hours",
+                "to use the rackhand command line with this hub",
+                "an AI that works incidents through Rackhand's tools",
+                "To watch its health too, add it as a machine as well.",
+                "Linked hubs share summaries, watch each other",
+                "A place with its own network gets its own hub.",
+            ],
+        ),
+        (
+            "/add?add=machine",
+            &[
+                "Monitor only: it is watched, and the hub can run nothing on it.",
+                "Remote for a machine at a place with no hub of its own",
+            ],
+        ),
+        ("/incidents", &["An incident is a problem the hub tracks until its cause clears.", "Needs a person"]),
+        ("/incidents/01JD00000000000000000000H1", &["State: Needs a person"]),
+        ("/approvals", &["Actions that wait for a person to say yes", "Each approval covers exactly what it shows"]),
+        ("/jobs", &["Work the hub ran: runbooks, patches and the assistant's jobs."]),
+        (
+            "/library",
+            &["Runbooks are steps the hub runs by itself.", "Playbooks guide the assistant.", "Nothing changes until"],
+        ),
+        (
+            "/patching",
+            &[
+                "security updates daily at 04:00 and the rest on Sundays at 03:00",
+                "A maintenance window pauses patching and silence alerts",
+                "No windows yet. Add one for times you work on machines yourself.",
+            ],
+        ),
+        (
+            "/patching?add=policy",
+            &["each patch waits on the Approvals page", "cut a machine off its network", "another site's hub"],
+        ),
+        ("/patching?add=window", &["a machine going quiet raises no alert"]),
+        ("/audit", &["a changed or removed entry breaks the chain"]),
+        ("/users", &["A device acts as its person"]),
+        ("/users?add=user", &["Responder: also handles incidents and approvals that aren't high risk."]),
+        (
+            "/settings",
+            &["known-bad addresses", "nothing about your machines is sent", "a copy and a history outside the hub"],
+        ),
+        ("/settings/notifiers", &["warning and critical incidents are sent to every notifier"]),
+        ("/sites/home", &["A site is a place with its own network and its own hub."]),
+    ];
+    for (path, all) in pages {
+        says(path, see(&app, path, &admin).await, all);
+    }
+    let incidents = see(&app, "/incidents", &admin).await;
+    assert!(!plain(&incidents).contains("| Human |"), "a stored state isn't shown as it is stored");
+    let patching = plain(&see(&app, "/patching", &admin).await);
+    assert!(
+        !patching.contains("Nothing is patched by itself without one"),
+        "patches don't wait for a maintenance window"
+    );
+    let fields = [("name", "web9"), ("os", "linux"), ("access", "managed"), ("mode", "local")];
+    let (_, html) = submit(&app, &admin, "/add/machine", &fields).await;
+    says("/add/machine", html, &["It shows on the Overview once its probe connects."]);
+    // a choice says what it is in a few words, so it isn't cut off on a phone; its field's hint says the rest
+    let users: Vec<String> = app
+        .db
+        .readers()
+        .with(|c| {
+            let mut s = c.prepare("SELECT id FROM users")?;
+            s.query_map([], |r| r.get(0))?.collect()
+        })
+        .unwrap();
+    for (i, user) in users.into_iter().enumerate() {
+        insert(
+            &app,
+            "devices",
+            Row::from([
+                ("id", Value::Text(format!("help-device-{i}"))),
+                ("user_id", Value::Text(user)),
+                ("name", Value::Text(format!("laptop-{i}"))),
+                ("endpoint_id", Value::Text(format!("{i}").repeat(64))),
+                ("created_at", Value::Integer(1)),
+            ]),
+        )
+        .await;
+    }
+    let keys = see(&app, "/account/keys", &admin).await;
+    assert!(keys.contains("name=\"scope\""), "the key form is there to look at: {keys}");
+    for path in ["/add?add=machine", "/users?add=user", "/patching?add=policy", "/security?add=rule", "/account/keys"] {
+        let html = see(&app, path, &admin).await;
+        for option in html.split("<option").skip(1) {
+            let label = plain(&option[option.find('>').unwrap() + 1..option.find("</option>").unwrap()]);
+            assert!(label.chars().count() <= 32, "{path}: {label}");
+        }
+    }
 }
