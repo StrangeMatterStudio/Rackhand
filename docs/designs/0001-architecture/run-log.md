@@ -183,3 +183,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-23 | T84 done: tunnels for devices, the remote-mode probe's splice, the hub's SSH to remote-mode machines, and the tunnel step (D145 to D148) |
 | 2026-11-23 | T85 done: transfers (chunks, resume, streams), peer backups and export, the transfer step and the backup runbooks (D149 to D153) |
 | 2026-11-23 | T86 done: rackhand-cli (login, status, connect, forward, send, mcp), the hub resolving machine names; the Windows build waits for T89 (D154 to D155) |
+| 2026-11-23 | T87 done: address changes (config and key updates), set-hub, identity conflicts (D156 to D157) |

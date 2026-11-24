@@ -35,6 +35,8 @@ fn config() -> Option<ProbeConfig> {
         extra_iface_excludes: vec![],
         watched_services: vec!["nginx.service".into()],
         ebpf_enabled: true,
+        hub_addrs: vec![],
+        hub_relays: vec![],
         buffer_max_mb: 64,
     })
 }

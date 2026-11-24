@@ -84,6 +84,21 @@ impl Settings {
     }
 }
 
+/// The hub's addresses as it last said them, next to the buffer.
+pub const HUB_CACHE: &str = "hub-addrs.json";
+
+/// What the hub last said about where it is: direct addresses and relays.
+pub fn cached_hub_addrs(dir: &std::path::Path) -> Option<(Vec<String>, Vec<String>)> {
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join(HUB_CACHE)).ok()?).ok()?;
+    let list = |key: &str| -> Vec<String> {
+        value[key]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default()
+    };
+    Some((list("addrs"), list("relays")))
+}
+
 pub struct Options {
     pub host: Arc<dyn Host + Send + Sync>,
     pub settings: Settings,
@@ -266,6 +281,24 @@ impl Daemon {
                             let _ = tx.send(crate::probe_check::run(rc).await).await;
                         });
                     }
+                    Ok(Incoming::Keys(update)) => {
+                        // the hub's key lines for the new addresses: the helper checks and applies them (7.3.3)
+                        if let (Some(helper), Some(signed)) = (self.opts.helper.clone(), update.keys) {
+                            tokio::spawn(async move {
+                                use data_encoding::BASE64;
+                                let request = rackhand_proto::helper::HelperRequest::ApplyKeys {
+                                    payload: BASE64.encode(&signed.payload),
+                                    hub_signature: BASE64.encode(&signed.hub_signature),
+                                };
+                                match helper.request(&request).await {
+                                    Ok(rackhand_proto::helper::HelperResponse::KeysApplied) => {
+                                        tracing::info!("the hub's key lines were replaced for its new addresses");
+                                    }
+                                    other => tracing::warn!(?other, "the hub's key update wasn't applied"),
+                                }
+                            });
+                        }
+                    }
                     Ok(Incoming::Nothing) => {}
                     Err(stop) => return stop,
                 },
@@ -288,6 +321,14 @@ impl Daemon {
 
     fn apply(&mut self, cfg: &ProbeConfig) {
         self.settings.send_modify(|s| s.apply(cfg));
+        // where the hub is now (E35): used from the next connection, and kept for the next start
+        if self.link.set_hub_addrs(&cfg.hub_addrs, &cfg.hub_relays) {
+            tracing::info!(addrs = ?cfg.hub_addrs, "the hub's addresses changed");
+            let cache = serde_json::json!({ "addrs": cfg.hub_addrs, "relays": cfg.hub_relays });
+            if let Err(e) = std::fs::write(self.opts.data_dir.join(HUB_CACHE), cache.to_string()) {
+                tracing::warn!(error = %e, "keeping the hub's addresses");
+            }
+        }
         if cfg.buffer_max_mb > 0 {
             let max = u64::from(cfg.buffer_max_mb.min(64)) * 1024 * 1024;
             if let Err(e) = self.link.buffer.set_max_bytes(max) {
@@ -493,6 +534,19 @@ pub async fn main(paths: Paths) -> Result<i32, String> {
         hub.addrs.insert(iroh::TransportAddr::Relay(url));
     }
     std::fs::create_dir_all(&paths.data_dir).map_err(|e| format!("{}: {e}", paths.data_dir.display()))?;
+    // where the hub said it was the last time (E35) wins over the addresses of the join; the hub's id stays the pinned one
+    if let Some((addrs, relays)) = cached_hub_addrs(&paths.data_dir.join("buffer")) {
+        let mut moved = iroh::EndpointAddr::new(hub_id);
+        for a in addrs.iter().filter_map(|a| a.parse::<std::net::SocketAddr>().ok()) {
+            moved.addrs.insert(iroh::TransportAddr::Ip(a));
+        }
+        for r in relays.iter().filter_map(|r| r.parse::<iroh::RelayUrl>().ok()) {
+            moved.addrs.insert(iroh::TransportAddr::Relay(r));
+        }
+        if !moved.addrs.is_empty() {
+            hub = moved;
+        }
+    }
     let key_path = paths.data_dir.join("node.key");
     let key = rackhand_net::key::load_or_create(&key_path).map_err(|e| format!("{}: {e}", key_path.display()))?;
     let relays = rackhand_net::relays::RelayConfig { relays: cfg.hub.relays.clone(), ..Default::default() };

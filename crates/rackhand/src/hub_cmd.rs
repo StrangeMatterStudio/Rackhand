@@ -260,7 +260,7 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         rackhand_hub::checks::steps::Hypervisor::new(db.clone(), vault.clone())
             .with_driver(Arc::new(rackhand_drivers::Proxmox::new())),
     );
-    let signer = joins::CommandSigner {
+    let signer = Arc::new(joins::CommandSigner {
         db: db.clone(),
         signing: ed25519_dalek::SigningKey::from_bytes(&node_key.to_bytes()),
         addrs: ticket_addrs.clone(),
@@ -272,7 +272,7 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
             web_port: config.web.port(),
             ..Default::default()
         },
-    };
+    });
     // tunnels: devices open them, and the hub's own SSH to a remote-mode machine goes through one (7.3.11); the endpoint is
     // bound further down
     let relay_urls: Vec<iroh::RelayUrl> = config.relays.iter().filter_map(|r| r.parse().ok()).collect();
@@ -282,7 +282,7 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let executor = rackhand_hub::executor::Executor::new(vault.clone(), host_keys.clone())
         .with_other(Arc::new(steps(&db, &vault, &notify, &ingest, &probe_server, network.clone(), transfer.clone())))
         .with_remote(forwards)
-        .with_hub(Arc::new(signer))
+        .with_hub(signer.clone())
         .with_reboot(machines.clone(), REBOOT_WAIT);
     let executor = Arc::new(executor);
     let actions = rackhand_hub::actions::Actions::new(db.clone(), audit.clone(), bus.clone(), executor.clone())
@@ -390,6 +390,30 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let addrs: joins::HubAddrs = Arc::new(move || hub_addrs(&quic, &ep.addr().ip_addrs().copied().collect::<Vec<_>>()));
     let id_hex: String = endpoint.id().as_bytes().iter().map(|b| format!("{b:02x}")).collect();
     let _ = ticket_addrs.set((id_hex, addrs.clone()));
+    // the hub's addresses can change (E35): every connected probe is told, and each Welcome carries the current ones
+    let change = rackhand_hub::actions::address_change::AddressChange::new(
+        db.clone(),
+        vault.clone(),
+        signer.clone(),
+        probe_server.clone(),
+    );
+    let (current, relays) = (addrs.clone(), config.relays.clone());
+    tokio::spawn(async move {
+        let mut last: Option<Vec<String>> = None;
+        loop {
+            let now = current();
+            if last.as_ref() != Some(&now) {
+                if last.is_some() {
+                    let told = change.announce(&now, &relays).await;
+                    tracing::info!(configs = told.configs.len(), keys = told.keys.len(), addrs = ?now, "the hub's addresses changed");
+                } else {
+                    change.learn(&now, &relays);
+                }
+                last = Some(now);
+            }
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
+    });
     let join =
         joins::LazyJoin::with_relays(db.clone(), registry.clone(), setup, addrs, joined_tx, config.relays.clone());
     let observations = Arc::new(crate::observations::FromIngest(ingest.clone()));

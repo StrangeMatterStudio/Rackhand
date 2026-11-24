@@ -66,6 +66,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 rackhand-net = { path = "../rackhand-net", features = ["testing"] }
 rackhand-probe = { path = "../rackhand-probe" }
 rackhand-cli = { path = "../rackhand-cli" }
+data-encoding = "2"
 iroh-relay = { workspace = true }
 rackhand-release = { path = "../rackhand-release", features = ["test-keys", "signing"] }
 

@@ -38,6 +38,8 @@ fn main() -> ExitCode {
         Some("enroll") => enroll(&args[1..]),
         #[cfg(unix)]
         Some("uninstall") => uninstall(&args[1..]),
+        #[cfg(unix)]
+        Some("set-hub") => set_hub(&args[1..]),
         #[cfg(target_os = "linux")]
         Some("helper") => helper(&args[1..]),
         _ => {
@@ -247,6 +249,23 @@ fn enroll(args: &[String]) -> ExitCode {
         }
         Err(e) => {
             eprintln!("rackhand-probe enroll: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// `set-hub <ticket>` (7.7.3, E35): the hub this probe trusts and where it is, from a new ticket; root only.
+#[cfg(unix)]
+fn set_hub(args: &[String]) -> ExitCode {
+    let [ticket] = args else { return usage() };
+    let root = rustix::process::geteuid().is_root();
+    match rackhand_probe::set_hub::rewrite(std::path::Path::new(rackhand_probe::config::PATH), ticket, root) {
+        Ok(said) => {
+            println!("{said}; restart the probe (systemctl restart rackhand-probe) to use it");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("rackhand-probe set-hub: {e}");
             ExitCode::from(1)
         }
     }

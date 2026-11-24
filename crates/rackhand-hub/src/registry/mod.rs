@@ -6,6 +6,7 @@
 pub mod agentless;
 pub mod devices;
 pub mod guest_binding;
+pub mod identity;
 pub mod join_server;
 pub mod machines;
 pub mod operators;

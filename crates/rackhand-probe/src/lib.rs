@@ -14,5 +14,6 @@ pub mod run;
 pub mod runcmd;
 #[cfg(unix)]
 pub mod security;
+pub mod set_hub;
 #[cfg(unix)]
 pub mod uninstall;

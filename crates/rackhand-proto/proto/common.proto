@@ -70,6 +70,10 @@ message ProbeConfig {
   repeated string watched_services = 6;
   bool ebpf_enabled = 7;
   uint32 buffer_max_mb = 8;
+  // The hub's direct addresses and relays now, so that a probe finds it again after they change (7.3.2, E35); empty means
+  // nothing to say.
+  repeated string hub_addrs = 9;
+  repeated string hub_relays = 10;
 }
 
 // Hub-signed, versioned payload with an expiry (7.3.3, 7.3.7): `payload` is an encoded `SignedEnvelope`.

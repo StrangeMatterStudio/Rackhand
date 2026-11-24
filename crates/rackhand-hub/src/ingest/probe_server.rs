@@ -16,7 +16,10 @@ use rackhand_proto::probe::{
     probe_to_hub,
 };
 use rackhand_store::ids::now_ms;
+use std::sync::atomic::{AtomicI64, Ordering};
 use tokio::sync::mpsc;
+
+use crate::registry::identity::{Entry, Identities};
 
 use super::events::{Event, Severity};
 use super::{Ingest, Receipt, Stream};
@@ -91,6 +94,10 @@ pub struct ProbeServer {
     directory: Arc<dyn ProbeDirectory>,
     settings: ServerSettings,
     outbound: Arc<Outbound>,
+    /// Which boot of which machine is behind each endpoint id (E6).
+    identities: Arc<Identities>,
+    /// The hub's addresses and relays now, which every Welcome carries (E35).
+    addresses: Arc<Mutex<(Vec<String>, Vec<String>)>>,
     /// Guest binding, given the MACs each Hello reports.
     bindings: Option<Arc<crate::registry::guest_binding::GuestBindings>>,
     /// Told the machine id of each accepted Hello (the hub's SSH test follows a managed machine's first report).
@@ -105,7 +112,16 @@ enum End {
 
 impl ProbeServer {
     pub fn new(ingest: Ingest, directory: Arc<dyn ProbeDirectory>, settings: ServerSettings) -> ProbeServer {
-        ProbeServer { ingest, directory, settings, outbound: Arc::default(), bindings: None, greeted: None }
+        ProbeServer {
+            ingest,
+            directory,
+            settings,
+            outbound: Arc::default(),
+            identities: Arc::default(),
+            addresses: Arc::default(),
+            bindings: None,
+            greeted: None,
+        }
     }
 
     /// Gives guest binding the MACs of each probe's interfaces, as its Hello reports them.
@@ -121,6 +137,36 @@ impl ProbeServer {
     }
 
     /// The runner of `probe_check` steps (D115), sending them to the machines' connected probes.
+    /// What the hub tells probes now: their `ProbeConfig`.
+    pub fn config(&self) -> &ProbeConfig {
+        &self.settings.config
+    }
+
+    pub fn config_rev(&self) -> u64 {
+        self.settings.config_rev
+    }
+
+    /// The hub's addresses and relays, for every Welcome after this.
+    pub fn set_hub_addresses(&self, addrs: Vec<String>, relays: Vec<String>) {
+        *self.addresses.lock().unwrap_or_else(|e| e.into_inner()) = (addrs, relays);
+    }
+
+    /// The machines whose probes are connected.
+    pub fn connected(&self) -> Vec<String> {
+        let mut machines: Vec<String> =
+            self.outbound.probes().iter().filter(|(_, s)| !s.is_closed()).map(|(m, _)| m.clone()).collect();
+        machines.sort();
+        machines
+    }
+
+    /// Sends a message on a machine's stream 0; whether its probe is connected.
+    pub async fn send_to(&self, machine: &str, msg: HubToProbe) -> bool {
+        match self.outbound.to(machine) {
+            Some(out) => out.send(msg).await.is_ok(),
+            None => false,
+        }
+    }
+
     pub fn probe_checks(&self) -> super::probe_checks::ProbeChecks {
         super::probe_checks::ProbeChecks::new(self.outbound.clone())
     }
@@ -172,6 +218,24 @@ impl ProbeServer {
         if !(self.settings.supports)(version) {
             return End::Close(CloseCode::UnsupportedVersion);
         }
+        // one endpoint id from two boots that both report is a clone, and neither is the machine the hub enrolled (E6)
+        let identity = match self.identities.enter(conn.remote_id(), &hello.boot_id, now_ms()) {
+            Entry::Admitted(session) => session,
+            Entry::Conflict => {
+                let event = Event::machine(
+                    &machine,
+                    "probe.identity_conflict",
+                    Severity::Critical,
+                    serde_json::json!({
+                        "machine_id": machine,
+                        "endpoint": conn.remote_id().to_string(),
+                        "reason": "one endpoint id from two boots; each is refused until one re-enrolls",
+                    }),
+                );
+                let _ = self.ingest.raise_event(event).await;
+                return End::Close(CloseCode::IdentityMismatch);
+            }
+        };
         if self.ingest.hello(&machine, hello.epoch, &hello.label_table).await.is_err() {
             return End::Gone;
         }
@@ -186,9 +250,15 @@ impl ProbeServer {
             let _ = greeted.send(machine.clone());
         }
         let received = self.ingest.received(&machine, hello.epoch);
+        let mut config = self.settings.config.clone();
+        {
+            let (addrs, relays) = self.addresses.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            config.hub_addrs = addrs;
+            config.hub_relays = relays;
+        }
         let welcome = Welcome {
             hub_version: Some(SemVer { version: self.settings.hub_version.clone() }),
-            config: Some(self.settings.config.clone()),
+            config: Some(config),
             config_rev: self.settings.config_rev,
             received: (!received.is_empty()).then(|| EpochRanges { epoch: hello.epoch, ranges: seq_ranges(&received) }),
             server_time_ms: now_ms(),
@@ -230,6 +300,7 @@ impl ProbeServer {
         let end = loop {
             tokio::select! {
                 end = end_rx.recv() => break end.unwrap_or(End::Gone),
+                _ = identity.killed() => break End::Close(CloseCode::IdentityMismatch),
                 stream = conn.accept_uni() => {
                     let Ok(mut recv) = stream else { break End::Gone };
                     let mut tag = [0u8; 1];
@@ -237,9 +308,10 @@ impl ProbeServer {
                         continue;
                     }
                     let (ingest, machine, acks, ends) = (self.ingest.clone(), machine.clone(), acks.clone(), ends.clone());
+                    let activity = identity.activity();
                     match tag[0] {
-                        rackhand_proto::streams::LIVE => { tokio::spawn(live(ingest, machine, recv, acks, ends)); }
-                        rackhand_proto::streams::REPLAY => { tokio::spawn(replay(ingest, machine, recv, acks, ends)); }
+                        rackhand_proto::streams::LIVE => { tokio::spawn(live(ingest, machine, recv, acks, ends, activity)); }
+                        rackhand_proto::streams::REPLAY => { tokio::spawn(replay(ingest, machine, recv, acks, ends, activity)); }
                         _ => break End::Close(CloseCode::UnsupportedVersion),
                     }
                 }
@@ -316,10 +388,18 @@ fn inflate<M: Message + Default>(body: &[u8]) -> Result<M, CloseCode> {
     M::decode(bytes.as_slice()).map_err(|_| CloseCode::FrameTooLarge)
 }
 
-async fn live(ingest: Ingest, machine: String, mut recv: RecvStream, acks: mpsc::Sender<Ack>, ends: mpsc::Sender<End>) {
+async fn live(
+    ingest: Ingest,
+    machine: String,
+    mut recv: RecvStream,
+    acks: mpsc::Sender<Ack>,
+    ends: mpsc::Sender<End>,
+    activity: Arc<AtomicI64>,
+) {
     let (mut tokens, mut at) = (LIVE_BURST, Instant::now());
     loop {
         let Ok(body) = frames::read(&mut recv).await else { return };
+        activity.store(now_ms(), Ordering::Relaxed);
         let now = Instant::now();
         tokens = (tokens + now.duration_since(at).as_secs_f64() * LIVE_PER_SECOND).min(LIVE_BURST);
         at = now;
@@ -349,6 +429,7 @@ async fn replay(
     mut recv: RecvStream,
     acks: mpsc::Sender<Ack>,
     ends: mpsc::Sender<End>,
+    activity: Arc<AtomicI64>,
 ) {
     loop {
         // Past the replay limits stream 2 isn't read, so QUIC flow control holds the probe back (7.3.2).
@@ -356,6 +437,7 @@ async fn replay(
             tokio::time::sleep(REPLAY_POLL).await;
         }
         let Ok(body) = frames::read(&mut recv).await else { return };
+        activity.store(now_ms(), Ordering::Relaxed);
         let batch: ReplayBatch = match inflate(&body) {
             Ok(b) => b,
             Err(code) => {

@@ -2,6 +2,7 @@
 //! `assistant_transcripts`, runs one job per machine at a time (a second waits up to 60 s, then fails `machine_busy`),
 //! records each step before it runs, and publishes `JobFinished` on the Bus.
 
+pub mod address_change;
 mod coordinator;
 pub mod diagnostics;
 pub mod hypervisor_guard;

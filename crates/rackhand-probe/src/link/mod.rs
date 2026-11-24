@@ -113,6 +113,8 @@ pub struct Link {
 pub enum Incoming {
     Nothing,
     Config(ProbeConfig),
+    /// New key lines for the hub's accounts, for the helper to apply.
+    Keys(rackhand_proto::probe::KeysUpdate),
     RunCheck(RunCheck),
 }
 
@@ -241,6 +243,26 @@ impl Link {
         replay(s.conn.clone(), self.backlog(s)).await
     }
 
+    /// Where the hub is now, when it says so (7.3.2, E35): its endpoint id stays the pinned one. Returns whether the
+    /// addresses changed.
+    pub fn set_hub_addrs(&mut self, addrs: &[String], relays: &[String]) -> bool {
+        if addrs.is_empty() && relays.is_empty() {
+            return false;
+        }
+        let mut hub = EndpointAddr::new(self.cfg.hub.id);
+        for a in addrs.iter().filter_map(|a| a.parse::<std::net::SocketAddr>().ok()) {
+            hub.addrs.insert(iroh::TransportAddr::Ip(a));
+        }
+        for r in relays.iter().filter_map(|r| r.parse::<iroh::RelayUrl>().ok()) {
+            hub.addrs.insert(iroh::TransportAddr::Relay(r));
+        }
+        if hub.addrs.is_empty() || hub == self.cfg.hub {
+            return false;
+        }
+        self.cfg.hub = hub;
+        true
+    }
+
     /// Acts on one message from the hub: an `Ack` deletes the buffered reports it covers; a `ConfigUpdate` and a
     /// `RunCheck` are returned for the daemon.
     pub fn on_message(&mut self, msg: HubToProbe) -> Result<Incoming, Stop> {
@@ -253,6 +275,7 @@ impl Link {
             }
             Some(hub_to_probe::Msg::ConfigUpdate(u)) => Ok(u.config.map_or(Incoming::Nothing, Incoming::Config)),
             Some(hub_to_probe::Msg::RunCheck(rc)) => Ok(Incoming::RunCheck(rc)),
+            Some(hub_to_probe::Msg::KeysUpdate(k)) => Ok(Incoming::Keys(k)),
             _ => Ok(Incoming::Nothing),
         }
     }
