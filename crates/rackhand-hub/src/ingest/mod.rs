@@ -170,6 +170,8 @@ struct Machine {
     last_seen_ms: Option<i64>,
     /// What the probe said it can do in its last `Hello`.
     capabilities: Vec<i32>,
+    /// The probe's version and architecture from its last `Hello`, for offering it an update.
+    probe_build: Option<(String, String)>,
     /// When the last `conn.overflow` was kept, and how many events of an unknown kind were dropped.
     last_overflow_ms: i64,
     unknown_events: u64,
@@ -204,6 +206,7 @@ impl Default for Machine {
             counted: Counted::default(),
             last_seen_ms: None,
             capabilities: Vec::new(),
+            probe_build: None,
             last_overflow_ms: i64::MIN / 2,
             unknown_events: 0,
             conn: conn::ConnState::default(),
@@ -322,6 +325,16 @@ impl Ingest {
     /// The capabilities from the probe's last `Hello` (7.3.2).
     pub fn set_capabilities(&self, machine: &str, capabilities: &[i32]) {
         self.state().machines.entry(machine.to_string()).or_default().capabilities = capabilities.to_vec();
+    }
+
+    /// The probe's version and architecture from its last `Hello`.
+    pub fn set_probe_build(&self, machine: &str, version: &str, arch: &str) {
+        self.state().machines.entry(machine.to_string()).or_default().probe_build =
+            Some((version.to_string(), arch.to_string()));
+    }
+
+    pub fn probe_build(&self, machine: &str) -> Option<(String, String)> {
+        self.state().machines.get(machine).and_then(|m| m.probe_build.clone())
     }
 
     pub fn capabilities(&self, machine: &str) -> Vec<i32> {

@@ -644,3 +644,17 @@ async fn connections_scored_and_stored_by_policy() {
     live(&ingest, M1, again, T0 + 15_000).await;
     assert_eq!(rows(M1).iter().find(|r| r.0 == "93.184.216.34").unwrap().1, 4, "2 and 2");
 }
+
+#[test]
+fn the_probe_build_from_the_hello_is_kept_per_machine() {
+    let env = Env::new("probe-build");
+    let ingest = env.ingest();
+    assert_eq!(ingest.probe_build(M1), None, "nothing before a Hello");
+    ingest.set_probe_build(M1, "0.1.0", "x86_64");
+    ingest.set_probe_build(M2, "0.1.1", "aarch64");
+    assert_eq!(ingest.probe_build(M1), Some(("0.1.0".to_string(), "x86_64".to_string())));
+    // a probe that updated says so in its next Hello
+    ingest.set_probe_build(M1, "0.1.1", "x86_64");
+    assert_eq!(ingest.probe_build(M1), Some(("0.1.1".to_string(), "x86_64".to_string())));
+    assert_eq!(ingest.probe_build(M2), Some(("0.1.1".to_string(), "aarch64".to_string())));
+}

@@ -65,6 +65,9 @@ pub struct HubConfig {
     /// Relay lists this hub follows (7.3.10): HTTPS addresses of TOML lists, fetched daily when `sources.relay_lists` is on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relay_list_urls: Vec<String>,
+    /// The release channel this hub offers its probes updates from (13): `stable`, or `beta` to take beta releases too.
+    #[serde(default, skip_serializing_if = "rackhand_release::manifest::Channel::is_stable")]
+    pub release_channel: rackhand_release::manifest::Channel,
 }
 
 /// The assistant's settings (7.7.1): how many jobs a day the hub starts.

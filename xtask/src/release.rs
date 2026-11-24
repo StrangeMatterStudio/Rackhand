@@ -60,6 +60,8 @@ pub struct Options {
     pub epoch: String,
     /// Only these `<name>` of `<name>-<target>` (for `repro`, which compares the two programs that matter most).
     pub only: Option<Vec<String>>,
+    /// The channel the manifest names (13).
+    pub channel: rackhand_release::manifest::Channel,
 }
 
 fn home(var: &str, default: &str) -> PathBuf {
@@ -287,7 +289,7 @@ pub fn build(o: &Options) -> Result<BTreeMap<String, String>> {
             std::fs::write(o.out.join("install.ps1"), script)?;
             std::fs::write(o.out.join("rackhand-windows-scripts.zip"), zip(&windows_scripts(&o.src)?))?;
         }
-        let manifest = rackhand_release::manifest::Manifest::of_dir(&version, &o.out)?;
+        let manifest = rackhand_release::manifest::Manifest::of_dir(&version, &o.out)?.with_channel(o.channel);
         std::fs::write(o.out.join(rackhand_release::manifest::NAME), manifest.to_json())?;
     }
     let mut hashes = BTreeMap::new();
@@ -332,13 +334,31 @@ fn option<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
 }
 
-/// `release build [--out <dir>] [--targets <list>]`.
+/// `--channel stable|beta` (stable when it isn't given).
+fn parse_channel(args: &[String]) -> Result<rackhand_release::manifest::Channel> {
+    use rackhand_release::manifest::Channel;
+    match option(args, "--channel") {
+        None | Some("stable") => Ok(Channel::Stable),
+        Some("beta") => Ok(Channel::Beta),
+        Some(other) => bail!("--channel is stable or beta, not `{other}`"),
+    }
+}
+
+/// `release build [--out <dir>] [--targets <list>] [--channel stable|beta]`.
 fn build_command(args: &[String]) -> Result<()> {
     let src = workspace_root();
     let out = option(args, "--out").map(PathBuf::from).unwrap_or_else(|| src.join("dist"));
     // a release is built in the fixed directory, clean: another path changes what OpenSSL embeds in the hub
     let target_dir = option(args, "--target-dir").map(PathBuf::from).unwrap_or_else(release_target_dir);
-    let o = Options { epoch: commit_epoch(&src)?, src, target_dir, out, targets: parse_targets(args)?, only: None };
+    let o = Options {
+        epoch: commit_epoch(&src)?,
+        src,
+        target_dir,
+        out,
+        targets: parse_targets(args)?,
+        only: None,
+        channel: parse_channel(args)?,
+    };
     let hashes = build(&o)?;
     for (name, hash) in hashes {
         println!("{hash}  {name}");
@@ -394,6 +414,7 @@ pub fn repro_hashes() -> Result<(BTreeMap<String, String>, BTreeMap<String, Stri
             targets: vec![LINUX_X86_64.to_string()],
             epoch: epoch.clone(),
             only: Some(REPRO.iter().map(|s| s.to_string()).collect()),
+            channel: Default::default(),
         };
         results.push(build(&o)?);
         let _ = std::fs::remove_dir_all(release_target_dir());
@@ -424,7 +445,9 @@ pub fn run(args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("build") => build_command(&args[1..]),
         Some("repro") => repro_command(),
-        _ => bail!("usage: cargo xtask release build [--out <dir>] [--targets <list>] | release repro"),
+        _ => bail!(
+            "usage: cargo xtask release build [--out <dir>] [--targets <list>] [--channel stable|beta] | release repro"
+        ),
     }
 }
 
@@ -491,6 +514,15 @@ mod tests {
     }
 
     #[test]
+    fn the_channel_is_stable_unless_beta_is_asked_for() {
+        use rackhand_release::manifest::Channel;
+        assert_eq!(parse_channel(&[]).unwrap(), Channel::Stable);
+        assert_eq!(parse_channel(&["--channel".into(), "stable".into()]).unwrap(), Channel::Stable);
+        assert_eq!(parse_channel(&["--channel".into(), "beta".into()]).unwrap(), Channel::Beta);
+        assert!(parse_channel(&["--channel".into(), "nightly".into()]).is_err());
+    }
+
+    #[test]
     fn unknown_targets_are_refused() {
         assert!(parse_targets(&["--targets".into(), "i686-pc-windows-msvc".into()]).is_err());
         assert_eq!(parse_targets(&[]).unwrap(), [LINUX_X86_64]);
@@ -520,6 +552,7 @@ mod slow_tests {
             out: out.clone(),
             targets: vec![LINUX_X86_64.to_string()],
             only: None,
+            channel: Default::default(),
         };
         let hashes = build(&o).unwrap();
         for name in ["rackhand", "rackhand-probe", "rackhand-cli", "rackhand-verify"] {

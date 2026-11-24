@@ -36,10 +36,33 @@ pub struct Artifact {
     pub size: u64,
 }
 
+/// The channel a release is on (13): a hub on `stable` offers only stable releases, one on `beta` offers both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Channel {
+    #[default]
+    Stable,
+    Beta,
+}
+
+impl Channel {
+    pub fn is_stable(&self) -> bool {
+        *self == Channel::Stable
+    }
+
+    /// Whether a hub on this channel offers a release on `release`'s.
+    pub fn offers(self, release: Channel) -> bool {
+        self == Channel::Beta || release == Channel::Stable
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub version: String,
+    /// Left out of a stable release's manifest, so that it is the text it was before there were channels.
+    #[serde(default, skip_serializing_if = "Channel::is_stable")]
+    pub channel: Channel,
     pub artifacts: Vec<Artifact>,
 }
 
@@ -65,7 +88,12 @@ impl Manifest {
             .map(|(name, bytes)| Artifact { name, sha256: sha256_hex(bytes), size: bytes.len() as u64 })
             .collect();
         artifacts.sort_by(|a, b| a.name.cmp(&b.name));
-        Manifest { version: version.to_string(), artifacts }
+        Manifest { version: version.to_string(), channel: Channel::Stable, artifacts }
+    }
+
+    pub fn with_channel(mut self, channel: Channel) -> Manifest {
+        self.channel = channel;
+        self
     }
 
     /// The manifest of the artifacts in a directory (signatures and an earlier manifest are left out).

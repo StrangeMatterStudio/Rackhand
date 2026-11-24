@@ -104,7 +104,9 @@ async fn quick_check_failure_stops_writes_and_alerts() {
 }
 
 fn manifest(dir: &Path, name: &str, sha: &str, signer: u8, key_id: [u8; 8]) -> Manifest {
-    let body = serde_json::json!({ "version": "0.1.0", "files": { name: sha } }).to_string();
+    // the format `cargo xtask release build` writes (5.2): a size and a SHA-256 for every artifact
+    let body = serde_json::json!({ "version": "0.1.0", "artifacts": [{ "name": name, "sha256": sha, "size": 1 }] })
+        .to_string();
     let key = ed25519_dalek::SigningKey::from_bytes(&[signer; 32]);
     let sig = rackhand_release::signing::sign(&key, key_id, body.as_bytes(), "file:manifest.json");
     std::fs::write(dir.join("manifest.json"), &body).unwrap();

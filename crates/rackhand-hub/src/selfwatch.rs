@@ -35,7 +35,7 @@ pub fn quick_check(db_path: PathBuf) -> IntegrityCheck {
     })
 }
 
-/// The signed release manifest (13): `{"version": "...", "files": {"<file name>": "<sha256 hex>"}}` and its `.minisig`.
+/// The signed release manifest (5.2, 13) that `cargo xtask release build` writes, and its `.minisig`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
     pub path: PathBuf,
@@ -76,8 +76,9 @@ pub fn binary_check(exe: &Path, exe_name: &str, manifest: &Manifest) -> Result<O
     if let Err(e) = rackhand_release::verify(&data, &sig) {
         return Ok(Some(Finding { kind: "hub.binary_changed", detail: format!("the release manifest: {e}") }));
     }
-    let doc: serde_json::Value = serde_json::from_slice(&data).map_err(|e| e.to_string())?;
-    let Some(expected) = doc["files"][exe_name].as_str() else {
+    let text = std::str::from_utf8(&data).map_err(|e| e.to_string())?;
+    let manifest = rackhand_release::manifest::Manifest::parse(text).map_err(|e| e.to_string())?;
+    let Some(expected) = manifest.artifacts.iter().find(|a| a.name == exe_name).map(|a| a.sha256.as_str()) else {
         return Ok(Some(Finding {
             kind: "hub.binary_changed",
             detail: format!("{exe_name} isn't in the release manifest"),

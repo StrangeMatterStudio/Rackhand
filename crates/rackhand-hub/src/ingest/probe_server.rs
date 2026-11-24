@@ -240,6 +240,7 @@ impl ProbeServer {
             return End::Gone;
         }
         self.ingest.set_capabilities(&machine, &hello.capabilities);
+        self.ingest.set_probe_build(&machine, version, hello.os.as_ref().map(|o| o.arch.as_str()).unwrap_or_default());
         if let Some(bindings) = &self.bindings {
             let macs = hello.interfaces.iter().map(|i| i.mac.clone()).collect();
             if let Err(e) = bindings.reported(&machine, macs, now_ms()).await {

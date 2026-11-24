@@ -9,10 +9,12 @@ pub mod hypervisor_guard;
 pub mod jobs;
 mod locks;
 pub mod patching;
+pub mod probe_rollout;
 pub mod provision;
 pub mod quarantining;
 mod reboots;
 mod recovery;
+pub mod rollout_service;
 pub mod runner;
 
 use std::collections::BTreeMap;
@@ -203,3 +205,7 @@ mod tests;
 #[cfg(test)]
 #[path = "quarantine_tests.rs"]
 mod quarantine;
+
+#[cfg(test)]
+#[path = "probe_rollout_tests.rs"]
+mod rollout;

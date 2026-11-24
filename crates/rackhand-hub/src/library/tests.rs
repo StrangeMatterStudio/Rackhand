@@ -127,3 +127,16 @@ async fn shipped_builtins_are_valid_library_runbooks() {
     let seeded = lib.seed(rackhand_runbook::builtin::runbooks(), 1).await.unwrap();
     assert!(seeded.contains(&"patch-debian".to_string()) && seeded.contains(&"patch-alpine".to_string()), "{seeded:?}");
 }
+
+/// 13: the release channel is a hub setting, stable unless the admin says beta, and a stable hub's file doesn't mention it.
+#[test]
+fn the_release_channel_is_stable_unless_the_hub_setting_says_beta() {
+    use rackhand_release::manifest::Channel;
+    let default = crate::library::config::parse_hub("").unwrap();
+    assert_eq!(default.release_channel, Channel::Stable);
+    assert!(!default.to_toml().contains("release_channel"), "{}", default.to_toml());
+    let beta = crate::library::config::parse_hub("release_channel = \"beta\"\n").unwrap();
+    assert_eq!(beta.release_channel, Channel::Beta);
+    assert!(beta.to_toml().contains("release_channel = \"beta\""), "{}", beta.to_toml());
+    assert!(crate::library::config::parse_hub("release_channel = \"nightly\"\n").is_err());
+}

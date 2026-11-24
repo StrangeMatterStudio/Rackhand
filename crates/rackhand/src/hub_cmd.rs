@@ -424,8 +424,14 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
             tokio::time::sleep(Duration::from_secs(30)).await;
         }
     });
-    let join =
-        joins::LazyJoin::with_relays(db.clone(), registry.clone(), setup, addrs, joined_tx, config.relays.clone());
+    let join = joins::LazyJoin::with_relays(
+        db.clone(),
+        registry.clone(),
+        setup,
+        addrs.clone(),
+        joined_tx,
+        config.relays.clone(),
+    );
     let observations = Arc::new(crate::observations::FromIngest(ingest.clone()));
     let mcp = rackhand_hub::mcp::Mcp::new(db.clone(), audit.clone(), observations)
         .with_actions(actions)
@@ -484,6 +490,33 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
             }),
         },
     );
+    // probe updates (13, 7.3.3): the release in the release directory goes to the probes, a canary per site first
+    {
+        use rackhand_hub::actions::rollout_service::{FsReleases, HubFleet, RolloutService};
+        let settings = db.clone();
+        let channel = Arc::new(move || {
+            rackhand_hub::library::config::hub(&settings).map(|c| c.release_channel).unwrap_or_default()
+        });
+        let saved = rackhand_hub::scheduler::tasks::load_state(db.readers()).unwrap_or_default();
+        let fleet = Arc::new(HubFleet { db: db.clone(), ingest: ingest.clone(), probes: probe_server.clone() });
+        let (current, web_port) = (addrs.clone(), config.web.port());
+        // where a probe fetches a release: this hub's first address, on the dashboard's port, where `/release/<file>` is served
+        let base = Arc::new(move || {
+            let first: SocketAddr = current().first()?.parse().ok()?;
+            Some(match first.ip() {
+                std::net::IpAddr::V4(ip) => format!("https://{ip}:{web_port}"),
+                std::net::IpAddr::V6(ip) => format!("https://[{ip}]:{web_port}"),
+            })
+        });
+        let releases = Arc::new(FsReleases::new(config.data_dir.join("release")));
+        let service = RolloutService::new(channel, &saved, fleet, releases, base);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                service.tick(now_ms()).await;
+            }
+        });
+    }
     patching::spawn(db.clone(), windows, patching::WINDOW_POLL);
     // the service checks of config/checks.toml, each at its interval (FR-9), and the agentless machines' polls (FR-10)
     rackhand_hub::checks::Checks::new(db.clone(), ingest.clone())

@@ -137,6 +137,24 @@ mod manifest {
         assert_eq!(m.check_dir(&dir), Err(ManifestError::NotListed("surprise.bin".into())));
     }
 
+    /// 13: a release is on the stable or the beta channel, and the manifest, which is signed, says which. A stable manifest
+    /// is the text it was before there were channels.
+    #[test]
+    fn a_beta_manifest_says_so_and_a_stable_one_is_unchanged() {
+        use crate::manifest::Channel;
+        let stable = manifest();
+        assert_eq!(stable.channel, Channel::Stable);
+        assert!(!stable.to_json().contains("channel"), "{}", stable.to_json());
+        let beta = manifest().with_channel(Channel::Beta);
+        assert!(beta.to_json().contains("\"channel\": \"beta\""), "{}", beta.to_json());
+        assert_eq!(Manifest::parse(&beta.to_json()).unwrap().channel, Channel::Beta);
+        assert_eq!(Manifest::parse(&stable.to_json()).unwrap().channel, Channel::Stable);
+        let nightly = beta.to_json().replace("beta", "nightly");
+        assert!(matches!(Manifest::parse(&nightly), Err(ManifestError::Malformed(_))));
+        let named_stable = beta.to_json().replace("beta", "stable");
+        assert_eq!(Manifest::parse(&named_stable).unwrap().channel, Channel::Stable);
+    }
+
     #[test]
     fn a_manifest_that_isnt_one_is_refused() {
         for bad in [
