@@ -235,6 +235,10 @@ pub async fn send_stream(
 /// What the waiting for a direct path asks of a connection; a fake in tests.
 pub trait Paths: Send + Sync {
     fn kind(&self) -> PathKind;
+    /// Whether the connection is over: no path will ever be direct, and the send that follows says what went wrong.
+    fn closed(&self) -> bool {
+        false
+    }
     /// Returns when the path changes, or after `within`.
     fn changed<'a>(&'a self, within: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 }
@@ -242,6 +246,10 @@ pub trait Paths: Send + Sync {
 impl Paths for Connection {
     fn kind(&self) -> PathKind {
         paths::kind(self)
+    }
+
+    fn closed(&self) -> bool {
+        self.close_reason().is_some()
     }
 
     fn changed<'a>(&'a self, within: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
@@ -264,7 +272,7 @@ pub async fn wait_for_direct(
     }
     let started = now_ms();
     let mut said = false;
-    while paths.kind() != PathKind::Direct {
+    while paths.kind() != PathKind::Direct && !paths.closed() {
         if !said && now_ms() - started >= DIRECT_WAIT_NOTICE.as_millis() as i64 {
             said = true;
             notice();
@@ -318,5 +326,27 @@ mod tests {
         // ten minutes less a moment raises nothing yet
         let early = Fake { now: Mutex::new(0), direct_at_ms: 9 * 60_000 };
         wait_for_direct(&early, false, &|| *early.now.lock().unwrap(), &mut || panic!("too early")).await;
+    }
+
+    /// A connection that is over: nothing will ever be direct, and the wait must not go round without awaiting.
+    struct Gone;
+
+    impl Paths for Gone {
+        fn kind(&self) -> PathKind {
+            PathKind::None
+        }
+
+        fn closed(&self) -> bool {
+            true
+        }
+
+        fn changed<'a>(&'a self, _within: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+            panic!("a closed connection isn't waited on")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_closed_connection_ends_the_wait() {
+        wait_for_direct(&Gone, false, &|| 0, &mut || panic!("no notice")).await;
     }
 }

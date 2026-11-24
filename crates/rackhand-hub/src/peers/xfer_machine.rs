@@ -14,7 +14,7 @@ use rackhand_runbook::runbook::Identity;
 use rackhand_store::Db;
 use rusqlite::OptionalExtension;
 
-use super::tunnel::{Target, person, target};
+use super::tunnel::{Target, person, resolve_machine, target};
 use super::xfer::{Opener, Sink};
 use crate::actions::runner::{BoxFuture, StepCtx};
 use crate::audit::Audit;
@@ -138,8 +138,7 @@ impl MachineOpener {
 
     /// The machine an offer names: of this site, with an account for the hub, and not isolated.
     fn checked_machine(&self, offer: &XferOffer) -> Result<(Target, String), String> {
-        let id = <[u8; 16]>::try_from(offer.target.as_slice()).map_err(|_| "no such machine")?;
-        let machine = ulid::Ulid::from_bytes(id).to_string();
+        let machine = resolve_machine(&self.db, &offer.target).ok_or("no such machine")?;
         let t = target(&self.db, &machine).ok_or("no such machine at this site")?;
         if t.access == "monitor" {
             return Err("monitor_only: the machine has no account for the hub to write with".into());

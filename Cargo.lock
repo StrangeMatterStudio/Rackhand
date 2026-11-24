@@ -3766,6 +3766,15 @@ dependencies = [
 [[package]]
 name = "rackhand-cli"
 version = "0.1.0"
+dependencies = [
+ "iroh",
+ "prost",
+ "rackhand-net",
+ "rackhand-proto",
+ "serde",
+ "tokio",
+ "toml 0.8.23",
+]
 
 [[package]]
 name = "rackhand-detect"
@@ -3823,6 +3832,7 @@ dependencies = [
  "jiff",
  "prost",
  "qrcodegen",
+ "rackhand-cli",
  "rackhand-detect",
  "rackhand-drivers",
  "rackhand-net",
@@ -3897,6 +3907,7 @@ name = "rackhand-net"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "getrandom 0.3.4",
  "iroh",
  "iroh-relay",
  "prost",

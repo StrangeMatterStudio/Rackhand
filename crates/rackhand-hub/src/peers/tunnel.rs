@@ -221,6 +221,27 @@ impl RemoteReach for Forwards {
     }
 }
 
+/// The machine a tunnel or transfer names: its 16-byte id, or its name at this hub's own site (what `rackhand-cli` says,
+/// `<site>/<machine>` having been used to find this hub).
+pub(crate) fn resolve_machine(db: &Db, named: &[u8]) -> Option<String> {
+    if let Ok(id) = <[u8; 16]>::try_from(named) {
+        return Some(ulid::Ulid::from_bytes(id).to_string());
+    }
+    let name = std::str::from_utf8(named).ok()?;
+    db.readers()
+        .with(|c| {
+            c.query_row(
+                "SELECT m.id FROM machines m JOIN sites s ON s.id = m.site_id
+                 WHERE s.is_local = 1 AND m.name = ?1 AND m.state = 'enrolled'",
+                [name],
+                |r| r.get(0),
+            )
+            .optional()
+        })
+        .ok()
+        .flatten()
+}
+
 /// A machine of this site that has enrolled.
 pub(crate) fn target(db: &Db, machine_id: &str) -> Option<Target> {
     db.readers()
@@ -330,8 +351,7 @@ impl Tunnels {
         if !matches!(person.role.as_str(), "responder" | "admin") {
             return Err(TunnelError::OutOfScope);
         }
-        let id = <[u8; 16]>::try_from(open.target.as_slice()).map_err(|_| TunnelError::OutOfScope)?;
-        let machine = ulid::Ulid::from_bytes(id).to_string();
+        let machine = resolve_machine(&self.db, &open.target).ok_or(TunnelError::OutOfScope)?;
         // a machine at another site belongs to another hub, which the caller dials directly
         let target = target(&self.db, &machine).ok_or(TunnelError::OutOfScope)?;
         let port = u16::try_from(open.port).map_err(|_| TunnelError::PortNotAllowed)?;
@@ -348,8 +368,7 @@ impl Tunnels {
     async fn one(self: Arc<Tunnels>, caller: EndpointId, mut send: SendStream, mut recv: RecvStream) {
         let Ok(body) = frames::read(&mut recv).await else { return };
         let Ok(open) = TunnelOpen::decode(body.as_slice()) else { return };
-        let machine = <[u8; 16]>::try_from(open.target.as_slice()).map(|b| ulid::Ulid::from_bytes(b).to_string());
-        let machine = machine.unwrap_or_default();
+        let machine = resolve_machine(&self.db, &open.target).unwrap_or_default();
         let reply = |e: Option<TunnelError>| TunnelReply {
             reply: Some(match e {
                 None => tunnel_reply::Reply::Opened(true),
