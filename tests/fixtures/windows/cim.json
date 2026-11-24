@@ -8,7 +8,7 @@
   "disks": [
     {"DeviceID": "C:", "Size": 255000000000, "FreeSpace": 51000000000, "DriveType": 3},
     {"DeviceID": "D:", "Size": 1000000000000, "FreeSpace": 900000000000, "DriveType": 3},
-    {"DeviceID": "E:", "Size": 0, "FreeSpace": 0, "DriveType": 5}
+    {"DeviceID": "E:", "Size": 4700000000, "FreeSpace": 0, "DriveType": 5}
   ],
   "net": [
     {"Name": "Ethernet Adapter #2", "BytesReceivedPersec": 12000, "BytesSentPersec": 8000, "PacketsReceivedPersec": 90, "PacketsSentPersec": 70, "PacketsReceivedErrors": 1, "PacketsOutboundErrors": 2},

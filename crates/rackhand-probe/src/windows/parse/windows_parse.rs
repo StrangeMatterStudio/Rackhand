@@ -35,6 +35,7 @@ fn tcp_udp_table_records_to_tuples() {
         "the pid is the owner"
     );
     assert!(est.outbound() && !est.listening(), "an established connection with an owner");
+    assert_eq!(est.state, 0x01, "ESTABLISHED, as the kernel numbers it");
     let rdp = &tcp4[1];
     assert!(rdp.listening() && !rdp.outbound(), "a listener on 3389");
     assert_eq!((rdp.local_port, rdp.inode), (3389, 1188));
