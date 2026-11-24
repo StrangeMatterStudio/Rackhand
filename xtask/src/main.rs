@@ -4,6 +4,7 @@ mod arch;
 mod ci_guard;
 mod kernels;
 mod lab;
+mod release;
 mod tiers;
 mod vm;
 
@@ -13,8 +14,9 @@ use std::process::ExitCode;
 const USAGE: &str = "usage: cargo xtask <command>
 commands:
   arch-check                 check the dependency rules (design 7.2)
-  ci <tier> [args]           run a test tier: fast, it, net, ebpf, win, perf, live
+  ci <tier> [args]           run a test tier: fast, it, net, ebpf, win, perf, live, release
   lab <command>              the local lab (see `cargo xtask lab`)
+  release build|repro        build the release artifacts, or build a commit twice and compare (T91)
   golden --update            rewrite the wire format's golden files (review the diff)
   ci-guard                   check the workflow guards against the recorded event payloads
   kernels fetch              download, verify and build the test kernels
@@ -37,6 +39,7 @@ fn main() -> ExitCode {
         Some("rootfs") if rest.first().map(String::as_str) == Some("build") => vm::build_rootfs().map(|_| ()),
         Some("it-images") => tiers::build_it_images(),
         Some("lab") => lab::run(rest),
+        Some("release") => release::run(rest),
         Some("golden") if rest.first().map(String::as_str) == Some("--update") => vm::run_checked(
             std::process::Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
                 .args(["nextest", "run", "-p", "rackhand-proto", "-E", "test(golden::)"])

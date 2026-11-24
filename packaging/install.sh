@@ -12,7 +12,8 @@
 set -eu
 
 VERSION="__VERSION__"
-VERIFY_SHA256="__VERIFY_SHA256__"
+VERIFY_SHA256_X86_64="__VERIFY_SHA256_X86_64__"
+VERIFY_SHA256_AARCH64="__VERIFY_SHA256_AARCH64__"
 RELEASE_URL="https://github.com/StrangeMatterStudio/Rackhand/releases/download/v$VERSION"
 
 die() {
@@ -37,8 +38,8 @@ done
 [ "$(id -u)" = 0 ] || die "run it as root"
 
 case "$(uname -m)" in
-  x86_64) TARGET=x86_64-unknown-linux-musl ;;
-  aarch64 | arm64) TARGET=aarch64-unknown-linux-musl ;;
+  x86_64) TARGET=x86_64-unknown-linux-musl; VERIFY_SHA256="$VERIFY_SHA256_X86_64" ;;
+  aarch64 | arm64) TARGET=aarch64-unknown-linux-musl; VERIFY_SHA256="$VERIFY_SHA256_AARCH64" ;;
   *) die "unsupported architecture $(uname -m)" ;;
 esac
 if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then

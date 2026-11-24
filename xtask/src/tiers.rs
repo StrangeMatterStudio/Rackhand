@@ -17,6 +17,7 @@ pub enum Tier {
     Win,
     Perf,
     Live,
+    Release,
 }
 
 const TIERS: &[(&str, Tier, &str)] = &[
@@ -27,6 +28,7 @@ const TIERS: &[(&str, Tier, &str)] = &[
     ("win", Tier::Win, "Windows cross builds and Pester tests of the shipped PowerShell"),
     ("perf", Tier::Perf, "soak, load and fill tests"),
     ("live", Tier::Live, "the built product in the local lab (--target local) or the real lab (--target real)"),
+    ("release", Tier::Release, "static artifacts and a commit built twice in two places with the same hashes"),
 ];
 
 impl Tier {
@@ -57,6 +59,7 @@ pub fn run(args: &[String]) -> Result<()> {
         Tier::Win => win(),
         Tier::Perf => perf(),
         Tier::Live => live(&args[1..]),
+        Tier::Release => release(),
     }
 }
 
@@ -333,6 +336,12 @@ fn win() -> Result<()> {
     Ok(())
 }
 
+/// `cargo xtask ci release`: the release artifacts are static and a commit builds to the same bytes twice (AC43). Builds the hub
+/// and the probe several times, so it is not part of the fast tier.
+fn release() -> Result<()> {
+    run_checked(cargo().args(["nextest", "run", "-p", "xtask", "--profile", "release", "-E", "test(release::slow_tests::)"]))
+}
+
 fn perf() -> Result<()> {
     run_checked(cargo().args([
         "nextest",
@@ -353,7 +362,7 @@ mod tests {
     #[test]
     fn unknown_tier_fails_with_list_of_tiers() {
         let err = Tier::parse("nope").unwrap_err().to_string();
-        for name in ["fast", "it", "net", "ebpf", "win", "perf"] {
+        for name in ["fast", "it", "net", "ebpf", "win", "perf", "release"] {
             assert!(err.contains(name), "`{err}` should name tier `{name}`");
         }
         assert_eq!(Tier::parse("ebpf").unwrap(), Tier::Ebpf);

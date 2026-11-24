@@ -22,7 +22,14 @@ path = "src/bin/verify.rs"
 ed25519-dalek = { workspace = true }
 blake2 = "0.10"
 base64 = { workspace = true }
+sha2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# the integration tests sign with the `signing` feature (the library's own unit tests have it without)
+rackhand-release = { path = ".", features = ["signing"] }

@@ -110,7 +110,9 @@ pub fn build_release(dir: &Path, tamper: bool) -> Result<()> {
     let verify_sha = sha256(&dir.join(format!("rackhand-verify-{TARGET}")))?;
     let script = std::fs::read_to_string(packaging.join("install.sh"))?
         .replace("__VERSION__", env!("CARGO_PKG_VERSION"))
-        .replace("__VERIFY_SHA256__", &verify_sha);
+        .replace("__VERIFY_SHA256_X86_64__", &verify_sha)
+        // the lab builds for x86_64 only
+        .replace("__VERIFY_SHA256_AARCH64__", &"0".repeat(64));
     std::fs::write(dir.join("install.sh"), script)?;
     Ok(())
 }

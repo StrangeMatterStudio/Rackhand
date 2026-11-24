@@ -10,6 +10,8 @@ slow-timeout = { period = "30s", terminate-after = 4 }
 [profile.ci]
 retries = 0
 fail-fast = false
+# the release tier builds the hub twice over: `cargo xtask ci release` runs these
+default-filter = "not test(release::slow_tests::)"
 slow-timeout = { period = "30s", terminate-after = 4 }
 junit = { path = "junit.xml" }
 
@@ -58,3 +60,14 @@ retries = 0
 fail-fast = false
 slow-timeout = { period = "600s", terminate-after = 12 }
 junit = { path = "junit.xml" }
+
+# The release tier (T91): static artifacts and a commit built twice in two places. Each builds the hub, so the limits are long.
+[profile.release]
+retries = 0
+fail-fast = false
+slow-timeout = { period = "300s", terminate-after = 24 }
+
+# The same tests run by name outside the tier (the plan's verification) get the same time.
+[[profile.default.overrides]]
+filter = 'test(release::slow_tests::)'
+slow-timeout = { period = "300s", terminate-after = 24 }

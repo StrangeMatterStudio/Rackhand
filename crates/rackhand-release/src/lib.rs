@@ -7,6 +7,8 @@
 //! creates offline before the first release (T91); until then nothing verifies. The `test-keys` feature pins the test
 //! keys of `tests/keys/` instead; a release build never enables it.
 
+pub mod manifest;
+
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use blake2::{Blake2b512, Digest};

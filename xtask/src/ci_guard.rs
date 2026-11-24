@@ -328,6 +328,7 @@ pub fn run() -> Result<()> {
     let hosted = parse_workflow(&std::fs::read_to_string(root.join(".github/workflows/ci-github-hosted.yml"))?)?;
     let mut problems = check_self_hosted_jobs(&ci);
     problems.extend(check_hosted_jobs(&hosted));
+    problems.extend(check_release_workflow(&std::fs::read_to_string(root.join(".github/workflows/release.yml"))?));
 
     let all = Vars::from([("RACKHAND_CI_LINUX", "true"), ("RACKHAND_CI_DOCKER", "true"), ("RACKHAND_CI_KVM", "true")]);
     let mut names: Vec<String> = std::fs::read_dir(root.join("ci/fixtures"))?
@@ -368,9 +369,89 @@ pub fn run() -> Result<()> {
     }
 }
 
+/// What the release workflow may be (13, D90): built by a tag or by hand, on this repository's runners behind the same guards
+/// as CI, reading the source and nothing more, and holding no secret. The artifacts leave unsigned and the maintainer signs
+/// them offline; no job or step can hold a signing key if none can name a secret.
+pub fn check_release_workflow(text: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    let lower = text.to_ascii_lowercase();
+    for needle in ["secrets.", "secrets[", "secrets:", "github_token", "signing_key", "minisign"] {
+        if lower.contains(needle) {
+            problems.push(format!("release.yml mentions `{needle}`: no job or step may hold a secret or a signing key"));
+        }
+    }
+    let Ok(docs) = YamlLoader::load_from_str(text) else {
+        problems.push("release.yml isn't YAML".into());
+        return problems;
+    };
+    let Some(doc) = docs.first() else {
+        problems.push("release.yml is empty".into());
+        return problems;
+    };
+    match &doc["on"] {
+        Yaml::Hash(triggers) => {
+            for key in triggers.keys() {
+                if !matches!(key.as_str(), Some("push" | "workflow_dispatch")) {
+                    problems.push(format!(
+                        "release.yml is triggered by `{}`: only a tag push or a manual run may build a release",
+                        key.as_str().unwrap_or("?")
+                    ));
+                }
+            }
+            let pushes = triggers.contains_key(&Yaml::String("push".into()));
+            if pushes && !matches!(&doc["on"]["push"]["tags"], Yaml::Array(t) if !t.is_empty()) {
+                problems.push("release.yml's push trigger must name tags".into());
+            }
+        }
+        _ => problems.push("release.yml has no triggers".into()),
+    }
+    let read_only = matches!(&doc["permissions"], Yaml::Hash(h)
+        if h.len() == 1 && h.get(&Yaml::String("contents".into())).and_then(Yaml::as_str) == Some("read"));
+    if !read_only {
+        problems.push("release.yml's permissions must be exactly `contents: read`".into());
+    }
+    match parse_workflow(text) {
+        Ok(jobs) if !jobs.is_empty() => {
+            problems.extend(check_self_hosted_jobs(&jobs).into_iter().map(|p| p.replace("in ci.yml", "in release.yml")));
+        }
+        Ok(_) => problems.push("release.yml has no jobs".into()),
+        Err(e) => problems.push(format!("release.yml: {e}")),
+    }
+    problems
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn release_workflow() -> String {
+        std::fs::read_to_string(crate::workspace_root().join(".github/workflows/release.yml")).unwrap()
+    }
+
+    /// D90: no CI job or run step ever holds a signing key, so the release workflow names no secret and has nothing
+    /// beyond read access to the source; it can only run for a tag or by hand, on the guarded runners.
+    #[test]
+    fn release_workflow_uses_no_secrets() {
+        let text = release_workflow();
+        assert_eq!(check_release_workflow(&text), Vec::<String>::new());
+        assert!(!text.contains("secrets"), "not even in a comment");
+        // each way of breaking it is found
+        let with = |from: &str, to: &str| {
+            let changed = text.replace(from, to);
+            assert_ne!(changed, text, "{from:?} isn't in the workflow");
+            check_release_workflow(&changed)
+        };
+        assert!(with("      - uses: actions/checkout", "      - env: { KEY: ${{ secrets.SIGNING_KEY }} }\n        uses: actions/checkout")
+            .iter()
+            .any(|p| p.contains("secrets.")));
+        assert!(with("  workflow_dispatch:", "  workflow_dispatch:\n  pull_request:").iter().any(|p| p.contains("pull_request")));
+        assert!(with("  contents: read", "  contents: write").iter().any(|p| p.contains("permissions")));
+        assert!(with("    if: ${{ (github.repository", "    if: ${{ (true || github.repository").iter().any(|p| p.contains("fork guard")));
+        assert!(with("    tags:", "    branches:").iter().any(|p| p.contains("tags")));
+        assert!(with("run: cargo xtask release build", "run: minisign -S -m dist/*").iter().any(|p| p.contains("minisign")));
+        // a workflow that isn't one of these at all
+        assert!(!check_release_workflow("on: [push]\njobs: {}\n").is_empty());
+    }
 
     fn upstream_push() -> Context {
         Context::from_fixture(&load_fixture("push-upstream").unwrap())

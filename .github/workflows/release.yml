@@ -1,0 +1,42 @@
+# Release builds on the maintainers' self-hosted runners (design 5.2, 13, D90, T91). A tag or a manual run builds every artifact
+# the same way a rebuild elsewhere would (`cargo xtask release build`), checks that two builds of the commit agree
+# (`cargo xtask release repro`), and uploads the files unsigned. No job here names a secret or a signing key: the maintainer
+# rebuilds the tag on a machine that is not a CI runner, checks that every hash matches this build, and signs offline
+# (docs/maintainers/signing.md). `cargo xtask ci-guard` checks all of this.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_HOME: /cache/cargo
+  RUSTUP_HOME: /cache/rustup
+  CARGO_TARGET_DIR: /cache/target
+  CARGO_BUILD_JOBS: "4"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  artifacts:
+    runs-on: [self-hosted, sm-linux]
+    if: ${{ (github.repository == 'StrangeMatterStudio/Rackhand' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))) && vars.RACKHAND_CI_LINUX == 'true' }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: ci/setup-toolchain.sh
+      - name: Build every artifact
+        run: cargo xtask release build --out dist --targets x86_64-unknown-linux-musl,x86_64-pc-windows-gnu
+      - name: Build the hub and the probe twice and compare
+        run: cargo xtask release repro
+      - name: Upload the unsigned release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-unsigned
+          path: dist/
+          if-no-files-found: error
