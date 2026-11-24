@@ -1,0 +1,7 @@
+# The relay's updater (7.5.7): root; the same checks as the hub's.
+[Unit]
+Description=Rackhand updater (relay)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/rackhand update-apply relay

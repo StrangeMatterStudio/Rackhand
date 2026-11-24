@@ -5,6 +5,8 @@ mod logging;
 mod observations;
 mod operator_cmd;
 mod relay_cmd;
+#[cfg(unix)]
+mod update;
 
 #[cfg(test)]
 #[path = "hub_tests.rs"]
@@ -34,6 +36,11 @@ const USAGE: &str = "usage: rackhand hub init [--config-dir <dir>] [--data-dir <
        rackhand hub peer-backup export <site> <file> [--config <hub.toml>]
        rackhand hub restore <file> --master-key <path> [--config-dir <dir>] [--data-dir <dir>]
        rackhand operator join|run|mcp-bridge ... (rackhand operator for the options)
+       rackhand self-update [--config <hub.toml>] [--from <release dir>]
+       rackhand relay self-update --from <release dir>
+       rackhand operator self-update --from <release dir>
+       rackhand update-apply hub|relay|operator
+       rackhand update-guard <hub|relay|operator> <old-slot> <new-slot> <version>
        rackhand relay run|key create ... (rackhand relay for the options)";
 
 fn main() -> ExitCode {
@@ -44,6 +51,16 @@ fn main() -> ExitCode {
             println!("rackhand {}", VERSION);
             ExitCode::SUCCESS
         }
+        #[cfg(unix)]
+        ["update-apply", rest @ ..] => update::apply::main(rest),
+        #[cfg(unix)]
+        ["update-guard", rest @ ..] => update::guard::main(rest),
+        #[cfg(unix)]
+        ["self-update", rest @ ..] => self_update(rest),
+        #[cfg(unix)]
+        ["relay", "self-update", rest @ ..] => component_self_update(update::Component::Relay, rest),
+        #[cfg(unix)]
+        ["operator", "self-update", rest @ ..] => component_self_update(update::Component::Operator, rest),
         ["operator", rest @ ..] => operator_cmd::main(rest),
         ["relay", rest @ ..] => relay_cmd::main(rest),
         ["hub", "init", rest @ ..] => hub_init(rest),
@@ -261,6 +278,50 @@ fn detect_replay(rest: &[&str]) -> ExitCode {
 }
 
 /// `hub backup`: one backup now into the data directory's `backups/` (the newest 2 are kept).
+/// `rackhand self-update`: the hub asks for the release in its release directory (or `--from`), as its own user or root.
+#[cfg(unix)]
+fn self_update(rest: &[&str]) -> ExitCode {
+    let Some(o) = options(rest, &["config", "from"]) else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    let path = PathBuf::from(o.get("config").copied().unwrap_or("/etc/rackhand/hub.toml"));
+    let result = hub_cmd::HubConfig::load(&path).and_then(|config| {
+        let from = o.get("from").map_or_else(|| config.data_dir.join("release"), PathBuf::from);
+        update::ask::ask_hub(&config, &from, rackhand_store::ids::now_ms())
+    });
+    match result {
+        Ok(version) => {
+            println!("asked for {version}: the updater checks it, switches, and goes back if the hub doesn't come up");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `rackhand relay self-update --from <dir>` and the operator's: the release in the component's own spool, and the request.
+#[cfg(unix)]
+fn component_self_update(component: update::Component, rest: &[&str]) -> ExitCode {
+    let Some(from) = options(rest, &["from"]).and_then(|o| o.get("from").map(PathBuf::from)) else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    let spool = update::ask::component_dir(component);
+    match update::ask::ask(&from, &spool, &|_| Ok(()), rackhand_store::ids::now_ms()) {
+        Ok(version) => {
+            println!("asked for {version}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn hub_backup(rest: &[&str]) -> ExitCode {
     let Some(o) = options(rest, &["config"]) else {
         eprintln!("{USAGE}");

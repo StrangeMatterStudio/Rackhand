@@ -195,6 +195,16 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         secret(&vault, "setup_code_hash")?.try_into().map_err(|_| "setup_code_hash is malformed")?;
     let csrf_key: [u8; 32] = secret(&vault, "csrf_key")?.try_into().map_err(|_| "csrf_key is malformed")?;
     let audit = Audit::new(db.writer());
+    // what an update did since the hub last ran (7.5.7): a rollback is the first entry after the database it put back
+    #[cfg(unix)]
+    let updated = crate::update::ask::outcomes(&config.data_dir.join("update"));
+    #[cfg(not(unix))]
+    let updated: Vec<(&str, serde_json::Value)> = Vec::new();
+    for (action, data) in &updated {
+        if let Err(e) = audit.append("updater", action, Some("hub"), &data.to_string()).await {
+            tracing::warn!(error = %e, action, "recording the update");
+        }
+    }
     let bus = Bus::new();
     // the outside lists (7.8.5): the last good downloads at once, then refreshed on their schedules from the settings as they
     // are at the time (a source turned off, or air-gapped mode, makes no request)
@@ -203,6 +213,14 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let ingest =
         Ingest::new(db.clone(), bus.clone(), Arc::new(Statvfs(config.data_dir.clone()))).with_intel(intel.clone());
     ingest.start(now_ms()).await.map_err(|e| e.to_string())?;
+    for (action, data) in updated {
+        let severity = match action {
+            "hub.update_rolled_back" => rackhand_hub::ingest::Severity::Critical,
+            "hub.update_refused" => rackhand_hub::ingest::Severity::Warning,
+            _ => rackhand_hub::ingest::Severity::Info,
+        };
+        let _ = ingest.raise_event(rackhand_hub::ingest::Event::hub(action, severity, data)).await;
+    }
     let incidents = rackhand_hub::incidents::Incidents::new(db.clone(), ingest.clone(), bus.clone());
     let transports = notifiers(&db, &vault, None).unwrap_or_else(|e| {
         tracing::warn!(error = %e, "notifiers not started");

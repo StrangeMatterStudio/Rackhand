@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 rackhand-drivers = { path = "../rackhand-drivers" }
+data-encoding = "2"
 tracing-subscriber = { workspace = true }
 rackhand-hub = { path = "../rackhand-hub" }
 rackhand-release = { path = "../rackhand-release" }
@@ -44,6 +45,7 @@ rusqlite = { workspace = true }
 axum = { workspace = true }
 rackhand-net = { path = "../rackhand-net", features = ["testing"] }
 rackhand-probe = { path = "../rackhand-probe" }
+rackhand-release = { path = "../rackhand-release", features = ["signing"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]

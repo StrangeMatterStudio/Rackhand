@@ -187,12 +187,30 @@ impl Layout {
         std::fs::rename(&tmp, path)
     }
 
+    /// Another file of the spool, read whole the same way (at most `max` bytes): the hub's update request, the release's signature
+    /// and its manifest.
+    pub fn read_spool(&self, name: &str, max: u64) -> Result<Vec<u8>, ApplyError> {
+        use std::io::Read;
+        if name.contains(['/', '\\']) || name == ".." || name.is_empty() {
+            return Err(refuse("bad_request", "a spool file is named, not a path"));
+        }
+        let mut bytes = Vec::new();
+        self.open_in_spool(name, max)?
+            .take(max + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| refuse("spool_unreadable", e.to_string()))?;
+        if bytes.len() as u64 > max {
+            return Err(refuse("too_large", format!("{name} is over {max} bytes")));
+        }
+        Ok(bytes)
+    }
+
     /// The spool file, opened without following a link anywhere below the root, and without blocking on a FIFO.
     #[cfg(unix)]
-    fn open_spool(&self) -> Result<std::fs::File, ApplyError> {
+    pub fn open_in_spool(&self, name: &str, max: u64) -> Result<std::fs::File, ApplyError> {
         use rustix::fs::{CWD, Mode, OFlags, openat};
         let unreadable = |e: rustix::io::Errno| refuse("spool_unreadable", format!("the spool file: {e}"));
-        let file = self.spool_file();
+        let file = self.spool_dir().join(name);
         let rel =
             file.strip_prefix(&self.root).map_err(|_| refuse("spool_unreadable", "the spool is outside the root"))?;
         let parts: Vec<&std::ffi::OsStr> = rel.iter().collect();
@@ -215,8 +233,8 @@ impl Layout {
         if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::RegularFile {
             return Err(refuse("spool_unreadable", "the spool file isn't a regular file"));
         }
-        if stat.st_size < 0 || stat.st_size as u64 > MAX_RELEASE_BYTES {
-            return Err(refuse("too_large", format!("the spool file is over {MAX_RELEASE_BYTES} bytes")));
+        if stat.st_size < 0 || stat.st_size as u64 > max {
+            return Err(refuse("too_large", format!("the spool file is over {max} bytes")));
         }
         Ok(std::fs::File::from(fd))
     }
@@ -225,7 +243,7 @@ impl Layout {
     /// point (a junction or a link), and the file is opened as itself rather than as what a reparse point names. What is read
     /// is checked against the signature, so a race here can only make the copy fail.
     #[cfg(windows)]
-    fn open_spool(&self) -> Result<std::fs::File, ApplyError> {
+    pub fn open_in_spool(&self, name: &str, max: u64) -> Result<std::fs::File, ApplyError> {
         use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
         const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
@@ -242,7 +260,7 @@ impl Layout {
                 }
             }
         }
-        let file = self.spool_file();
+        let file = self.spool_dir().join(name);
         let f = std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
@@ -252,8 +270,8 @@ impl Layout {
         if reparse(&m) || !m.is_file() {
             return Err(refuse("spool_unreadable", "the spool file isn't a regular file"));
         }
-        if m.len() > MAX_RELEASE_BYTES {
-            return Err(refuse("too_large", format!("the spool file is over {MAX_RELEASE_BYTES} bytes")));
+        if m.len() > max {
+            return Err(refuse("too_large", format!("the spool file is over {max} bytes")));
         }
         Ok(f)
     }
@@ -293,7 +311,7 @@ pub fn apply(
     let inactive = old.other();
     let mut bytes = Vec::new();
     layout
-        .open_spool()?
+        .open_in_spool(layout.spool_file, MAX_RELEASE_BYTES)?
         .take(MAX_RELEASE_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| refuse("spool_unreadable", e.to_string()))?;

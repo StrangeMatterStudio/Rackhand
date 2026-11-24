@@ -397,3 +397,21 @@ fn a_switch_that_cannot_be_made_changes_nothing_and_restarts_nothing() {
     assert_eq!(running(&m), "probe-a");
     assert!(env.at_restart.borrow().is_empty());
 }
+
+/// 7.5.7: the updater reads the hub's request, the release's signature and its manifest from the spool the same way it reads
+/// the release: by name, without following a link, and up to a limit.
+#[test]
+fn a_small_spool_file_is_read_by_name_without_following_links() {
+    let m = Machine::with("small", hub_layout);
+    std::fs::write(m.layout.spool_dir().join("request.json"), br#"{"version":"0.1.1"}"#).unwrap();
+    assert_eq!(m.layout.read_spool("request.json", 4096).unwrap(), br#"{"version":"0.1.1"}"#);
+    std::fs::write(m.layout.spool_dir().join("big.json"), vec![b' '; 5000]).unwrap();
+    assert_eq!(m.layout.read_spool("big.json", 4096).unwrap_err().code, "too_large");
+    let secret = m.dir.join("secret");
+    std::fs::write(&secret, b"root's").unwrap();
+    symlink(&secret, m.layout.spool_dir().join("answer.json")).unwrap();
+    assert_eq!(m.layout.read_spool("answer.json", 4096).unwrap_err().code, "spool_unreadable");
+    for name in ["../secret", "/etc/passwd", "..", ""] {
+        assert_eq!(m.layout.read_spool(name, 4096).unwrap_err().code, "bad_request", "{name}");
+    }
+}

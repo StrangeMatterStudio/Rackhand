@@ -26,7 +26,7 @@ pub fn backup_now(config: &HubConfig, now_ms: i64) -> Result<PathBuf, String> {
 
 /// The backups belong to whoever owns the data directory: a backup the owner takes as root (`sudo rackhand hub
 /// backup`) mustn't leave the directory to root, or the hub's own 02:00 backup can't write or prune there.
-fn keep_with_the_data(data_dir: &Path, dir: &Path) -> Result<(), String> {
+pub(crate) fn keep_with_the_data(data_dir: &Path, dir: &Path) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
     let owner = std::fs::metadata(data_dir).map_err(|e| format!("{}: {e}", data_dir.display()))?;
     let (uid, gid) = (owner.uid(), owner.gid());

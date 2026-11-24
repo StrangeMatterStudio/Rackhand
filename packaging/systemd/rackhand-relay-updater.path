@@ -1,0 +1,10 @@
+# The relay's updater (7.5.7): the same as the hub's, for `rackhand relay self-update`.
+[Unit]
+Description=Rackhand updater: a relay update was asked for
+
+[Path]
+PathExists=/var/lib/rackhand-relay/update/request.json
+Unit=rackhand-relay-updater.service
+
+[Install]
+WantedBy=multi-user.target

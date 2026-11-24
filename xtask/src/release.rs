@@ -263,6 +263,10 @@ pub fn build(o: &Options) -> Result<BTreeMap<String, String>> {
             ("systemd/rackhand-probe.service", "rackhand-probe.service"),
             ("systemd/rackhand-probe-helper.service", "rackhand-probe-helper.service"),
             ("systemd/rackhand-relay.service", "rackhand-relay.service"),
+            ("systemd/rackhand-updater.path", "rackhand-updater.path"),
+            ("systemd/rackhand-updater.service", "rackhand-updater.service"),
+            ("systemd/rackhand-relay-updater.path", "rackhand-relay-updater.path"),
+            ("systemd/rackhand-relay-updater.service", "rackhand-relay-updater.service"),
             ("openrc/rackhand-probe", "rackhand-probe.openrc"),
             ("openrc/rackhand-probe-helper", "rackhand-probe-helper.openrc"),
         ] {

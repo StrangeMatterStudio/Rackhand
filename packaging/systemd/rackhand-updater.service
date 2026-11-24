@@ -1,0 +1,9 @@
+# The updater (7.5.7): root, because it writes the binary the hub can't. It trusts only the version in the hub's request,
+# checks the release against the keys this binary pins, copies it into the inactive slot, and starts the guard, which
+# switches and goes back if the hub doesn't come up. It answers in the spool and removes the request either way.
+[Unit]
+Description=Rackhand updater (hub)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/rackhand update-apply hub
