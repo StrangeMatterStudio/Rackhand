@@ -23,6 +23,7 @@ use crate::vault::Vault;
 
 pub mod transfer_step;
 pub mod tunnel_step;
+pub mod windows;
 pub use detached::POLL;
 pub use hub::{GuestEnrollment, GuestHost, HubSide};
 pub use reboot::{NO_REPORT, RebootFacts};
@@ -237,6 +238,53 @@ impl Executor {
         crate::ssh::client::start(addr, &ctx.machine_id, self.host_keys.clone(), id, &key, line, timeout).await
     }
 
+    /// A `windows_script` step: `<script> <json args>` to the dispatcher, as the identity the job runs as. There is no
+    /// `timeout` to wrap it in: the dispatcher ends a script that runs too long, and Actions drops the connection.
+    async fn windows_step(&self, ctx: &StepCtx, step: &Step) -> StepResult {
+        let script = step.windows_script.as_deref().unwrap_or_default();
+        let args = step.windows_args.clone().unwrap_or_default();
+        let line = match windows::command_line(script, &args) {
+            Ok(l) => l,
+            Err(e) => return StepResult::failed(format!("bad_windows_step: {e}")),
+        };
+        if step.detached {
+            return self.windows_detached(ctx, step, script, &args, line).await;
+        }
+        match self.ssh(ctx, identity(ctx.identity), &line, ctx.timeout + Duration::from_secs(5)).await {
+            Ok(out) => from_output(line, out),
+            Err(e) => StepResult { command: Some(line), ..StepResult::failed(ssh_failure(&e)) },
+        }
+    }
+
+    /// A detached Windows step: `job-start` runs the script as a scheduled task and returns, then it is polled like a Linux one.
+    async fn windows_detached(
+        &self,
+        ctx: &StepCtx,
+        step: &Step,
+        script: &str,
+        args: &std::collections::BTreeMap<String, String>,
+        command: String,
+    ) -> StepResult {
+        let job_ref = format!("{}/{}", ctx.job_id, step.id);
+        let start = match windows::start_line(&job_ref, script, args) {
+            Ok(l) => l,
+            Err(e) => return StepResult::failed(format!("bad_windows_step: {e}")),
+        };
+        let limit = Duration::from_secs(60);
+        match self.ssh(ctx, Identity::Automation, &start, limit).await {
+            Ok(out) if out.exit_code == Some(0) => {}
+            // the session ended without the start's exit status: the task may be running, and its status says so
+            Ok(out) if out.exit_code.is_none() => {
+                if !self.started(ctx, Identity::Automation, &job_ref, limit).await {
+                    return from_output(command, out);
+                }
+            }
+            Ok(out) => return from_output(command, out),
+            Err(e) => return StepResult { command: Some(command), ..StepResult::failed(ssh_failure(&e)) },
+        }
+        self.poll_detached(ctx, command, &job_ref).await
+    }
+
     async fn plain(&self, ctx: &StepCtx, id: Identity, argv: &[String]) -> StepResult {
         let command = display(argv);
         // Actions enforces the step's timeout and drops the connection, which doesn't stop a command without a
@@ -286,7 +334,7 @@ impl Executor {
         let mut collected = detached::Collected::default();
         let end = loop {
             tokio::time::sleep(self.poll).await;
-            let line = quote::join(&detached::status_argv(&job_ref, collected.offset));
+            let line = status_line(ctx, &job_ref, collected.offset);
             // A dropped connection or a restarting sshd: poll again (E54).
             let Ok(out) = self.ssh(ctx, id, &line, limit).await else { continue };
             // The wrapper refused the poll (126) or sudo failed: that won't change by asking again.
@@ -299,7 +347,7 @@ impl Executor {
                 break end;
             }
         };
-        let _ = self.ssh(ctx, id, &quote::join(&detached::clean_argv(&job_ref)), limit).await;
+        let _ = self.ssh(ctx, id, &clean_line(ctx, &job_ref), limit).await;
         detached::result(command, collected, end)
     }
 }
@@ -308,7 +356,7 @@ impl Executor {
     /// Whether a detached step whose start lost its answer was started: asks `job-status` until the machine answers
     /// (within `limit`); `unknown` means the start never reached the wrapper.
     async fn started(&self, ctx: &StepCtx, id: Identity, job_ref: &str, limit: Duration) -> bool {
-        let line = quote::join(&detached::status_argv(job_ref, 0));
+        let line = status_line(ctx, job_ref, 0);
         let deadline = tokio::time::Instant::now() + limit;
         while tokio::time::Instant::now() < deadline {
             if let Ok(out) = self.ssh(ctx, id, &line, limit).await {
@@ -321,6 +369,24 @@ impl Executor {
             tokio::time::sleep(self.poll).await;
         }
         false
+    }
+}
+
+/// The line that asks how a detached step is doing: the wrapper's `job-status` on Linux, the dispatcher's on Windows.
+fn status_line(ctx: &StepCtx, job_ref: &str, offset: u64) -> String {
+    if ctx.machine_kind == "windows" {
+        windows::status_line(job_ref, offset)
+    } else {
+        quote::join(&detached::status_argv(job_ref, offset))
+    }
+}
+
+/// The line that removes a detached step's files once its result is recorded.
+fn clean_line(ctx: &StepCtx, job_ref: &str) -> String {
+    if ctx.machine_kind == "windows" {
+        windows::clean_line(job_ref)
+    } else {
+        quote::join(&detached::clean_argv(job_ref))
     }
 }
 
@@ -337,7 +403,8 @@ impl StepRunner for Executor {
             match (step.kind, argv) {
                 (StepKind::Ssh, Some(argv)) if step.detached => self.detached(ctx, step, argv).await,
                 (StepKind::Ssh, Some(argv)) => self.plain(ctx, identity(ctx.identity), argv).await,
-                // `windows_script` steps go through the dispatcher (T90).
+                // a Windows step is one line for the dispatcher, the automation key's forced command (7.3.7, T90)
+                (StepKind::Ssh, None) if step.windows_script.is_some() => self.windows_step(ctx, step).await,
                 (StepKind::Ssh, None) => StepResult::failed("windows_unavailable"),
                 (StepKind::Hub, _) => self.hub_step(ctx, step).await,
                 (StepKind::RebootIfRequired, _) if self.reboot.is_some() => {
@@ -358,6 +425,13 @@ impl StepRunner for Executor {
                 (StepKind::Ssh, Some(argv)) if step.detached => {
                     let job_ref = format!("{}/{}", ctx.job_id, step.id);
                     self.poll_detached(ctx, display(argv), &job_ref).await
+                }
+                (StepKind::Ssh, None) if step.detached && step.windows_script.is_some() => {
+                    let job_ref = format!("{}/{}", ctx.job_id, step.id);
+                    let args = step.windows_args.clone().unwrap_or_default();
+                    let line = windows::command_line(step.windows_script.as_deref().unwrap_or_default(), &args)
+                        .unwrap_or_default();
+                    self.poll_detached(ctx, line, &job_ref).await
                 }
                 _ => StepResult::failed("adopt_unavailable"),
             }

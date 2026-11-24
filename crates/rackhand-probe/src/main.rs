@@ -42,7 +42,6 @@ fn main() -> ExitCode {
         Some("run") => run(&args[1..]),
         #[cfg(unix)]
         Some("security") => security(&args[1..]),
-        #[cfg(unix)]
         Some("enroll") => enroll(&args[1..]),
         #[cfg(unix)]
         Some("uninstall") => uninstall(&args[1..]),
@@ -247,7 +246,6 @@ fn helper(args: &[String]) -> ExitCode {
 }
 
 /// `enroll`: the join, as root (the installer runs it). Prints `machine_id=`, `managed=` and `assistant=` lines.
-#[cfg(unix)]
 fn enroll(args: &[String]) -> ExitCode {
     rackhand_probe::logging::init();
     use rackhand_proto::common::{Access, ProbeMode};

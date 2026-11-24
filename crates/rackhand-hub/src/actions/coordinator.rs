@@ -69,6 +69,7 @@ pub(crate) fn with_params(step: &Step, params: &BTreeMap<String, String>) -> Ste
     s.message = s.message.map(|m| substitute_text(&m, params));
     s.source = s.source.map(|m| substitute_text(&m, params));
     s.dest = s.dest.map(|m| substitute_text(&m, params));
+    s.windows_args = s.windows_args.map(|a| a.into_iter().map(|(k, v)| (k, substitute_text(&v, params))).collect());
     s
 }
 enum StepEndState {
@@ -557,4 +558,23 @@ fn check_params(runbook: &Runbook, params: &BTreeMap<String, String>) -> Result<
         check_value(param, value).map_err(|e| ActionsError::InvalidParam(name.clone(), e.to_string()))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn parameters_fill_a_windows_steps_arguments_whole() {
+        let step: Step = toml::from_str(
+            "id = \"s\"\nkind = \"ssh\"\nwindows_script = \"service-restart\"\n[windows_args]\nname = \"{{service}}\"\nnote = \"fixed\"\n",
+        )
+        .unwrap();
+        let params = BTreeMap::from([("service".to_string(), "Spooler".to_string())]);
+        let step = with_params(&step, &params);
+        assert_eq!(
+            step.windows_args.unwrap(),
+            BTreeMap::from([("name".into(), "Spooler".into()), ("note".into(), "fixed".into())])
+        );
+    }
 }

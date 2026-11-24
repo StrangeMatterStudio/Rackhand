@@ -148,9 +148,14 @@ impl Diagnostic {
         }
     }
 
-    /// Checks the arguments (every parameter given, nothing else, each valid as runbook parameters are) and returns
-    /// the argument list with them substituted.
-    pub fn argv(&self, alpine: bool, args: &BTreeMap<String, String>) -> Result<Vec<String>, DiagnosticError> {
+    /// The script that runs this diagnostic on Windows (7.8.3): `diag-<name>`, with the arguments as given, checked by the
+    /// dispatcher against `packaging/windows/schemas/<script>.json`, which holds the same patterns.
+    pub fn windows_script(&self) -> String {
+        format!("diag-{}", self.name.replace('_', "-"))
+    }
+
+    /// Checks the arguments (every parameter given, nothing else, each valid as runbook parameters are).
+    pub fn check(&self, args: &BTreeMap<String, String>) -> Result<(), DiagnosticError> {
         if let Some(extra) = args.keys().find(|k| !self.params.contains_key(*k)) {
             return Err(DiagnosticError::ExtraParam(extra.clone()));
         }
@@ -158,6 +163,12 @@ impl Diagnostic {
             let value = args.get(name).ok_or_else(|| DiagnosticError::MissingParam(name.clone()))?;
             check_value(&p.param(), value).map_err(|e| DiagnosticError::Param(name.clone(), e))?;
         }
+        Ok(())
+    }
+
+    /// Checks the arguments and returns the argument list with them substituted.
+    pub fn argv(&self, alpine: bool, args: &BTreeMap<String, String>) -> Result<Vec<String>, DiagnosticError> {
+        self.check(args)?;
         Ok(substitute(self.command(alpine), args))
     }
 

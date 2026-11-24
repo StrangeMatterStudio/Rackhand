@@ -113,3 +113,24 @@ fn always_is_for_reboot_steps_only() {
     let err = crate::runbook::Runbook::parse(&source("wait_report")).unwrap_err().to_string();
     assert!(err.contains("always"), "{err}");
 }
+
+/// A Windows step's arguments take declared parameters whole (7.3.7), as a command's arguments do.
+#[test]
+fn windows_arguments_take_declared_parameters_whole() {
+    let source = |args: &str| {
+        format!(
+            "name = \"r\"\ndescription = \"d\"\nidentity = \"automation\"\nrisk = \"normal\"\nautonomy = 1\n\
+             [params.service]\ntype = \"string\"\npattern = \"[A-Za-z]{{1,20}}\"\n\
+             [[step]]\nid = \"s\"\nkind = \"ssh\"\nwindows_script = \"service-restart\"\n[step.windows_args]\n{args}\n"
+        )
+    };
+    assert!(Runbook::parse(&source("name = \"{{service}}\"")).is_ok());
+    let undeclared = Runbook::parse(&source("name = \"{{other}}\"")).unwrap_err().to_string();
+    assert!(undeclared.contains("isn't a declared parameter"), "{undeclared}");
+    let part = Runbook::parse(&source("name = \"x-{{service}}\"")).unwrap_err().to_string();
+    assert!(part.contains("whole"), "{part}");
+    // a script and a command together, or neither, is still refused
+    let both = "name = \"r\"\ndescription = \"d\"\nidentity = \"automation\"\nrisk = \"normal\"\nautonomy = 1\n\
+                [[step]]\nid = \"s\"\nkind = \"ssh\"\ncmd = [\"x\"]\nwindows_script = \"y\"\n";
+    assert!(Runbook::parse(both).is_err());
+}

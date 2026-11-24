@@ -37,6 +37,7 @@ pub struct Paths {
 }
 
 impl Default for Paths {
+    #[cfg(unix)]
     fn default() -> Paths {
         Paths {
             probe_toml: crate::config::PATH.into(),
@@ -44,6 +45,19 @@ impl Default for Paths {
             commands: crate::runcmd::COMMANDS.into(),
             managed_dir: "/var/lib/rackhand-run/enroll".into(),
             ssh_dir: "/etc/ssh".into(),
+        }
+    }
+
+    /// Windows: the accounts' key files are where `sshd_config` looks for them (`__PROGRAMDATA__/rackhand/keys/%u`), and
+    /// there is no command list: the dispatcher's scripts are the allow-list (7.3.7).
+    #[cfg(windows)]
+    fn default() -> Paths {
+        Paths {
+            probe_toml: crate::config::PATH.into(),
+            data_dir: PathBuf::from(r"C:\ProgramData\Rackhand\probe\data"),
+            commands: PathBuf::new(),
+            managed_dir: PathBuf::from(r"C:\ProgramData\Rackhand\keys"),
+            ssh_dir: PathBuf::from(r"C:\ProgramData\ssh"),
         }
     }
 }
@@ -76,6 +90,20 @@ pub fn host_keys(ssh_dir: &Path) -> Vec<SshHostKey> {
     keys
 }
 
+/// The Windows edition and version, as `cmd /c ver` prints them (`Microsoft Windows [Version 10.0.22631.4890]`).
+#[cfg(windows)]
+fn os_release() -> (String, String) {
+    let out = std::process::Command::new("cmd").args(["/c", "ver"]).output().ok();
+    let text = out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    let version = text
+        .split_once("[Version ")
+        .and_then(|(_, v)| v.split_once(']'))
+        .map(|(v, _)| v.to_string())
+        .unwrap_or_default();
+    ("windows".to_string(), version)
+}
+
+#[cfg(unix)]
 fn os_release() -> (String, String) {
     let text = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
     let field = |k: &str| {
@@ -89,12 +117,17 @@ fn os_release() -> (String, String) {
 
 fn facts(role: &str) -> HostFacts {
     let (os_name, os_version) = os_release();
+    #[cfg(unix)]
     let read = |p: &str| std::fs::read_to_string(p).map(|s| s.trim().to_string()).unwrap_or_default();
+    #[cfg(unix)]
+    let (hostname, kernel) = (read("/proc/sys/kernel/hostname"), read("/proc/sys/kernel/osrelease"));
+    #[cfg(windows)]
+    let (hostname, kernel) = (std::env::var("COMPUTERNAME").unwrap_or_default(), os_version.clone());
     HostFacts {
-        hostname: read("/proc/sys/kernel/hostname"),
+        hostname,
         os_name,
         os_version,
-        kernel: read("/proc/sys/kernel/osrelease"),
+        kernel,
         arch: std::env::consts::ARCH.into(),
         machine_role: role.into(),
         interfaces: Vec::new(),
@@ -115,14 +148,21 @@ pub fn authorized_keys_line(key: &str, hub_addrs: &[String], remote: bool) -> St
     format!("from=\"{}\",no-agent-forwarding,no-X11-forwarding,no-port-forwarding {}", from.join(","), key.trim())
 }
 
+/// Writes a file the installer owns: made beside the old one and renamed over it. On Unix it has `mode`; on Windows the
+/// installer sets the directory's ACL (SYSTEM and Administrators only), which a file made in it inherits.
 fn write_root_file(path: &Path, data: &[u8], mode: u32) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, data).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode)).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode)).map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
@@ -201,24 +241,34 @@ pub async fn enroll(req: &Request, paths: &Paths) -> Result<Enrolled, String> {
     let Some(managed) = &joined.managed else {
         return Ok(Enrolled { machine_id, managed: false, assistant: false });
     };
-    // the first command list arrives with the join (7.3.7, D28), checked like any later one
-    let commands = managed.commands.as_ref().ok_or("a managed join without a command list")?;
-    let pinned = ed25519_dalek::VerifyingKey::from_bytes(&req.ticket.hub_id).map_err(|_| "the hub id isn't a key")?;
-    let now =
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
-    if let Some(dir) = paths.commands.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    // the first command list arrives with the join (7.3.7, D28), checked like any later one; Windows has none
+    #[cfg(unix)]
+    {
+        let commands = managed.commands.as_ref().ok_or("a managed join without a command list")?;
+        let pinned =
+            ed25519_dalek::VerifyingKey::from_bytes(&req.ticket.hub_id).map_err(|_| "the hub id isn't a key")?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        if let Some(dir) = paths.commands.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        crate::runcmd::install::install(&paths.commands, &commands.encode_to_vec(), &pinned, now)
+            .map_err(|e| format!("the command list: {e}"))?;
     }
-    crate::runcmd::install::install(&paths.commands, &commands.encode_to_vec(), &pinned, now)
-        .map_err(|e| format!("the command list: {e}"))?;
     let remote = req.mode == ProbeMode::Remote;
     let dir = &paths.managed_dir;
+    // the installer reads these: sudoers and `<user>.authorized_keys` on Unix; on Windows `sshd_config` reads the
+    // key files, named for the accounts, from this directory
+    #[cfg(unix)]
     write_root_file(&dir.join("sudoers"), managed.sudoers.as_bytes(), 0o600)?;
+    let key_file = |user: &str| if cfg!(windows) { user.to_string() } else { format!("{user}.authorized_keys") };
     let line = authorized_keys_line(&managed.automation_pubkey, &joined.hub_addrs, remote);
-    write_root_file(&dir.join("rackhand.authorized_keys"), format!("{line}\n").as_bytes(), 0o600)?;
+    write_root_file(&dir.join(key_file("rackhand")), format!("{line}\n").as_bytes(), 0o600)?;
     if let Some(assistant) = &managed.assistant_pubkey {
         let line = authorized_keys_line(assistant, &joined.hub_addrs, remote);
-        write_root_file(&dir.join("rackhand-ai.authorized_keys"), format!("{line}\n").as_bytes(), 0o600)?;
+        write_root_file(&dir.join(key_file("rackhand-ai")), format!("{line}\n").as_bytes(), 0o600)?;
     }
     Ok(Enrolled { machine_id, managed: true, assistant: managed.assistant_pubkey.is_some() })
 }

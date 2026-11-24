@@ -60,6 +60,7 @@ async fn db(name: &str) -> Arc<Db> {
             site("away"),
             machine("web", "home", "linux", "192.0.2.10"),
             machine("db", "home", "alpine", "192.0.2.11"),
+            machine("desk", "home", "windows", "192.0.2.12"),
             machine("far", "away", "linux", "198.51.100.7"),
             RowWrite::insert(
                 "checks",
@@ -156,4 +157,27 @@ async fn leading_dash_unit_refused() {
     assert!(matches!(status, Err(ActionsError::InvalidParam(p, _)) if p == "name"));
     let du = prepare(&db, "web", "du_top", &args(&[("path", "-x"), ("depth", "1")]));
     assert!(matches!(du, Err(ActionsError::InvalidParam(p, _)) if p == "path"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_windows_machine_runs_the_dispatcher_script_under_the_same_limits() {
+    let db = db("windows").await;
+    let journal = |lines: &str| args(&[("unit", "Spooler"), ("since", "1 hour ago"), ("lines", lines)]);
+    let ok = prepare(&db, "desk", "journal", &journal("50")).unwrap();
+    assert!(ok.argv.is_empty(), "no command line of its own");
+    assert_eq!(ok.windows, Some(("diag-journal".to_string(), journal("50"))));
+    assert!(ok.sensitive, "the sensitive ones stay sensitive");
+    assert!(
+        matches!(prepare(&db, "desk", "journal", &journal("2001")), Err(ActionsError::InvalidParam(p, _)) if p == "lines")
+    );
+    // the bindings still hold: a machine of the same site, and not one elsewhere
+    assert!(prepare(&db, "desk", "ping", &args(&[("target", "db")])).is_ok());
+    let far = prepare(&db, "desk", "ping", &args(&[("target", "far")]));
+    assert!(matches!(far, Err(ActionsError::InvalidParam(p, _)) if p == "target"));
+    // every diagnostic has a script of its own, named for it
+    for d in rackhand_runbook::diagnostics::builtin() {
+        assert_eq!(d.windows_script(), format!("diag-{}", d.name.replace('_', "-")));
+    }
+    // a Linux machine is unchanged
+    assert!(prepare(&db, "web", "df", &args(&[])).unwrap().windows.is_none());
 }

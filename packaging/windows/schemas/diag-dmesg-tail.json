@@ -1,0 +1,4 @@
+{
+  "script": "diag-dmesg-tail",
+  "params": {}
+}

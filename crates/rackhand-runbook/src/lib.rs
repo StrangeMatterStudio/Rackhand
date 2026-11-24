@@ -21,4 +21,5 @@ mod tests {
     mod playbook;
     pub(crate) mod runbook;
     mod templates;
+    mod windows;
 }

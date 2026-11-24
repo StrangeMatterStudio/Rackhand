@@ -29,6 +29,8 @@ pub struct Prepared {
     pub argv: Vec<String>,
     pub sensitive: bool,
     pub keep: Keep,
+    /// On a Windows machine, the dispatcher script and its arguments instead of a command line (7.8.3, T90).
+    pub windows: Option<(String, BTreeMap<String, String>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,11 +79,14 @@ pub fn prepare(
             .optional()
     })?;
     let (kind, site_id) = machine.ok_or(ActionsError::UnknownMachine)?;
-    if kind == "windows" {
-        // The Windows equivalents run through the dispatcher's scripts (T90).
-        return Err(ActionsError::Unsupported("Windows diagnostics".into()));
-    }
-    let argv = d.argv(kind == "alpine", args).map_err(param_error)?;
+    // Windows: `diag-<name>` through the dispatcher, with the same parameters and limits (T90)
+    let windows = (kind == "windows").then(|| (d.windows_script(), args.clone()));
+    let argv = if windows.is_some() {
+        d.check(args).map_err(param_error)?;
+        Vec::new()
+    } else {
+        d.argv(kind == "alpine", args).map_err(param_error)?
+    };
     for (pname, p) in &d.params {
         if let (Some(bind), Some(value)) = (p.bind, args.get(pname))
             && !bound(db, machine_id, &site_id, bind, value)?
@@ -93,7 +98,7 @@ pub fn prepare(
             return Err(ActionsError::InvalidParam(pname.clone(), why.into()));
         }
     }
-    Ok(Prepared { name: &d.name, argv, sensitive: d.sensitive, keep: d.keep })
+    Ok(Prepared { name: &d.name, argv, sensitive: d.sensitive, keep: d.keep, windows })
 }
 
 /// A `du` size such as `1.5G` in bytes, for sorting.
@@ -143,13 +148,13 @@ pub fn untrusted(output: &[u8]) -> serde_json::Value {
     serde_json::json!({ "untrusted_output": String::from_utf8_lossy(output) })
 }
 
-fn step_for(name: &str, argv: &[String]) -> Step {
+fn step_for(name: &str, prepared: &Prepared) -> Step {
     Step {
         id: format!("diag-{}-{}", name.replace('_', "-"), new_id().to_string().to_ascii_lowercase()),
         kind: StepKind::Ssh,
-        cmd: Some(argv.to_vec()),
-        windows_script: None,
-        windows_args: None,
+        cmd: prepared.windows.is_none().then(|| prepared.argv.clone()),
+        windows_script: prepared.windows.as_ref().map(|w| w.0.clone()),
+        windows_args: prepared.windows.as_ref().map(|w| w.1.clone()),
         checks: None,
         call: None,
         message: None,
@@ -183,8 +188,12 @@ impl Actions {
             return Err(ActionsError::MonitorOnly);
         }
         let prepared = prepare(&self.inner.db, machine_id, name, args)?;
-        let step = step_for(name, &prepared.argv);
-        let command = super::runner::display(&prepared.argv);
+        let step = step_for(name, &prepared);
+        let command = match &prepared.windows {
+            Some((script, windows_args)) => crate::executor::windows::command_line(script, windows_args)
+                .map_err(|e| ActionsError::InvalidParam(script.clone(), e))?,
+            None => super::runner::display(&prepared.argv),
+        };
         if let Some(job) = job_id {
             jobs::step_started(&self.inner.db, job, &step.id, Some(&command), now_ms()).await?;
         }
@@ -200,7 +209,11 @@ impl Actions {
         };
         let runner = self.inner.runner.clone();
         let (argv, run_step) = (prepared.argv.clone(), step.clone());
-        let handle = tokio::spawn(async move { runner.run(&ctx, &run_step, Some(&argv)).await });
+        let windows = prepared.windows.is_some();
+        let handle = tokio::spawn(async move {
+            // a Windows step has no argument list: its script and arguments are in the step
+            runner.run(&ctx, &run_step, (!windows).then_some(argv.as_slice())).await
+        });
         let result = match tokio::time::timeout(TIMEOUT, handle).await {
             Ok(Ok(r)) => r,
             Ok(Err(e)) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),

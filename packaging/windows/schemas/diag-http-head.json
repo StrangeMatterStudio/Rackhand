@@ -1,0 +1,9 @@
+{
+  "script": "diag-http-head",
+  "params": {
+    "url": {
+      "type": "string",
+      "pattern": "https?://[A-Za-z0-9.:\\[\\]-]+(/[A-Za-z0-9._~%!$&()*+,;=:@/?-]*)?"
+    }
+  }
+}

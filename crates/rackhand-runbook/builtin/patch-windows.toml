@@ -1,0 +1,66 @@
+name = "patch-windows"
+description = "Install every pending update on a Windows machine through the Windows Update Agent, reboot if required, and check it came back as it was"
+targets = { kinds = ["windows"] }
+identity = "automation"
+risk = "normal"
+autonomy = 2
+
+# The same shape as patch-debian (7.5.3 step 4). Every command goes through the dispatcher on the machine, which runs only the
+# shipped `patch-windows` script, with the arguments checked against its schema. A Windows machine isn't rebooted without
+# someone's say (policy `auto_reboot` is false by default for kind `windows`, D67).
+
+# 1 GB free on the system drive, a report to judge by, no open critical incident on the machine (7.5.3).
+[[step]]
+id = "precheck"
+kind = "verify"
+checks = ["patch_precheck"]
+timeout = "1m"
+
+# Proxmox guests only; named rackhand-patch-<YYYYMMDD-HHMM>, the last 3 kept.
+[[step]]
+id = "snapshot"
+kind = "snapshot"
+timeout = "10m"
+
+# The running services, kept in the job log for the verify step.
+[[step]]
+id = "record"
+kind = "verify"
+checks = ["record_state"]
+timeout = "1m"
+
+# The Windows Update Agent searches for the updates that are pending and lists them.
+[[step]]
+id = "update"
+kind = "ssh"
+windows_script = "patch-windows"
+detached = true
+timeout = "20m"
+[step.windows_args]
+phase = "scan"
+
+# It downloads and installs them. A reboot that is needed is reported in the output, and the next step decides about it.
+[[step]]
+id = "install"
+kind = "ssh"
+windows_script = "patch-windows"
+detached = true
+timeout = "90m"
+[step.windows_args]
+phase = "install"
+
+[[step]]
+id = "reboot"
+kind = "reboot_if_required"
+timeout = "20m"
+
+[[step]]
+id = "report"
+kind = "wait_report"
+timeout = "15m"
+
+[[step]]
+id = "verify"
+kind = "verify"
+checks = ["as_recorded", "required_mounts", "bound_checks"]
+timeout = "5m"

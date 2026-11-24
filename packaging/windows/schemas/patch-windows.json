@@ -1,0 +1,9 @@
+{
+  "script": "patch-windows",
+  "params": {
+    "phase": {
+      "type": "string",
+      "pattern": "scan|install"
+    }
+  }
+}

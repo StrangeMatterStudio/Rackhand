@@ -4,6 +4,7 @@
 const RUNBOOKS: &[(&str, &str)] = &[
     ("patch-debian", include_str!("../builtin/patch-debian.toml")),
     ("patch-alpine", include_str!("../builtin/patch-alpine.toml")),
+    ("patch-windows", include_str!("../builtin/patch-windows.toml")),
     ("patch-proxmox-host", include_str!("../builtin/patch-proxmox-host.toml")),
     ("patch-hub-host", include_str!("../builtin/patch-hub-host.toml")),
     ("reboot-host", include_str!("../builtin/reboot-host.toml")),

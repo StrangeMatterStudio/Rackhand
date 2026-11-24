@@ -123,6 +123,7 @@ fn all_parse_and_have_design_risk() {
     let risks = [
         ("patch-debian", Normal),
         ("patch-alpine", Normal),
+        ("patch-windows", Normal),
         ("patch-proxmox-host", Normal),
         ("patch-hub-host", Normal),
         ("reboot-host", High),
@@ -489,4 +490,25 @@ fn backup_runbooks_stream_or_run_through_the_wrapper() {
     );
     assert!(!ok(&restic, "repo", "-o sftp.command=x") && !ok(&restic, "path", "/etc/../root"));
     assert!(ok(&parsed("pbs-sync"), "job", "daily-offsite") && !ok(&parsed("pbs-sync"), "job", "x;y"));
+}
+
+/// 7.5.3 step 4, 9 and D67: `patch-windows` has the shape of the others, through the dispatcher's `patch-windows` script, with
+/// both package steps detached, and it is for Windows machines only.
+#[test]
+fn patch_windows_has_the_shape_of_the_others_through_the_dispatcher() {
+    let source = builtin::runbook("patch-windows").expect("patch-windows is built in");
+    let r = Runbook::parse(source).unwrap();
+    assert_eq!((r.name.as_str(), r.targets.kinds.as_slice()), ("patch-windows", &["windows".to_string()][..]));
+    assert_eq!((r.identity, r.risk), (crate::runbook::Identity::Automation, crate::runbook::Risk::Normal));
+    assert_eq!(ids(&r), ["precheck", "snapshot", "record", "update", "install", "reboot", "report", "verify"]);
+    let kinds: Vec<StepKind> = r.steps.iter().map(|s| s.kind).collect();
+    use StepKind::*;
+    assert_eq!(kinds, [Verify, Snapshot, Verify, Ssh, Ssh, RebootIfRequired, WaitReport, Verify]);
+    for id in ["update", "install"] {
+        let s = r.steps.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(s.windows_script.as_deref(), Some("patch-windows"), "{id}");
+        assert!(s.cmd.is_none() && s.detached, "{id}: no command, and detached so a cut connection doesn't stop it");
+    }
+    let phase = |id: &str| r.steps.iter().find(|s| s.id == id).unwrap().windows_args.clone().unwrap()["phase"].clone();
+    assert_eq!((phase("update").as_str(), phase("install").as_str()), ("scan", "install"));
 }

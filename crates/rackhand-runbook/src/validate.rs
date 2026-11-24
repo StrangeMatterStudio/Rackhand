@@ -101,6 +101,17 @@ fn step_rules(rb: &Runbook, step: &Step) -> Result<(), String> {
             }
         }
     }
+    // a Windows step's arguments take declared parameters whole, as a command's arguments do
+    for value in step.windows_args.iter().flat_map(|a| a.values()) {
+        for name in placeholders(value) {
+            if !known(&name) {
+                return Err(format!("`{{{{{name}}}}}` isn't a declared parameter"));
+            }
+            if value.trim() != format!("{{{{{name}}}}}") {
+                return Err(format!("`{value}`: a parameter must be a whole value"));
+            }
+        }
+    }
     let texts =
         step.checks.iter().flatten().chain(step.message.iter()).chain(step.source.iter()).chain(step.dest.iter());
     for text in texts {
