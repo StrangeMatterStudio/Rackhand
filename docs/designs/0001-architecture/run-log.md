@@ -189,3 +189,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-23 | T90 done: the Windows installer, dispatcher, scripts and Pester tests, and the hub's Windows steps (D167 to D171) |
 | 2026-11-23 | T91 done: release manifest and verifier, xtask release build and repro, the release workflow and its guard, the signing procedure (D172 to D175) |
 | 2026-11-23 | T92 done: probe self-update: signed version, apply into the inactive slot, update guard, spool download, the hub's release source, channels and canary rollout, installer slots, IT tests (D176 to D182) |
+| 2026-11-24 | T92, Windows: the Windows probe updates itself (the services' binary path as the switch, the guard a SYSTEM scheduled task), the slots shared in `rackhand-release`, and probes offered only the hub's own version (D183) |
