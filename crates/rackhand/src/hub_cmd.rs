@@ -317,7 +317,8 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         &site_name,
         env!("CARGO_PKG_VERSION"),
     )
-    .with_registry(registry.clone());
+    .with_registry(registry.clone())
+    .with_network(network.clone());
     peers.clone().spawn(bus.subscribe("peers"));
     rackhand_hub::incidents::routing::Routing::new(incidents.clone(), starter)
         .with_assist(Arc::new(AssistStarter(assist.clone())))
@@ -430,6 +431,8 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         .route(rackhand_proto::alpn::JOIN, join.handler());
     tokio::spawn(router.serve());
     let watch = Arc::new(self_watch(config, &db, &ingest, &notify));
+    // each hub tells its peers how it is every 30 s (7.3.4)
+    peers.clone().spawn_push();
     // the peers watch each other every 30 s, and a hub with none calls its dead-man URL (7.5.5)
     let deadman_db = db.clone();
     peers.clone().spawn_watch(

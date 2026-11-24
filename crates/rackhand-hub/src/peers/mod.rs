@@ -19,6 +19,7 @@
 pub mod deadman;
 pub mod election;
 mod link;
+mod links;
 pub mod path_status;
 mod queries;
 pub mod relay_lists;
@@ -67,6 +68,11 @@ pub struct PeerRow {
     pub site: String,
     pub endpoint_id: String,
     pub allowed: Vec<String>,
+    /// The peer's direct addresses and relays, from its ticket and its join.
+    pub addrs: Vec<String>,
+    pub relays: Vec<String>,
+    /// What this hub keeps for the peer's backups, in bytes (0: none).
+    pub quota_bytes: u64,
 }
 
 struct Inner {
@@ -82,6 +88,10 @@ struct Inner {
     registry: Mutex<Option<Arc<crate::registry::Registry>>>,
     /// Query times per peer, for the rate limit.
     queries: Mutex<HashMap<String, VecDeque<Instant>>>,
+    /// The hub's endpoint, to dial peers and join (links.rs).
+    network: Mutex<Option<Arc<tunnel::Network>>>,
+    /// The live connection to each peer, by peer id: the one it opened or the one this hub dialed.
+    live: Mutex<HashMap<String, Connection>>,
 }
 
 #[derive(Clone)]
@@ -108,6 +118,8 @@ impl Peers {
                 health: Mutex::new(None),
                 registry: Mutex::new(None),
                 queries: Mutex::new(HashMap::new()),
+                network: Mutex::new(None),
+                live: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -135,15 +147,20 @@ impl Peers {
             .readers()
             .with(|c| {
                 let mut s = c.prepare(
-                    "SELECT id, site, endpoint_id, allowed_queries FROM peers WHERE revoked_at IS NULL ORDER BY site",
+                    "SELECT id, site, endpoint_id, allowed_queries, addrs, relays, backup_quota_bytes FROM peers
+                     WHERE revoked_at IS NULL ORDER BY site",
                 )?;
                 s.query_map([], |r| {
-                    let allowed: String = r.get(3)?;
+                    let (allowed, addrs, relays): (String, String, String) = (r.get(3)?, r.get(4)?, r.get(5)?);
+                    let quota: i64 = r.get(6)?;
                     Ok(PeerRow {
                         id: r.get(0)?,
                         site: r.get(1)?,
                         endpoint_id: r.get(2)?,
                         allowed: serde_json::from_str(&allowed).unwrap_or_default(),
+                        addrs: serde_json::from_str(&addrs).unwrap_or_default(),
+                        relays: serde_json::from_str(&relays).unwrap_or_default(),
+                        quota_bytes: u64::try_from(quota).unwrap_or(0),
                     })
                 })?
                 .collect()
@@ -171,11 +188,17 @@ impl Peers {
             return;
         };
         let _ = self.touch(&peer.id);
+        self.keep(&peer.id, &conn);
+        self.accept_streams(&id, &conn).await;
+        self.forget(&peer.id, &conn);
+    }
+
+    async fn accept_streams(&self, id: &str, conn: &Connection) {
         loop {
             tokio::select! {
                 uni = conn.accept_uni() => {
                     let Ok(recv) = uni else { return };
-                    let (peers, id) = (self.clone(), id.clone());
+                    let (peers, id) = (self.clone(), id.to_string());
                     // the peer as it is now: the admin may have changed what it may ask, or removed it
                     tokio::spawn(async move {
                         if let Some(peer) = peers.peer_by_endpoint(&id) {
@@ -185,7 +208,7 @@ impl Peers {
                 }
                 bi = conn.accept_bi() => {
                     let Ok((send, recv)) = bi else { return };
-                    let (peers, id) = (self.clone(), id.clone());
+                    let (peers, id) = (self.clone(), id.to_string());
                     tokio::spawn(async move {
                         if let Some(peer) = peers.peer_by_endpoint(&id) {
                             peers.on_bi(&peer, send, recv).await;
@@ -196,9 +219,8 @@ impl Peers {
         }
     }
 
-    fn touch(&self, peer_id: &str) -> Result<(), rusqlite::Error> {
+    fn touch(&self, _peer_id: &str) -> Result<(), rusqlite::Error> {
         // the time is for the dashboard and the watch (T81); it is written with the summary, not on every stream
-        let _ = peer_id;
         Ok(())
     }
 

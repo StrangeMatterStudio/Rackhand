@@ -9,8 +9,38 @@ use crate::reader::ReadPool;
 use crate::writer::StoreWriter;
 
 /// The schema version this binary writes (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 const BASELINE: &str = include_str!("schema.sql");
+
+/// A column added by an upgrade: table, column, declaration.
+type Column = (&'static str, &'static str, &'static str);
+
+/// Forward-only upgrades (13): each runs once, in order, for a database older than its version. `schema.sql` is always the
+/// newest shape, so a new database skips them. Each step is safe to run twice.
+const UPGRADES: &[(i64, &[Column])] = &[
+    // 2: a linked hub's addresses and relays, so that a hub can dial a peer (7.3.4)
+    (2, &[("peers", "addrs", "TEXT NOT NULL DEFAULT '[]'"), ("peers", "relays", "TEXT NOT NULL DEFAULT '[]'")]),
+];
+
+fn has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = stmt.query_map([], |r| r.get::<_, String>(1))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(names.iter().any(|n| n == column))
+}
+
+fn upgrade(conn: &Connection, found: i64) -> rusqlite::Result<()> {
+    for (version, columns) in UPGRADES.iter().filter(|(v, _)| *v > found) {
+        let tx = conn.unchecked_transaction()?;
+        for (table, column, decl) in *columns {
+            if !has_column(&tx, table, column)? {
+                tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))?;
+            }
+        }
+        tx.execute_batch(&format!("PRAGMA user_version = {version}"))?;
+        tx.commit()?;
+    }
+    Ok(())
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum OpenError {
@@ -50,6 +80,8 @@ impl Db {
             tx.execute_batch(BASELINE)?;
             tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
             tx.commit()?;
+        } else {
+            upgrade(&conn, found)?;
         }
         let writer = StoreWriter::spawn(path)?;
         let readers = ReadPool::open(path, 4)?;

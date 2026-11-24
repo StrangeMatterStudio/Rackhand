@@ -378,6 +378,13 @@ impl JoinServer {
             ("id", Value::Text(id.clone())),
             ("site", Value::Text(p.site.clone())),
             ("endpoint_id", Value::Text(caller.to_string())),
+            (
+                "relays",
+                Value::Text(
+                    serde_json::to_string(&p.relays.iter().map(|r| r.url.clone()).collect::<Vec<_>>())
+                        .unwrap_or_else(|_| "[]".into()),
+                ),
+            ),
             ("added_at", Value::Integer(now_ms)),
         ]
         .into_iter()

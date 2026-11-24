@@ -108,3 +108,46 @@ fn policy_defaults_snapshot_required_no_auto_rollback() {
         .unwrap();
     assert_eq!(got, ("required".to_string(), 0));
 }
+
+/// A database the way the previous build made it: the peers table without the address columns, at version 1.
+fn previous_build(name: &str) -> std::path::PathBuf {
+    let path = temp(name);
+    drop(Db::open(&path).unwrap());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "ALTER TABLE peers DROP COLUMN addrs; ALTER TABLE peers DROP COLUMN relays;
+         INSERT INTO peers (id, site, endpoint_id, added_at) VALUES ('p1', 'beta', 'abc', 5);
+         PRAGMA user_version = 1;",
+    )
+    .unwrap();
+    path
+}
+
+#[test]
+fn a_version_1_database_is_upgraded_and_keeps_its_rows() {
+    let path = previous_build("upgrade");
+    let db = Db::open(&path).unwrap();
+    let conn = db.connection();
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+    assert_eq!(version, SCHEMA_VERSION);
+    let (site, addrs, relays): (String, String, String) = conn
+        .query_row("SELECT site, addrs, relays FROM peers WHERE id = 'p1'", [], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .unwrap();
+    assert_eq!(
+        (site.as_str(), addrs.as_str(), relays.as_str()),
+        ("beta", "[]", "[]"),
+        "the row stays, the new columns are empty"
+    );
+}
+
+#[test]
+fn opening_an_upgraded_database_again_changes_nothing() {
+    let path = previous_build("again");
+    drop(Db::open(&path).unwrap());
+    let db = Db::open(&path).unwrap();
+    let conn = db.connection();
+    let n: i64 = conn.query_row("SELECT count(*) FROM peers", [], |r| r.get(0)).unwrap();
+    assert_eq!(n, 1);
+}

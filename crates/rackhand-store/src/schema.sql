@@ -64,7 +64,9 @@ CREATE TABLE peers (
   backup_quota_bytes INTEGER NOT NULL DEFAULT 0,
   added_at INTEGER NOT NULL,
   last_seen_ms INTEGER,
-  revoked_at INTEGER
+  revoked_at INTEGER,
+  addrs TEXT NOT NULL DEFAULT '[]', -- JSON: the peer hub's direct addresses, from its ticket (7.3.4)
+  relays TEXT NOT NULL DEFAULT '[]' -- JSON: the relays it can be reached through
 );
 
 CREATE TABLE peer_summaries (
