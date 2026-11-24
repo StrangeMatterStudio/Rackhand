@@ -35,6 +35,10 @@ Never put a private key, a passphrase or a signing script in the repository, in 
    cargo xtask release build --out dist-local --targets x86_64-unknown-linux-musl,x86_64-pc-windows-gnu
    ```
 
+   The build runs in `/tmp/rackhand-release-target` whatever `CARGO_TARGET_DIR` says, on the runners and on your machine alike: OpenSSL,
+   built by a build script, keeps the directory it was installed to inside the hub, so another directory is another binary.
+   Don't pass `--target-dir`, and don't build in a path of your own choosing, when the aim is the same hashes.
+
 3. **Check that every hash matches** what CI built. Download `release-unsigned`, then:
 
    ```sh

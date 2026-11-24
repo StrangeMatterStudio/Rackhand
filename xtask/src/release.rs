@@ -42,6 +42,12 @@ fn artifact_name(name: &str, target: &str) -> String {
     if target == WINDOWS { format!("{name}-{target}.exe") } else { format!("{name}-{target}") }
 }
 
+/// Where release builds happen: one path, the same on every machine. OpenSSL, built by a build script, keeps the directory it was
+/// installed to in the binary (its modules path), so the hub differs byte for byte if its target directory does.
+pub fn release_target_dir() -> PathBuf {
+    PathBuf::from("/tmp/rackhand-release-target")
+}
+
 pub struct Options {
     /// The source tree to build.
     pub src: PathBuf,
@@ -79,7 +85,9 @@ fn cflags(src: &Path) -> String {
     let (cargo, rustup) = (home("CARGO_HOME", ".cargo"), home("RUSTUP_HOME", ".rustup"));
     [(src, "/build/src"), (cargo.as_path(), "/build/cargo"), (rustup.as_path(), "/build/rustup")]
         .iter()
-        .map(|(from, to)| format!("-ffile-prefix-map={}={to} -fdebug-prefix-map={}={to}", from.display(), from.display()))
+        .map(|(from, to)| {
+            format!("-ffile-prefix-map={}={to} -fdebug-prefix-map={}={to}", from.display(), from.display())
+        })
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -215,7 +223,8 @@ fn windows_scripts(src: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     let base = src.join("packaging/windows");
     let mut files = vec![("dispatch.ps1".to_string(), std::fs::read(base.join("dispatch.ps1"))?)];
     for dir in ["scripts", "schemas"] {
-        let mut names: Vec<_> = std::fs::read_dir(base.join(dir))?.filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
+        let mut names: Vec<_> =
+            std::fs::read_dir(base.join(dir))?.filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
         names.sort();
         for name in names {
             files.push((format!("{dir}/{}", name.to_string_lossy()), std::fs::read(base.join(dir).join(&name))?));
@@ -234,6 +243,13 @@ pub fn build(o: &Options) -> Result<BTreeMap<String, String>> {
                 continue;
             }
             let built = cargo_build(o, target, package, bin)?;
+            // a release binary needs nothing of the machine it runs on (AC43)
+            if target != WINDOWS {
+                let bytes = std::fs::read(&built).with_context(|| built.display().to_string())?;
+                if elf_is_static(&bytes) != Ok(true) {
+                    bail!("{bin} for {target} isn't statically linked");
+                }
+            }
             std::fs::copy(&built, o.out.join(artifact_name(name, target)))
                 .with_context(|| format!("copying {}", built.display()))?;
         }
@@ -255,7 +271,9 @@ pub fn build(o: &Options) -> Result<BTreeMap<String, String>> {
             .find_map(|l| l.strip_prefix("version = ").map(|v| v.trim_matches('"').to_string()))
             .context("the workspace version")?;
         let verify_hash = |target: &str| {
-            std::fs::read(o.out.join(artifact_name("rackhand-verify", target))).map(|b| sha256(&b)).unwrap_or_else(|_| "0".repeat(64))
+            std::fs::read(o.out.join(artifact_name("rackhand-verify", target)))
+                .map(|b| sha256(&b))
+                .unwrap_or_else(|_| "0".repeat(64))
         };
         let script = std::fs::read_to_string(packaging.join("install.sh"))?
             .replace("__VERSION__", &version)
@@ -318,7 +336,8 @@ fn option<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
 fn build_command(args: &[String]) -> Result<()> {
     let src = workspace_root();
     let out = option(args, "--out").map(PathBuf::from).unwrap_or_else(|| src.join("dist"));
-    let target_dir = option(args, "--target-dir").map(PathBuf::from).unwrap_or_else(|| src.join("target"));
+    // a release is built in the fixed directory, clean: another path changes what OpenSSL embeds in the hub
+    let target_dir = option(args, "--target-dir").map(PathBuf::from).unwrap_or_else(release_target_dir);
     let o = Options { epoch: commit_epoch(&src)?, src, target_dir, out, targets: parse_targets(args)?, only: None };
     let hashes = build(&o)?;
     for (name, hash) in hashes {
@@ -356,25 +375,32 @@ pub const REPRO: [&str; 2] = ["rackhand", "rackhand-probe"];
 pub fn repro_hashes() -> Result<(BTreeMap<String, String>, BTreeMap<String, String>)> {
     let src = workspace_root();
     let epoch = commit_epoch(&src)?;
-    let base = std::env::temp_dir().join(format!("rackhand-repro-{}", std::process::id()));
+    // RACKHAND_REPRO_KEEP=<dir> leaves both builds there, to find what differs
+    let keep = std::env::var_os("RACKHAND_REPRO_KEEP").map(PathBuf::from);
+    let base =
+        keep.clone().unwrap_or_else(|| std::env::temp_dir().join(format!("rackhand-repro-{}", std::process::id())));
     let _ = std::fs::remove_dir_all(&base);
     let mut results = Vec::new();
     for which in ["first", "second-in-another-place"] {
         let dir = base.join(which);
         let tree = dir.join("source");
         export(&src, &tree)?;
+        // each build starts from nothing in the same directory, so the only difference between them is where the source is
+        let _ = std::fs::remove_dir_all(release_target_dir());
         let o = Options {
             src: tree,
-            target_dir: dir.join("target"),
+            target_dir: release_target_dir(),
             out: dir.join("out"),
             targets: vec![LINUX_X86_64.to_string()],
             epoch: epoch.clone(),
             only: Some(REPRO.iter().map(|s| s.to_string()).collect()),
         };
         results.push(build(&o)?);
-        let _ = std::fs::remove_dir_all(dir.join("target"));
+        let _ = std::fs::remove_dir_all(release_target_dir());
     }
-    let _ = std::fs::remove_dir_all(&base);
+    if keep.is_none() {
+        let _ = std::fs::remove_dir_all(&base);
+    }
     let second = results.pop().context("second build")?;
     let first = results.pop().context("first build")?;
     Ok((first, second))
@@ -504,7 +530,8 @@ mod slow_tests {
         }
         // the manifest lists exactly what is there, and the installer has its verifier's hash in it
         let manifest =
-            rackhand_release::manifest::Manifest::parse(&std::fs::read_to_string(out.join("manifest.json")).unwrap()).unwrap();
+            rackhand_release::manifest::Manifest::parse(&std::fs::read_to_string(out.join("manifest.json")).unwrap())
+                .unwrap();
         assert_eq!(manifest.check_dir(&out), Ok(()));
         let install = std::fs::read_to_string(out.join("install.sh")).unwrap();
         assert!(!install.contains("__VERIFY_SHA256") && !install.contains("__VERSION__"), "the installer is rendered");
@@ -516,7 +543,11 @@ mod slow_tests {
         #[test]
         fn two_builds_identical_hashes() {
             let (first, second) = super::super::repro_hashes().unwrap();
-            assert_eq!(first.keys().collect::<Vec<_>>(), [&format!("rackhand-{}", super::LINUX_X86_64), &format!("rackhand-probe-{}", super::LINUX_X86_64)]);
+            // the names sort as strings: `rackhand-probe-...` before `rackhand-x86_64-...`
+            assert_eq!(
+                first.keys().collect::<Vec<_>>(),
+                [&format!("rackhand-probe-{}", super::LINUX_X86_64), &format!("rackhand-{}", super::LINUX_X86_64)]
+            );
             assert_eq!(first, second, "the hash of each artifact is the same from the other directory");
         }
     }

@@ -11,3 +11,4 @@ lab/real.env
 !.env.example
 .idea/
 .vscode/
+/dist/

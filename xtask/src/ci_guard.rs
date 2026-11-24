@@ -377,7 +377,8 @@ pub fn check_release_workflow(text: &str) -> Vec<String> {
     let lower = text.to_ascii_lowercase();
     for needle in ["secrets.", "secrets[", "secrets:", "github_token", "signing_key", "minisign"] {
         if lower.contains(needle) {
-            problems.push(format!("release.yml mentions `{needle}`: no job or step may hold a secret or a signing key"));
+            problems
+                .push(format!("release.yml mentions `{needle}`: no job or step may hold a secret or a signing key"));
         }
     }
     let Ok(docs) = YamlLoader::load_from_str(text) else {
@@ -412,7 +413,8 @@ pub fn check_release_workflow(text: &str) -> Vec<String> {
     }
     match parse_workflow(text) {
         Ok(jobs) if !jobs.is_empty() => {
-            problems.extend(check_self_hosted_jobs(&jobs).into_iter().map(|p| p.replace("in ci.yml", "in release.yml")));
+            problems
+                .extend(check_self_hosted_jobs(&jobs).into_iter().map(|p| p.replace("in ci.yml", "in release.yml")));
         }
         Ok(_) => problems.push("release.yml has no jobs".into()),
         Err(e) => problems.push(format!("release.yml: {e}")),
@@ -441,14 +443,29 @@ mod tests {
             assert_ne!(changed, text, "{from:?} isn't in the workflow");
             check_release_workflow(&changed)
         };
-        assert!(with("      - uses: actions/checkout", "      - env: { KEY: ${{ secrets.SIGNING_KEY }} }\n        uses: actions/checkout")
+        assert!(
+            with(
+                "      - uses: actions/checkout",
+                "      - env: { KEY: ${{ secrets.SIGNING_KEY }} }\n        uses: actions/checkout"
+            )
             .iter()
-            .any(|p| p.contains("secrets.")));
-        assert!(with("  workflow_dispatch:", "  workflow_dispatch:\n  pull_request:").iter().any(|p| p.contains("pull_request")));
+            .any(|p| p.contains("secrets."))
+        );
+        assert!(
+            with("  workflow_dispatch:", "  workflow_dispatch:\n  pull_request:")
+                .iter()
+                .any(|p| p.contains("pull_request"))
+        );
         assert!(with("  contents: read", "  contents: write").iter().any(|p| p.contains("permissions")));
-        assert!(with("    if: ${{ (github.repository", "    if: ${{ (true || github.repository").iter().any(|p| p.contains("fork guard")));
+        assert!(
+            with("    if: ${{ (github.repository", "    if: ${{ (true || github.repository")
+                .iter()
+                .any(|p| p.contains("fork guard"))
+        );
         assert!(with("    tags:", "    branches:").iter().any(|p| p.contains("tags")));
-        assert!(with("run: cargo xtask release build", "run: minisign -S -m dist/*").iter().any(|p| p.contains("minisign")));
+        assert!(
+            with("run: cargo xtask release build", "run: minisign -S -m dist/*").iter().any(|p| p.contains("minisign"))
+        );
         // a workflow that isn't one of these at all
         assert!(!check_release_workflow("on: [push]\njobs: {}\n").is_empty());
     }

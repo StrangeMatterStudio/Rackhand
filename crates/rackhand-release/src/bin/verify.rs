@@ -19,9 +19,10 @@ fn which(p: Pinned) -> &'static str {
 
 fn release_directory(dir: &str) -> ExitCode {
     let dir = Path::new(dir);
-    let (Ok(text), Ok(sig)) =
-        (std::fs::read(dir.join(manifest::NAME)), std::fs::read_to_string(dir.join(format!("{}.minisig", manifest::NAME))))
-    else {
+    let (Ok(text), Ok(sig)) = (
+        std::fs::read(dir.join(manifest::NAME)),
+        std::fs::read_to_string(dir.join(format!("{}.minisig", manifest::NAME))),
+    ) else {
         eprintln!("rackhand-verify: {} has no {} with its signature", dir.display(), manifest::NAME);
         return ExitCode::from(1);
     };
@@ -45,7 +46,9 @@ fn main() -> ExitCode {
         }
     }
     let [file, sig] = args.as_slice() else {
-        eprintln!("usage: rackhand-verify <file> <file.minisig>\n       rackhand-verify --manifest <release directory>");
+        eprintln!(
+            "usage: rackhand-verify <file> <file.minisig>\n       rackhand-verify --manifest <release directory>"
+        );
         return ExitCode::from(2);
     };
     let (Ok(data), Ok(minisig)) = (std::fs::read(file), std::fs::read_to_string(sig)) else {

@@ -17,6 +17,8 @@ Everything builds and runs in WSL Ubuntu (or any Linux). Keep `CARGO_TARGET_DIR`
 | Network and eBPF tiers (QEMU with KVM) | `cargo xtask ci net`, `cargo xtask ci ebpf` |
 | Windows tier (cross build and Pester) | `cargo xtask ci win` |
 | Performance tier | `cargo xtask ci perf` |
+| Release tier (static artifacts, a commit built twice with the same hashes) | `cargo xtask ci release` |
+| Release artifacts, unsigned (signing is offline: `docs/maintainers/signing.md`) | `cargo xtask release build --out dist` |
 | Live tier (local lab) | `cargo xtask ci live --target local --milestone <name>` |
 | Dependency rules | `cargo xtask arch-check` |
 | Lint and format | `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings` |

@@ -85,7 +85,10 @@ mod manifest {
         let m = manifest();
         assert_eq!(m.artifacts.len(), 3);
         let names: Vec<&str> = m.artifacts.iter().map(|a| a.name.as_str()).collect();
-        assert_eq!(names, ["install.sh", "rackhand-probe-x86_64-unknown-linux-musl", "rackhand-x86_64-unknown-linux-musl"]);
+        assert_eq!(
+            names,
+            ["install.sh", "rackhand-probe-x86_64-unknown-linux-musl", "rackhand-x86_64-unknown-linux-musl"]
+        );
         for (name, bytes) in files() {
             let a = m.artifacts.iter().find(|a| a.name == name).unwrap();
             assert_eq!(a.sha256, format!("{:x}", Sha256::digest(&bytes)), "{name}");
@@ -109,6 +112,11 @@ mod manifest {
             Err(ManifestError::HashMismatch("install.sh".into()))
         );
         assert_eq!(m.check("other", b"x"), Err(ManifestError::NotListed("other".into())));
+        // a change that keeps the length is found by the hash alone
+        assert_eq!(
+            m.check("rackhand-x86_64-unknown-linux-musl", b"hub bytez"),
+            Err(ManifestError::HashMismatch("rackhand-x86_64-unknown-linux-musl".into()))
+        );
         let dir = std::env::temp_dir().join(format!("rackhand-manifest-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -131,7 +139,13 @@ mod manifest {
 
     #[test]
     fn a_manifest_that_isnt_one_is_refused() {
-        for bad in ["", "{", "[]", r#"{"version":"1"}"#, r#"{"version":"1","artifacts":[{"name":"a","sha256":"xyz","size":1}]}"#] {
+        for bad in [
+            "",
+            "{",
+            "[]",
+            r#"{"version":"1"}"#,
+            r#"{"version":"1","artifacts":[{"name":"a","sha256":"xyz","size":1}]}"#,
+        ] {
             assert!(Manifest::parse(bad).is_err(), "{bad:?}");
         }
         // a name that climbs out of the directory, or is listed twice

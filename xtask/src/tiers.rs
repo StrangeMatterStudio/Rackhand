@@ -339,7 +339,16 @@ fn win() -> Result<()> {
 /// `cargo xtask ci release`: the release artifacts are static and a commit builds to the same bytes twice (AC43). Builds the hub
 /// and the probe several times, so it is not part of the fast tier.
 fn release() -> Result<()> {
-    run_checked(cargo().args(["nextest", "run", "-p", "xtask", "--profile", "release", "-E", "test(release::slow_tests::)"]))
+    run_checked(cargo().args([
+        "nextest",
+        "run",
+        "-p",
+        "xtask",
+        "--profile",
+        "release",
+        "-E",
+        "test(release::slow_tests::)",
+    ]))
 }
 
 fn perf() -> Result<()> {

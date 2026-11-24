@@ -94,15 +94,29 @@ fn verify_checks_a_release_directory_against_its_signed_manifest() {
     std::fs::write(dir.join("manifest.json"), &text).unwrap();
     let run = |expect_ok: bool| {
         let out = Command::new(&verify).arg("--manifest").arg(&dir).output().unwrap();
-        assert_eq!(out.status.success(), expect_ok, "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert_eq!(
+            out.status.success(),
+            expect_ok,
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr)
     };
     // unsigned: refused
     run(false);
     // signed by the current key, and then by the standby key: both fine
-    std::fs::write(dir.join("manifest.json.minisig"), sign(&test_key("current"), [1; 8], text.as_bytes(), "timestamp:1")).unwrap();
+    std::fs::write(
+        dir.join("manifest.json.minisig"),
+        sign(&test_key("current"), [1; 8], text.as_bytes(), "timestamp:1"),
+    )
+    .unwrap();
     assert!(run(true).starts_with("ok current (2 artifacts, version 0.1.0)"));
-    std::fs::write(dir.join("manifest.json.minisig"), sign(&test_key("standby"), [2; 8], text.as_bytes(), "timestamp:1")).unwrap();
+    std::fs::write(
+        dir.join("manifest.json.minisig"),
+        sign(&test_key("standby"), [2; 8], text.as_bytes(), "timestamp:1"),
+    )
+    .unwrap();
     assert!(run(true).starts_with("ok standby"));
     // a changed artifact, a missing one and a stray one are each refused
     std::fs::write(dir.join("install.sh"), b"#!/bin/sh\nrm -rf /\n").unwrap();

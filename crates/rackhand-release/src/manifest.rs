@@ -106,7 +106,8 @@ impl Manifest {
 
     /// `bytes` is the artifact `name` the manifest lists.
     pub fn check(&self, name: &str, bytes: &[u8]) -> Result<(), ManifestError> {
-        let listed = self.artifacts.iter().find(|a| a.name == name).ok_or_else(|| ManifestError::NotListed(name.into()))?;
+        let listed =
+            self.artifacts.iter().find(|a| a.name == name).ok_or_else(|| ManifestError::NotListed(name.into()))?;
         if listed.size != bytes.len() as u64 || listed.sha256 != sha256_hex(bytes) {
             return Err(ManifestError::HashMismatch(name.into()));
         }
@@ -119,7 +120,10 @@ impl Manifest {
         for entry in std::fs::read_dir(dir).map_err(io)? {
             let entry = entry.map_err(io)?;
             let name = entry.file_name().to_string_lossy().into_owned();
-            if entry.file_type().map_err(io)?.is_file() && !beside(&name) && !self.artifacts.iter().any(|a| a.name == name) {
+            if entry.file_type().map_err(io)?.is_file()
+                && !beside(&name)
+                && !self.artifacts.iter().any(|a| a.name == name)
+            {
                 return Err(ManifestError::NotListed(name));
             }
         }
