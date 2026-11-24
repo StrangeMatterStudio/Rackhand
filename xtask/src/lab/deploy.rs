@@ -87,6 +87,8 @@ pub fn build_release(dir: &Path, tamper: bool) -> Result<()> {
         (hub, format!("rackhand-{TARGET}")),
         (probe, format!("rackhand-probe-{TARGET}")),
         (packaging.join("systemd/rackhand-hub.service"), "rackhand-hub.service".into()),
+        (packaging.join("systemd/rackhand-updater.path"), "rackhand-updater.path".into()),
+        (packaging.join("systemd/rackhand-updater.service"), "rackhand-updater.service".into()),
         (packaging.join("systemd/rackhand-probe.service"), "rackhand-probe.service".into()),
         (packaging.join("systemd/rackhand-probe-helper.service"), "rackhand-probe-helper.service".into()),
         (packaging.join("openrc/rackhand-probe"), "rackhand-probe.openrc".into()),
@@ -95,7 +97,12 @@ pub fn build_release(dir: &Path, tamper: bool) -> Result<()> {
     let key = test_key()?;
     for (from, name) in files {
         let data = std::fs::read(&from).with_context(|| from.display().to_string())?;
-        let sig = rackhand_release::signing::sign(&key, [1; 8], &data, &format!("file:{name}"));
+        let sig = rackhand_release::signing::sign(
+            &key,
+            [1; 8],
+            &data,
+            &format!("file:{name} version:{}", env!("CARGO_PKG_VERSION")),
+        );
         std::fs::write(dir.join(&name), &data)?;
         std::fs::write(dir.join(format!("{name}.minisig")), sig)?;
     }
@@ -114,6 +121,16 @@ pub fn build_release(dir: &Path, tamper: bool) -> Result<()> {
         // the lab builds for x86_64 only
         .replace("__VERIFY_SHA256_AARCH64__", &"0".repeat(64));
     std::fs::write(dir.join("install.sh"), script)?;
+    // the signed manifest, as a release has it: the updater checks a hub update against it (7.5.7)
+    let manifest = rackhand_release::manifest::Manifest::of_dir(env!("CARGO_PKG_VERSION"), dir)?.to_json();
+    std::fs::write(dir.join("manifest.json"), &manifest)?;
+    let sig = rackhand_release::signing::sign(
+        &key,
+        [1; 8],
+        manifest.as_bytes(),
+        &format!("file:manifest.json version:{}", env!("CARGO_PKG_VERSION")),
+    );
+    std::fs::write(dir.join("manifest.json.minisig"), sig)?;
     Ok(())
 }
 
