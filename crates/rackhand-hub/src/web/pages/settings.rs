@@ -27,6 +27,8 @@ struct Settings<'a> {
     notifiers: usize,
     /// The dead-man URL, as set (7.5.5).
     deadman: String,
+    /// The hub's own update (7.5.7), when this hub can update itself.
+    updates: Option<crate::web::UpdateStatus>,
 }
 
 const MIRROR: &[Spec] = &[Spec::text("url", "Repository")
@@ -87,6 +89,7 @@ fn show(web: &Web, ctx: &Ctx, code: StatusCode, mut sent: Option<Form>, notice: 
             deploy_key: deploy_public_key(web),
             notifiers: super::notifiers::count(web),
             deadman: current.deadman_url.clone().unwrap_or_default(),
+            updates: web.0.updates.as_ref().map(|u| u.status()),
         }
         .render(),
     )
@@ -240,4 +243,28 @@ pub(super) async fn oidc(web: &Web, ctx: &Ctx) -> Response<Body> {
         serde_json::json!({ "issuer": issuer, "client_id": client_id, "redirect_url": redirect_url })
     })
     .await
+}
+
+/// Update (7.5.7): the hub takes a backup and a copy of its database, puts the release it holds in its spool and asks the
+/// updater, which checks it against its own keys, switches, and goes back if the hub doesn't come up. Audited with the version.
+pub(super) async fn update(web: &Web, ctx: &Ctx) -> Response<Body> {
+    let Some(user) = ctx.user.as_ref() else { return redirect("/sign-in") };
+    let Some(updates) = web.0.updates.clone() else {
+        return status(StatusCode::NOT_FOUND, "This hub doesn't update itself");
+    };
+    let now = ctx.now_ms;
+    let asked = tokio::task::spawn_blocking(move || updates.ask(now)).await.unwrap_or_else(|e| Err(e.to_string()));
+    match asked {
+        Ok(version) => {
+            let data = serde_json::json!({ "version": version });
+            if let Err(e) = web.0.audit.append(&user.name, "hub.update_asked", Some("hub"), &data.to_string()).await {
+                tracing::error!(error = %e, "audit");
+            }
+            let notice = format!(
+                "Asked for {version}. The hub restarts on it in a minute or so, and goes back to this version if it doesn't come up."
+            );
+            show(web, ctx, StatusCode::OK, None, Some(&notice))
+        }
+        Err(e) => show(web, ctx, StatusCode::CONFLICT, None, Some(&format!("The update wasn't asked for: {e}"))),
+    }
 }

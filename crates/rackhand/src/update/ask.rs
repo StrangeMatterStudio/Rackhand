@@ -98,3 +98,42 @@ pub fn outcomes(spool: &Path) -> Vec<(&'static str, serde_json::Value)> {
 pub fn component_dir(component: Component) -> std::path::PathBuf {
     Path::new("/").join(component.state_dir()).join("update")
 }
+
+/// The newer release the hub holds in `release`, checked against the pinned keys.
+pub fn available(release: &Path) -> Option<Version> {
+    let bytes = std::fs::read(release.join(MANIFEST)).ok()?;
+    let sig = std::fs::read_to_string(release.join(MANIFEST_SIG)).ok()?;
+    let (_, m) = manifest::verify_signed(&bytes, &sig).ok()?;
+    let version = Version::parse(&m.version)?;
+    let running = Version::parse(crate::VERSION)?;
+    (version > running && m.artifacts.iter().any(|a| a.name == artifact())).then_some(version)
+}
+
+/// What the dashboard says about the last update, from what the hub recorded.
+pub fn last(spool: &Path) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(r) =
+        std::fs::read(spool.join(ROLLED_BACK_SEEN)).ok().and_then(|b| serde_json::from_slice::<RolledBack>(&b).ok())
+    {
+        let minutes = ((r.window_to_ms - r.window_from_ms) as f64 / 60_000.0).ceil().max(1.0) as i64;
+        let lost = if r.restored_database {
+            format!(
+                "the database from before the update was put back, and what the hub wrote in between ({minutes} {}) is gone",
+                if minutes == 1 { "minute" } else { "minutes" }
+            )
+        } else {
+            "the database was kept".to_string()
+        };
+        lines.push(format!("{} didn't come up and was rolled back to {}; {lost}.", r.to, r.from));
+    }
+    if let Some(a) = std::fs::read(spool.join(ANSWER_SEEN)).ok().and_then(|b| serde_json::from_slice::<Answer>(&b).ok())
+    {
+        let version = a.version.unwrap_or_else(|| "the release".into());
+        if a.ok {
+            lines.push(format!("The updater checked {version} and switched to it."));
+        } else {
+            lines.push(format!("The updater refused {version}: {} ({}).", a.message, a.code));
+        }
+    }
+    lines
+}

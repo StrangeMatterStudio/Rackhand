@@ -20,6 +20,15 @@
 <div class="field"><label for="deadman-url">Address</label><input id="deadman-url" name="url" type="url" value="{{ deadman }}" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="https://hc-ping.com/..."></div>
 <div class="actions"><button type="submit" class="primary">Save</button><button type="button" data-undo hidden>Undo changes</button></div>
 </form></section>
+{% if let Some(u) = updates %}<section class="card"><h2>Updates</h2>
+<p class="hint">This hub runs {{ u.running }}. An update is checked against the release keys this hub pins before it is installed, and the hub goes back to this version if the new one doesn't come up within 2 minutes.</p>
+{% if let Some(v) = u.available %}<form method="post" action="/settings/update">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<p>Release {{ v }} is ready.</p>
+<div class="actions"><button type="submit" class="primary">Update to {{ v }}</button></div>
+</form>{% else %}<p>No newer release is in the hub's release directory.</p>{% endif %}
+{% for line in u.last %}<p>{{ line }}</p>{% endfor %}
+</section>{% endif %}
 <section class="card"><h2>Notifiers</h2><p class="hint">Where alerts for incidents are sent: {{ notifiers }} saved.</p><p><a class="btn" href="/settings/notifiers">Open notifiers</a></p></section>
 <section class="card"><h2>Git mirror</h2>
 <p class="hint">Every change to runbooks, playbooks and configuration is pushed to this repository: a copy and a history outside the hub.</p>

@@ -377,6 +377,9 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         .with_bus(bus.clone())
         .with_peer_reach(Arc::new(peers.clone()))
         .with_relay_lists(relay_lists.clone());
+    // the hub's own update (7.5.7), asked for from the Settings page
+    #[cfg(unix)]
+    let web = web.with_updates(Arc::new(HubUpdates { config: config.clone() }));
     // the mesh: probes and MCP clients
     let setup = Arc::new(joins::HubSetup {
         db: db.clone(),
@@ -883,3 +886,24 @@ pub mod patching;
 
 #[cfg(test)]
 mod tests;
+
+/// The hub's own update as the Settings page shows and asks for it (7.5.7).
+#[cfg(unix)]
+struct HubUpdates {
+    config: HubConfig,
+}
+
+#[cfg(unix)]
+impl rackhand_hub::web::Updates for HubUpdates {
+    fn status(&self) -> rackhand_hub::web::UpdateStatus {
+        rackhand_hub::web::UpdateStatus {
+            running: crate::VERSION.to_string(),
+            available: crate::update::ask::available(&self.config.data_dir.join("release")).map(|v| v.to_string()),
+            last: crate::update::ask::last(&self.config.data_dir.join("update")),
+        }
+    }
+
+    fn ask(&self, now_ms: i64) -> Result<String, String> {
+        crate::update::ask::ask_hub(&self.config, &self.config.data_dir.join("release"), now_ms).map(|v| v.to_string())
+    }
+}

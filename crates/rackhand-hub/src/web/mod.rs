@@ -87,6 +87,8 @@ struct Inner {
     /// What the peer pages ask of the peers system (a request, a join, an unlink), and the relay lists with their status.
     peer_reach: Option<Arc<dyn crate::peers::PeerReach>>,
     relay_lists: Option<Arc<Mutex<crate::peers::relay_lists::RelayLists>>>,
+    /// The hub's own update (7.5.7): what is running and ready, and how to ask for it.
+    updates: Option<Arc<dyn Updates>>,
     first_run: pages::FirstRunDrafts,
     held: forms::HeldForms,
 }
@@ -145,6 +147,7 @@ impl Web {
             bus: None,
             peer_reach: None,
             relay_lists: None,
+            updates: None,
             first_run: pages::FirstRunDrafts::default(),
             held: forms::HeldForms::default(),
         }))
@@ -178,6 +181,14 @@ impl Web {
     pub fn with_peer_reach(mut self, reach: Arc<dyn crate::peers::PeerReach>) -> Web {
         if let Some(inner) = Arc::get_mut(&mut self.0) {
             inner.peer_reach = Some(reach);
+        }
+        self
+    }
+
+    /// The hub's own update, for the Settings page; before the router is built.
+    pub fn with_updates(mut self, updates: Arc<dyn Updates>) -> Web {
+        if let Some(inner) = Arc::get_mut(&mut self.0) {
+            inner.updates = Some(updates);
         }
         self
     }
@@ -450,3 +461,21 @@ fn parse_cookies(header: Option<&HeaderValue>) -> HashMap<String, String> {
 
 #[cfg(test)]
 mod tests;
+
+/// The hub's own update as the dashboard sees it (7.5.7): the composition root reads the release directory and the spool, and
+/// asks the updater.
+pub trait Updates: Send + Sync {
+    fn status(&self) -> UpdateStatus;
+    /// Takes the backup and the database copy, puts the release in the spool and writes the request: the version asked for.
+    fn ask(&self, now_ms: i64) -> Result<String, String>;
+}
+
+/// What the Settings page says about updates.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UpdateStatus {
+    pub running: String,
+    /// A newer release the hub holds and can be updated to.
+    pub available: Option<String>,
+    /// What the last update did, in sentences (asked, refused and why, rolled back and the window lost).
+    pub last: Vec<String>,
+}

@@ -3272,3 +3272,86 @@ mod deadman {
         assert!(crate::library::config::hub(&app.db).unwrap().deadman_url.is_none());
     }
 }
+
+/// 7.5.7: the Settings page shows what the hub runs, a newer release it holds, and what the last update did; Update asks for
+/// it, and the ask is audited. A hub that doesn't update itself has no such card and refuses the button.
+mod updates {
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::web::{UpdateStatus, Updates};
+
+    #[derive(Default)]
+    struct Fake {
+        asked: Mutex<Vec<i64>>,
+        refuse: bool,
+    }
+
+    impl Updates for Fake {
+        fn status(&self) -> UpdateStatus {
+            UpdateStatus {
+                running: "0.1.0".into(),
+                available: Some("0.1.1".into()),
+                last: vec![
+                    "0.1.1 didn't come up and was rolled back; the database from before the update was put back, \
+                     and what the hub wrote in between (2 minutes) is gone."
+                        .into(),
+                ],
+            }
+        }
+
+        fn ask(&self, now_ms: i64) -> Result<String, String> {
+            self.asked.lock().unwrap().push(now_ms);
+            if self.refuse { Err("0.1.1 isn't newer than the running 0.1.1".into()) } else { Ok("0.1.1".into()) }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn settings_show_the_update_and_ask_for_it() {
+        let fake = Arc::new(Fake::default());
+        let given = fake.clone();
+        let app = app_with("updates", move |web| web.with_updates(given)).await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let page = text(send(&app.router, get("/settings", &admin)).await).await;
+        assert!(page.contains("This hub runs 0.1.0"), "{page}");
+        assert!(page.contains("Update to 0.1.1"), "{page}");
+        assert!(
+            page.contains("was rolled back") && page.contains("(2 minutes) is gone"),
+            "the rollback and the window lost"
+        );
+        let csrf = csrf_of(&app, &admin).await;
+        let resp = send(&app.router, post("/settings/update", &admin, &[("csrf", csrf.as_str())])).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(text(resp).await.contains("Asked for 0.1.1"));
+        assert_eq!(fake.asked.lock().unwrap().len(), 1);
+        let audited: Vec<String> = app
+            .db
+            .readers()
+            .with(|c| {
+                let mut st = c.prepare("SELECT data FROM audit_log WHERE action = 'hub.update_asked'")?;
+                st.query_map([], |r| r.get(0))?.collect()
+            })
+            .unwrap();
+        assert_eq!(audited, [r#"{"version":"0.1.1"}"#]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_ask_says_why_and_a_hub_without_updates_has_no_button() {
+        let given = Arc::new(Fake { refuse: true, ..Fake::default() });
+        let refusing = app_with("updates-refused", move |web| web.with_updates(given)).await;
+        complete_first_run(&refusing, SETUP_CODE).await;
+        let admin = session_for(&refusing.db, Role::Admin).await;
+        let csrf = csrf_of(&refusing, &admin).await;
+        let resp = send(&refusing.router, post("/settings/update", &admin, &[("csrf", csrf.as_str())])).await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert!(text(resp).await.contains("newer than the running 0.1.1"));
+        let plain = app("updates-none").await;
+        complete_first_run(&plain, SETUP_CODE).await;
+        let admin = session_for(&plain.db, Role::Admin).await;
+        assert!(!text(send(&plain.router, get("/settings", &admin)).await).await.contains("Updates</h2>"));
+        let csrf = csrf_of(&plain, &admin).await;
+        let resp = send(&plain.router, post("/settings/update", &admin, &[("csrf", csrf.as_str())])).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+}

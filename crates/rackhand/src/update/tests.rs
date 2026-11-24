@@ -257,3 +257,34 @@ fn a_machine_with_slots_already_is_left_as_it_is() {
     assert_eq!(std::fs::read_link(m.dir.join(BIN)).unwrap(), link);
     assert_eq!(std::fs::read(m.dir.join(LIB).join("rackhand")).unwrap(), b"the installed hub");
 }
+
+#[test]
+fn the_dashboard_says_what_the_last_update_did() {
+    let m = Machine::new("last");
+    assert!(ask::last(&m.spool()).is_empty());
+    let rolled = request::RolledBack {
+        from: "0.1.0".into(),
+        to: "0.1.1".into(),
+        restored_database: true,
+        window_from_ms: 0,
+        window_to_ms: 125_000,
+    };
+    std::fs::write(m.spool().join(ask::ROLLED_BACK_SEEN), serde_json::to_string(&rolled).unwrap()).unwrap();
+    let refused = request::Answer {
+        ok: false,
+        version: Some("0.1.2".into()),
+        code: "bad_signature".into(),
+        message: "signed by a key that isn't pinned".into(),
+        at_ms: 1,
+    };
+    std::fs::write(m.spool().join(ask::ANSWER_SEEN), serde_json::to_string(&refused).unwrap()).unwrap();
+    let lines = ask::last(&m.spool());
+    assert_eq!(
+        lines,
+        [
+            "0.1.1 didn't come up and was rolled back to 0.1.0; the database from before the update was put back, and what the hub \
+             wrote in between (3 minutes) is gone.",
+            "The updater refused 0.1.2: signed by a key that isn't pinned (bad_signature).",
+        ]
+    );
+}
