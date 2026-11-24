@@ -4,6 +4,10 @@
 #   curl -fsSL https://github.com/StrangeMatterStudio/Rackhand/releases/download/v<X>/install.sh \
 #     | sudo sh -s -- --ticket <ticket> --token <token> [--monitor] [--remote] [--role <role>]
 #
+# or, to make this machine a site's hub (7.7.4, Debian 12 or later):
+#
+#   curl -fsSL https://github.com/StrangeMatterStudio/Rackhand/releases/download/v<X>/install.sh | sudo sh -s -- --hub
+#
 # It checks rackhand-verify against the SHA-256 below, then has the verifier check every other file against the two
 # pinned release keys, and installs nothing until all of them pass. The release fills in the two values below.
 #
@@ -21,7 +25,7 @@ die() {
   exit 1
 }
 
-TICKET="" TOKEN="" ACCESS=managed MODE="" ROLE="" SELF_SIGNED=""
+TICKET="" TOKEN="" ACCESS=managed MODE="" ROLE="" SELF_SIGNED="" HUB=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --ticket) TICKET="$2"; shift 2 ;;
@@ -31,10 +35,12 @@ while [ $# -gt 0 ]; do
     --role) ROLE="$2"; shift 2 ;;
     --release-url) RELEASE_URL="$2"; shift 2 ;;
     --self-signed) SELF_SIGNED=1; shift ;;
+    --hub) HUB=1; shift ;;
     *) die "unknown option $1" ;;
   esac
 done
-[ -n "$TICKET" ] && [ -n "$TOKEN" ] || die "usage: install.sh --ticket <ticket> --token <token> [--monitor] [--remote] [--role <role>]"
+[ -n "$HUB" ] || { [ -n "$TICKET" ] && [ -n "$TOKEN" ]; } \
+  || die "usage: install.sh --ticket <ticket> --token <token> [--monitor] [--remote] [--role <role>], or install.sh --hub"
 [ "$(id -u)" = 0 ] || die "run it as root"
 
 case "$(uname -m)" in
@@ -48,6 +54,21 @@ elif command -v openrc-run >/dev/null 2>&1 || [ -x /sbin/openrc-run ]; then
   INIT=openrc
 else
   die "neither systemd nor OpenRC is running"
+fi
+
+# a hub needs Debian 12 or later and systemd (7.7.4); said before anything is downloaded
+if [ -n "$HUB" ]; then
+  # read in subshells: os-release names VERSION too
+  OS_ID=$( [ -r /etc/os-release ] && . /etc/os-release && echo "${ID:-}" )
+  OS_NAME=$( [ -r /etc/os-release ] && . /etc/os-release && echo "${PRETTY_NAME:-}" )
+  OS_VERSION=$( [ -r /etc/os-release ] && . /etc/os-release && echo "${VERSION_ID:-}" )
+  [ "$OS_ID" = debian ] || die "a hub installs on Debian 12 or later; this is ${OS_NAME:-not Debian}"
+  case "$OS_VERSION" in
+    '' | *[!0-9.]*) die "a hub installs on Debian 12 or later; this is Debian ${OS_VERSION:-of an unknown version}" ;;
+  esac
+  [ "${OS_VERSION%%.*}" -ge 12 ] || die "a hub installs on Debian 12 or later; this is Debian $OS_VERSION"
+  [ "$INIT" = systemd ] || die "a hub runs under systemd"
+  command -v curl >/dev/null 2>&1 || die "a hub's installer needs curl"
 fi
 
 fetch() {
@@ -68,6 +89,53 @@ fetch "$RELEASE_URL/rackhand-verify-$TARGET" "$WORK/rackhand-verify"
 [ "$(sha256sum "$WORK/rackhand-verify" | cut -d' ' -f1)" = "$VERIFY_SHA256" ] \
   || die "rackhand-verify doesn't match this installer; nothing was installed"
 chmod 0700 "$WORK/rackhand-verify"
+
+# A site's hub (7.7.4): the hub and its updater from the release, checked like everything else, the binary in its slots
+# (7.5.7), `rackhand hub init` the first time, and the units. It prints the dashboard's address and the one-time setup code.
+if [ -n "$HUB" ]; then
+  for f in "rackhand-$TARGET" rackhand-hub.service rackhand-updater.path rackhand-updater.service manifest.json; do
+    fetch "$RELEASE_URL/$f" "$WORK/$f"
+    fetch "$RELEASE_URL/$f.minisig" "$WORK/$f.minisig"
+    "$WORK/rackhand-verify" "$WORK/$f" "$WORK/$f.minisig" >/dev/null \
+      || die "$f isn't signed by a pinned release key; nothing was installed"
+  done
+  S=/usr/local/lib/rackhand-server
+  install -d -m 0755 "$S" /etc/rackhand
+  install -m 0755 "$WORK/rackhand-$TARGET" "$S/rackhand-a"
+  ln -sfn rackhand-a "$S/rackhand"
+  ln -sfn "$S/rackhand" /usr/local/bin/rackhand
+  id rackhand-hub >/dev/null 2>&1 || useradd -r -U -M -d /var/lib/rackhand -s /usr/sbin/nologin rackhand-hub
+  INIT_OUT=""
+  if [ ! -f /etc/rackhand/master.key ]; then
+    INIT_OUT=$(/usr/local/bin/rackhand hub init) || die "rackhand hub init failed"
+  fi
+  install -d -m 0750 -o rackhand-hub -g rackhand-hub /var/lib/rackhand
+  chown -R rackhand-hub:rackhand-hub /var/lib/rackhand
+  chown rackhand-hub:rackhand-hub /etc/rackhand/node.key
+  chown root:rackhand-hub /etc/rackhand/hub.toml
+  # what the self-watch checks this binary against (10)
+  install -m 0644 "$WORK/manifest.json" /etc/rackhand/release-manifest.json
+  install -m 0644 "$WORK/manifest.json.minisig" /etc/rackhand/release-manifest.json.minisig
+  for u in rackhand-hub.service rackhand-updater.path rackhand-updater.service; do
+    install -m 0644 "$WORK/$u" "/etc/systemd/system/$u"
+  done
+  systemctl daemon-reload
+  systemctl enable --now rackhand-hub.service rackhand-updater.path >/dev/null 2>&1 || die "the hub's services didn't start"
+  i=0
+  until curl -fsk --max-time 5 https://127.0.0.1:8443/healthz 2>/dev/null | grep -q ok; do
+    i=$((i + 1))
+    [ "$i" -lt 60 ] || die "the hub didn't answer on https://127.0.0.1:8443/healthz; see journalctl -u rackhand-hub"
+    sleep 1
+  done
+  ADDR=$(hostname -I 2>/dev/null | awk '{print $1}')
+  echo "Rackhand: the hub runs. Dashboard: https://${ADDR:-this-machine}:8443/"
+  if [ -n "$INIT_OUT" ]; then
+    echo "$INIT_OUT" | grep -E '^(Setup code|Recovery code)'
+  else
+    echo "This machine had a hub already: its keys and database were kept."
+  fi
+  exit 0
+fi
 
 # 2. everything else, checked against the pinned release keys
 case "$INIT" in

@@ -52,9 +52,31 @@ pub struct Hub {
     /// Built with the `lab-build` feature and told this version: the test release keys pinned, so that it offers updates
     /// signed with them, and the version it offers its probes.
     lab: Option<&'static str>,
+    /// Where its dashboard is: this host, or a container's address for a hub installed in one.
+    host: String,
 }
 
 impl Hub {
+    /// A hub that runs elsewhere (installed in a container): its dashboard at `host:web`, for `curl` and the first run.
+    pub fn attach(name: &str, host: &str, web: u16, setup_code: &str) -> Hub {
+        let dir = temp(name);
+        let jar = dir.join("cookies");
+        Hub {
+            etc: dir.join("etc"),
+            data: dir.join("lib"),
+            dir,
+            web,
+            quic: 0,
+            setup_code: setup_code.to_string(),
+            id_hex: String::new(),
+            jar,
+            child: None,
+            started: None,
+            lab: None,
+            host: host.to_string(),
+        }
+    }
+
     /// `rackhand hub init` into a temporary directory, on free ports.
     pub fn init(name: &str) -> Hub {
         Hub::init_as(name, None)
@@ -92,7 +114,20 @@ impl Hub {
         let key: [u8; 32] = std::fs::read(etc.join("node.key")).unwrap().try_into().unwrap();
         let id_hex = hex(iroh::SecretKey::from_bytes(&key).public().as_bytes());
         let jar = dir.join("cookies");
-        Hub { dir, etc, data, web, quic, setup_code, id_hex, jar, child: None, started: None, lab }
+        Hub {
+            dir,
+            etc,
+            data,
+            web,
+            quic,
+            setup_code,
+            id_hex,
+            jar,
+            child: None,
+            started: None,
+            lab,
+            host: "127.0.0.1".into(),
+        }
     }
 
     /// A hub restored from `file` with `master_key` (`rackhand hub restore`), on the given ports: the same address.
@@ -119,7 +154,20 @@ impl Hub {
         let key: [u8; 32] = std::fs::read(etc.join("node.key")).unwrap().try_into().unwrap();
         let id_hex = hex(iroh::SecretKey::from_bytes(&key).public().as_bytes());
         let jar = dir.join("cookies");
-        Hub { dir, etc, data, web, quic, setup_code: String::new(), id_hex, jar, child: None, started: None, lab: None }
+        Hub {
+            dir,
+            etc,
+            data,
+            web,
+            quic,
+            setup_code: String::new(),
+            id_hex,
+            jar,
+            child: None,
+            started: None,
+            lab: None,
+            host: "127.0.0.1".into(),
+        }
     }
 
     /// `rackhand hub backup` while the hub runs; the backup file.
@@ -197,7 +245,7 @@ impl Hub {
             .arg("-c")
             .arg(&self.jar)
             .args(rest)
-            .arg(format!("https://127.0.0.1:{}{path}", self.web))
+            .arg(format!("https://{}:{}{path}", self.host, self.web))
             .output()
             .unwrap();
         String::from_utf8_lossy(&out.stdout).to_string()
@@ -220,6 +268,11 @@ impl Hub {
 
     /// First run over HTTPS: the admin and the local site; the cookie jar then holds the admin's session.
     pub fn first_run(&self) {
+        self.first_run_as("home");
+    }
+
+    /// The same, naming the site.
+    pub fn first_run_as(&self, site: &str) {
         let page = self.curl(&["/first-run"]);
         let csrf = field(&page, "csrf");
         let form = [
@@ -228,7 +281,7 @@ impl Hub {
             ("admin_name", "admin"),
             ("password", "correct horse battery staple"),
             ("password_again", "correct horse battery staple"),
-            ("site_name", "home"),
+            ("site_name", site),
             ("timezone", "UTC"),
         ];
         let mut args: Vec<String> = Vec::new();

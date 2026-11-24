@@ -1,6 +1,9 @@
 //! Integration tier (design 14): hub, probes and helpers in Docker containers. Run with `cargo xtask ci it`.
 
 #[cfg(test)]
+#[path = "bootstrap_it.rs"]
+mod bootstrap_it;
+#[cfg(test)]
 mod callouts;
 #[cfg(test)]
 #[path = "checks_it.rs"]

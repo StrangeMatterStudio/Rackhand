@@ -286,6 +286,9 @@ pub fn build(o: &Options) -> Result<BTreeMap<String, String>> {
             .replace("__VERIFY_SHA256_X86_64__", &verify_hash(LINUX_X86_64))
             .replace("__VERIFY_SHA256_AARCH64__", &verify_hash(LINUX_AARCH64));
         std::fs::write(o.out.join("install.sh"), script)?;
+        // the site bootstrap on a Proxmox host (7.7.4)
+        let lxc = std::fs::read_to_string(packaging.join("rackhand-lxc.sh"))?.replace("__VERSION__", &version);
+        std::fs::write(o.out.join("rackhand-lxc.sh"), lxc)?;
         if o.targets.iter().any(|t| t == WINDOWS) {
             let script = std::fs::read_to_string(packaging.join("windows/install.ps1"))?
                 .replace("__VERSION__", &version)
@@ -572,6 +575,11 @@ mod slow_tests {
         assert_eq!(manifest.check_dir(&out), Ok(()));
         let install = std::fs::read_to_string(out.join("install.sh")).unwrap();
         assert!(!install.contains("__VERIFY_SHA256") && !install.contains("__VERSION__"), "the installer is rendered");
+        let lxc = std::fs::read_to_string(out.join("rackhand-lxc.sh")).unwrap();
+        assert!(!lxc.contains("__VERSION__"), "and the LXC script (7.7.4)");
+        for unit in ["rackhand-updater.path", "rackhand-updater.service"] {
+            assert!(out.join(unit).is_file(), "{unit} ships with the release");
+        }
         let _ = std::fs::remove_dir_all(&out);
     }
 

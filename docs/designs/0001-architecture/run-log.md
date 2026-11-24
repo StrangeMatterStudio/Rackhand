@@ -191,3 +191,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-23 | T92 done: probe self-update: signed version, apply into the inactive slot, update guard, spool download, the hub's release source, channels and canary rollout, installer slots, IT tests (D176 to D182) |
 | 2026-11-24 | T92, Windows: the Windows probe updates itself (the services' binary path as the switch, the guard a SYSTEM scheduled task), the slots shared in `rackhand-release`, and probes offered only the hub's own version (D183) |
 | 2026-11-23 | T93 done: the hub, relay and operator updater: self-update, the root updater, the guard with the database put back on a rollback, the Settings page, IT tests (D184 to D189) |
+| 2026-11-23 | T94 done: install.sh --hub and rackhand-lxc.sh, with their integration tests (D190 to D191) |
