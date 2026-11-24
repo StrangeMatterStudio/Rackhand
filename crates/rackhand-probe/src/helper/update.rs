@@ -11,7 +11,7 @@ use rackhand_proto::helper::HelperResponse;
 use rackhand_release::binary::Version;
 use rackhand_release::{Pinned, PublicKey};
 
-use crate::update::apply::{Paths, Request, apply};
+use crate::update::apply::{Layout, Request, apply, paths};
 
 /// Another update isn't started while a guard that was started less than this long ago may still be working: it waits 2
 /// minutes for the probe and restarts the helper either way.
@@ -85,7 +85,7 @@ pub fn apply_update(
     if started.is_some_and(|at| at.elapsed() < GUARD_BUSY) {
         return error("update_in_progress", "an update is being switched in");
     }
-    let paths = Paths::new(root);
+    let paths = paths(root);
     let request = Request { version: version.into(), sha256: sha256.into(), signature: signature.into() };
     let applied = match apply(&paths, installed, &request, &setup.keys) {
         Ok(a) => a,
@@ -95,11 +95,15 @@ pub fn apply_update(
         }
     };
     let guard = root.join("var/lib/rackhand-helper/update-guard");
-    let copied = std::fs::read(paths.slot(applied.old)).and_then(|bytes| Paths::replace(&guard, &bytes, 0o700));
+    let copied = std::fs::read(paths.slot(applied.old)).and_then(|bytes| Layout::replace(&guard, &bytes, 0o700));
     if let Err(e) = copied {
         return error("guard_failed", format!("the guard's copy of the running binary: {e}"));
     }
-    let args = [applied.old.name().to_string(), applied.new.name().to_string(), applied.version.to_string()];
+    let args = [
+        paths.slot_name(applied.old).to_string(),
+        paths.slot_name(applied.new).to_string(),
+        applied.version.to_string(),
+    ];
     if let Err(e) = setup.launcher.start(&guard, &args) {
         tracing::warn!(error = %e, "the update guard didn't start");
         return error("guard_failed", e);

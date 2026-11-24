@@ -9,6 +9,8 @@
 
 pub mod binary;
 pub mod manifest;
+#[cfg(unix)]
+pub mod slots;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;

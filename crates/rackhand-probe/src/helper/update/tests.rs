@@ -54,7 +54,7 @@ impl Fixture {
     fn new(name: &str, keys: Vec<(Pinned, PublicKey)>) -> Fixture {
         let dir = std::env::temp_dir().join(format!("rackhand-helper-update-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let paths = Paths::new(&dir);
+        let paths = crate::update::apply::paths(&dir);
         for d in [paths.lib(), paths.spool_dir(), dir.join("var/lib/rackhand-helper")] {
             std::fs::create_dir_all(d).unwrap();
         }
@@ -73,7 +73,7 @@ impl Fixture {
     }
 
     fn spool(&self, bytes: &[u8]) {
-        std::fs::write(Paths::new(&self.dir).spool_file(), bytes).unwrap();
+        std::fs::write(crate::update::apply::paths(&self.dir).spool_file(), bytes).unwrap();
     }
 
     fn ask(&self, data: &[u8], version: &str) -> HelperResponse {
@@ -98,7 +98,7 @@ fn an_update_starts_the_guard_from_a_copy_of_the_running_binary() {
     // the guard is the old, known-good binary, so a broken new one can't stop the rollback
     assert_eq!(std::fs::read(&guard).unwrap(), b"the running probe");
     assert_eq!(std::fs::metadata(&guard).unwrap().permissions().mode() & 0o7777, 0o700, "root's alone");
-    assert_eq!(std::fs::read(Paths::new(&f.dir).slot(Slot::B)).unwrap(), b"the new probe");
+    assert_eq!(std::fs::read(crate::update::apply::paths(&f.dir).slot(Slot::B)).unwrap(), b"the new probe");
 }
 
 #[test]
@@ -120,7 +120,7 @@ fn a_refused_release_starts_no_guard_and_says_why() {
     let HelperResponse::Error { code, .. } = f.ask(b"older", "0.1.0") else { panic!("the same version was accepted") };
     assert_eq!(code, "downgrade");
     assert!(f.launched.started.lock().unwrap().is_empty());
-    assert!(!Paths::new(&f.dir).slot(Slot::B).exists());
+    assert!(!crate::update::apply::paths(&f.dir).slot(Slot::B).exists());
     assert!(!f.dir.join("var/lib/rackhand-helper/update-guard").exists());
     // and the helper isn't stuck: a good one goes through afterwards
     f.spool(b"the new probe");
@@ -137,7 +137,7 @@ fn a_second_update_while_the_guard_runs_is_refused() {
     assert_eq!(code, "update_in_progress");
     assert_eq!(f.launched.started.lock().unwrap().len(), 1);
     assert_eq!(
-        std::fs::read(Paths::new(&f.dir).slot(Slot::B)).unwrap(),
+        std::fs::read(crate::update::apply::paths(&f.dir).slot(Slot::B)).unwrap(),
         b"the new probe",
         "the slot the guard is switching to isn't touched"
     );
@@ -150,7 +150,7 @@ fn a_guard_that_cannot_start_leaves_the_machine_as_it_was() {
     *f.launched.fail.lock().unwrap() = true;
     let HelperResponse::Error { code, .. } = f.ask(b"the new probe", "0.1.1") else { panic!("no guard, no update") };
     assert_eq!(code, "guard_failed");
-    assert_eq!(std::fs::read_link(Paths::new(&f.dir).link()).unwrap(), PathBuf::from("probe-a"));
+    assert_eq!(std::fs::read_link(crate::update::apply::paths(&f.dir).link()).unwrap(), PathBuf::from("probe-a"));
     *f.launched.fail.lock().unwrap() = false;
     assert_eq!(f.ask(b"the new probe", "0.1.1"), HelperResponse::UpdateStarted, "it can be tried again");
 }
@@ -163,5 +163,5 @@ fn a_build_that_pins_no_release_keys_installs_nothing() {
         panic!("unsigned code was accepted")
     };
     assert_eq!(code, "no_keys");
-    assert!(!Paths::new(&f.dir).slot(Slot::B).exists());
+    assert!(!crate::update::apply::paths(&f.dir).slot(Slot::B).exists());
 }

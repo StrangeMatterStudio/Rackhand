@@ -30,7 +30,7 @@ mod tests {
     /// The probe writes where the helper reads: a download that lands elsewhere is never applied.
     #[test]
     fn probe_and_helper_agree_on_the_spool() {
-        let helper = super::apply::Paths::new(Path::new("/")).spool_dir();
+        let helper = super::apply::paths(Path::new("/")).spool_dir();
         assert_eq!(super::spool_dir(Path::new("/var/lib/rackhand-probe/buffer")), helper);
         assert_eq!(helper, Path::new("/var/lib/rackhand-probe/update"));
     }
