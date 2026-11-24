@@ -39,4 +39,7 @@ mod ssh_it;
 #[cfg(test)]
 mod support;
 #[cfg(test)]
+#[path = "update_it.rs"]
+mod update;
+#[cfg(test)]
 mod wrapper;

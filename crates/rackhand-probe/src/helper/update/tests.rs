@@ -55,7 +55,7 @@ impl Fixture {
         let dir = std::env::temp_dir().join(format!("rackhand-helper-update-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let paths = Paths::new(&dir);
-        for d in [paths.lib(), paths.spool_dir(), dir.join("run/rackhand-helper")] {
+        for d in [paths.lib(), paths.spool_dir(), dir.join("var/lib/rackhand-helper")] {
             std::fs::create_dir_all(d).unwrap();
         }
         std::fs::write(paths.slot(Slot::A), b"the running probe").unwrap();
@@ -93,7 +93,7 @@ fn an_update_starts_the_guard_from_a_copy_of_the_running_binary() {
     f.spool(b"the new probe");
     assert_eq!(f.ask(b"the new probe", "0.1.1"), HelperResponse::UpdateStarted);
     let started = f.launched.started.lock().unwrap().clone();
-    let guard = f.dir.join("run/rackhand-helper/update-guard");
+    let guard = f.dir.join("var/lib/rackhand-helper/update-guard");
     assert_eq!(started, vec![(guard.clone(), vec!["probe-a".into(), "probe-b".into(), "0.1.1".into()])]);
     // the guard is the old, known-good binary, so a broken new one can't stop the rollback
     assert_eq!(std::fs::read(&guard).unwrap(), b"the running probe");
@@ -121,7 +121,7 @@ fn a_refused_release_starts_no_guard_and_says_why() {
     assert_eq!(code, "downgrade");
     assert!(f.launched.started.lock().unwrap().is_empty());
     assert!(!Paths::new(&f.dir).slot(Slot::B).exists());
-    assert!(!f.dir.join("run/rackhand-helper/update-guard").exists());
+    assert!(!f.dir.join("var/lib/rackhand-helper/update-guard").exists());
     // and the helper isn't stuck: a good one goes through afterwards
     f.spool(b"the new probe");
     assert_eq!(f.ask(b"the new probe", "0.1.1"), HelperResponse::UpdateStarted);

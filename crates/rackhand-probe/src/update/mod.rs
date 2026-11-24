@@ -16,3 +16,22 @@ pub fn artifact_name() -> String {
 
 /// At most this much is downloaded into the spool and copied into a slot.
 pub const MAX_RELEASE_BYTES: u64 = 64 << 20;
+
+/// The spool, from the probe's data directory (the `buffer` directory inside its state directory): the one place the probe
+/// puts a download and the helper reads it from.
+pub fn spool_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
+    data_dir.parent().unwrap_or(data_dir).join("update")
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::path::Path;
+
+    /// The probe writes where the helper reads: a download that lands elsewhere is never applied.
+    #[test]
+    fn probe_and_helper_agree_on_the_spool() {
+        let helper = super::apply::Paths::new(Path::new("/")).spool_dir();
+        assert_eq!(super::spool_dir(Path::new("/var/lib/rackhand-probe/buffer")), helper);
+        assert_eq!(helper, Path::new("/var/lib/rackhand-probe/update"));
+    }
+}

@@ -340,7 +340,7 @@ impl Daemon {
     ) {
         let now = self.opts.clock.now_ms();
         let Some(offer) = self.offers.accept(update, &self.opts.version, now) else { return };
-        let spool = self.opts.data_dir.join("update");
+        let spool = crate::update::spool_dir(&self.opts.data_dir);
         let helper = self.opts.helper.clone();
         let events = events.clone();
         let clock = self.opts.clock.clone();
@@ -637,6 +637,7 @@ pub async fn main(paths: Paths) -> Result<i32, String> {
     let mut link_cfg = crate::link::LinkConfig::new(hub, machine_id, version);
     // the MACs the hub compares with the guests' configurations (guest binding, 7.3.12)
     link_cfg.interfaces = collect::interfaces(host.as_ref());
+    link_cfg.os = Some(hello_os());
     // what this probe can do (E36): sampling until the eBPF capture is loaded, with the helper and the engine's socket
     #[cfg(unix)]
     let containers = crate::helper::containers::SOCKETS.iter().any(|s| std::path::Path::new(s).exists());
@@ -663,3 +664,12 @@ pub async fn main(paths: Paths) -> Result<i32, String> {
 
 #[cfg(test)]
 mod tests;
+
+/// What the Hello says of the machine: its architecture (the hub picks the release file by it) and whether it runs systemd.
+pub fn hello_os() -> rackhand_proto::common::OsInfo {
+    rackhand_proto::common::OsInfo {
+        arch: std::env::consts::ARCH.to_string(),
+        systemd: std::path::Path::new("/run/systemd/system").exists(),
+        ..Default::default()
+    }
+}

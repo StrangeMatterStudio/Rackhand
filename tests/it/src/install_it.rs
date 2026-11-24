@@ -102,7 +102,8 @@ impl Release {
         let text = std::fs::read_to_string(template)
             .unwrap()
             .replace("__VERSION__", "0.1.0")
-            .replace("__VERIFY_SHA256__", &sha);
+            .replace("__VERIFY_SHA256_X86_64__", &sha)
+            .replace("__VERIFY_SHA256_AARCH64__", &"0".repeat(64));
         let out = self.dir.join("install.sh");
         std::fs::write(&out, text).unwrap();
         out

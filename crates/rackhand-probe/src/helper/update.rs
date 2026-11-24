@@ -1,5 +1,6 @@
 //! `ApplyUpdate` in the helper (7.3.3): the copy and its checks are `crate::update::apply`; this starts the guard. The guard is
-//! a copy of the running, known-good binary in root's `/run/rackhand-helper`, started as a unit of its own, so a new helper that
+//! a copy of the running, known-good binary in root's `/var/lib/rackhand-helper` (not `/run`, which can be mounted `noexec`),
+//! started as a unit of its own, so a new helper that
 //! doesn't work can't stop the way back.
 
 use std::path::Path;
@@ -93,7 +94,7 @@ pub fn apply_update(
             return error(e.code, e.message);
         }
     };
-    let guard = root.join("run/rackhand-helper/update-guard");
+    let guard = root.join("var/lib/rackhand-helper/update-guard");
     let copied = std::fs::read(paths.slot(applied.old)).and_then(|bytes| Paths::replace(&guard, &bytes, 0o700));
     if let Err(e) = copied {
         return error("guard_failed", format!("the guard's copy of the running binary: {e}"));

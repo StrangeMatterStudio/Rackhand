@@ -201,3 +201,11 @@ mod helper {
         assert!(reports.iter().all(|r| r.events.iter().all(|e| e.kind != "helper_version_mismatch")));
     }
 }
+
+/// The Hello says what the machine's architecture is, so that the hub offers it the release built for it (7.3.3).
+#[test]
+fn the_hello_names_the_architecture() {
+    let os = super::hello_os();
+    assert_eq!(os.arch, std::env::consts::ARCH);
+    assert!(!os.arch.is_empty());
+}

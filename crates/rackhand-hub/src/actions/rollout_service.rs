@@ -69,11 +69,14 @@ fn hex_to_array(hex: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
+/// What was read the last time: the manifest's size and modified time, and the release found (or none).
+type Cached = ((u64, std::time::SystemTime), Option<Release>);
+
 /// The release in a directory, read again when its manifest changes.
 #[derive(Debug)]
 pub struct FsReleases {
     dir: PathBuf,
-    cache: Mutex<Option<((u64, std::time::SystemTime), Option<Release>)>>,
+    cache: Mutex<Option<Cached>>,
 }
 
 impl FsReleases {
