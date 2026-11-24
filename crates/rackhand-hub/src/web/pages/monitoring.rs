@@ -528,7 +528,7 @@ pub(super) fn site(web: &Web, ctx: &Ctx) -> Response<Body> {
             let shell = Shell::at(web, ctx, &name, &format!("/sites/{name}"));
             html(StatusCode::OK, SitePage { shell, q, machines }.render())
         }
-        Ok(None) => status(StatusCode::NOT_FOUND, "No such site"),
+        Ok(None) => super::peers::site(web, ctx, key).unwrap_or_else(|| status(StatusCode::NOT_FOUND, "No such site")),
         Err(_) => status(StatusCode::INTERNAL_SERVER_ERROR, "The database couldn't be read"),
     }
 }

@@ -128,7 +128,7 @@ pub struct Status {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct RelayLists {
     urls: Vec<String>,
     kept: BTreeMap<String, Vec<Listed>>,
@@ -142,6 +142,18 @@ impl RelayLists {
 
     pub fn status(&self, url: &str) -> Option<&Status> {
         self.status.get(url)
+    }
+
+    /// The lists this hub subscribes to.
+    pub fn urls(&self) -> &[String] {
+        &self.urls
+    }
+
+    /// A change of subscriptions: what a list that is no longer followed gave is forgotten, the rest is kept.
+    pub fn set_urls(&mut self, urls: Vec<String>) {
+        self.kept.retain(|u, _| urls.contains(u));
+        self.status.retain(|u, _| urls.contains(u));
+        self.urls = urls;
     }
 
     /// Fetches each list that is due (one never fetched, or last fetched a day ago).
@@ -189,6 +201,27 @@ impl RelayLists {
             ..RelayConfig::default()
         }
     }
+}
+
+/// One look at the lists the setting names (7.3.10, 7.8.5): with relay lists off, or in air-gapped mode, no request is made. Otherwise
+/// the subscriptions are brought in line with the setting, each list that is due is fetched, and the listed relays come back for
+/// the endpoint to use.
+pub async fn follow(
+    lists: &std::sync::Mutex<RelayLists>,
+    settings: &crate::library::config::HubConfig,
+    now_ms: i64,
+    fetch: &dyn Fetch,
+) -> Vec<Listed> {
+    if !settings.sources.relay_lists || settings.sources.airgapped {
+        return Vec::new();
+    }
+    // fetched on a copy, so that the dashboard can read the status while a slow list is waited for
+    let mut current = lists.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    current.set_urls(settings.relay_list_urls.clone());
+    current.refresh(now_ms, fetch).await;
+    let listed = current.listed();
+    *lists.lock().unwrap_or_else(|e| e.into_inner()) = current;
+    listed
 }
 
 #[cfg(test)]
@@ -300,5 +333,53 @@ mod tests {
             let ours = relay.url.to_string().contains("own.example.net");
             assert_eq!(relay.auth_token.is_some(), ours, "{}: only our own relays are sent the key", relay.url);
         }
+    }
+}
+
+#[cfg(test)]
+mod follow_tests {
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::library::config::{HubConfig, Sources};
+
+    struct Fixed(String);
+
+    impl Fetch for Fixed {
+        fn fetch<'a>(&'a self, _url: &'a str) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
+            let body = self.0.clone();
+            Box::pin(async move { Ok(body) })
+        }
+    }
+
+    const ONE: &str = "https://one.example.net/r.toml";
+    const TWO: &str = "https://two.example.net/r.toml";
+
+    fn settings(on: bool, airgapped: bool, urls: &[&str]) -> HubConfig {
+        HubConfig {
+            sources: Sources { relay_lists: on, airgapped, ..Sources::default() },
+            relay_list_urls: urls.iter().map(|u| u.to_string()).collect(),
+            ..HubConfig::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn lists_are_fetched_only_when_on_and_not_air_gapped_and_follow_the_setting() {
+        let body = "[[relay]]\nurl = \"https://relay.example.org\"\nname = \"R\"\n";
+        let lists = Mutex::new(RelayLists::default());
+        // off, or air-gapped: no request, so no status and nothing listed
+        for (on, air) in [(false, false), (true, true)] {
+            let listed = follow(&lists, &settings(on, air, &[ONE]), 1_000, &Fixed(body.into())).await;
+            assert!(listed.is_empty());
+            assert!(lists.lock().unwrap().status(ONE).is_none(), "on {on}, air-gapped {air}");
+        }
+        // on: fetched, and the relays come back for the endpoint
+        let listed = follow(&lists, &settings(true, false, &[ONE, TWO]), 2_000, &Fixed(body.into())).await;
+        assert_eq!(listed.iter().map(|r| r.url.as_str()).collect::<Vec<_>>(), ["https://relay.example.org"]);
+        assert!(lists.lock().unwrap().status(ONE).is_some() && lists.lock().unwrap().status(TWO).is_some());
+        // a list taken out of the setting is forgotten, the other keeps its status
+        follow(&lists, &settings(true, false, &[ONE]), 3_000, &Fixed(body.into())).await;
+        assert!(lists.lock().unwrap().status(TWO).is_none());
+        assert_eq!(lists.lock().unwrap().status(ONE).map(|s| s.checked_ms), Some(2_000), "not due again yet");
     }
 }

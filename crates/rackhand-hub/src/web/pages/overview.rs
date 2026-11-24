@@ -44,6 +44,8 @@ struct Overview {
     incidents: Vec<IncidentView>,
     approvals: Vec<(String, String, String)>,
     machines: Vec<MachineRow>,
+    /// A tile for each site, once a peer is linked (7.7.1).
+    tiles: Vec<super::peers::Tile>,
 }
 
 fn health(state: &str, quarantine: &str, silent: bool, worst: Option<&str>) -> &'static str {
@@ -157,9 +159,11 @@ pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
         updates: reported.iter().map(|u| u.pending).sum(),
         security: reported.iter().map(|u| u.security).sum(),
     };
+    let tiles = super::peers::tiles(web, ctx.now_ms, &all);
     let q = ui::query(ctx);
     let machines = all.into_iter().filter(|m| m.matches(&q)).collect();
     let shell = Shell::new(web, ctx, "Overview");
-    let page = Overview { shell, q, counts, incidents: incidents.into_iter().take(5).collect(), approvals, machines };
+    let page =
+        Overview { shell, q, counts, incidents: incidents.into_iter().take(5).collect(), approvals, machines, tiles };
     html(StatusCode::OK, page.render())
 }

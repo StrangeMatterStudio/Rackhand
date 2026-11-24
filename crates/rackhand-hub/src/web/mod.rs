@@ -84,6 +84,9 @@ struct Inner {
     assist: Option<crate::assist::Assist>,
     notify: Option<crate::notify::Notify>,
     bus: Option<crate::bus::Bus>,
+    /// What the peer pages ask of the peers system (a request, a join, an unlink), and the relay lists with their status.
+    peer_reach: Option<Arc<dyn crate::peers::PeerReach>>,
+    relay_lists: Option<Arc<Mutex<crate::peers::relay_lists::RelayLists>>>,
     first_run: pages::FirstRunDrafts,
     held: forms::HeldForms,
 }
@@ -140,6 +143,8 @@ impl Web {
             assist: None,
             notify: None,
             bus: None,
+            peer_reach: None,
+            relay_lists: None,
             first_run: pages::FirstRunDrafts::default(),
             held: forms::HeldForms::default(),
         }))
@@ -165,6 +170,22 @@ impl Web {
     pub fn with_assist(mut self, assist: crate::assist::Assist) -> Web {
         if let Some(inner) = Arc::get_mut(&mut self.0) {
             inner.assist = Some(assist);
+        }
+        self
+    }
+
+    /// The peers system, for the Peers and relays page and a peer's machines; before the router is built.
+    pub fn with_peer_reach(mut self, reach: Arc<dyn crate::peers::PeerReach>) -> Web {
+        if let Some(inner) = Arc::get_mut(&mut self.0) {
+            inner.peer_reach = Some(reach);
+        }
+        self
+    }
+
+    /// The relay lists the hub follows and how each fetch went; before the router is built.
+    pub fn with_relay_lists(mut self, lists: Arc<Mutex<crate::peers::relay_lists::RelayLists>>) -> Web {
+        if let Some(inner) = Arc::get_mut(&mut self.0) {
+            inner.relay_lists = Some(lists);
         }
         self
     }

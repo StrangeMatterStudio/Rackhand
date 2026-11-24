@@ -37,7 +37,7 @@ impl Peers {
         self
     }
 
-    fn network(&self) -> Result<std::sync::Arc<Network>, String> {
+    pub(super) fn network(&self) -> Result<std::sync::Arc<Network>, String> {
         self.inner
             .network
             .lock()
@@ -60,7 +60,7 @@ impl Peers {
         }
     }
 
-    fn alive(&self, peer_id: &str) -> Option<Connection> {
+    pub(super) fn alive(&self, peer_id: &str) -> Option<Connection> {
         let live = self.inner.live.lock().unwrap_or_else(|e| e.into_inner());
         live.get(peer_id).filter(|c| c.close_reason().is_none()).cloned()
     }

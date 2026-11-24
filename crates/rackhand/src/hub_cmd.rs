@@ -332,11 +332,18 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     };
     // the hub's ticket for install commands and invites, once the endpoint is up
     let slot = ticket_addrs.clone();
+    let ticket_relays = config.relays.clone();
     let ticket = Arc::new(move || {
         let (id, addrs) = slot.get()?;
         let addrs = addrs();
-        (!addrs.is_empty()).then(|| format!("rackhand1:{id}@{}", addrs.join(",")))
+        // a hub behind a NAT is reached through its relays, so an invite names them (7.3.1)
+        let relays = if ticket_relays.is_empty() { String::new() } else { format!("!{}", ticket_relays.join(",")) };
+        (!addrs.is_empty() || !ticket_relays.is_empty()).then(|| format!("rackhand1:{id}@{}{relays}", addrs.join(",")))
     });
+    // the relay lists this hub follows, and how each fetch went (7.3.10)
+    let relay_lists = Arc::new(std::sync::Mutex::new(rackhand_hub::peers::relay_lists::RelayLists::new(
+        rackhand_hub::library::config::hub(&db).map(|c| c.relay_list_urls).unwrap_or_default(),
+    )));
     let web = rackhand_hub::web::Web::new(db.clone(), vault.clone(), audit.clone(), recovery, web_config)
         .with_ticket(ticket)
         .with_release_dir(config.data_dir.join("release"))
@@ -349,7 +356,9 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         .with_intel(intel.clone())
         .with_assist(assist.clone())
         .with_notify(notify.clone())
-        .with_bus(bus.clone());
+        .with_bus(bus.clone())
+        .with_peer_reach(Arc::new(peers.clone()))
+        .with_relay_lists(relay_lists.clone());
     // the mesh: probes and MCP clients
     let setup = Arc::new(joins::HubSetup {
         db: db.clone(),
@@ -433,6 +442,26 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     let watch = Arc::new(self_watch(config, &db, &ingest, &notify));
     // each hub tells its peers how it is every 30 s (7.3.4)
     peers.clone().spawn_push();
+    // relay lists, when turned on: fetched daily, and what they list is added to the endpoint's relays (7.3.10)
+    let (lists_db, ep, own_relays) = (db.clone(), endpoint.clone(), config.relays.clone());
+    tokio::spawn(async move {
+        let mut added = std::collections::HashSet::new();
+        loop {
+            let settings = rackhand_hub::library::config::hub(&lists_db).unwrap_or_default();
+            let https = rackhand_hub::peers::relay_lists::Https;
+            let listed = rackhand_hub::peers::relay_lists::follow(&relay_lists, &settings, now_ms(), &https).await;
+            for relay in listed {
+                // a relay the operator named keeps its key; a listed one is added once, as a public relay
+                if own_relays.contains(&relay.url) || !added.insert(relay.url.clone()) {
+                    continue;
+                }
+                if let Ok(url) = relay.url.parse::<iroh::RelayUrl>() {
+                    ep.insert_relay(url.clone(), Arc::new(iroh::RelayConfig::from(url))).await;
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(600)).await;
+        }
+    });
     // the peers watch each other every 30 s, and a hub with none calls its dead-man URL (7.5.5)
     let deadman_db = db.clone();
     peers.clone().spawn_watch(

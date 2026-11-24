@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">Hubs linked with this one, and the relays that connect sites behind NATs. A peer is a pair: it sees what it is allowed to ask, and what you ask of it is decided on its own dashboard.</p></div>{% if can_edit %}<a class="btn primary" href="/add">{{ crate::web::ui::icon("add")|safe }}Invite a peer</a>{% endif %}</div>
+<section class="card list"><div class="bar"><h2>Peers</h2></div>
+{% if peers.is_empty() %}<p class="empty">No peers linked. Invite one from Add, or join another hub with its invite below.</p>{% else %}
+<table><thead><tr><th scope="col">Site</th><th scope="col">State</th><th scope="col">Last summary</th><th scope="col">Path</th><th scope="col" class="x">Machines</th><th scope="col" class="x">Open incidents</th></tr></thead><tbody>
+{% for p in peers %}<tr><td class="t"><a href="/sites/{{ p.site }}">{{ p.site }}</a></td><td class="state">{{ crate::web::ui::badge(p.state)|safe }}</td><td class="num" data-label="Last summary">{{ p.last_heard }}</td><td data-label="Path">{% if p.path.is_empty() %}Not known{% else %}{{ p.path }}{% endif %}{% if !p.path_detail.is_empty() %}<small>{{ p.path_detail }}</small>{% endif %}</td><td class="x num" data-label="Machines">{{ p.machines }}</td><td class="x num" data-label="Open incidents">{{ p.incidents }}</td></tr>
+{% endfor %}</tbody></table>{% endif %}
+</section>
+{% for p in peers %}{% if can_edit %}<section class="card"><h2>{{ p.site }}: what it may ask, and backup space</h2>
+<form method="post" action="/peers/{{ p.id }}/settings" novalidate>
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<fieldset><legend>Queries this peer may make</legend>
+{% for (key, label, on) in p.queries %}<div class="field check"><label><input type="checkbox" name="{{ key }}" value="on"{% if on %} checked{% endif %}> {{ label }}</label></div>
+{% endfor %}</fieldset>
+<div class="field"><label for="quota-{{ p.id }}">Backup space kept for it, in GB</label><input id="quota-{{ p.id }}" name="quota_gb" type="number" min="0" max="100000" value="{{ p.quota_gb }}"><p class="hint">0 keeps none. Its backups are kept here, one copy, up to this size.</p></div>
+<button type="submit" class="primary">Save</button>
+</form>
+<form method="post" action="/peers/{{ p.id }}/unlink"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="btn danger">Unlink {{ p.site }}</button></form>
+</section>{% endif %}{% endfor %}
+{% if can_edit %}<section class="card"><h2>Join another hub</h2>
+<p>On the other hub, Add, Invite a peer, gives a line to paste here. It works once, for 24 hours.</p>
+<form method="post" action="/peers/join" novalidate>
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="field"><label for="invite">Invite</label><input id="invite" name="invite" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="rackhand1:...#..."></div>
+<button type="submit" class="primary">Join</button>
+</form></section>{% endif %}
+<section class="card list"><div class="bar"><h2>Relay lists</h2></div>
+<p>{% if lists_on %}Relay lists are on: each list is fetched once a day, and its relays are tried after this hub's own, as public relays that never get this hub's key.{% else %}Relay lists are off. Turn them on to fetch the lists below once a day.{% endif %}</p>
+{% if lists.is_empty() %}<p class="empty">No relay lists. A list is an address that returns relays in TOML.</p>{% else %}
+<table><thead><tr><th scope="col">List</th><th scope="col">Last fetch</th></tr></thead><tbody>
+{% for l in lists %}<tr><td class="t">{{ l.url }}</td><td data-label="Last fetch">{{ l.status }}{% if !l.error.is_empty() %}<small>Error: {{ l.error }}. What it gave before is still in use.</small>{% endif %}</td></tr>
+{% endfor %}</tbody></table>{% endif %}
+{% if can_edit %}<form method="post" action="/peers/relay-lists" novalidate>
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="field"><label for="urls">List addresses, one a line</label><textarea id="urls" name="urls" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false">{{ list_urls }}</textarea><p class="hint">https:// only.</p></div>
+<div class="field check"><label><input type="checkbox" name="enabled" value="on"{% if lists_on %} checked{% endif %}> Fetch relay lists</label></div>
+<button type="submit" class="primary">Save</button>
+</form>{% endif %}
+</section>
+{% if !listed.is_empty() %}<section class="card list"><div class="bar"><h2>Listed relays</h2></div>
+<table><thead><tr><th scope="col">Name</th><th scope="col">Address</th><th scope="col" class="x">Region</th><th scope="col" class="x">Operator</th></tr></thead><tbody>
+{% for r in listed %}<tr><td class="t">{{ r.name }}</td><td data-label="Address">{{ r.url }}</td><td class="x" data-label="Region">{{ r.region }}</td><td class="x" data-label="Operator">{{ r.operator }}</td></tr>
+{% endfor %}</tbody></table></section>{% endif %}
+<p class="hint">Operators that run the assistant are under <a href="/settings/assistant">Assistant</a>.</p>
+{% endblock %}

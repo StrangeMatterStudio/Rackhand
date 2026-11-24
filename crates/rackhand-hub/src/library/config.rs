@@ -62,6 +62,9 @@ pub struct HubConfig {
     /// A URL a hub with no peers calls every 5 minutes, for a service outside the site that notices when it goes quiet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deadman_url: Option<String>,
+    /// Relay lists this hub follows (7.3.10): HTTPS addresses of TOML lists, fetched daily when `sources.relay_lists` is on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relay_list_urls: Vec<String>,
 }
 
 /// The assistant's settings (7.7.1): how many jobs a day the hub starts.

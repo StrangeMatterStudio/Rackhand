@@ -252,3 +252,44 @@ async fn a_second_hub_with_a_name_this_hub_already_knows_is_not_linked() {
     assert_eq!(peers.len(), 1);
     assert_eq!(peers[0].endpoint_id, alpha.endpoint.id().to_string(), "the first alpha is still the one");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unlinking_tells_the_peer_and_both_hubs_forget() {
+    use rackhand_hub::peers::PeerReach;
+    let (alpha, beta, _relay) = two("unlink").await;
+    beta.peers.join(&alpha.invite().await, "admin").await.unwrap();
+    let row = alpha.peers.peers().remove(0);
+    eventually("alpha heard from beta", || alpha.peers.latest_summary(&row.id).is_some()).await;
+    PeerReach::unlink(&alpha.peers, &row.id, "admin").await.unwrap();
+    assert!(alpha.peers.peers().is_empty());
+    eventually("beta forgot alpha", || beta.peers.peers().is_empty()).await;
+    assert_eq!(alpha.admits(&beta), Admission::Revoked);
+    assert_eq!(beta.admits(&alpha), Admission::Revoked);
+    assert!(PeerReach::unlink(&alpha.peers, "nobody", "admin").await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_for_a_peers_machine_gets_the_owners_answer_and_the_path_is_known() {
+    use rackhand_hub::peers::PeerReach;
+    use rackhand_proto::peer::{ActionRequest, action_request_status};
+    let (alpha, beta, _relay) = two("ask").await;
+    beta.peers.join(&alpha.invite().await, "admin").await.unwrap();
+    let row = alpha.peers.peers().remove(0);
+    eventually("alpha heard from beta", || alpha.peers.latest_summary(&row.id).is_some()).await;
+    // beta has no such runbook, and says so on the request's own stream
+    let request = ActionRequest {
+        request_id: ulid::Ulid::new().to_bytes().to_vec(),
+        requested_by: "admin@alpha".into(),
+        runbook: "nope".into(),
+        target: ulid::Ulid::new().to_bytes().to_vec(),
+        params: Default::default(),
+        reason: "test".into(),
+    };
+    let first = PeerReach::request(&alpha.peers, &row.id, &request).await.unwrap();
+    assert!(matches!(first.status, Some(action_request_status::Status::Rejected(_))), "{first:?}");
+    assert!(PeerReach::request(&alpha.peers, "nobody", &request).await.is_err());
+    // the path to a peer that is connected is direct or through the relay, never unreachable
+    let path = PeerReach::path(&alpha.peers, &row.id);
+    assert!(["direct", "via relay"].contains(&path.label), "{}", path.label);
+    assert_eq!(PeerReach::path(&alpha.peers, "nobody").label, "unreachable: no path");
+}

@@ -15,6 +15,7 @@ mod monitoring;
 mod notifiers;
 mod overview;
 mod patching;
+mod peers;
 mod security;
 mod settings;
 mod users;
@@ -115,6 +116,12 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
         Page::SettingsNotifiers => notifiers::page(web, ctx),
         Page::NotifierSave => notifiers::save(web, ctx).await,
         Page::NotifierTest => notifiers::test(web, ctx).await,
+        Page::Peers => peers::page(web, ctx),
+        Page::PeersJoin => peers::join(web, ctx).await,
+        Page::PeerSettings => peers::settings(web, ctx).await,
+        Page::PeerUnlink => peers::unlink(web, ctx).await,
+        Page::PeerRequest => peers::request(web, ctx).await,
+        Page::RelayListsSave => peers::relay_lists(web, ctx).await,
         // answered before the gate (bearer token, no session)
         Page::Metrics => status(StatusCode::NOT_FOUND, "Not here"),
     }

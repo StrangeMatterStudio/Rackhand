@@ -22,6 +22,7 @@ mod link;
 mod links;
 pub mod path_status;
 mod queries;
+mod reach;
 pub mod relay_lists;
 mod requests;
 mod summary;
@@ -45,8 +46,9 @@ use crate::audit::Audit;
 use crate::ingest::Ingest;
 
 pub use link::{PeerLink, Statuses};
+pub use reach::PeerReach;
 pub use summary::HubHealthSource;
-pub use watch::{DOWN_AFTER_MS, PeerState, SILENT_AFTER_MS};
+pub use watch::{DOWN_AFTER_MS, PeerState, SILENT_AFTER_MS, state};
 
 /// Queries a peer may make in a second.
 pub const QUERIES_PER_SECOND: usize = 10;

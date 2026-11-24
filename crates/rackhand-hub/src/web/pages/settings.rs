@@ -99,6 +99,17 @@ async fn change(
     action: &str,
     edit: impl FnOnce(&mut HubConfig) -> serde_json::Value,
 ) -> Response<Body> {
+    change_to(web, ctx, action, "/settings", edit).await
+}
+
+/// The same, moving on to `to` afterward (a page that edits the settings from its own place).
+pub(super) async fn change_to(
+    web: &Web,
+    ctx: &Ctx,
+    action: &str,
+    to: &'static str,
+    edit: impl FnOnce(&mut HubConfig) -> serde_json::Value,
+) -> Response<Body> {
     let Some(user) = ctx.user.as_ref() else { return redirect("/sign-in") };
     let Ok(mut current) = config::hub(&web.0.db) else {
         return status(StatusCode::INTERNAL_SERVER_ERROR, "Settings unreadable");
@@ -114,7 +125,7 @@ async fn change(
     if let Some(library) = &web.0.library {
         library.changed(&user.name, "edit config/hub");
     }
-    redirect("/settings")
+    redirect(to)
 }
 
 /// The dead-man URL (7.5.5): a hub with no peers calls it every 5 minutes. Empty turns it off. The URL can hold a secret (a ping

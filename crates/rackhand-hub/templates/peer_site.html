@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">A peer site: {{ crate::web::ui::badge(state)|safe }} {{ last_summary }}.{% if !version.is_empty() %} Hub version {{ version }}.{% endif %} What follows is what it last said. A change is asked of it, and decided on its own dashboard.</p></div></div>
+{% if state != "peer_up" %}<div class="banner">{{ crate::web::ui::icon("error")|safe }}<div>{% if state == "peer_down" %}This site is down or can't be reached.{% else %}This site has gone quiet.{% endif %} {{ last_summary }}; everything below is as it was then.</div></div>{% endif %}
+<div class="cols attend"><div class="stack">
+<section class="card list"><div class="bar"><h2>Open incidents</h2></div>{% if incidents.is_empty() %}<p class="empty">No open incidents at last report.</p>{% else %}<div class="rows">{% for i in incidents %}<div class="row"><span><b>{{ i.title }}</b><small>{% if !i.machine.is_empty() %}{{ i.machine }}{% endif %}{% if !i.opened.is_empty() %}, since {{ i.opened|safe }}{% endif %}</small></span>{{ crate::web::ui::badge(i.severity)|safe }}</div>{% endfor %}</div>{% endif %}</section>
+</div>
+<section class="card list"><div class="bar"><h2>Machines</h2></div>
+{% if machines.is_empty() %}<p class="empty">This site has not reported any machines.</p>{% else %}
+<table><thead><tr><th scope="col">Machine</th><th scope="col">State</th><th scope="col">Kind</th><th scope="col">Last seen</th></tr></thead><tbody>
+{% for m in machines %}<tr><td class="t">{{ m.name }}</td><td class="state" data-health="{{ m.health }}">{{ crate::web::ui::badge(m.health)|safe }}</td><td data-label="Kind">{{ crate::web::ui::word(m.kind) }}</td><td class="num" data-label="Last seen">{% if m.last_seen.is_empty() %}Not reported{% else %}{{ m.last_seen|safe }}{% endif %}</td></tr>
+{% endfor %}</tbody></table>{% endif %}
+</section></div>
+{% if can_ask %}{% for m in machines %}<section class="card"><h2>Ask {{ peer }} to run a runbook on {{ m.name }}</h2>
+<p>The request goes to {{ peer }} and waits for an approval on its own dashboard unless its policy allows it. Nothing runs on this hub.</p>
+<form method="post" action="/peers/{{ peer_id }}/machines/{{ m.id }}/request" novalidate>
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="field"><label for="runbook-{{ m.id }}">Runbook</label><input id="runbook-{{ m.id }}" name="runbook" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="restart-service"></div>
+<div class="field"><label for="params-{{ m.id }}">Parameters</label><textarea id="params-{{ m.id }}" name="params" rows="2" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="unit=nginx.service"></textarea><p class="hint">One name=value a line, as the runbook declares them.</p></div>
+<div class="field"><label for="reason-{{ m.id }}">Why</label><input id="reason-{{ m.id }}" name="reason" type="text" autocomplete="off"><p class="hint">The person who approves it on {{ peer }} reads this.</p></div>
+<button type="submit" class="primary">Send request</button>
+</form></section>{% endfor %}{% endif %}
+{% endblock %}

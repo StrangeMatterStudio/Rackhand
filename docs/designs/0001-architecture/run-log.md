@@ -184,3 +184,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-23 | T85 done: transfers (chunks, resume, streams), peer backups and export, the transfer step and the backup runbooks (D149 to D153) |
 | 2026-11-23 | T86 done: rackhand-cli (login, status, connect, forward, send, mcp), the hub resolving machine names; the Windows build waits for T89 (D154 to D155) |
 | 2026-11-23 | T87 done: address changes (config and key updates), set-hub, identity conflicts (D156 to D157) |
+| 2026-11-23 | T88 done: peer links (join, connection, push), the Peers and relays page, peer site pages and overview tiles, relay lists, the first schema upgrade (D158 to D162) |

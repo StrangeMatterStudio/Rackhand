@@ -853,6 +853,9 @@ mod settings {
 
 mod pages {
     use super::*;
+    mod peers {
+        include!("peer_pages_tests.rs");
+    }
     use crate::library::items::{Kind, Library};
     use crate::policy::approvals::{ApprovalRequest, Approvals, approval_hash};
     use rackhand_runbook::runbook::Risk;
