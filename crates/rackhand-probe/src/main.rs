@@ -36,7 +36,7 @@ fn main() -> ExitCode {
         #[cfg(unix)]
         Some("run-cmd") => rackhand_probe::runcmd::main(&args[1..]),
         Some("--version") => {
-            println!("rackhand-probe {}", env!("CARGO_PKG_VERSION"));
+            println!("rackhand-probe {}", rackhand_probe::VERSION);
             ExitCode::SUCCESS
         }
         Some("collect") => collect_once(&args[1..]),
@@ -144,7 +144,7 @@ fn security(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let helper = rackhand_probe::helper::client::HelperClient::new(socket, env!("CARGO_PKG_VERSION"));
+    let helper = rackhand_probe::helper::client::HelperClient::new(socket, rackhand_probe::VERSION);
     let out = runtime.block_on(async move {
         let host = RootHost::system();
         let mut sampler = rackhand_probe::security::Sampler::default();
@@ -239,7 +239,7 @@ fn helper(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    match runtime.block_on(rackhand_probe::helper::daemon::main(paths, env!("CARGO_PKG_VERSION"))) {
+    match runtime.block_on(rackhand_probe::helper::daemon::main(paths, rackhand_probe::VERSION)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("rackhand-probe helper: {e}");
@@ -362,7 +362,7 @@ mod windows_cmd {
     }
 
     async fn helper_body(path: String) -> Result<(), String> {
-        let helper = rackhand_probe::helper::server::Helper::new(env!("CARGO_PKG_VERSION"));
+        let helper = rackhand_probe::helper::server::Helper::new(rackhand_probe::VERSION);
         rackhand_probe::windows::pipe::serve(&path, helper).await.map_err(|e| format!("{path}: {e}"))
     }
 

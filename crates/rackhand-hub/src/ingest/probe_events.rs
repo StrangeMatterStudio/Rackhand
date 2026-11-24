@@ -64,6 +64,26 @@ impl Facts for DbFacts {
         self.running_job(machine, &["sudoers-refresh"]).is_some() || self.enrolling(machine)
     }
 
+    fn update_offered(&self, machine: &str, sha256: &str) -> bool {
+        let since = rackhand_store::ids::now_ms() - 60 * 60_000;
+        // a hash a probe reports is hex or it matches nothing (it goes into a LIKE)
+        if !sha256.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+            return false;
+        }
+        // an offer is a row keyed `<machine>/<sha256>`; no hash asks for any of the machine's
+        let like = format!("{}/{}%", machine.replace(['%', '_', '\\'], ""), sha256);
+        self.0
+            .readers()
+            .with(|c| {
+                c.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM schedule_state WHERE kind = ?1 AND key LIKE ?2 AND last_run_ms > ?3)",
+                    rusqlite::params![super::exemptions::UPDATE_OFFERED_KIND, like, since],
+                    |r| r.get::<_, bool>(0),
+                )
+            })
+            .unwrap_or(false)
+    }
+
     fn upgraded_by(&self, _machine: &str, _job: &str, path: &str) -> bool {
         ["/usr/bin/", "/usr/sbin/", "/usr/lib/", "/bin/", "/sbin/"].iter().any(|p| path.starts_with(p))
     }

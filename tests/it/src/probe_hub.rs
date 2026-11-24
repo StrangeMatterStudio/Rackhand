@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::support::{Container, binary, musl_binary};
+use crate::support::{Container, binary, binary_with, musl_binary};
 
 pub const MACHINE: &str = "01JD0000000000000000000042";
 
@@ -49,14 +49,25 @@ pub struct Hub {
     child: Option<Child>,
     /// When `start` last ran.
     pub started: Option<Instant>,
+    /// Built with the `lab-build` feature: the test release keys pinned, so that it offers updates signed with them.
+    lab: bool,
 }
 
 impl Hub {
     /// `rackhand hub init` into a temporary directory, on free ports.
     pub fn init(name: &str) -> Hub {
+        Hub::init_as(name, false)
+    }
+
+    /// A hub built with `lab-build`, for the tests that need it to trust the test release keys.
+    pub fn init_lab(name: &str) -> Hub {
+        Hub::init_as(name, true)
+    }
+
+    fn init_as(name: &str, lab: bool) -> Hub {
         let dir = temp(name);
         let (etc, data) = (dir.join("etc"), dir.join("lib"));
-        let out = Command::new(binary("rackhand", "rackhand"))
+        let out = Command::new(exe_for(lab))
             .args(["hub", "init", "--config-dir"])
             .arg(&etc)
             .arg("--data-dir")
@@ -80,7 +91,7 @@ impl Hub {
         let key: [u8; 32] = std::fs::read(etc.join("node.key")).unwrap().try_into().unwrap();
         let id_hex = hex(iroh::SecretKey::from_bytes(&key).public().as_bytes());
         let jar = dir.join("cookies");
-        Hub { dir, etc, data, web, quic, setup_code, id_hex, jar, child: None, started: None }
+        Hub { dir, etc, data, web, quic, setup_code, id_hex, jar, child: None, started: None, lab }
     }
 
     /// A hub restored from `file` with `master_key` (`rackhand hub restore`), on the given ports: the same address.
@@ -107,7 +118,19 @@ impl Hub {
         let key: [u8; 32] = std::fs::read(etc.join("node.key")).unwrap().try_into().unwrap();
         let id_hex = hex(iroh::SecretKey::from_bytes(&key).public().as_bytes());
         let jar = dir.join("cookies");
-        Hub { dir, etc, data, web, quic, setup_code: String::new(), id_hex, jar, child: None, started: None }
+        Hub {
+            dir,
+            etc,
+            data,
+            web,
+            quic,
+            setup_code: String::new(),
+            id_hex,
+            jar,
+            child: None,
+            started: None,
+            lab: false,
+        }
     }
 
     /// `rackhand hub backup` while the hub runs; the backup file.
@@ -142,7 +165,7 @@ impl Hub {
     /// `rackhand hub run`, waiting for `/healthz`.
     pub fn start(&mut self) {
         let log = std::fs::OpenOptions::new().create(true).append(true).open(self.dir.join("hub.log")).unwrap();
-        let child = Command::new(binary("rackhand", "rackhand"))
+        let child = Command::new(exe_for(self.lab))
             .args(["hub", "run", "--config"])
             .arg(self.etc.join("hub.toml"))
             .env("RUST_LOG", "info")
@@ -670,4 +693,9 @@ mod backup {
         assert_eq!(machine.root("cat /etc/rackhand-probe/probe.toml").stdout, toml_before, "without re-enrolling");
         assert!(b.events("machine.identity_conflict").is_empty());
     }
+}
+
+/// The hub's executable: the plain build, or the one with the test release keys pinned.
+fn exe_for(lab: bool) -> PathBuf {
+    if lab { binary_with("rackhand", "rackhand", "lab-build") } else { binary("rackhand", "rackhand") }
 }

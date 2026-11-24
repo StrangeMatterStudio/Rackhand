@@ -629,7 +629,7 @@ pub async fn main(paths: Paths) -> Result<i32, String> {
     let buffer = crate::buffer::segments::Buffer::open(&buffer_dir, Default::default(), clock.now_ms())
         .map_err(|e| format!("{}: {e}", buffer_dir.display()))?;
     let backlog = buffer.pending().last().map(|r| (r.epoch, r.seq));
-    let version = env!("CARGO_PKG_VERSION");
+    let version = crate::VERSION;
     let host: Arc<dyn Host + Send + Sync> = Arc::new(match &paths.root {
         Some(root) => collect::RootHost::new(root.clone()),
         None => collect::RootHost::system(),

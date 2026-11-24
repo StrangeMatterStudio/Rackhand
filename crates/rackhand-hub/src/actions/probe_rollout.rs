@@ -13,6 +13,7 @@ use rackhand_proto::probe::UpdateAvailable;
 use rackhand_release::binary::Version;
 use rackhand_release::manifest::Channel;
 
+use crate::ingest::exemptions::UPDATE_OFFERED_KIND;
 use crate::scheduler::tasks::ScheduleState;
 
 const MIN: i64 = 60_000;
@@ -159,6 +160,14 @@ impl Rollout {
         let file = Release::probe_file(&p.arch);
         let Some(artifact) = release.artifacts.get(&file) else { return };
         self.offered.insert(p.machine.clone(), now);
+        // what the machine is told, so that its files changing to exactly this isn't an event (E48)
+        let sha: String = artifact.sha256.iter().map(|b| format!("{b:02x}")).collect();
+        plan.saved.push(ScheduleState {
+            kind: UPDATE_OFFERED_KIND.into(),
+            key: format!("{}/{sha}", p.machine),
+            last_run_ms: Some(now),
+            next_run_ms: None,
+        });
         plan.offers.push(Offer {
             machine: p.machine.clone(),
             update: UpdateAvailable {

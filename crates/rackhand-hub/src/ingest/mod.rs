@@ -10,7 +10,7 @@ mod conn;
 pub mod conn_score;
 pub mod conn_store;
 mod events;
-mod exemptions;
+pub mod exemptions;
 pub mod probe_checks;
 mod probe_events;
 pub mod probe_server;

@@ -93,7 +93,10 @@ fi
 # 4. the binary, the wrapper and the probe user, laid out as 7.3.3 says
 install -d -m 0755 /usr/local/lib/rackhand /etc/rackhand-probe /etc/rackhand
 install -d -m 0700 /var/lib/rackhand-run
-install -m 0755 "$WORK/rackhand-probe-$TARGET" /usr/local/lib/rackhand/rackhand-probe
+# the services run the probe through a link to one of two slots, so that an update goes into the other slot and the guard
+# switches the link (7.3.3)
+install -m 0755 "$WORK/rackhand-probe-$TARGET" /usr/local/lib/rackhand/probe-a
+ln -sfn probe-a /usr/local/lib/rackhand/rackhand-probe
 install -m 0755 "$WORK/rackhand-probe-$TARGET" /usr/local/lib/rackhand/run
 add_system_user() { # name
   id "$1" >/dev/null 2>&1 && return 0

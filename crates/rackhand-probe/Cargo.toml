@@ -43,6 +43,11 @@ rackhand-release = { path = "../rackhand-release" }
 # statvfs without unsafe code.
 rustix = { version = "1", default-features = false, features = ["std", "fs", "process", "net", "event"] }
 
+[features]
+# the local lab and the integration tests: the test release keys pinned, and `RACKHAND_PROBE_VERSION` honored at build time;
+# refused in a release build
+lab-build = ["rackhand-release/test-keys"]
+
 [lints]
 workspace = true
 

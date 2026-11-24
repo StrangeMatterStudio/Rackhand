@@ -12,16 +12,16 @@ use rackhand_proto::common::{Access, ProbeMode};
 use crate::probe_hub::{Hub, field, within};
 use crate::support::{Container, musl_binary, musl_binary_with};
 
-const TARGET: &str = "x86_64-unknown-linux-musl";
+pub(crate) const TARGET: &str = "x86_64-unknown-linux-musl";
 
-fn seed(name: &str) -> SigningKey {
+pub(crate) fn seed(name: &str) -> SigningKey {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../keys/test-{name}.seed"));
     let hex = std::fs::read_to_string(path).unwrap();
     let bytes: Vec<u8> = (0..32).map(|i| u8::from_str_radix(&hex.trim()[2 * i..2 * i + 2], 16).unwrap()).collect();
     SigningKey::from_bytes(&bytes.try_into().unwrap())
 }
 
-fn key_id(name: &str) -> [u8; 8] {
+pub(crate) fn key_id(name: &str) -> [u8; 8] {
     match name {
         "current" => [1; 8],
         "standby" => [2; 8],
@@ -35,9 +35,9 @@ fn sha256(path: &Path) -> String {
 }
 
 /// A release directory and the HTTP server in front of it.
-struct Release {
-    dir: PathBuf,
-    port: u16,
+pub(crate) struct Release {
+    pub(crate) dir: PathBuf,
+    pub(crate) port: u16,
     server: Child,
 }
 
@@ -50,7 +50,12 @@ impl Drop for Release {
 
 impl Release {
     /// The release files, signed with the test key `signer`; `tamper` changes the probe after signing.
-    fn new(name: &str, signer: &str, tamper: bool) -> Release {
+    pub(crate) fn new(name: &str, signer: &str, tamper: bool) -> Release {
+        Release::with_probe(name, signer, tamper, musl_binary("rackhand-probe", "rackhand-probe"))
+    }
+
+    /// The same with `probe` as the probe binary (a `lab-build` of it, to trust the test keys for updates).
+    pub(crate) fn with_probe(name: &str, signer: &str, tamper: bool, probe: PathBuf) -> Release {
         let dir = std::env::temp_dir().join(format!("rackhand-it-release-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -58,7 +63,7 @@ impl Release {
         std::fs::copy(verify, dir.join(format!("rackhand-verify-{TARGET}"))).unwrap();
         let packaging = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging");
         let files = [
-            (musl_binary("rackhand-probe", "rackhand-probe"), format!("rackhand-probe-{TARGET}")),
+            (probe, format!("rackhand-probe-{TARGET}")),
             (packaging.join("systemd/rackhand-probe.service"), "rackhand-probe.service".into()),
             (packaging.join("systemd/rackhand-probe-helper.service"), "rackhand-probe-helper.service".into()),
             (packaging.join("openrc/rackhand-probe"), "rackhand-probe.openrc".into()),
@@ -90,7 +95,7 @@ impl Release {
     }
 
     /// `install.sh` as the release fills it in; `verify_sha256` overrides the verifier's hash.
-    fn script(&self, verify_sha256: Option<&str>) -> PathBuf {
+    pub(crate) fn script(&self, verify_sha256: Option<&str>) -> PathBuf {
         let template = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/install.sh");
         let sha =
             verify_sha256.map_or_else(|| sha256(&self.dir.join(format!("rackhand-verify-{TARGET}"))), str::to_string);
@@ -105,7 +110,7 @@ impl Release {
 }
 
 /// A hub with its admin signed in and its site named.
-fn hub(name: &str) -> Hub {
+pub(crate) fn hub(name: &str) -> Hub {
     let mut hub = Hub::init(name);
     hub.start();
     hub.first_run();
@@ -113,7 +118,7 @@ fn hub(name: &str) -> Hub {
 }
 
 /// The dashboard's Add machine (T49 builds the page): a pending machine and its 60-minute token.
-fn add_machine(hub: &Hub, access: Access, roles: &[&str]) -> (String, String) {
+pub(crate) fn add_machine(hub: &Hub, access: Access, roles: &[&str]) -> (String, String) {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     rt.block_on(async {
         let db = std::sync::Arc::new(rackhand_store::Db::open(&hub.data.join("hub.db")).unwrap());
@@ -134,7 +139,7 @@ fn add_machine(hub: &Hub, access: Access, roles: &[&str]) -> (String, String) {
 }
 
 /// Runs the installer on `c` as root.
-fn install(c: &Container, hub: &Hub, release: &Release, script: &Path, token: &str, extra: &str) -> Output {
+pub(crate) fn install(c: &Container, hub: &Hub, release: &Release, script: &Path, token: &str, extra: &str) -> Output {
     let (_, gateway) = c.ip_and_gateway();
     let ticket = format!("rackhand1:{}@{gateway}:{}", hub.id_hex, hub.quic);
     c.copy_in(script, "/tmp/install.sh");
@@ -144,7 +149,7 @@ fn install(c: &Container, hub: &Hub, release: &Release, script: &Path, token: &s
     ))
 }
 
-fn ok(out: &Output) {
+pub(crate) fn ok(out: &Output) {
     assert!(
         out.status.success(),
         "install: {}\n{}",
@@ -153,11 +158,11 @@ fn ok(out: &Output) {
     );
 }
 
-fn sh(c: &Container, script: &str) -> String {
+pub(crate) fn sh(c: &Container, script: &str) -> String {
     String::from_utf8_lossy(&c.root(script).stdout).trim().to_string()
 }
 
-fn reporting(hub: &Hub) {
+pub(crate) fn reporting(hub: &Hub) {
     within(Duration::from_secs(60), "the machine's reports on /metrics", || hub.metrics().contains("machine=\"web1\""));
 }
 

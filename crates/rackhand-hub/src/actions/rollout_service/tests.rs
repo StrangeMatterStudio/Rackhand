@@ -199,7 +199,8 @@ async fn the_service_sends_the_offers_saves_the_rows_and_says_what_happened() {
             log.offers,
             [("a".to_string(), "https://192.0.2.10:8443/release/rackhand-probe-x86_64-unknown-linux-musl".to_string())]
         );
-        assert_eq!(log.saved.len(), 1);
+        let kept: Vec<&str> = log.saved.iter().map(|r| r.kind.as_str()).collect();
+        assert_eq!(kept, ["probe_rollout", "probe_update_offered"], "the canary, and what it was offered");
     }
     assert_eq!(service.tick(1_000 * HOUR + 60_000).await, 0, "once");
     // a updated, and had an incident since: the rest are held, and it is said
@@ -208,7 +209,7 @@ async fn the_service_sends_the_offers_saves_the_rows_and_says_what_happened() {
     assert_eq!(service.tick(1_000 * HOUR + 61 * 60_000).await, 0);
     let log = fleet.log.lock().unwrap();
     assert_eq!(log.events, [("rollout.held".to_string(), "a".to_string())]);
-    assert_eq!(log.saved.len(), 2, "the hold is kept too");
+    assert_eq!(log.saved.last().map(|r| r.kind.as_str()), Some("probe_rollout_held"), "the hold is kept too");
 }
 
 #[tokio::test]

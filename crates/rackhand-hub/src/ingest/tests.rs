@@ -658,3 +658,32 @@ fn the_probe_build_from_the_hello_is_kept_per_machine() {
     assert_eq!(ingest.probe_build(M1), Some(("0.1.1".to_string(), "x86_64".to_string())));
     assert_eq!(ingest.probe_build(M2), Some(("0.1.1".to_string(), "aarch64".to_string())));
 }
+
+/// 7.3.3, E48: the hub knows which probe release it offered a machine, by machine, hash and time.
+#[test]
+fn an_offered_update_is_found_by_machine_hash_and_time() {
+    use super::exemptions::{Facts, UPDATE_OFFERED_KIND};
+    let env = Env::new("offered");
+    let now = rackhand_store::ids::now_ms();
+    {
+        let c = rusqlite::Connection::open(&env.path).unwrap();
+        for (key, at) in [(format!("{M1}/abc123"), now - 5 * MIN), (format!("{M2}/def456"), now - 90 * MIN)] {
+            c.execute(
+                "INSERT INTO schedule_state (kind, key, last_run_ms) VALUES (?1, ?2, ?3)",
+                rusqlite::params![UPDATE_OFFERED_KIND, key, at],
+            )
+            .unwrap();
+        }
+    }
+    let facts = super::probe_events::DbFacts(env.db.clone());
+    assert!(facts.update_offered(M1, "abc123"));
+    assert!(facts.update_offered(M1, ""), "any");
+    assert!(!facts.update_offered(M1, "abc124"), "another hash");
+    assert!(!facts.update_offered(M2, "def456"), "more than an hour ago");
+    assert!(!facts.update_offered(M2, ""), "nor any");
+    assert!(!facts.update_offered("01JD0000000000000000000003", "abc123"), "another machine");
+    // a hash a probe makes up can't widen the match
+    for sneaky in ["%", "abc%", "_bc123", "abc123/x", "ABC123"] {
+        assert!(!facts.update_offered(M1, sneaky), "{sneaky}");
+    }
+}

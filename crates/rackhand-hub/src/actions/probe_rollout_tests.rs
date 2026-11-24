@@ -172,7 +172,7 @@ fn a_restarted_hub_goes_on_where_it_was() {
     let t0 = 1_000 * HOUR;
     let mut before = Rollout::new(Channel::Stable);
     let first = before.tick(t0, &rel, &fleet(&|_| "0.1.0"), &no_incidents, &url);
-    let rows: Vec<_> = first.saved.clone();
+    let rows: Vec<_> = first.saved.iter().filter(|r| r.kind != "probe_update_offered").cloned().collect();
     assert_eq!(rows.len(), 2, "a row for each site's canary");
     let canaries_updated = |m: &str| if m == "x1" || m == "y1" { "0.1.1" } else { "0.1.0" };
 
@@ -228,4 +228,15 @@ fn a_canary_that_stays_away_is_replaced_after_six_hours() {
         ["x2"],
         "x2 is the site's canary now; y1 came up connected on the old version and is held"
     );
+}
+
+#[test]
+fn what_a_machine_is_offered_is_saved_so_its_files_changing_to_it_are_not_an_event() {
+    let rel = release("0.1.1", Channel::Stable);
+    let plan =
+        Rollout::new(Channel::Stable).tick(1_000 * HOUR, &rel, &[probe("x1", "X", "0.1.0")], &no_incidents, &url);
+    let offered: Vec<_> = plan.saved.iter().filter(|r| r.kind == "probe_update_offered").collect();
+    assert_eq!(offered.len(), 1);
+    assert_eq!(offered[0].key, format!("x1/{}", "07".repeat(32)), "machine and the hash of the file it was offered");
+    assert_eq!(offered[0].last_run_ms, Some(1_000 * HOUR));
 }

@@ -28,7 +28,12 @@ const HOUR_MS: i64 = 3_600_000;
 const HIGH_PORT: u16 = 49_151;
 
 /// Executables that are Rackhand's own, or the package managers a patch job runs.
-const OWN: &[&str] = &["/usr/local/lib/rackhand/rackhand-probe", "/usr/local/lib/rackhand/run"];
+const OWN: &[&str] = &[
+    "/usr/local/lib/rackhand/rackhand-probe",
+    "/usr/local/lib/rackhand/probe-a",
+    "/usr/local/lib/rackhand/probe-b",
+    "/usr/local/lib/rackhand/run",
+];
 const PACKAGE_MANAGERS: &[&str] = &[
     "/usr/bin/apt",
     "/usr/bin/apt-get",
@@ -439,6 +444,12 @@ mod tests {
         let mut own = conn("185.0.0.5", 4444);
         own.exe = "/usr/local/lib/rackhand/rackhand-probe".into();
         assert_eq!(score(&own, &mut st, &ctx(&intel, NOW)).verdict, Verdict::Skipped);
+        // the services run through a link to a slot, and a process's executable is where the link points (7.3.3)
+        for slot in ["probe-a", "probe-b"] {
+            let mut running = conn("185.0.0.5", 4444);
+            running.exe = format!("/usr/local/lib/rackhand/{slot}");
+            assert_eq!(score(&running, &mut st, &ctx(&intel, NOW)).verdict, Verdict::Skipped, "{slot}");
+        }
         let mut apt = conn("185.0.0.5", 4444);
         apt.exe = "/usr/bin/apt-get".into();
         assert_eq!(score(&apt, &mut st, &ctx(&intel, NOW)).verdict, Verdict::New, "outside a patch job it is scored");
