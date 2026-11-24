@@ -176,6 +176,7 @@ const HOUR: i64 = 3_600_000;
 
 fn service(fleet: &Arc<FakeFleet>, release: Option<Release>, saved: &[ScheduleState]) -> RolloutService {
     RolloutService::new(
+        Version::parse("0.1.1").unwrap(),
         Arc::new(|| Channel::Stable),
         saved,
         fleet.clone(),
@@ -232,6 +233,7 @@ async fn nothing_is_offered_without_a_release_or_an_address() {
     });
     assert_eq!(service(&fleet, None, &[]).tick(1_000 * HOUR).await, 0);
     let no_address = RolloutService::new(
+        Version::parse("0.1.1").unwrap(),
         Arc::new(|| Channel::Stable),
         &[],
         fleet.clone(),
@@ -295,4 +297,26 @@ fn only_enrolled_linux_machines_with_a_probe_are_updated_and_incidents_are_found
     assert!(incident_opened_since(&db, "m-linux", 4999));
     assert!(!incident_opened_since(&db, "m-linux", 5000), "after, not at");
     assert!(!incident_opened_since(&db, "m-alpine", 0), "another machine's");
+}
+
+/// FR-22, 7.5.7: a probe is offered only the hub's own version, so a release put in the hub's directory before the hub itself
+/// updates waits for it.
+#[tokio::test]
+async fn probes_are_offered_only_the_hubs_own_version() {
+    let fleet = Arc::new(FakeFleet {
+        probes: Mutex::new(vec![probe("a", "0.1.0")]),
+        log: Mutex::default(),
+        incident: Mutex::new(false),
+    });
+    let older_hub = RolloutService::new(
+        Version::parse("0.1.0").unwrap(),
+        Arc::new(|| Channel::Stable),
+        &[],
+        fleet.clone(),
+        Arc::new(Fixed(Some(release()))),
+        Arc::new(|| Some("https://192.0.2.10:8443".to_string())),
+    );
+    assert_eq!(older_hub.tick(1_000 * HOUR).await, 0, "the hub runs 0.1.0 and the release is 0.1.1");
+    assert!(fleet.log.lock().unwrap().offers.is_empty());
+    assert_eq!(service(&fleet, Some(release()), &[]).tick(1_000 * HOUR).await, 1, "a hub on 0.1.1 offers it");
 }

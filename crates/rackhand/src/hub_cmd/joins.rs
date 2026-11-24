@@ -134,10 +134,8 @@ impl rackhand_hub::executor::HubSide for CommandSigner {
                 self_signed: true,
             });
         }
-        let url = format!(
-            "https://github.com/StrangeMatterStudio/Rackhand/releases/download/v{}/install.sh",
-            env!("CARGO_PKG_VERSION")
-        );
+        let url =
+            format!("https://github.com/StrangeMatterStudio/Rackhand/releases/download/v{}/install.sh", crate::VERSION);
         Some(rackhand_hub::executor::GuestEnrollment { script_url: url, args, self_signed: false })
     }
 
@@ -521,7 +519,7 @@ impl LazyJoin {
         }
         let info = HubInfo {
             site: local_site(&self.db)?,
-            version: env!("CARGO_PKG_VERSION").into(),
+            version: crate::VERSION.into(),
             relays: self.relays.clone(),
             hub_addrs: (self.hub_addrs)(),
             probe_config: probe_defaults(),

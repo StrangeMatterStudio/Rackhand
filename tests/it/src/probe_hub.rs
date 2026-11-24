@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::support::{Container, binary, binary_with, musl_binary};
+use crate::support::{Container, binary, binary_versioned, musl_binary};
 
 pub const MACHINE: &str = "01JD0000000000000000000042";
 
@@ -49,22 +49,23 @@ pub struct Hub {
     child: Option<Child>,
     /// When `start` last ran.
     pub started: Option<Instant>,
-    /// Built with the `lab-build` feature: the test release keys pinned, so that it offers updates signed with them.
-    lab: bool,
+    /// Built with the `lab-build` feature and told this version: the test release keys pinned, so that it offers updates
+    /// signed with them, and the version it offers its probes.
+    lab: Option<&'static str>,
 }
 
 impl Hub {
     /// `rackhand hub init` into a temporary directory, on free ports.
     pub fn init(name: &str) -> Hub {
-        Hub::init_as(name, false)
+        Hub::init_as(name, None)
     }
 
-    /// A hub built with `lab-build`, for the tests that need it to trust the test release keys.
-    pub fn init_lab(name: &str) -> Hub {
-        Hub::init_as(name, true)
+    /// A hub built with `lab-build` as `version`, for the tests that need it to trust the test release keys.
+    pub fn init_lab(name: &str, version: &'static str) -> Hub {
+        Hub::init_as(name, Some(version))
     }
 
-    fn init_as(name: &str, lab: bool) -> Hub {
+    fn init_as(name: &str, lab: Option<&'static str>) -> Hub {
         let dir = temp(name);
         let (etc, data) = (dir.join("etc"), dir.join("lib"));
         let out = Command::new(exe_for(lab))
@@ -118,19 +119,7 @@ impl Hub {
         let key: [u8; 32] = std::fs::read(etc.join("node.key")).unwrap().try_into().unwrap();
         let id_hex = hex(iroh::SecretKey::from_bytes(&key).public().as_bytes());
         let jar = dir.join("cookies");
-        Hub {
-            dir,
-            etc,
-            data,
-            web,
-            quic,
-            setup_code: String::new(),
-            id_hex,
-            jar,
-            child: None,
-            started: None,
-            lab: false,
-        }
+        Hub { dir, etc, data, web, quic, setup_code: String::new(), id_hex, jar, child: None, started: None, lab: None }
     }
 
     /// `rackhand hub backup` while the hub runs; the backup file.
@@ -696,6 +685,9 @@ mod backup {
 }
 
 /// The hub's executable: the plain build, or the one with the test release keys pinned.
-fn exe_for(lab: bool) -> PathBuf {
-    if lab { binary_with("rackhand", "rackhand", "lab-build") } else { binary("rackhand", "rackhand") }
+fn exe_for(lab: Option<&str>) -> PathBuf {
+    match lab {
+        Some(version) => binary_versioned("rackhand", "rackhand", "lab-build", "RACKHAND_LAB_VERSION", version),
+        None => binary("rackhand", "rackhand"),
+    }
 }

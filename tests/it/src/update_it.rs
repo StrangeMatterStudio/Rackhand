@@ -27,7 +27,8 @@ fn name() -> String {
 }
 
 fn lab(label: &str) -> Lab {
-    let mut hub = Hub::init_lab(label);
+    // the hub offers probes only its own version (FR-22): it is the newer release
+    let mut hub = Hub::init_lab(label, "0.1.1");
     hub.start();
     hub.first_run();
     // the installed probe is a lab build too, so that its helper checks releases against the test keys

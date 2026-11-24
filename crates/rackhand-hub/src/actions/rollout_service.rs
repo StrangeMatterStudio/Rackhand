@@ -121,6 +121,8 @@ pub trait Fleet: Send + Sync + std::fmt::Debug {
 
 pub struct RolloutService {
     rollout: Mutex<Rollout>,
+    /// Probes are offered only this version, the hub's own (FR-22, 7.5.7).
+    hub_version: Version,
     fleet: Arc<dyn Fleet>,
     releases: Arc<dyn Releases>,
     /// The hub's release channel now (a hub setting the admin can change).
@@ -137,6 +139,7 @@ impl std::fmt::Debug for RolloutService {
 
 impl RolloutService {
     pub fn new(
+        hub_version: Version,
         channel: Arc<dyn Fn() -> manifest::Channel + Send + Sync>,
         saved: &[ScheduleState],
         fleet: Arc<dyn Fleet>,
@@ -145,12 +148,15 @@ impl RolloutService {
     ) -> RolloutService {
         let mut rollout = Rollout::new(channel());
         rollout.restore(saved);
-        RolloutService { rollout: Mutex::new(rollout), channel, fleet, releases, base }
+        RolloutService { rollout: Mutex::new(rollout), hub_version, channel, fleet, releases, base }
     }
 
     /// One pass: returns how many offers were sent.
     pub async fn tick(&self, now_ms: i64) -> usize {
         let Some(release) = self.releases.current() else { return 0 };
+        if release.version != self.hub_version {
+            return 0;
+        }
         let Some(base) = (self.base)() else { return 0 };
         let probes = self.fleet.probes();
         let plan = {

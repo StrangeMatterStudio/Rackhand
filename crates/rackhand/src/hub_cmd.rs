@@ -315,7 +315,7 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
         actions.clone(),
         ingest.clone(),
         &site_name,
-        env!("CARGO_PKG_VERSION"),
+        crate::VERSION,
     )
     .with_registry(registry.clone())
     .with_network(network.clone());
@@ -498,6 +498,9 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
             rackhand_hub::library::config::hub(&settings).map(|c| c.release_channel).unwrap_or_default()
         });
         let saved = rackhand_hub::scheduler::tasks::load_state(db.readers()).unwrap_or_default();
+        // probes are offered only the hub's own version (FR-22)
+        let hub_version = rackhand_release::binary::Version::parse(crate::VERSION)
+            .unwrap_or(rackhand_release::binary::Version(0, 0, 0));
         let fleet = Arc::new(HubFleet { db: db.clone(), ingest: ingest.clone(), probes: probe_server.clone() });
         let (current, web_port) = (addrs.clone(), config.web.port());
         // where a probe fetches a release: this hub's first address, on the dashboard's port, where `/release/<file>` is served
@@ -509,7 +512,7 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
             })
         });
         let releases = Arc::new(FsReleases::new(config.data_dir.join("release")));
-        let service = RolloutService::new(channel, &saved, fleet, releases, base);
+        let service = RolloutService::new(hub_version, channel, &saved, fleet, releases, base);
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(60)).await;

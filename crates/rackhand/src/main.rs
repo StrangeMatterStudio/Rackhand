@@ -13,6 +13,16 @@ mod hub;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+/// This build's version: the workspace's. A lab build can be given another with `RACKHAND_LAB_VERSION` at build time, to play a
+/// newer release in the update tests; a release build can't (`lab-build` is refused in one).
+#[cfg(not(feature = "lab-build"))]
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+#[cfg(feature = "lab-build")]
+pub const VERSION: &str = match option_env!("RACKHAND_LAB_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 const USAGE: &str = "usage: rackhand hub init [--config-dir <dir>] [--data-dir <dir>]
        rackhand hub run [--config <hub.toml>]
        rackhand hub detect replay --machine <id> --from <ms> --to <ms> [--db <path>]
@@ -31,7 +41,7 @@ fn main() -> ExitCode {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     match words.as_slice() {
         ["--version"] => {
-            println!("rackhand {}", env!("CARGO_PKG_VERSION"));
+            println!("rackhand {}", VERSION);
             ExitCode::SUCCESS
         }
         ["operator", rest @ ..] => operator_cmd::main(rest),
