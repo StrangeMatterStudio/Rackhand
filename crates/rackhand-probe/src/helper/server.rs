@@ -54,6 +54,8 @@ pub struct Helper {
     #[cfg(unix)]
     keys: Mutex<super::keys::Files>,
     #[cfg(unix)]
+    update: super::update::Setup,
+    #[cfg(unix)]
     machine: Machine,
 }
 
@@ -87,10 +89,22 @@ impl Helper {
     /// The same, reading `machine`.
     #[cfg(unix)]
     pub fn with_machine(version: &str, keys: super::keys::Files, machine: Machine) -> Arc<Helper> {
+        Helper::with_update(version, keys, machine, super::update::Setup::system())
+    }
+
+    /// The same, with the release keys and the guard's launcher that updates use.
+    #[cfg(unix)]
+    pub fn with_update(
+        version: &str,
+        keys: super::keys::Files,
+        machine: Machine,
+        update: super::update::Setup,
+    ) -> Arc<Helper> {
         Arc::new(Helper {
             version: version.into(),
             state: Mutex::new(State::default()),
             keys: Mutex::new(keys),
+            update,
             machine,
         })
     }
@@ -213,6 +227,16 @@ impl Helper {
                     }
                 }
             }
+            #[cfg(unix)]
+            HelperRequest::ApplyUpdate { version, sha256, signature } => super::update::apply_update(
+                &self.version,
+                &self.machine.roots.root,
+                &self.update,
+                &version,
+                &sha256,
+                &signature,
+            ),
+            #[cfg(windows)]
             _ => error("unsupported", "not provided by this helper version"),
         }
     }

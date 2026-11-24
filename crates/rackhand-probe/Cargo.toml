@@ -37,6 +37,7 @@ blake3 = "1"
 data-encoding = "2"
 sha2 = { workspace = true }
 sha1 = "0.11"
+rackhand-release = { path = "../rackhand-release" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # statvfs without unsafe code.
@@ -55,3 +56,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_Security_Authorization",
     "Win32_System_Services",
 ] }
+
+[dev-dependencies]
+# tests sign releases with keys of their own
+rackhand-release = { path = "../rackhand-release", features = ["signing"] }

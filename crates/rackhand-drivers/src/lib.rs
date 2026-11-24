@@ -3,6 +3,7 @@
 
 mod dns;
 mod driver;
+pub mod fetch;
 mod http;
 mod icmp;
 pub mod pinned;

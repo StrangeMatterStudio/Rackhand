@@ -194,3 +194,17 @@ pub fn test_server() -> (tokio_rustls::TlsAcceptor, String) {
         .expect("the server config");
     (tokio_rustls::TlsAcceptor::from(Arc::new(config)), fingerprint)
 }
+
+/// A connector that takes whatever certificate the server presents (the handshake's signatures are still checked), for a
+/// download whose content is verified by a signature instead (`crate::fetch`).
+pub fn accept_any_certificate() -> tokio_rustls::TlsConnector {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let verifier = Arc::new(Presented { seen: std::sync::Mutex::new(None), provider: provider.clone() });
+    let config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .expect("ring supports the default protocol versions")
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth();
+    tokio_rustls::TlsConnector::from(Arc::new(config))
+}

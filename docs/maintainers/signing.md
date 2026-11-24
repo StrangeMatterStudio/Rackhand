@@ -53,9 +53,15 @@ Never put a private key, a passphrase or a signing script in the repository, in 
 
    ```sh
    cd dist-local
-   for f in $(ls | grep -v '\.minisig$' | grep -v '^manifest.json$'); do minisign -S -s ../current.key -m "$f" -t "file:$f"; done
-   minisign -S -s ../current.key -m manifest.json -t "file:manifest.json"
+   VERSION=0.1.0     # the release's version, the tag without its v
+   for f in $(ls | grep -v '\.minisig$' | grep -v '^manifest.json$'); do minisign -S -s ../current.key -m "$f" -t "file:$f version:$VERSION"; done
+   minisign -S -s ../current.key -m manifest.json -t "file:manifest.json version:$VERSION"
    ```
+
+   The trusted comment is `file:<name> version:<x.y.z>`, exactly. The helper and the updater take a binary's version
+   from it, not from the request that brought the file, and refuse a version that isn't newer than the one installed;
+   a signature with another file name or no version in its comment is refused, so an old signed release can't be
+   replayed as a new one.
 
 5. **Verify the directory** with the verifier built from the tag, which pins the real keys:
 

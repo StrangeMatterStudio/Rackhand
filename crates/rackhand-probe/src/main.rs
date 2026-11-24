@@ -15,7 +15,8 @@ const USAGE: &str = "usage: rackhand-probe --version
        rackhand-probe run [--config <probe.toml>] [--data-dir <dir>] [--state-file <path>] [--root <dir>]
        rackhand-probe helper [--socket <path>]
        rackhand-probe enroll --ticket <ticket> --token <token> [--monitor] [--remote] [--role <role>]
-       rackhand-probe uninstall [--after <seconds>]";
+       rackhand-probe uninstall [--after <seconds>]
+       rackhand-probe update-guard <old-slot> <new-slot> <version>";
 
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
@@ -45,6 +46,8 @@ fn main() -> ExitCode {
         Some("enroll") => enroll(&args[1..]),
         #[cfg(unix)]
         Some("uninstall") => uninstall(&args[1..]),
+        #[cfg(unix)]
+        Some("update-guard") => rackhand_probe::update::guard::main(&args[1..]),
         #[cfg(unix)]
         Some("set-hub") => set_hub(&args[1..]),
         #[cfg(target_os = "linux")]

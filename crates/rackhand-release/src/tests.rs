@@ -183,3 +183,58 @@ mod manifest {
         );
     }
 }
+
+mod binary {
+    use super::*;
+    use crate::binary::{BinaryError, Version, verify_binary_with};
+
+    #[test]
+    fn version_is_read_from_the_signed_comment() {
+        let data = b"a probe";
+        let sig = sign(&key(0x11), [1; 8], data, "file:rackhand-probe-x86_64-unknown-linux-musl version:0.1.7");
+        let (which, version) =
+            verify_binary_with(data, &sig, &keys(), "rackhand-probe-x86_64-unknown-linux-musl").unwrap();
+        assert_eq!((which, version.to_string()), (Pinned::Current, "0.1.7".to_string()));
+        // the comment is under the signature: changing the version in it breaks the global signature
+        let edited = sig.replace("version:0.1.7", "version:0.9.9");
+        assert_eq!(
+            verify_binary_with(data, &edited, &keys(), "rackhand-probe-x86_64-unknown-linux-musl"),
+            Err(BinaryError::Signature(VerifyError::BadGlobalSignature))
+        );
+    }
+
+    #[test]
+    fn a_signature_for_another_file_or_without_a_version_is_refused() {
+        let data = b"a probe";
+        let other = sign(&key(0x11), [1; 8], data, "file:rackhand-cli-x86_64-unknown-linux-musl version:0.1.7");
+        assert!(matches!(
+            verify_binary_with(data, &other, &keys(), "rackhand-probe-x86_64-unknown-linux-musl"),
+            Err(BinaryError::NotThisFile { .. })
+        ));
+        for comment in [
+            "timestamp:1",
+            "file:rackhand-probe-x version:",
+            "file:rackhand-probe-x version:1.2",
+            "file:rackhand-probe-x version:01.2.3",
+            "file:rackhand-probe-x version:1.2.3 extra:1",
+        ] {
+            let sig = sign(&key(0x11), [1; 8], data, comment);
+            assert!(
+                matches!(verify_binary_with(data, &sig, &keys(), "rackhand-probe-x"), Err(BinaryError::NoVersion(_))),
+                "{comment}"
+            );
+        }
+    }
+
+    #[test]
+    fn versions_compare_as_numbers() {
+        let v = |s: &str| Version::parse(s).unwrap();
+        assert!(v("0.1.10") > v("0.1.9"));
+        assert!(v("0.2.0") > v("0.1.99"));
+        assert!(v("1.0.0") > v("0.99.99"));
+        assert_eq!(v("0.1.0"), v("0.1.0"));
+        for bad in ["", "1", "1.2", "1.2.3.4", "a.b.c", "1.2.-3", "01.2.3", "1.2.3-beta", "+1.2.3"] {
+            assert!(Version::parse(bad).is_none(), "{bad}");
+        }
+    }
+}

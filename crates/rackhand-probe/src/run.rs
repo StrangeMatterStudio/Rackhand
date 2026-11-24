@@ -159,6 +159,9 @@ pub struct Daemon {
     attempts: u32,
     /// `helper_version_mismatch` was reported for the current mismatch.
     mismatch_reported: bool,
+    /// What the update tasks found out since the last report: `update_unreachable` and `update_refused`.
+    pending_events: Vec<ProbeEvent>,
+    offers: crate::update::offers::Offers,
 }
 
 impl std::fmt::Debug for Daemon {
@@ -180,6 +183,8 @@ impl Daemon {
             held_drops: Vec::new(),
             attempts: 0,
             mismatch_reported: false,
+            pending_events: Vec::new(),
+            offers: Default::default(),
         })
     }
 
@@ -257,6 +262,7 @@ impl Daemon {
         }));
         let mut replaying = true;
         let (checked_tx, mut checked_rx) = tokio::sync::mpsc::channel(16);
+        let (update_tx, mut update_rx) = tokio::sync::mpsc::channel::<ProbeEvent>(8);
         loop {
             tokio::select! {
                 sampled = rx.recv() => {
@@ -299,9 +305,15 @@ impl Daemon {
                             });
                         }
                     }
+                    Ok(Incoming::Update(update)) => self.offered(&update, &update_tx),
                     Ok(Incoming::Nothing) => {}
                     Err(stop) => return stop,
                 },
+                event = update_rx.recv() => {
+                    if let Some(event) = event {
+                        self.pending_events.push(event);
+                    }
+                }
                 result = checked_rx.recv() => {
                     if let Some(result) = result {
                         if let Err(stop) = s.check_result(result).await {
@@ -317,6 +329,37 @@ impl Daemon {
                 }
             }
         }
+    }
+
+    /// A release the hub offers: if it is newer than this probe, a task of its own downloads it into the spool and asks the
+    /// helper to apply it; what goes wrong is reported as an event, and the probe stays on its version (7.3.3, E65).
+    fn offered(
+        &mut self,
+        update: &rackhand_proto::probe::UpdateAvailable,
+        events: &tokio::sync::mpsc::Sender<ProbeEvent>,
+    ) {
+        let now = self.opts.clock.now_ms();
+        let Some(offer) = self.offers.accept(update, &self.opts.version, now) else { return };
+        let spool = self.opts.data_dir.join("update");
+        let helper = self.opts.helper.clone();
+        let events = events.clone();
+        let clock = self.opts.clock.clone();
+        tracing::info!(version = %offer.version, "the hub offers an update");
+        tokio::spawn(async move {
+            let ask = |request: rackhand_proto::helper::HelperRequest| async move {
+                match helper {
+                    Some(helper) => helper.request(&request).await,
+                    None => Err("this machine has no helper".to_string()),
+                }
+            };
+            match crate::update::offers::perform(&spool, &offer, crate::update::offers::DOWNLOAD_TIMEOUT, ask).await {
+                Ok(()) => tracing::info!(version = %offer.version, "the update was handed to the guard"),
+                Err(failure) => {
+                    tracing::warn!(version = %offer.version, ?failure, "the update wasn't made");
+                    let _ = events.send(failure.event(offer.version, clock.now_ms())).await;
+                }
+            }
+        });
     }
 
     fn apply(&mut self, cfg: &ProbeConfig) {
@@ -395,6 +438,7 @@ impl Daemon {
             None => self.mismatch_reported = false,
         }
         events.extend(sampled.security_events.iter().cloned());
+        events.append(&mut self.pending_events);
         let containers = h
             .containers
             .iter()

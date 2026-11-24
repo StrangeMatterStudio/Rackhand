@@ -1,4 +1,4 @@
-//! Th            let (read, mut write) = connect(&self.path).await.map_err(|e| e.to_string())?; probe's side of the helper socket (7.3.3). Probe and helper must be the same version: on a mismatch the probe
+//! The probe's side of the helper socket (7.3.3). Probe and helper must be the same version: on a mismatch the probe
 //! runs without the helper's features and reports `helper_version_mismatch` (once, until the versions match again).
 
 use std::path::PathBuf;

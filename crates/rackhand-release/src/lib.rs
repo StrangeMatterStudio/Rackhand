@@ -7,6 +7,7 @@
 //! creates offline before the first release (T91); until then nothing verifies. The `test-keys` feature pins the test
 //! keys of `tests/keys/` instead; a release build never enables it.
 
+pub mod binary;
 pub mod manifest;
 
 use base64::Engine;
@@ -103,6 +104,15 @@ pub fn verify(data: &[u8], minisig: &str) -> Result<Pinned, VerifyError> {
 }
 
 pub fn verify_with(data: &[u8], minisig: &str, keys: &[(Pinned, PublicKey)]) -> Result<Pinned, VerifyError> {
+    verify_with_comment(data, minisig, keys).map(|(which, _)| which)
+}
+
+/// Like [`verify_with`], and the trusted comment too, which the global signature covers.
+pub fn verify_with_comment(
+    data: &[u8],
+    minisig: &str,
+    keys: &[(Pinned, PublicKey)],
+) -> Result<(Pinned, String), VerifyError> {
     let lines: Vec<&str> = minisig.lines().map(str::trim_end).collect();
     let [_untrusted, sig_line, trusted_line, global_line, ..] = lines.as_slice() else {
         return Err(VerifyError::Malformed("four lines expected"));
@@ -131,7 +141,7 @@ pub fn verify_with(data: &[u8], minisig: &str, keys: &[(Pinned, PublicKey)]) -> 
     let mut signed = sig_bytes.to_vec();
     signed.extend_from_slice(comment.as_bytes());
     key.key.verify(&signed, &Signature::from_bytes(&global)).map_err(|_| VerifyError::BadGlobalSignature)?;
-    Ok(*which)
+    Ok((*which, comment.to_string()))
 }
 
 /// Making signatures, for tests and the maintainer's offline signing.

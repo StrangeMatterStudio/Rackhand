@@ -16,4 +16,5 @@ pub mod security;
 pub mod set_hub;
 #[cfg(unix)]
 pub mod uninstall;
+pub mod update;
 pub mod windows;

@@ -3969,6 +3969,7 @@ dependencies = [
  "rackhand-drivers",
  "rackhand-net",
  "rackhand-proto",
+ "rackhand-release",
  "regex",
  "rustix",
  "serde",

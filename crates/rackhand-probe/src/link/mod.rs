@@ -116,6 +116,8 @@ pub enum Incoming {
     /// New key lines for the hub's accounts, for the helper to apply.
     Keys(rackhand_proto::probe::KeysUpdate),
     RunCheck(RunCheck),
+    /// A release the hub offers (7.3.3).
+    Update(rackhand_proto::probe::UpdateAvailable),
 }
 
 /// One connection to the hub.
@@ -276,6 +278,7 @@ impl Link {
             Some(hub_to_probe::Msg::ConfigUpdate(u)) => Ok(u.config.map_or(Incoming::Nothing, Incoming::Config)),
             Some(hub_to_probe::Msg::RunCheck(rc)) => Ok(Incoming::RunCheck(rc)),
             Some(hub_to_probe::Msg::KeysUpdate(k)) => Ok(Incoming::Keys(k)),
+            Some(hub_to_probe::Msg::UpdateAvailable(u)) => Ok(Incoming::Update(u)),
             _ => Ok(Incoming::Nothing),
         }
     }

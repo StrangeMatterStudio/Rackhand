@@ -45,7 +45,8 @@ pub fn severity(kind: &str, fields: &BTreeMap<String, String>) -> Option<Severit
         }
         "port.new_listener" => Severity::Warning,
         "conn.overflow" | "series_cap_reached" | "auth.login" | "auth.failed" => Severity::Info,
-        "helper_version_mismatch" => Severity::Warning,
+        "helper_version_mismatch" | "update_refused" => Severity::Warning,
+        "update_unreachable" => Severity::Info,
         "auth.keys_changed" => Severity::Critical,
         "file.changed" => {
             if critical_file(field("path")) {
@@ -175,6 +176,9 @@ mod tests {
             ("file.changed", f(&[("path", "/etc/crontab")]), Some(Warning)),
             ("file.changed", f(&[("path", "/usr/bin/sudo")]), Some(Warning)),
             ("port.new_listener", f(&[("port", "4444")]), Some(Warning)),
+            // a probe that can't reach the release URL stays on its version (E65); one the helper refused to update is a warning
+            ("update_unreachable", f(&[("version", "0.1.1")]), Some(Info)),
+            ("update_refused", f(&[("detail", "bad_signature")]), Some(Warning)),
             ("kernel.panic", f(&[]), None),
         ];
         for (kind, fields, want) in cases {
