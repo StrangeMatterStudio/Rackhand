@@ -1161,6 +1161,12 @@ timeout = "20s"
                 "test -e /home/rackhand",
                 "test -e /usr/local/lib/rackhand",
             ] {
+                // the job ends when the machine refuses the hub's key, which is when `rackhand` is gone; the uninstall goes
+                // on with the other users and the files for a moment after
+                let deadline = std::time::Instant::now() + Duration::from_secs(30);
+                while present(&lab, gone) && std::time::Instant::now() < deadline {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
                 assert!(!present(&lab, gone), "{gone}");
             }
             assert!(present(&lab, "test -e /etc/rackhand-keepme"), "what isn't Rackhand's stays");
