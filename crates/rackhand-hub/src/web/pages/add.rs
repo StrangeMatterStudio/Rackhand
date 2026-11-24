@@ -106,10 +106,12 @@ const RECENT_MS: i64 = 86_400_000;
 
 #[derive(Template)]
 #[template(path = "add_done.html")]
-struct AddDone {
-    shell: Shell,
-    lines: Vec<(String, String)>,
-    note: String,
+pub(super) struct AddDone {
+    pub shell: Shell,
+    pub lines: Vec<(String, String)>,
+    pub note: String,
+    /// Where the page leads back to, and what it calls it.
+    pub back: (String, String),
 }
 
 pub(super) fn page(web: &Web, ctx: &Ctx) -> Response<Body> {
@@ -249,6 +251,32 @@ pub(super) async fn machine(web: &Web, ctx: &Ctx) -> Response<Body> {
     let (id, token) = (id.to_string(), token.as_str().to_string());
     let monitor = access == Access::Monitor;
     let remote = mode == ProbeMode::Remote;
+    let lines = install_commands(web, ctx, kind, &ticket, &token, monitor, remote);
+    let data = serde_json::json!({ "machine": id, "name": name, "os": kind, "access": if monitor { "monitor" } else { "managed" } });
+    if let Err(e) = web.0.audit.append(&user.name, "machine.added", Some(&id), &data.to_string()).await {
+        tracing::error!(error = %e, "audit");
+    }
+    let page = AddDone {
+        shell: Shell::at(web, ctx, &format!("Install the probe on {name}"), "/add"),
+        lines,
+        note: "The command works once, for 60 minutes. Run it on the machine. It shows on the Overview once its probe connects."
+            .into(),
+        back: ("/add".into(), "Back to Add".into()),
+    };
+    html(StatusCode::OK, page.render())
+}
+
+/// The one-time install commands for a machine of `kind`: the release's and, for Linux and Alpine, the offline one from
+/// this hub. `monitor` and `remote` add the flags; the same commands change an enrolled machine's level (7.3.12).
+pub(super) fn install_commands(
+    web: &Web,
+    ctx: &Ctx,
+    kind: &str,
+    ticket: &str,
+    token: &str,
+    monitor: bool,
+    remote: bool,
+) -> Vec<(String, String)> {
     let flags = format!("{}{}", if monitor { " --monitor" } else { "" }, if remote { " --remote" } else { "" });
     let args = format!("--ticket {ticket} --token {token}{flags}");
     let url = release_url();
@@ -287,16 +315,7 @@ pub(super) async fn machine(web: &Web, ctx: &Ctx) -> Response<Body> {
             ));
         }
     }
-    let data = serde_json::json!({ "machine": id, "name": name, "os": kind, "access": if monitor { "monitor" } else { "managed" } });
-    if let Err(e) = web.0.audit.append(&user.name, "machine.added", Some(&id), &data.to_string()).await {
-        tracing::error!(error = %e, "audit");
-    }
-    let page = AddDone {
-        shell: Shell::at(web, ctx, &format!("Install the probe on {name}"), "/add"),
-        lines,
-        note: "The command works once, for 60 minutes. Run it on the machine. It shows on the Overview once its probe connects.".into(),
-    };
-    html(StatusCode::OK, page.render())
+    lines
 }
 
 pub(super) async fn invite(web: &Web, ctx: &Ctx) -> Response<Body> {
@@ -342,6 +361,7 @@ pub(super) async fn invite(web: &Web, ctx: &Ctx) -> Response<Body> {
         shell: Shell::at(web, ctx, &format!("Invite a {kind}"), "/add"),
         lines: vec![line],
         note: "The invite works once, for 24 hours.".into(),
+        back: ("/add".into(), "Back to Add".into()),
     };
     html(StatusCode::OK, page.render())
 }

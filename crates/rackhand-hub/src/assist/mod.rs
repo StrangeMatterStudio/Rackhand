@@ -31,6 +31,8 @@ pub const DEFAULT_DAILY_CAP: u32 = 20;
 pub const DEFAULT_DEADLINE_MS: i64 = 30 * 60_000;
 pub const MAX_DEADLINE_MS: i64 = 2 * 60 * 60_000;
 pub const DEFAULT_MAX_TURNS: u32 = 60;
+/// How long after its deadline a job may stay silent before it ends `timed_out`.
+pub const SWEEP_GRACE_MS: i64 = 5 * 60_000;
 /// Declines after which the incident goes to a person.
 pub const MAX_DECLINES: usize = 3;
 
@@ -125,6 +127,26 @@ impl Assist {
             let assist = assist.clone();
             async move { assist.serve(conn).await }
         })
+    }
+
+    /// Every minute, ends the jobs whose operator never reported after their deadline and a grace of 5 minutes.
+    pub fn spawn_sweep(self) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                tick.tick().await;
+                match self.inner.actions.sweep_assistant_jobs(rackhand_store::ids::now_ms(), SWEEP_GRACE_MS).await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::warn!(jobs = n, "assistant jobs ended without a report"),
+                    Err(e) => tracing::warn!(error = %e, "sweeping assistant jobs"),
+                }
+            }
+        })
+    }
+
+    /// The operators connected now, by id.
+    pub fn connected_operators(&self) -> Vec<String> {
+        self.inner.links.lock().map(|l| l.keys().cloned().collect()).unwrap_or_default()
     }
 
     /// Whether the job is attached to a connected operator.

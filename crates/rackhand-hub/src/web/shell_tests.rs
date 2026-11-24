@@ -85,17 +85,23 @@ async fn machine(app: &App, id: &str, name: &str) {
     insert(app, "machines", row).await;
 }
 
+/// How many of `PAGES`, from the first, are in the side navigation.
+const NAV: usize = 9;
+
 /// Every page a signed-in admin opens by its address, and the heading it has.
-const PAGES: [(&str, &str); 14] = [
+const PAGES: [(&str, &str); 17] = [
     ("/", "Overview"),
     ("/incidents", "Incidents"),
     ("/approvals", "Approvals"),
     ("/jobs", "Jobs"),
+    ("/security", "Security"),
     ("/library", "Library"),
     ("/patching", "Patching"),
     ("/add", "Add"),
     ("/audit", "Audit"),
     ("/account", "Account"),
+    ("/account/keys", "MCP keys"),
+    ("/settings/assistant", "Assistant"),
     ("/users", "Users"),
     ("/settings", "System settings"),
     ("/settings/notifiers", "Notifiers"),
@@ -126,11 +132,11 @@ async fn every_page_has_the_shell() {
             assert!(html.contains(part), "{path}: {part}");
         }
         let nav = block(&html, "<nav", "</nav>");
-        for (to, name) in &PAGES[..8] {
+        for (to, name) in &PAGES[..NAV] {
             assert!(nav.contains(&format!("href=\"{to}\"")) && nav.contains(name), "{path}: {name} in the navigation");
         }
         assert!(nav.matches("aria-current=\"page\"").count() <= 1, "{path}");
-        if PAGES[..8].iter().any(|(p, _)| *p == path) {
+        if PAGES[..NAV].iter().any(|(p, _)| *p == path) {
             let at = nav.find("aria-current=\"page\"").unwrap_or_else(|| panic!("{path} is marked in the navigation"));
             let link = &nav[nav[..at].rfind("<a").unwrap()..];
             assert!(link[..link.find('>').unwrap()].contains(&format!("href=\"{path}\"")), "{path}: {link}");
@@ -837,6 +843,7 @@ async fn pages_for_measuring() {
         ("dialog-proxmox", "/add?add=proxmox".into()),
         ("dialog-device", "/add?add=device".into()),
         ("dialog-reject", format!("/approvals?confirm=reject:{approval}")),
+        ("dialog-rule", "/security?add=rule".into()),
         ("none-found", "/?q=nothing+like+it".into()),
     ] {
         pages.push((name.into(), path, admin.clone()));
@@ -1052,7 +1059,31 @@ async fn a_newcomer_is_told_what_each_thing_is() {
     let (_, html) = submit(&app, &admin, "/add/machine", &fields).await;
     says("/add/machine", html, &["It shows on the Overview once its probe connects."]);
     // a choice says what it is in a few words, so it isn't cut off on a phone; its field's hint says the rest
-    for path in ["/add?add=machine", "/users?add=user", "/patching?add=policy"] {
+    let users: Vec<String> = app
+        .db
+        .readers()
+        .with(|c| {
+            let mut s = c.prepare("SELECT id FROM users")?;
+            s.query_map([], |r| r.get(0))?.collect()
+        })
+        .unwrap();
+    for (i, user) in users.into_iter().enumerate() {
+        insert(
+            &app,
+            "devices",
+            Row::from([
+                ("id", Value::Text(format!("help-device-{i}"))),
+                ("user_id", Value::Text(user)),
+                ("name", Value::Text(format!("laptop-{i}"))),
+                ("endpoint_id", Value::Text(format!("{i}").repeat(64))),
+                ("created_at", Value::Integer(1)),
+            ]),
+        )
+        .await;
+    }
+    let keys = see(&app, "/account/keys", &admin).await;
+    assert!(keys.contains("name=\"scope\""), "the key form is there to look at: {keys}");
+    for path in ["/add?add=machine", "/users?add=user", "/patching?add=policy", "/security?add=rule", "/account/keys"] {
         let html = see(&app, path, &admin).await;
         for option in html.split("<option").skip(1) {
             let label = plain(&option[option.find('>').unwrap() + 1..option.find("</option>").unwrap()]);

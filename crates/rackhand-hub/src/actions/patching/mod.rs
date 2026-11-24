@@ -5,6 +5,7 @@
 pub const NO_REPORT_AFTER_REBOOT: &str = "no_report_after_reboot";
 
 pub mod driver;
+pub mod hypervisor;
 pub mod precheck;
 pub mod rollback;
 pub mod select;

@@ -26,6 +26,8 @@ ulid = { workspace = true }
 rackhand-store = { path = "../../crates/rackhand-store" }
 rackhand-runbook = { path = "../../crates/rackhand-runbook" }
 rackhand-proto = { path = "../../crates/rackhand-proto" }
+rackhand-operator = { path = "../../crates/rackhand-operator" }
+prost = { workspace = true }
 iroh = { workspace = true }
 ed25519-dalek = { workspace = true }
 rusqlite = { workspace = true }

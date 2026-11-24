@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use rackhand_runbook::runbook::{Identity, Runbook, StepKind};
+use rackhand_runbook::runbook::{Identity, Runbook};
 use serde_json::{Value, json};
 
 use super::auth::Caller;
@@ -31,6 +31,9 @@ fn actions_error(e: ActionsError) -> ToolError {
     match e {
         ActionsError::MachineBusy => ToolError::new("machine_busy", "another job holds the machine; try again later"),
         ActionsError::MonitorOnly => ToolError::new("monitor_only", "the machine is at access level monitor"),
+        ActionsError::Quarantined => {
+            ToolError::new("machine_quarantined", "only diagnostics and the release run on a quarantined machine")
+        }
         ActionsError::Approval(e) => gate::approval_error("", &e),
         ActionsError::InvalidParam(..)
         | ActionsError::UnknownDiagnostic
@@ -247,7 +250,7 @@ impl Mcp {
             Action::Runbook {
                 risk: runbook.risk,
                 level: gate::level(&self.inner.db, caller).min(runbook.autonomy),
-                needs_account: runbook.steps.iter().any(|s| matches!(s.kind, StepKind::Ssh | StepKind::Transfer)),
+                needs_account: runbook.steps.iter().any(|s| s.needs_account()),
                 assistant_commands: &commands,
             }
         };

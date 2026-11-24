@@ -101,7 +101,9 @@ impl Assist {
     /// Starts an assistant job for an incident and offers it.
     pub async fn start(&self, req: AssistRequest) -> AssistResult {
         let now = now_ms();
-        let cap = self.inner.daily_cap;
+        // the settings page's cap, else the one the hub started with
+        let cap =
+            crate::library::config::hub(&self.inner.db).map(|c| c.assistant.daily_cap).unwrap_or(self.inner.daily_cap);
         if cap::started_today(&self.inner.db, now) >= cap {
             let note = format!("The daily assistant cap ({cap}) is reached; this incident goes to a person.");
             return self.to_person(None, &req.incident_id, "daily_cap", Some(note)).await;

@@ -183,6 +183,7 @@ async fn no_patch_or_silence_alert_during_maintenance_window() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert_eq!(count(&m, PATCH_JOBS), started, "in maintenance: {maintained}");
+        m.ingest.start(0).await.unwrap();
         let incidents = rackhand_hub::incidents::Incidents::new(m.db.clone(), m.ingest.clone(), Bus::new());
         incidents.set_quiet(Arc::new(Expected { machines: Arc::new(m.clone()), actions }));
         incidents.set_started(now - 3_600_000);
@@ -215,4 +216,82 @@ async fn expected_silence_from_the_windows() {
     assert!(e.in_maintenance(M, &["db".into()], now_ms()));
     assert!(!e.in_maintenance(M, &["web".into()], now_ms()));
     assert!(!e.awaiting_reboot(M));
+}
+
+/// E13: only a job with an approved high-risk approval may reboot a hypervisor, and a hypervisor's kernels are compared
+/// as it has no flag of its own.
+#[tokio::test(flavor = "multi_thread")]
+async fn only_an_approved_high_risk_job_may_reboot_a_hypervisor() {
+    let m = machines("approved").await;
+    let approval = |id: &str, risk: &str, state: &str| {
+        RowWrite::insert(
+            "approvals",
+            Row::from([
+                ("id", t(id)),
+                ("tool", t("run_runbook")),
+                ("target", t("pve")),
+                ("args_hash", Value::Blob(vec![1])),
+                ("risk", t(risk)),
+                ("requested_by", t("schedule:patch")),
+                ("state", t(state)),
+                ("expires_at", Value::Integer(1)),
+            ]),
+        )
+    };
+    let job = |id: &str, name: &str, approval: Option<&str>| {
+        let mut row = Row::from([
+            ("id", t(id)),
+            ("kind", t("runbook")),
+            ("name", t(name)),
+            ("target", t("pve")),
+            ("requested_by", t("schedule:patch")),
+            ("state", t("running")),
+        ]);
+        if let Some(a) = approval {
+            row.insert("approval_id", t(a));
+        }
+        RowWrite::insert("jobs", row)
+    };
+    m.db.writer()
+        .send(WriteCmd::Batch(vec![
+            approval("high", "high", "used"),
+            approval("normal", "normal", "used"),
+            approval("rejected", "high", "rejected"),
+            job("j-high", "reboot-host", Some("high")),
+            job("j-normal", "reboot-host", Some("normal")),
+            job("j-rejected", "reboot-host", Some("rejected")),
+            job("j-patch", "patch-proxmox-host", Some("high")),
+            job("j-none", "reboot-host", None),
+        ]))
+        .await
+        .unwrap();
+    assert!(m.approved("j-high"));
+    for no in ["j-normal", "j-rejected", "j-patch", "j-none", "missing"] {
+        assert!(!m.approved(no), "{no}");
+    }
+    assert!(m.compares_kernels("pve") && m.compares_kernels("pve2") && !m.compares_kernels("plain"));
+}
+
+/// 7.5.3 steps 7 and 8: the machines whose reboot takes the hub down: its own host, and the hypervisor its confirmed
+/// binding names.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_machines_the_hub_runs_on() {
+    for (state, bound) in [("confirmed", true), ("proposed", false)] {
+        let m = machines(&format!("hubhost-{state}")).await;
+        let hub = Row::from([
+            ("id", t("hub")),
+            ("site_id", t("s")),
+            ("name", t("hub")),
+            ("kind", t("linux")),
+            ("roles", t("[\"hub\"]")),
+            ("proxmox_ref", t("{\"cluster\":\"pve2\",\"node\":\"pve\",\"vmid\":1,\"type\":\"lxc\"}")),
+            ("proxmox_ref_state", t(state)),
+            ("state", t("enrolled")),
+        ]);
+        m.db.writer().send(WriteCmd::Batch(vec![RowWrite::insert("machines", hub)])).await.unwrap();
+        assert!(m.hosts_hub("hub"));
+        assert_eq!(m.hosts_hub("pve2"), bound, "bound through it: {state}");
+        assert_eq!(m.hosts_hub("pve"), bound, "another of its cluster, named as the node: {state}");
+        assert!(!m.hosts_hub("plain") && !m.hosts_hub("missing"));
+    }
 }

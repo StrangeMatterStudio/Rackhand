@@ -12,15 +12,26 @@ mod executor_it;
 #[cfg(test)]
 mod helper_it;
 #[cfg(test)]
+mod helper_scan;
+#[cfg(test)]
 mod install_it;
 #[cfg(test)]
 mod jobs;
 #[cfg(test)]
 mod mirror_it;
 #[cfg(test)]
+#[path = "operator_it.rs"]
+mod operator_it;
+#[cfg(test)]
 mod patch_it;
 #[cfg(test)]
 mod probe_hub;
+#[cfg(test)]
+#[path = "quarantine_it.rs"]
+mod quarantine;
+#[cfg(test)]
+#[path = "sampling_it.rs"]
+mod sampling;
 #[cfg(test)]
 mod smoke;
 #[cfg(test)]

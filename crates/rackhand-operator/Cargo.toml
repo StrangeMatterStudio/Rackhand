@@ -7,5 +7,30 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[lib]
+name = "rackhand_operator"
+path = "src/lib.rs"
+
+[dependencies]
+rackhand-proto = { path = "../rackhand-proto" }
+rackhand-net = { path = "../rackhand-net" }
+iroh = { workspace = true }
+tokio = { workspace = true, features = ["process", "rt-multi-thread", "signal", "io-std"] }
+tokio-util = "0.7"
+async-trait = "0.1"
+prost = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+ulid = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1", default-features = false, features = ["std", "process"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
 [lints]
 workspace = true

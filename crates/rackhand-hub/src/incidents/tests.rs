@@ -83,6 +83,7 @@ impl Env {
         for m in [M1, M2] {
             ingest.hello(m, 1, &[LabelEntry::default()]).await.unwrap();
         }
+        ingest.start(0).await.unwrap();
         let incidents = Incidents::new(db.clone(), ingest.clone(), Bus::new());
         // machine silence stays in its start-up grace unless a test sets when the hub started
         incidents.set_started(i64::MAX / 4);
@@ -890,4 +891,33 @@ async fn cert_expiry_warns_at_14_days() {
     cert_days(&env, T0 + 3 * H, 89.0).await;
     env.incidents.evaluate(T0 + 3 * H).await.unwrap();
     assert_eq!(by_kind(&env, "cert.expiry")[0].0, "resolved", "renewed");
+}
+
+/// E44: after a restart no rule runs until the recent window has been rebuilt from what was stored. A hub that judged
+/// before that would find every machine silent.
+mod recovery {
+    use super::*;
+
+    fn count(db: &Db) -> i64 {
+        db.readers().with(|c| c.query_row("SELECT count(*) FROM incidents", [], |r| r.get(0))).unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn startup_order_window_before_rules() {
+        let mut env = Env::new("recovery-window").await;
+        env.sample(M1, CPU, T0, 1.0, Stream::Live, T0).await;
+        // the hub restarts: nothing is in memory yet, and its start-up grace is long over (as if the rules were late)
+        let Env { db, .. } = env;
+        let ingest = Ingest::new(db.clone(), Bus::new(), Arc::new(Roomy));
+        let incidents = Incidents::new(db.clone(), ingest.clone(), Bus::new());
+        incidents.set_started(T0 - 10 * MIN);
+        assert!(!ingest.window_rebuilt());
+        let before = incidents.evaluate(T0 + 10 * MIN).await.unwrap();
+        assert_eq!((before.opened, before.changed, count(&db)), (0, 0, 0), "no rule runs on a window not yet rebuilt");
+        // started: what was staged is compacted and the window rebuilt, and then the rules run
+        ingest.start(T0 + 10 * MIN).await.unwrap();
+        assert!(ingest.window_rebuilt());
+        incidents.evaluate(T0 + 10 * MIN + 15_000).await.unwrap();
+        assert!(count(&db) > 0, "a machine that hasn't reported is silent once the rules run: {}", count(&db));
+    }
 }

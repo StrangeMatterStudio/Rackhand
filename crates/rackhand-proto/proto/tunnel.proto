@@ -53,3 +53,13 @@ message XferDone {
   bool ok = 1;
   string error = 2;
 }
+
+// The receiving side's answers on an xfer stream (7.3.11): the first one to the offer, then one to each chunk. `resume` names
+// the next chunk it wants (the offer's resume point; after a chunk, the next one, or the same one again if it didn't match);
+// `done` ends the transfer, after the last chunk or at once if the offer is refused.
+message XferAnswer {
+  oneof answer {
+    XferResume resume = 1;
+    XferDone done = 2;
+  }
+}

@@ -344,7 +344,12 @@ pub(super) async fn factor_submit(web: &Web, ctx: &Ctx) -> Response<Body> {
     };
     let (name, site, tz) = (draft.value("admin_name"), draft.value("site_name"), draft.value(forms::ZONE));
     let on = |n: &str| draft.value(n) == "on";
-    let sources = Sources { feodo: on("source_feodo"), spamhaus: on("source_spamhaus"), dbip: on("source_dbip") };
+    let sources = Sources {
+        feodo: on("source_feodo"),
+        spamhaus: on("source_spamhaus"),
+        dbip: on("source_dbip"),
+        ..Sources::default()
+    };
     let settings = HubConfig { sources, ..HubConfig::default() }.to_toml();
 
     let user_id = ulid::Ulid::new().to_string();

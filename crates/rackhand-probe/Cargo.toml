@@ -34,10 +34,12 @@ ulid = { workspace = true }
 tracing = { workspace = true }
 regex = "1"
 blake3 = "1"
+data-encoding = "2"
+sha2 = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # statvfs without unsafe code.
-rustix = { version = "1", default-features = false, features = ["std", "fs", "process", "net"] }
+rustix = { version = "1", default-features = false, features = ["std", "fs", "process", "net", "event"] }
 
 [lints]
 workspace = true

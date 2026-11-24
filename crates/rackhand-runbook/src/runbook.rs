@@ -37,6 +37,34 @@ pub enum StepKind {
     Transfer,
     Tunnel,
     Notify,
+    /// Something the hub does itself, from a short fixed list (`call`).
+    Hub,
+}
+
+/// What a `hub` step may ask the hub to do: send a machine its signed command list, replace its hub keys, revoke its
+/// endpoint, take a guest through provisioning (make its machine and token, have the hypervisor's wrapper give it its
+/// enrollment, bind it to the guest, and wait until it has enrolled), or quarantine a machine, take its forensic snapshot,
+/// and release it (7.5.6).
+pub const HUB_CALLS: [&str; 10] = [
+    "send_commands",
+    "rotate_keys",
+    "revoke",
+    "provision_machine",
+    "send_guest",
+    "bind_guest",
+    "await_machine",
+    "quarantine_isolate",
+    "quarantine_snapshot",
+    "quarantine_release",
+];
+
+/// A step's `call` as a name and its `key=value` words (`clone vmid=9000 newid=120`). A word without `=` is no
+/// argument. Parameters have been put in by then, and a parameter's pattern holds no space.
+pub fn call_parts(call: &str) -> (&str, Vec<(String, String)>) {
+    let mut words = call.split_whitespace();
+    let name = words.next().unwrap_or("");
+    let args = words.filter_map(|w| w.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    (name, args)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -98,6 +126,9 @@ pub struct Step {
     /// `tunnel`: the port on the target.
     #[serde(default)]
     pub port: Option<u16>,
+    /// `transfer`: a bulk transfer waits for a direct path unless this is set (7.3.11, E29).
+    #[serde(default)]
+    pub allow_relay: bool,
     #[serde(default)]
     pub timeout: Option<String>,
     #[serde(default)]
@@ -110,9 +141,38 @@ pub struct Step {
     pub resumable: bool,
     #[serde(default)]
     pub detached: bool,
+    /// `reboot_if_required`: reboots whether the machine wants it or not.
+    #[serde(default)]
+    pub always: bool,
 }
 
 impl Step {
+    /// Whether the step needs an account on the machine, which a machine at access level `monitor` doesn't have: one that
+    /// runs over SSH, sends a file, or sends the machine something over SSH. Revoking an endpoint is the hub's alone.
+    pub fn needs_account(&self) -> bool {
+        match self.kind {
+            StepKind::Ssh | StepKind::Transfer => true,
+            StepKind::Hub => {
+                // revoking and the bookkeeping of a provisioning are the hub's own; only what goes through the
+                // machine's wrapper (the command list, the keys, a guest's enrollment) needs its account. A quarantine is
+                // done from the hypervisor for a guest, which a monitor machine can be; the in-guest one checks for the
+                // account itself
+                let call = call_parts(self.call.as_deref().unwrap_or("")).0;
+                ![
+                    "revoke",
+                    "provision_machine",
+                    "bind_guest",
+                    "await_machine",
+                    "quarantine_isolate",
+                    "quarantine_snapshot",
+                    "quarantine_release",
+                ]
+                .contains(&call)
+            }
+            _ => false,
+        }
+    }
+
     pub fn timeout_s(&self) -> Option<u64> {
         self.timeout.as_deref().and_then(parse_duration)
     }

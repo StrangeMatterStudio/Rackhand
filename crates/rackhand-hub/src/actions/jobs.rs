@@ -118,6 +118,12 @@ pub(crate) async fn step_finished(db: &Db, job: &str, step: &str, end: StepEnd<'
     db.writer().send(WriteCmd::UpdateJobStep(row)).await.map(|_| ())
 }
 
+/// Marks the step a restarted hub goes on with.
+pub(crate) async fn resume_at(db: &Db, job: &str, step: &str) -> Result<(), StoreError> {
+    let row: Row = [("id", text(job)), ("resumable_step", text(step))].into_iter().collect();
+    db.writer().send(WriteCmd::ResumeJobAt(row)).await.map(|_| ())
+}
+
 pub(crate) async fn finish(
     db: &Db,
     job: &str,

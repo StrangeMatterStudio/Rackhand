@@ -51,6 +51,58 @@ pub fn generate_ed25519(comment: &str) -> Result<(PrivateKey, PublicKey), KeyErr
     Ok((private, public))
 }
 
+/// The Vault names of a machine's own key for `id`, and of the one made for its next rotation.
+fn machine_name(id: Identity, machine: &str) -> String {
+    format!("{}.machine.{machine}", id.vault_name())
+}
+
+fn next_name(id: Identity, machine: &str) -> String {
+    format!("{}.next", machine_name(id, machine))
+}
+
+/// A key kept under `name`; none when nothing is stored there (or what is stored is empty).
+fn stored(vault: &Vault, name: &str) -> Result<Option<PrivateKey>, KeyError> {
+    let Ok(secret) = vault.get(name) else { return Ok(None) };
+    let pem = String::from_utf8_lossy(secret.expose()).into_owned();
+    if pem.trim().is_empty() {
+        return Ok(None);
+    }
+    PrivateKey::from_openssh(&pem).map(Some).map_err(|e| KeyError::Encoding(e.to_string()))
+}
+
+async fn store(vault: &Vault, name: &str, key: &PrivateKey) -> Result<(), KeyError> {
+    let pem = key.to_openssh(russh::keys::ssh_key::LineEnding::LF).map_err(|e| KeyError::Encoding(e.to_string()))?;
+    Ok(vault.put(name, &Secret::from(pem.as_str())).await?)
+}
+
+/// The key the hub uses for `id` on `machine`: the machine's own, once a rotation gave it one, else the hub's.
+pub async fn load_for(vault: &Vault, id: Identity, machine: &str) -> Result<PrivateKey, KeyError> {
+    match stored(vault, &machine_name(id, machine))? {
+        Some(key) => Ok(key),
+        None => load_or_create(vault, id).await,
+    }
+}
+
+/// The key a rotation of `machine`'s key moves to: made the first time and kept until it is committed, so an attempt
+/// that stopped halfway is taken up again with the same key. It changes nothing by itself.
+pub async fn next_for(vault: &Vault, id: Identity, machine: &str) -> Result<PrivateKey, KeyError> {
+    if let Some(key) = stored(vault, &next_name(id, machine))? {
+        return Ok(key);
+    }
+    let (private, _) = generate_ed25519(id.user())?;
+    store(vault, &next_name(id, machine), &private).await?;
+    Ok(private)
+}
+
+/// Makes the pending key the machine's own, once the machine accepts it.
+pub async fn commit_next(vault: &Vault, id: Identity, machine: &str) -> Result<(), KeyError> {
+    let Some(next) = stored(vault, &next_name(id, machine))? else {
+        return Err(KeyError::Encoding("no key is waiting to be used".into()));
+    };
+    store(vault, &machine_name(id, machine), &next).await?;
+    Ok(vault.put(&next_name(id, machine), &Secret::from("")).await?)
+}
+
 /// The identity's private key from the Vault, generated and stored the first time.
 pub async fn load_or_create(vault: &Vault, id: Identity) -> Result<PrivateKey, KeyError> {
     if let Ok(secret) = vault.get(id.vault_name()) {

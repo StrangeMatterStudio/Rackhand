@@ -64,6 +64,33 @@ impl Jobs for FakeJobs {
     }
 }
 
+/// Hypervisors as their APIs give them.
+#[derive(Default)]
+struct FakeHosts(Mutex<HashMap<String, HostView>>);
+
+impl Hosts for FakeHosts {
+    fn view<'a>(&'a self, host: &'a str) -> crate::actions::runner::BoxFuture<'a, Result<HostView, String>> {
+        let v = self.0.lock().unwrap().get(host).cloned().ok_or_else(|| "no_hypervisor".to_string());
+        Box::pin(async move { v })
+    }
+}
+
+impl FakeHosts {
+    fn put(&self, host: &str, node: &str, nodes: &[&str], guests: &[(u64, &str, bool)]) {
+        let guests = guests
+            .iter()
+            .map(|(vmid, name, running)| HostGuest {
+                vmid: *vmid,
+                kind: "qemu".into(),
+                name: (*name).into(),
+                running: *running,
+            })
+            .collect();
+        let nodes = nodes.iter().map(|n| n.to_string()).collect();
+        self.0.lock().unwrap().insert(host.into(), HostView { node: node.into(), nodes, guests });
+    }
+}
+
 impl FakeJobs {
     fn started(&self) -> Vec<(String, String)> {
         self.started.lock().unwrap().iter().map(|j| (j.name.clone(), j.machine_id.clone())).collect()
@@ -80,6 +107,7 @@ struct Env {
     db: Arc<Db>,
     world: Arc<FakeWorld>,
     jobs: Arc<FakeJobs>,
+    hosts: Arc<FakeHosts>,
     driver: Arc<Driver>,
     now: i64,
 }
@@ -105,8 +133,9 @@ async fn env(name: &str) -> Env {
     let (library, _) = crate::library::items::Library::new(db.clone(), crate::audit::Audit::new(db.writer()));
     library.seed(rackhand_runbook::builtin::runbooks(), 1).await.unwrap();
     let (world, jobs) = (Arc::new(FakeWorld::default()), Arc::new(FakeJobs::default()));
-    let driver = Driver::new(db.clone(), world.clone(), jobs.clone());
-    Env { db, world, jobs, driver, now: rackhand_store::ids::now_ms() }
+    let hosts = Arc::new(FakeHosts::default());
+    let driver = Driver::with_hosts(db.clone(), world.clone(), jobs.clone(), hosts.clone());
+    Env { db, world, jobs, hosts, driver, now: rackhand_store::ids::now_ms() }
 }
 
 impl Env {
@@ -149,6 +178,68 @@ impl Env {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         panic!("{machine}'s job didn't end");
+    }
+
+    /// Ends the host's patch, whose reboot step left `reboot` in the job log.
+    async fn end_patch(&self, machine: &str, reboot: &str) {
+        let n = self.jobs.started.lock().unwrap().iter().position(|j| j.machine_id == machine).unwrap() + 1;
+        let job = format!("01JJOB{n:020}");
+        let row = Row::from([
+            ("id", t(&job)),
+            ("kind", t("runbook")),
+            ("name", t("patch-proxmox-host")),
+            ("target", t(machine)),
+            ("requested_by", t("test")),
+            ("state", t("succeeded")),
+        ]);
+        let step = Row::from([
+            ("job_id", t(&job)),
+            ("step_id", t("reboot")),
+            ("state", t("succeeded")),
+            ("stdout", Value::Blob(format!("{{\"reboot\":\"{reboot}\"}}\n").into_bytes())),
+        ]);
+        self.db
+            .writer()
+            .send(WriteCmd::Batch(vec![RowWrite::insert("jobs", row), RowWrite::insert("job_steps", step)]))
+            .await
+            .unwrap();
+        self.end(machine).await;
+    }
+
+    /// The machine's `reboot-host` job in the log and its approval used, as Actions would have it.
+    async fn log_reboot(&self, machine: &str, started_ms: i64) {
+        for (id, ..) in self.reboots().into_iter().filter(|r| r.1 == machine) {
+            let hash: Vec<u8> = self
+                .db
+                .readers()
+                .with(|c| c.query_row("SELECT args_hash FROM approvals WHERE id = ?1", [&id], |r| r.get(0)))
+                .unwrap();
+            Approvals::new(self.db.clone()).use_approval(&id, REQUESTER, &hash, started_ms).await.unwrap();
+        }
+        let row = Row::from([
+            ("id", t(&ulid::Ulid::new().to_string())),
+            ("kind", t("runbook")),
+            ("name", t("reboot-host")),
+            ("target", t(machine)),
+            ("requested_by", t(REQUESTER)),
+            ("state", t("succeeded")),
+            ("started_at", Value::Integer(started_ms)),
+        ]);
+        self.db.writer().send(WriteCmd::Batch(vec![RowWrite::insert("jobs", row)])).await.unwrap();
+    }
+
+    /// The reboot approvals: (id, target, risk, step-up, reason).
+    fn reboots(&self) -> Vec<(String, String, String, bool, String)> {
+        self.db
+            .readers()
+            .with(|c| {
+                let mut s = c.prepare(
+                    "SELECT id, target, risk, step_up != 0, reason FROM approvals
+                     WHERE json_extract(args, '$.name') = 'reboot-host' ORDER BY target, id",
+                )?;
+                s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect()
+            })
+            .unwrap()
     }
 
     fn approvals(&self) -> Vec<(String, String, String)> {
@@ -408,4 +499,179 @@ async fn rolls_back_only_under_d45() {
             assert!(!e.driver.busy("web").await);
         }
     }
+}
+
+/// E13: a patched hypervisor that needs a reboot isn't rebooted; a high-risk approval with step-up lists every guest that
+/// goes down with it, and the reboot runs once approved. One that needs none asks nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn hypervisor_reboot_needs_high_risk_approval_listing_guests() {
+    let e = env("hv-reboot").await;
+    e.machine("pve", "hypervisor", "auto", "[]").await;
+    e.machine("calm", "hypervisor", "auto", "[]").await;
+    e.hosts.put("pve", "pve1", &["pve1"], &[(101, "web", true), (102, "db", true), (103, "spare", false)]);
+    e.hosts.put("calm", "pve2", &["pve2"], &[(201, "x", true)]);
+    let open = || vec![e.window("auto", Window::Security)];
+    e.tick(open(), e.now).await;
+    e.end_patch("calm", "not_required").await;
+    e.tick(open(), e.now + MIN).await;
+    e.end_patch("pve", "required_not_allowed").await;
+    let asked = e.reboots();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    let (id, target, risk, step_up, reason) = asked[0].clone();
+    assert_eq!((target.as_str(), risk.as_str(), step_up), ("pve", "high", true));
+    for part in ["web (VM 101)", "db (VM 102)", "spare (VM 103, stopped)"] {
+        assert!(reason.contains(part), "{reason}");
+    }
+    e.tick(open(), e.now + 2 * MIN).await;
+    assert!(e.jobs.started().iter().all(|j| j.0 != "reboot-host"), "not before it is approved");
+    e.approve(&id, e.now + 2 * MIN).await;
+    e.tick(open(), e.now + 3 * MIN).await;
+    assert_eq!(e.jobs.started().last(), Some(&("reboot-host".to_string(), "pve".to_string())));
+    let job = e.jobs.started.lock().unwrap().last().unwrap().clone();
+    assert_eq!(job.approval_id.as_deref(), Some(id.as_str()));
+    e.tick(open(), e.now + 4 * MIN).await;
+    assert_eq!(e.jobs.started().iter().filter(|j| j.0 == "reboot-host").count(), 1, "once");
+    assert_eq!(e.reboots().len(), 1, "asked once");
+}
+
+/// A hypervisor whose guests can't be listed isn't asked about: a person couldn't see what goes down.
+#[tokio::test(flavor = "multi_thread")]
+async fn hypervisor_without_a_guest_list_asks_nothing() {
+    let e = env("hv-blind").await;
+    e.machine("pve", "hypervisor", "auto", "[]").await;
+    e.tick(vec![e.window("auto", Window::Security)], e.now).await;
+    e.end_patch("pve", "required_not_allowed").await;
+    assert!(e.reboots().is_empty());
+}
+
+/// E62: when the hub is one of the guests (its confirmed binding), the approval says so.
+#[tokio::test(flavor = "multi_thread")]
+async fn hypervisor_approval_names_hub_when_hub_is_a_guest() {
+    for (state, named) in [("confirmed", true), ("proposed", false)] {
+        let e = env(&format!("hv-hub-{state}")).await;
+        e.machine("pve", "hypervisor", "auto", "[]").await;
+        let reference = r#"{"cluster":"pve","node":"pve1","vmid":102,"type":"qemu"}"#;
+        let hub = Row::from([
+            ("id", t("hub")),
+            ("site_id", t("s1")),
+            ("name", t("rackhand")),
+            ("kind", t("linux")),
+            ("roles", t("[\"hub\"]")),
+            ("state", t("enrolled")),
+            ("proxmox_ref", t(reference)),
+            ("proxmox_ref_state", t(state)),
+        ]);
+        e.db.writer().send(WriteCmd::Batch(vec![RowWrite::insert("machines", hub)])).await.unwrap();
+        e.hosts.put("pve", "pve1", &["pve1"], &[(101, "web", true), (102, "rackhand", true)]);
+        e.tick(vec![e.window("auto", Window::Security)], e.now).await;
+        e.end_patch("pve", "required_not_allowed").await;
+        let (id, _, _, _, reason) = e.reboots()[0].clone();
+        assert_eq!(reason.contains("This hub is one of them: rackhand (VM 102)"), named, "{state}: {reason}");
+        e.approve(&id, e.now + MIN).await;
+        e.tick(vec![e.window("auto", Window::Security)], e.now + MIN).await;
+        assert!(e.jobs.started().iter().any(|j| j.0 == "reboot-host"), "{state}: the step schedules it");
+    }
+}
+
+/// 7.5.3 step 7: two hypervisors of one cluster are never rebooted in the same window, whoever rebooted the first and
+/// also after the hub restarted; one that stands alone is.
+#[tokio::test(flavor = "multi_thread")]
+async fn hypervisor_two_cluster_members_never_rebooted_same_window() {
+    let e = env("hv-cluster").await;
+    for (id, node, nodes) in [("a", "n1", &["n1", "n2"][..]), ("b", "n2", &["n1", "n2"][..]), ("c", "n1", &["n1"][..])]
+    {
+        e.machine(id, "hypervisor", "auto", "[]").await;
+        e.hosts.put(id, node, nodes, &[(101, "web", true)]);
+    }
+    let open = || vec![e.window("auto", Window::Security)];
+    let mut at = e.now;
+    for id in ["a", "b", "c"] {
+        e.tick(open(), at).await;
+        e.end_patch(id, "required_not_allowed").await;
+        at += MIN;
+    }
+    for (id, ..) in e.reboots() {
+        e.approve(&id, at).await;
+    }
+    e.tick(open(), at).await;
+    assert_eq!(e.jobs.started().last().unwrap(), &("reboot-host".to_string(), "a".to_string()), "one at a time");
+    e.log_reboot("a", at).await;
+    e.end("a").await;
+    e.tick(open(), at + MIN).await;
+    assert_eq!(e.jobs.started().last().unwrap().1, "c", "b is in a's cluster and waits; c stands alone");
+    e.log_reboot("c", at + MIN).await;
+    e.end("c").await;
+    e.tick(open(), at + 2 * MIN).await;
+    assert!(!e.jobs.started().contains(&("reboot-host".into(), "b".into())));
+    // a hub that restarted knows it from the job log
+    let hosts: Arc<dyn Hosts> = e.hosts.clone();
+    let restarted = Driver::with_hosts(e.db.clone(), e.world.clone(), e.jobs.clone(), hosts);
+    restarted.tick(open(), at + 3 * MIN).await;
+    assert!(!e.jobs.started().contains(&("reboot-host".into(), "b".into())));
+    // the next window takes it, without asking again
+    let day = 24 * 60 * MIN;
+    let w = e.window("auto", Window::Security);
+    let next =
+        OpenWindow { starts_ms: w.starts_ms + day, ends_ms: w.ends_ms + day, next_ends_ms: w.next_ends_ms + day, ..w };
+    e.world.pending.lock().unwrap().extend(["a", "b", "c"].map(|m| (m.to_string(), (0, 0))));
+    e.tick(vec![next], e.now + day).await;
+    assert!(e.jobs.started().contains(&("reboot-host".into(), "b".into())));
+    assert_eq!(e.reboots().len(), 3);
+}
+
+/// A reboot job that ended without using its approval (the machine was busy, say) isn't started again in that window.
+#[tokio::test(flavor = "multi_thread")]
+async fn hypervisor_reboot_is_tried_once_per_window() {
+    let e = env("hv-once").await;
+    e.machine("pve", "hypervisor", "auto", "[]").await;
+    e.hosts.put("pve", "pve1", &["pve1"], &[(101, "web", true)]);
+    let open = || vec![e.window("auto", Window::Security)];
+    e.tick(open(), e.now).await;
+    e.end_patch("pve", "required_not_allowed").await;
+    e.approve(&e.reboots()[0].0.clone(), e.now + MIN).await;
+    e.tick(open(), e.now + MIN).await;
+    let row = Row::from([
+        ("id", t("01JBUSY0000000000000000001")),
+        ("kind", t("runbook")),
+        ("name", t("reboot-host")),
+        ("target", t("pve")),
+        ("requested_by", t(REQUESTER)),
+        ("state", t("failed")),
+        ("started_at", Value::Integer(e.now + MIN)),
+    ]);
+    e.db.writer().send(WriteCmd::Batch(vec![RowWrite::insert("jobs", row)])).await.unwrap();
+    e.end("pve").await;
+    e.tick(open(), e.now + 2 * MIN).await;
+    assert_eq!(e.jobs.started().iter().filter(|j| j.0 == "reboot-host").count(), 1);
+}
+
+/// 7.5.3 step 8: the hub's host has its own runbook and goes last, after the hypervisors; its reboot needs an approval
+/// that says the hub goes away with it. A hub on a hypervisor itself is patched as one.
+#[tokio::test(flavor = "multi_thread")]
+async fn hub_host_goes_last_and_asks_before_it_reboots() {
+    let e = env("hub-host").await;
+    e.machine("ahub", "linux", "auto", "[\"hub\"]").await;
+    e.machine("pve", "hypervisor", "auto", "[]").await;
+    e.machine("web", "linux", "auto", "[]").await;
+    let open = || vec![e.window("auto", Window::Security)];
+    for (i, (runbook, machine)) in
+        [("patch-debian", "web"), ("patch-proxmox-host", "pve"), ("patch-hub-host", "ahub")].into_iter().enumerate()
+    {
+        e.tick(open(), e.now + i as i64 * MIN).await;
+        assert_eq!(e.jobs.started().last(), Some(&(runbook.to_string(), machine.to_string())));
+        if machine == "ahub" {
+            e.end_patch(machine, "required_not_allowed").await;
+        } else {
+            e.end(machine).await;
+        }
+    }
+    let asked = e.reboots();
+    assert_eq!(asked.len(), 1);
+    assert_eq!((asked[0].1.as_str(), asked[0].2.as_str(), asked[0].3), ("ahub", "high", true));
+    assert!(asked[0].4.contains("the machine this hub runs on"), "{}", asked[0].4);
+    e.approve(&asked[0].0, e.now + 4 * MIN).await;
+    e.tick(open(), e.now + 4 * MIN).await;
+    assert_eq!(e.jobs.started().last(), Some(&("reboot-host".to_string(), "ahub".to_string())));
+    assert_eq!(runbook_for("hypervisor", &["hub".into()]), Some("patch-proxmox-host"));
+    assert_eq!(runbook_for("linux", &["hub".into(), "hypervisor".into()]), Some("patch-proxmox-host"));
 }

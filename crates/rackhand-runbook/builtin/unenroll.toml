@@ -1,0 +1,24 @@
+name = "unenroll"
+description = "Remove Rackhand from a machine, and revoke it on the hub"
+targets = { kinds = ["linux", "alpine"] }
+identity = "automation"
+risk = "high"
+autonomy = 1
+
+# The machine removes its services, the hub's users and keys, its sudoers file and command list, and its own files. The
+# command answers at once and does it five seconds later, so that its answer comes before the account it came through is
+# gone. A monitor machine has no such account: it is unenrolled with `rackhand-probe uninstall` on the machine, or revoked
+# on the hub.
+[[step]]
+id = "uninstall"
+kind = "ssh"
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/local/lib/rackhand/rackhand-probe", "uninstall", "--after", "5"]
+timeout = "1m"
+
+# Waits until the machine refuses the hub's key, which is how the hub knows the accounts are gone, and then revokes the
+# machine: its endpoint is no longer admitted. If the machine still takes the key, nothing is revoked.
+[[step]]
+id = "revoke"
+kind = "hub"
+call = "revoke"
+timeout = "3m"

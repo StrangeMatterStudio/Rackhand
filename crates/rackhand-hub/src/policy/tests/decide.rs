@@ -255,3 +255,46 @@ fn exec_step_up_patterns() {
         assert_eq!(d, Decision::Allow, "`{cmd}` is normal risk");
     }
 }
+
+/// 7.3.12, D89, AC58: a snapshot, rollback, power or firewall (quarantine) action on a monitor guest always creates an
+/// approval, whatever the runbook's level and whoever asks; and it is never refused as `monitor_only`, because it
+/// uses the hypervisor's API and no account on the guest.
+mod guard {
+    use super::*;
+
+    #[test]
+    fn monitor_guest_hypervisor_action_needs_approval() {
+        let risk_of = |name: &str| {
+            let runbook = rackhand_runbook::runbook::Runbook::parse(rackhand_runbook::builtin::runbook(name).unwrap());
+            runbook.unwrap().risk
+        };
+        let requesters =
+            [Requester::Local, Requester::Person, Requester::AssistantJob, Requester::PersonalKey, Requester::Peer];
+        for requester in requesters {
+            for level in 1..=3u8 {
+                // snapshot and rollback runbooks (their steps use the API; power is the same shape)
+                for name in ["snapshot", "rollback"] {
+                    let action =
+                        Action::Runbook { risk: risk_of(name), level, needs_account: false, assistant_commands: &[] };
+                    let monitor = decide(&req(requester, action, MONITOR));
+                    assert!(
+                        matches!(monitor, Decision::NeedsApproval { .. }),
+                        "{name} {requester:?} level {level}: {monitor:?}"
+                    );
+                }
+            }
+            // the guest firewall is quarantine and release
+            let quarantine = decide(&req(requester, Action::Quarantine, MONITOR));
+            assert_eq!(quarantine, Decision::NeedsApproval { risk: Risk::High, step_up: true }, "{requester:?}");
+        }
+        // an ordinary guest follows the level: a snapshot at level 2 runs
+        let snapshot =
+            Action::Runbook { risk: risk_of("snapshot"), level: 2, needs_account: false, assistant_commands: &[] };
+        assert_eq!(decide(&req(Requester::Local, snapshot, ORDINARY)), Decision::Allow);
+        // and no automatic rule applies to a monitor guest, at any level of the rule
+        for rule_enabled in [true, false] {
+            let action = Action::AutoQuarantine { rule_enabled };
+            assert_eq!(code(decide(&req(Requester::Local, action, MONITOR))), 'S');
+        }
+    }
+}

@@ -14,6 +14,8 @@ rackhand-hub = { path = "../rackhand-hub" }
 rackhand-release = { path = "../rackhand-release" }
 rackhand-runbook = { path = "../rackhand-runbook" }
 rackhand-net = { path = "../rackhand-net" }
+rackhand-operator = { path = "../rackhand-operator" }
+rackhand-relay = { path = "../rackhand-relay" }
 rackhand-proto = { path = "../rackhand-proto" }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "signal"] }
 rackhand-store = { path = "../rackhand-store" }

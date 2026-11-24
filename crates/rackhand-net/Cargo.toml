@@ -18,6 +18,8 @@ iroh-relay = { workspace = true, optional = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+blake3 = "1"
+getrandom = { workspace = true }
 
 [dev-dependencies]
 # The crate's own tests use the in-process pair, so the fast tier builds them with `testing` on.

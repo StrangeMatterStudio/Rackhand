@@ -1,0 +1,35 @@
+name = "service-restart"
+description = "Restart one systemd service and check that it is active"
+targets = { kinds = ["linux"] }
+identity = "automation"
+risk = "low"
+autonomy = 1
+
+[params.unit]
+type = "string"
+pattern = "[a-zA-Z0-9_][a-zA-Z0-9@_.:-]{0,118}\\.service"
+
+[[step]]
+id = "restart"
+kind = "ssh"
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/bin/systemctl", "restart", "{{unit}}"]
+timeout = "3m"
+
+[[step]]
+id = "active"
+kind = "ssh"
+cmd = ["/usr/bin/systemctl", "is-active", "{{unit}}"]
+timeout = "30s"
+
+# A report from after it: the checks below judge that one, not the state before.
+[[step]]
+id = "report"
+kind = "wait_report"
+timeout = "5m"
+
+# Every service check bound to the machine.
+[[step]]
+id = "verify"
+kind = "verify"
+checks = ["bound_checks"]
+timeout = "5m"

@@ -26,6 +26,8 @@ struct Guest {
     snapshots: Vec<Value>,
     /// Its configuration doesn't load (a 500).
     broken: bool,
+    /// A guest made through the API: its name, and whether it runs (the recorded two come from the fixtures).
+    made: Option<(String, bool)>,
 }
 
 #[derive(Debug)]
@@ -35,6 +37,12 @@ struct State {
     guests: BTreeMap<(String, u32), Guest>,
     /// Storages changed by a test: type, available and total bytes.
     storage: BTreeMap<String, (String, u64, u64)>,
+    /// The cluster's nodes and their status, when a test sets them.
+    nodes: Option<Vec<(String, String)>>,
+    /// The datacenter firewall's `enable`, when a test sets it (the recorded options say off).
+    datacenter_firewall: Option<bool>,
+    /// Requests that fail once with a 500: the method and the end of the path.
+    fail_once: Vec<(String, String)>,
     requests: Vec<Request>,
 }
 
@@ -77,7 +85,16 @@ impl Sim {
                 .collect();
             guests.insert((kind.to_string(), vmid), g);
         }
-        let state = Arc::new(Mutex::new(State { dir, node, guests, storage: BTreeMap::new(), requests: Vec::new() }));
+        let state = Arc::new(Mutex::new(State {
+            dir,
+            node,
+            guests,
+            storage: BTreeMap::new(),
+            nodes: None,
+            datacenter_firewall: None,
+            fail_once: Vec::new(),
+            requests: Vec::new(),
+        }));
         let (acceptor, fingerprint) = crate::pinned::test_server();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
         let url = format!("https://{}", listener.local_addr().expect("an address"));
@@ -105,6 +122,12 @@ impl Sim {
         Sim { url, fingerprint, state }
     }
 
+    /// The nodes `GET /nodes` gives, as `(name, status)`.
+    pub fn set_nodes(&self, nodes: &[(&str, &str)]) {
+        let nodes = nodes.iter().map(|(n, s)| (n.to_string(), s.to_string())).collect();
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).nodes = Some(nodes);
+    }
+
     pub fn requests(&self) -> Vec<Request> {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).requests.clone()
     }
@@ -123,6 +146,30 @@ impl Sim {
     pub fn set_storage(&self, name: &str, kind: &str, avail: u64, total: u64) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         s.storage.insert(name.to_string(), (kind.to_string(), avail, total));
+    }
+
+    /// The next request with this method whose path ends with `tail` fails with a 500.
+    pub fn fail_once(&self, method: &str, tail: &str) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).fail_once.push((method.into(), tail.into()));
+    }
+
+    /// Turns the datacenter firewall on or off, as an admin would.
+    pub fn set_datacenter_firewall(&self, on: bool) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).datacenter_firewall = Some(on);
+    }
+
+    /// A guest's own firewall: what it had before anything of ours.
+    pub fn set_guest_firewall(&self, vmid: u32, options: Value, rules: Vec<Value>) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let g = s.guests.get_mut(&("lxc".to_string(), vmid)).expect("the guest");
+        g.options = options.as_object().cloned().unwrap_or_default();
+        g.rules = rules;
+    }
+
+    /// Someone changes one of the guest's firewall options.
+    pub fn set_guest_option(&self, vmid: u32, key: &str, value: Value) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.guests.get_mut(&("lxc".to_string(), vmid)).expect("the guest").options.insert(key.into(), value);
     }
 
     /// What a quarantine does to a container's firewall (D104): policies DROP, a rule, the device's flag on.
@@ -191,12 +238,27 @@ fn answer(state: &Mutex<State>, req: Request) -> (&'static str, String) {
     let dir = s.dir.clone();
     let node = s.node.clone();
     let path = req.path.split('?').next().unwrap_or("").to_string();
+    if let Some(i) = s.fail_once.iter().position(|(m, p)| *m == req.method && path.ends_with(p.as_str())) {
+        s.fail_once.remove(i);
+        return ("500 Internal Server Error", json!({ "data": null, "message": "injected failure" }).to_string());
+    }
     let Some(rest) = path.strip_prefix("/api2/json") else { return ("404 Not Found", "{}".into()) };
     let parts: Vec<&str> = rest.trim_matches('/').split('/').collect();
     let data = |name: &str| fixture(&dir, name)["data"].clone();
     match (req.method.as_str(), parts.as_slice()) {
-        ("GET", ["nodes"]) => ok(data("nodes")),
-        ("GET", ["cluster", "firewall", "options"]) => ok(data("cluster_firewall_options")),
+        ("GET", ["nodes"]) => match &s.nodes {
+            Some(nodes) => {
+                ok(nodes.iter().map(|(n, status)| json!({ "node": n, "status": status, "type": "node" })).collect())
+            }
+            None => ok(data("nodes")),
+        },
+        ("GET", ["cluster", "firewall", "options"]) => {
+            let mut options = data("cluster_firewall_options");
+            if let (Some(on), Some(m)) = (s.datacenter_firewall, options.as_object_mut()) {
+                m.insert("enable".into(), json!(i64::from(on)));
+            }
+            ok(options)
+        }
         ("GET", ["nodes", n, "status"]) if *n == node => ok(data("node_status")),
         ("GET", ["nodes", n, "storage"]) if *n == node => {
             let mut list = data("storage");
@@ -211,11 +273,57 @@ fn answer(state: &Mutex<State>, req: Request) -> (&'static str, String) {
             }
             ok(list)
         }
-        ("GET", ["nodes", n, kind @ ("lxc" | "qemu")]) if *n == node => ok(data(kind)),
+        ("GET", ["nodes", n, kind @ ("lxc" | "qemu")]) if *n == node => {
+            let mut list = data(kind);
+            for ((k, vmid), g) in &s.guests {
+                if let (true, Some((name, running))) = (k == kind, &g.made) {
+                    let status = if *running { "running" } else { "stopped" };
+                    list.as_array_mut()
+                        .into_iter()
+                        .for_each(|l| l.push(json!({ "vmid": vmid, "name": name, "status": status })));
+                }
+            }
+            ok(list)
+        }
+        ("POST", ["nodes", n, "lxc"]) if *n == node => {
+            let f: BTreeMap<String, String> = form(&req.body).into_iter().collect();
+            let vmid = f.get("vmid").and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+            let config = f.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect();
+            let g = Guest {
+                config,
+                made: Some((f.get("hostname").cloned().unwrap_or_default(), false)),
+                ..Guest::default()
+            };
+            s.guests.insert(("lxc".to_string(), vmid), g);
+            ok(json!("UPID:sim:create"))
+        }
+        ("POST", ["nodes", n, "qemu", vmid, "clone"]) if *n == node => {
+            let f: BTreeMap<String, String> = form(&req.body).into_iter().collect();
+            let source =
+                s.guests.get(&("qemu".to_string(), vmid.parse::<u32>().unwrap_or(0))).map(|g| g.config.clone());
+            let newid = f.get("newid").and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+            let g = Guest {
+                config: source.unwrap_or_default(),
+                made: Some((f.get("name").cloned().unwrap_or_default(), false)),
+                ..Guest::default()
+            };
+            s.guests.insert(("qemu".to_string(), newid), g);
+            ok(json!("UPID:sim:clone"))
+        }
+        ("POST", ["nodes", n, kind @ ("lxc" | "qemu"), vmid, "status", action]) if *n == node => {
+            let key = (kind.to_string(), vmid.parse::<u32>().unwrap_or(0));
+            if let Some((_, running)) = s.guests.get_mut(&key).and_then(|g| g.made.as_mut()) {
+                *running = *action == "start" || *action == "reboot";
+            }
+            ok(json!(format!("UPID:sim:{action}")))
+        }
         ("GET", ["nodes", n, kind, _, "status", "current"]) if *n == node => ok(data(&format!("{kind}_status"))),
         ("GET", ["nodes", n, "tasks", upid, "status"]) if *n == node => {
             let upid = url::form_urlencoded::parse(format!("u={upid}").as_bytes()).next().map(|(_, v)| v.into_owned());
             let upid = upid.unwrap_or_default();
+            if upid.starts_with("UPID:sim:") {
+                return ok(json!({ "status": "stopped", "exitstatus": "OK", "upid": upid }));
+            }
             let task = ["snapshot_create", "snapshot_rollback", "snapshot_delete", "failed_delete"]
                 .into_iter()
                 .find(|t| data(t).as_str() == Some(upid.as_str()))
@@ -292,7 +400,9 @@ fn answer(state: &Mutex<State>, req: Request) -> (&'static str, String) {
                         if k == "pos" {
                             pos = v.parse().unwrap_or(0);
                         } else {
-                            rule.insert(k, v.parse::<i64>().map(Value::from).unwrap_or(Value::String(v)));
+                            // the API gives `enable` as a number and every other field (ports too) as text
+                            let number = if k == "enable" { v.parse::<i64>().ok() } else { None };
+                            rule.insert(k, number.map_or(Value::String(v), Value::from));
                         }
                     }
                     let at = pos.min(g.rules.len());

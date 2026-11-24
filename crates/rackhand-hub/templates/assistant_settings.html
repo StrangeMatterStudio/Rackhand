@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head"><div><h1>{{ shell.title }}</h1><p class="lede">Operators run the assistant's jobs on a host of your choice. Nothing here is needed for the rest of Rackhand to work.</p></div></div>
+{% if let Some(p) = problem %}<div class="banner">{{ crate::web::ui::icon("error")|safe }}<div>{{ p }}</div></div>{% endif %}
+<section class="card"><h2>What the AI provider receives</h2><p>{{ notice_text }}</p></section>
+{% if let Some(c) = command %}<section class="card"><h2>Run this on the operator host</h2><p>The invite works once, for 24 hours.</p><pre id="operator-command"><code>{{ c }}</code></pre><p><button type="button" data-copy="operator-command" hidden>Copy</button></p></section>{% endif %}
+<div class="cols sided">
+<section class="card list"><div class="bar"><h2>Operators</h2>{% if can_invite %}<form class="inline" method="post" action="/settings/assistant/invite"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="btn primary">Invite an operator</button></form>{% endif %}</div>
+{% if operators.is_empty() %}<p class="empty">No operator has joined. Invite one, and run the command it gives on the host that will run the assistant.</p>{% else %}
+<table><thead><tr><th scope="col">Operator</th><th scope="col">Runners</th><th scope="col">Last seen</th><th scope="col">State</th></tr></thead><tbody>
+{% for o in operators %}<tr><td class="t"><b>{{ o.name }}</b></td><td data-label="Runners">{{ o.runners }}</td><td data-label="Last seen">{% if o.connected %}Connected now{% else %}{{ o.last_seen|safe }}{% endif %}</td><td data-label="State">{{ o.state }}</td></tr>
+{% endfor %}</tbody></table>{% endif %}</section>
+<section class="card"><h2>Daily cap</h2>
+<form method="post" action="/settings/assistant/cap" novalidate>
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="field"><label for="cap">Assistant jobs a day</label><input id="cap" name="daily_cap" type="number" min="1" max="1000" value="{{ daily_cap }}"><p class="hint">Past it, an incident goes to a person.</p></div>
+<button type="submit" class="primary">Save</button>
+</form></section>
+</div>
+{% endblock %}

@@ -126,6 +126,24 @@ impl Registry {
         RowUpdate { table: "machines", key: ("id", Value::Text(machine_id.into())), set }
     }
 
+    /// Marks a machine revoked and stops admitting its probe (7.3.12), at once and in the stored state, so that a restart
+    /// doesn't admit it again. `false` for a machine that doesn't exist.
+    pub async fn revoke_machine(&self, machine_id: &str) -> Result<bool, super::RegistryError> {
+        use rusqlite::OptionalExtension;
+        let found: Option<Option<String>> = self.db().readers().with(|c| {
+            c.query_row("SELECT probe_endpoint_id FROM machines WHERE id = ?1", [machine_id], |r| r.get(0)).optional()
+        })?;
+        let Some(endpoint) = found else { return Ok(false) };
+        let set: Row = [("state", Value::Text("revoked".into()))].into_iter().collect();
+        let update = RowUpdate { table: "machines", key: ("id", Value::Text(machine_id.into())), set };
+        let change = rackhand_store::RegistryChange { consume: None, writes: vec![], updates: vec![update] };
+        self.db().writer().send(WriteCmd::RegistryChange(change)).await?;
+        if let Some(id) = endpoint.and_then(|e| e.parse::<EndpointId>().ok()) {
+            self.revoke(id);
+        }
+        Ok(true)
+    }
+
     /// Whether a driver is attached to the machine, so its `address` names the driver's API.
     pub(crate) fn machine_has_driver(&self, machine_id: &str) -> rusqlite::Result<bool> {
         self.db()

@@ -9,5 +9,10 @@ pub mod helper;
 pub mod link;
 pub mod logging;
 pub mod probe_check;
+pub mod remote;
 pub mod run;
 pub mod runcmd;
+#[cfg(unix)]
+pub mod security;
+#[cfg(unix)]
+pub mod uninstall;

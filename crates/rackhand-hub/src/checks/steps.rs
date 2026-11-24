@@ -28,6 +28,7 @@ use rackhand_store::Db;
 use rusqlite::OptionalExtension;
 
 use super::patch;
+use crate::actions::patching::hypervisor::{HostGuest, HostView, Hosts};
 use crate::actions::patching::precheck::{Guest, Snapshot, guest as guest_precheck};
 use crate::actions::runner::{BoxFuture, StepCtx, StepOutcome, StepResult, StepRunner};
 use crate::ingest::Ingest;
@@ -173,9 +174,33 @@ impl StepRunner for Verify {
     }
 }
 
+/// The arguments of a step's `call` (`clone vmid=9000 name=web`) as the driver takes them: the numbers the drivers read
+/// as numbers, `set.<key>=<value>` collected into `set`, the rest text; with no argument, `Null`.
+fn call_args(call: &str) -> (String, serde_json::Value) {
+    const NUMBERS: [&str; 5] = ["vmid", "newid", "memory", "cores", "disk_gb"];
+    let (name, words) = rackhand_runbook::runbook::call_parts(call);
+    if words.is_empty() {
+        return (name.to_string(), serde_json::Value::Null);
+    }
+    let mut args = serde_json::Map::new();
+    for (key, value) in words {
+        if let Some(inner) = key.strip_prefix("set.") {
+            let set = args.entry("set").or_insert_with(|| serde_json::json!({}));
+            set[inner] = serde_json::Value::String(value);
+        } else if let (true, Ok(n)) = (NUMBERS.contains(&key.as_str()), value.parse::<u64>()) {
+            args.insert(key, serde_json::json!(n));
+        } else {
+            args.insert(key, serde_json::Value::String(value));
+        }
+    }
+    (name.to_string(), serde_json::Value::Object(args))
+}
+
 pub struct Api {
     db: Arc<Db>,
     drivers: BTreeMap<&'static str, Arc<dyn Driver>>,
+    /// Where a machine's API credentials are kept (`driver.<machine id>`), when it has them.
+    vault: Option<Arc<crate::vault::Vault>>,
 }
 
 impl std::fmt::Debug for Api {
@@ -186,7 +211,13 @@ impl std::fmt::Debug for Api {
 
 impl Api {
     pub fn new(db: Arc<Db>) -> Api {
-        Api { db, drivers: BTreeMap::new() }
+        Api { db, drivers: BTreeMap::new(), vault: None }
+    }
+
+    /// The machine's API credentials come from the Vault (`driver.<machine id>`).
+    pub fn with_vault(mut self, vault: Arc<crate::vault::Vault>) -> Api {
+        self.vault = Some(vault);
+        self
     }
 
     /// Adds the driver for its kind (the API drivers arrive with their own steps, T47 to T49).
@@ -219,12 +250,15 @@ impl StepRunner for Api {
             let Some(driver) = self.drivers.get(kind.as_str()) else {
                 return StepResult::failed(format!("no_driver:{kind}"));
             };
-            let target = DriverTarget {
-                target: address.unwrap_or_default(),
-                settings: serde_json::Value::Null,
-                timeout: ctx.timeout,
-            };
-            let op = DriverOp { name: call.clone(), args: serde_json::Value::Null };
+            let settings = self
+                .vault
+                .as_ref()
+                .and_then(|v| v.get(&format!("driver.{}", ctx.machine_id)).ok())
+                .and_then(|s| serde_json::from_slice(s.expose()).ok())
+                .unwrap_or(serde_json::Value::Null);
+            let target = DriverTarget { target: address.unwrap_or_default(), settings, timeout: ctx.timeout };
+            let (name, args) = call_args(&call);
+            let op = DriverOp { name, args };
             let command = Some(format!("{kind} {call}"));
             match driver.call(&target, op).await {
                 Ok(result) => {
@@ -268,6 +302,24 @@ impl Hypervisor {
         self
     }
 
+    /// A hypervisor machine's driver kind, address and credentials.
+    fn api(&self, host: &str) -> Result<(String, String, serde_json::Value), String> {
+        let found: Option<(Option<String>, Option<String>)> = self
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row("SELECT driver, address FROM machines WHERE id = ?1", [host], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .optional()
+            })
+            .map_err(|e| e.to_string())?;
+        let Some((Some(driver), Some(address))) = found else { return Err("no_hypervisor".into()) };
+        let creds = self.vault.get(&format!("driver.{host}")).map_err(|_| "no_hypervisor_credentials".to_string())?;
+        let settings = serde_json::from_slice(creds.expose()).map_err(|_| "no_hypervisor_credentials".to_string())?;
+        Ok((driver, address, settings))
+    }
+
     fn bound(&self, guest: &str) -> Result<Bound, String> {
         let row: Option<(Option<String>, String)> = self
             .db
@@ -280,28 +332,99 @@ impl Hypervisor {
             })
             .map_err(|e| e.to_string())?;
         let Some((Some(reference), state)) = row else { return Err("not_a_proxmox_guest".into()) };
-        if state != "confirmed" {
-            return Err("guest_binding_unconfirmed".into());
+        if let Some(why) = crate::actions::hypervisor_guard::refusal(&state) {
+            return Err(why.into());
         }
         let r: serde_json::Value =
             serde_json::from_str(&reference).map_err(|_| "guest_binding_unreadable".to_string())?;
         let host = r["cluster"].as_str().ok_or("guest_binding_unreadable")?.to_string();
-        let found: Option<(Option<String>, Option<String>)> = self
-            .db
-            .readers()
-            .with(|c| {
-                c.query_row("SELECT driver, address FROM machines WHERE id = ?1", [&host], |r| {
-                    Ok((r.get(0)?, r.get(1)?))
-                })
-                .optional()
-            })
-            .map_err(|e| e.to_string())?;
-        let Some((Some(driver), Some(address))) = found else { return Err("no_hypervisor".into()) };
-        let creds = self.vault.get(&format!("driver.{host}")).map_err(|_| "no_hypervisor_credentials".to_string())?;
-        let settings: serde_json::Value =
-            serde_json::from_slice(creds.expose()).map_err(|_| "no_hypervisor_credentials".to_string())?;
+        let (driver, address, settings) = self.api(&host)?;
         let guest = serde_json::json!({ "node": r["node"], "vmid": r["vmid"], "kind": r["type"] });
         Ok(Bound { driver, address, settings, guest })
+    }
+}
+
+/// How long a hypervisor's API has to describe its host.
+const VIEW_TIMEOUT: Duration = Duration::from_secs(10);
+
+impl Hypervisor {
+    /// One hypervisor-side call on a guest (7.3.12): only on the guest its confirmed binding names, and refused
+    /// before any call to the API when the binding isn't confirmed. `extra` is added to the call's arguments.
+    pub async fn guest_call(
+        &self,
+        machine_id: &str,
+        action: crate::actions::hypervisor_guard::GuestAction,
+        extra: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, String> {
+        let b = self.bound(machine_id)?;
+        let op = match action {
+            crate::actions::hypervisor_guard::GuestAction::Snapshot => "snapshot",
+            crate::actions::hypervisor_guard::GuestAction::Rollback => "rollback",
+            crate::actions::hypervisor_guard::GuestAction::Firewall => "firewall_read",
+            crate::actions::hypervisor_guard::GuestAction::Power => "power",
+        };
+        self.guest_op(&b, action, op, extra, timeout).await
+    }
+
+    /// A firewall operation on the guest the machine's confirmed binding names (`firewall_isolate`, `firewall_release`,
+    /// `firewall_read`, `firewall_restore`), with `extra` added to its arguments.
+    pub async fn guest_firewall(
+        &self,
+        machine_id: &str,
+        op: &str,
+        extra: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, String> {
+        let b = self.bound(machine_id)?;
+        self.guest_op(&b, crate::actions::hypervisor_guard::GuestAction::Firewall, op, extra, timeout).await
+    }
+
+    /// A named driver operation of an action on the bound guest.
+    async fn guest_op(
+        &self,
+        b: &Bound,
+        action: crate::actions::hypervisor_guard::GuestAction,
+        op: &str,
+        extra: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, String> {
+        if !action.ops().contains(&op) {
+            return Err(format!("{op}_is_not_a_{action:?}_operation").to_ascii_lowercase());
+        }
+        let driver = self.drivers.get(b.driver.as_str()).ok_or_else(|| format!("no_driver:{}", b.driver))?;
+        let target = DriverTarget { target: b.address.clone(), settings: b.settings.clone(), timeout };
+        let mut args = b.guest.clone();
+        if let (Some(a), Some(e)) = (args.as_object_mut(), extra.as_object()) {
+            a.extend(e.clone());
+        }
+        driver.call(&target, DriverOp { name: op.into(), args }).await.map(|r| r.output).map_err(|e| e.to_string())
+    }
+}
+
+impl Hosts for Hypervisor {
+    fn view<'a>(&'a self, host: &'a str) -> BoxFuture<'a, Result<HostView, String>> {
+        Box::pin(async move {
+            let (kind, target, settings) = self.api(host)?;
+            let driver = self.drivers.get(kind.as_str()).ok_or_else(|| format!("no_driver:{kind}"))?;
+            let target = DriverTarget { target, settings, timeout: VIEW_TIMEOUT };
+            let op = DriverOp { name: "host".into(), args: serde_json::Value::Null };
+            let v = driver.call(&target, op).await.map_err(|e| e.to_string())?.output;
+            let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+            let guests = v["guests"].as_array().into_iter().flatten();
+            Ok(HostView {
+                node: text(&v["node"]),
+                nodes: v["nodes"].as_array().into_iter().flatten().map(&text).collect(),
+                guests: guests
+                    .map(|g| HostGuest {
+                        vmid: g["vmid"].as_u64().unwrap_or_default(),
+                        kind: text(&g["type"]),
+                        name: text(&g["name"]),
+                        running: g["running"].as_bool().unwrap_or(false),
+                    })
+                    .collect(),
+            })
+        })
     }
 }
 

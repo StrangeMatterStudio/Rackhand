@@ -13,46 +13,7 @@ use rackhand_proto::join::join_request::Kind as Req;
 use rackhand_proto::join::join_response::Kind as Resp;
 use rackhand_proto::join::{JoinError, JoinRequest, JoinResponse, MachineJoin, MachineJoined};
 
-/// The hub as the install command names it: `rackhand1:<endpoint id hex>@<addr>,<addr>[!<relay>,<relay>]`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Ticket {
-    pub hub_id: [u8; 32],
-    pub addrs: Vec<SocketAddr>,
-    pub relays: Vec<String>,
-}
-
-impl Ticket {
-    pub fn parse(text: &str) -> Result<Ticket, String> {
-        let rest = text.trim().strip_prefix("rackhand1:").ok_or("not a rackhand1 ticket")?;
-        let (id, rest) = rest.split_once('@').unwrap_or((rest, ""));
-        let (addrs, relays) = rest.split_once('!').unwrap_or((rest, ""));
-        if id.len() != 64 {
-            return Err("the ticket's hub id isn't 64 hex characters".into());
-        }
-        let mut hub_id = [0u8; 32];
-        for (i, b) in hub_id.iter_mut().enumerate() {
-            *b = u8::from_str_radix(&id[2 * i..2 * i + 2], 16).map_err(|_| "the ticket's hub id isn't hex")?;
-        }
-        let addrs = addrs
-            .split(',')
-            .filter(|a| !a.is_empty())
-            .map(|a| a.parse().map_err(|_| format!("ticket address {a}")))
-            .collect::<Result<_, _>>()?;
-        let relays = relays.split(',').filter(|r| !r.is_empty()).map(str::to_string).collect();
-        Ok(Ticket { hub_id, addrs, relays })
-    }
-
-    pub fn to_text(&self) -> String {
-        let id: String = self.hub_id.iter().map(|b| format!("{b:02x}")).collect();
-        let addrs: Vec<String> = self.addrs.iter().map(|a| a.to_string()).collect();
-        let mut t = format!("rackhand1:{id}@{}", addrs.join(","));
-        if !self.relays.is_empty() {
-            t.push('!');
-            t.push_str(&self.relays.join(","));
-        }
-        t
-    }
-}
+pub use rackhand_net::ticket::Ticket;
 
 #[derive(Debug, Clone)]
 pub struct Request {

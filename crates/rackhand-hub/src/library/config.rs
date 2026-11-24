@@ -16,11 +16,33 @@ pub struct Sources {
     pub feodo: bool,
     pub spamhaus: bool,
     pub dbip: bool,
+    /// Air-gapped mode: the hub makes no outside request at all (D65).
+    #[serde(default)]
+    pub airgapped: bool,
+    /// Off unless enabled: MaxMind GeoLite2 (own license key), online reputation lookups (send destinations out), relay
+    /// lists (URLs the admin adds) and n0's public relays and DNS discovery (7.8.5).
+    #[serde(default)]
+    pub maxmind: bool,
+    #[serde(default)]
+    pub reputation: bool,
+    #[serde(default)]
+    pub relay_lists: bool,
+    #[serde(default)]
+    pub n0_relays: bool,
 }
 
 impl Default for Sources {
     fn default() -> Self {
-        Sources { feodo: true, spamhaus: true, dbip: true }
+        Sources {
+            feodo: true,
+            spamhaus: true,
+            dbip: true,
+            airgapped: false,
+            maxmind: false,
+            reputation: false,
+            relay_lists: false,
+            n0_relays: false,
+        }
     }
 }
 
@@ -35,6 +57,35 @@ pub struct HubConfig {
     pub oidc: Option<Oidc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probe: Option<ProbeSettings>,
+    #[serde(default, skip_serializing_if = "AssistantSettings::is_default")]
+    pub assistant: AssistantSettings,
+    /// A URL a hub with no peers calls every 5 minutes, for a service outside the site that notices when it goes quiet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadman_url: Option<String>,
+}
+
+/// The assistant's settings (7.7.1): how many jobs a day the hub starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantSettings {
+    #[serde(default = "daily_cap")]
+    pub daily_cap: u32,
+}
+
+fn daily_cap() -> u32 {
+    crate::assist::DEFAULT_DAILY_CAP
+}
+
+impl Default for AssistantSettings {
+    fn default() -> Self {
+        AssistantSettings { daily_cap: daily_cap() }
+    }
+}
+
+impl AssistantSettings {
+    fn is_default(&self) -> bool {
+        *self == AssistantSettings::default()
+    }
 }
 
 /// What every probe is told (7.8.1): its interval, the connection tuples per report, and its buffer's cap.

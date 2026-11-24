@@ -66,13 +66,16 @@ pub(crate) const PLACES: &[Place] = &[
     place("/incidents", "Incidents", "warning", 'i', Permission::SeeEverything, Area::Watch),
     place("/approvals", "Approvals", "fact_check", 'a', Permission::SeeEverything, Area::Watch),
     place("/jobs", "Jobs", "play_circle", 'j', Permission::SeeEverything, Area::Watch),
+    place("/security", "Security", "shield", 'e', Permission::SeeEverything, Area::Watch),
     place("/library", "Library", "menu_book", 'l', Permission::SeeEverything, Area::Operate),
     place("/patching", "Patching", "system_update_alt", 'p', Permission::SeeEverything, Area::Operate),
     place("/add", "Add", "add_circle", 'n', Permission::Administer, Area::Operate),
     place("/audit", "Audit", "history", 'd', Permission::SeeEverything, Area::Operate),
     place("/account", "Account", "person", 'm', Permission::SeeEverything, Area::Account),
+    place("/account/keys", "MCP keys", "key", 'k', Permission::SeeEverything, Area::Account),
     place("/users", "Users", "group", 'u', Permission::Administer, Area::Account),
     place("/settings", "System settings", "settings", 's', Permission::Administer, Area::Account),
+    place("/settings/assistant", "Assistant", "computer", 'o', Permission::Administer, Area::Account),
 ];
 
 /// The shortcuts that aren't places: the keys, as the help shows them, and what they do.
@@ -228,6 +231,10 @@ pub(crate) fn badge(state: &str) -> String {
         "info" => ("", "info", "Info"),
         "silent" => (" err", "cloud_off", "Silent"),
         "quarantined" => (" err", "block", "Quarantined"),
+        "known_bad" => (" err", "block", "Known bad"),
+        "new" => (" warn", "info", "New"),
+        "known" => ("", "check", "Known"),
+        "learning" => ("", "hourglass_top", "Learning"),
         "pending" => (" warn", "hourglass_top", "Pending"),
         "revoked" => ("", "block", "Revoked"),
         "enrolled" => (" ok", "check", "Enrolled"),

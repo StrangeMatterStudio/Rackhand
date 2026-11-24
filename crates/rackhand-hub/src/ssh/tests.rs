@@ -327,3 +327,49 @@ mod enroll_test {
         assert!(!test.due("web1"), "once per join");
     }
 }
+
+/// A machine's own hub key (7.3.7, `keys-rotate`): made as a pending one, which changes nothing until it is committed,
+/// and then used for that machine only.
+mod machine_keys {
+    use super::super::keys::{Identity, commit_next, load_for, load_or_create, next_for};
+    use crate::vault::Vault;
+    use crate::vault::master_key::MasterKey;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn machine_key_is_pending_until_committed() {
+        let dir = std::env::temp_dir().join(format!("rackhand-machinekeys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = std::sync::Arc::new(rackhand_store::Db::open(&dir.join("hub.db")).unwrap());
+        let vault = Vault::new(MasterKey::from_bytes([3u8; 32]), db);
+        let id = Identity::Automation;
+        let public = |k: &russh::keys::PrivateKey| k.public_key().to_openssh().unwrap();
+        let global = load_or_create(&vault, id).await.unwrap();
+        assert_eq!(
+            public(&load_for(&vault, id, "m1").await.unwrap()),
+            public(&global),
+            "the hub's key until a machine has its own"
+        );
+        let next = next_for(&vault, id, "m1").await.unwrap();
+        assert_ne!(public(&next), public(&global));
+        assert_eq!(public(&next_for(&vault, id, "m1").await.unwrap()), public(&next), "the same one until it is used");
+        assert_eq!(public(&load_for(&vault, id, "m1").await.unwrap()), public(&global), "pending changes nothing");
+        assert!(commit_next(&vault, id, "m2").await.is_err(), "nothing pending for another machine");
+        commit_next(&vault, id, "m1").await.unwrap();
+        assert_eq!(public(&load_for(&vault, id, "m1").await.unwrap()), public(&next));
+        assert_eq!(
+            public(&load_for(&vault, id, "m2").await.unwrap()),
+            public(&global),
+            "other machines keep the hub's"
+        );
+        assert_eq!(
+            public(&load_for(&vault, Identity::Assistant, "m1").await.unwrap()),
+            public(&load_or_create(&vault, Identity::Assistant).await.unwrap())
+        );
+        assert!(commit_next(&vault, id, "m1").await.is_err(), "committed once");
+        let again = next_for(&vault, id, "m1").await.unwrap();
+        assert_ne!(public(&again), public(&next), "the next rotation makes another");
+        let reopened = load_for(&vault, id, "m1").await.unwrap();
+        assert_eq!(public(&reopened), public(&next), "stored in the Vault, not in memory");
+    }
+}

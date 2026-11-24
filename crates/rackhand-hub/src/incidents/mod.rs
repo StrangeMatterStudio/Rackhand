@@ -2,6 +2,7 @@
 //! `incident_events` and `silences`. Routing to runbooks is `routing` (T57); playbooks come with T78.
 
 mod baselines;
+pub mod brief;
 mod checks;
 mod conditions;
 mod counted;
@@ -11,6 +12,7 @@ mod forecasts;
 mod lifecycle;
 pub mod machine_silence;
 pub mod notes;
+mod peer;
 mod reconcile;
 pub mod replay;
 pub mod routing;

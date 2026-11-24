@@ -12,6 +12,30 @@ pub const MAX_LINE: usize = 64 * 1024;
 #[derive(Debug, Default)]
 struct State {
     updates: Option<(UpdateSummary, i64)>,
+    /// The critical files' hashes as of the last refresh (every 5 minutes and on a change, T66).
+    hashes: Option<Vec<rackhand_proto::helper::FileHash>>,
+}
+
+/// Where the helper reads the machine from: `/` and `/proc` on a machine, directories in a test.
+#[derive(Debug, Clone)]
+pub struct Machine {
+    #[cfg(unix)]
+    pub roots: super::hash::Roots,
+    pub proc: std::path::PathBuf,
+    pub cgroup: std::path::PathBuf,
+    pub passwd: std::path::PathBuf,
+}
+
+impl Default for Machine {
+    fn default() -> Machine {
+        Machine {
+            #[cfg(unix)]
+            roots: super::hash::Roots::default(),
+            proc: "/proc".into(),
+            cgroup: "/sys/fs/cgroup".into(),
+            passwd: "/etc/passwd".into(),
+        }
+    }
 }
 
 /// The helper's answers; the I/O lives in [`serve`].
@@ -19,6 +43,13 @@ struct State {
 pub struct Helper {
     version: String,
     state: Mutex<State>,
+    /// One key update at a time, so an older one can't end after a newer one.
+    keys: Mutex<super::keys::Files>,
+    machine: Machine,
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
 fn error(code: &str, message: impl Into<String>) -> HelperResponse {
@@ -27,7 +58,50 @@ fn error(code: &str, message: impl Into<String>) -> HelperResponse {
 
 impl Helper {
     pub fn new(version: &str) -> Arc<Helper> {
-        Arc::new(Helper { version: version.into(), state: Mutex::new(State::default()) })
+        Helper::with_keys(version, super::keys::Files::default())
+    }
+
+    /// The same, with key updates applied to `keys`.
+    pub fn with_keys(version: &str, keys: super::keys::Files) -> Arc<Helper> {
+        Helper::with_machine(version, keys, Machine::default())
+    }
+
+    /// The same, reading `machine`.
+    pub fn with_machine(version: &str, keys: super::keys::Files, machine: Machine) -> Arc<Helper> {
+        Arc::new(Helper {
+            version: version.into(),
+            state: Mutex::new(State::default()),
+            keys: Mutex::new(keys),
+            machine,
+        })
+    }
+
+    /// Hashes the critical files again and keeps the result; returns the warnings about the list.
+    #[cfg(unix)]
+    pub fn refresh_hashes(&self) -> Vec<String> {
+        let (hashes, warnings) = super::hash::hash_all(&self.machine.roots);
+        if let Ok(mut s) = self.state.lock() {
+            s.hashes = Some(hashes);
+        }
+        warnings
+    }
+
+    /// The directories whose changes mean the critical files may have changed.
+    #[cfg(unix)]
+    pub fn watch_dirs(&self) -> Vec<std::path::PathBuf> {
+        super::hash::watch_dirs(&self.machine.roots)
+    }
+
+    #[cfg(unix)]
+    fn passwd(&self) -> String {
+        std::fs::read_to_string(&self.machine.passwd).unwrap_or_default()
+    }
+
+    /// A container's name from its id, as the engine lists them.
+    #[cfg(unix)]
+    fn container_names(&self) -> impl Fn(&str) -> Option<String> {
+        let list = super::containers::list().unwrap_or_default();
+        move |id: &str| list.iter().find(|c| !c.id.is_empty() && id.starts_with(&c.id)).map(|c| c.name.clone())
     }
 
     /// The last package-list refresh.
@@ -53,6 +127,72 @@ impl Helper {
                 Ok(items) => HelperResponse::Containers { items },
                 Err(e) => error("containers_unavailable", e),
             },
+            #[cfg(unix)]
+            HelperRequest::HashFiles => {
+                let cached = self.state.lock().ok().and_then(|s| s.hashes.clone());
+                match cached {
+                    Some(files) => HelperResponse::Hashes { files },
+                    None => {
+                        self.refresh_hashes();
+                        HelperResponse::Hashes {
+                            files: self.state.lock().ok().and_then(|s| s.hashes.clone()).unwrap_or_default(),
+                        }
+                    }
+                }
+            }
+            #[cfg(unix)]
+            HelperRequest::AuthEventsSince { cursor } => {
+                let root = &self.machine.roots.root;
+                let year = 1970 + now_ms() / 31_556_952_000;
+                let batch = match super::auth::detect(root) {
+                    super::auth::Source::Journal => {
+                        super::auth::since_journal(cursor.as_deref(), &super::auth::run_journalctl)
+                    }
+                    super::auth::Source::File(path) => super::auth::since_file(&path, cursor.as_deref(), year),
+                };
+                match batch {
+                    Ok(b) => HelperResponse::AuthEvents { events: b.events, cursor: b.cursor },
+                    Err(e) => error("auth_unavailable", e),
+                }
+            }
+            #[cfg(unix)]
+            HelperRequest::SocketOwners { inodes } => {
+                if inodes.len() > super::sockets::MAX_IDS {
+                    return error("too_many", "too many socket inodes in one request");
+                }
+                let owners =
+                    super::sockets::owners(&self.machine.proc, &self.passwd(), &inodes, &self.container_names());
+                HelperResponse::SocketOwners { owners }
+            }
+            #[cfg(unix)]
+            HelperRequest::ContainerOf { cgroup_ids } => {
+                if cgroup_ids.len() > super::sockets::MAX_IDS {
+                    return error("too_many", "too many cgroup ids in one request");
+                }
+                let names = super::sockets::container_names(&self.machine.cgroup, &cgroup_ids, &self.container_names());
+                HelperResponse::ContainerNames { names }
+            }
+            #[cfg(unix)]
+            HelperRequest::ProcessScan => {
+                let boot = std::fs::read_to_string(self.machine.proc.join("stat"))
+                    .map(|s| super::procscan::boot_ms(&s))
+                    .unwrap_or(0);
+                let items = super::procscan::scan(&self.machine.proc, &self.passwd(), boot, 100);
+                HelperResponse::Processes { items }
+            }
+            HelperRequest::ApplyKeys { payload, hub_signature } => {
+                let files = self.keys.lock().unwrap_or_else(|e| e.into_inner());
+                match super::keys::apply(&files, &payload, &hub_signature, now_ms()) {
+                    Ok(version) => {
+                        tracing::info!(version, "the hub's keys were replaced");
+                        HelperResponse::KeysApplied
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "a key update was refused");
+                        error(e.code(), e.to_string())
+                    }
+                }
+            }
             _ => error("unsupported", "not provided by this helper version"),
         }
     }

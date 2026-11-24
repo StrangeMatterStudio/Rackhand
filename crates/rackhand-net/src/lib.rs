@@ -7,11 +7,14 @@
 pub mod endpoint;
 pub mod frames;
 pub mod key;
+pub mod paths;
 pub mod registry;
 pub mod relays;
 pub mod router;
 #[cfg(feature = "testing")]
 pub mod testing;
+pub mod ticket;
+pub mod xfer;
 
 use iroh::endpoint::ConnectionError;
 use rackhand_proto::close::CloseCode;

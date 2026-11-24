@@ -48,6 +48,9 @@ struct MachinePage {
     policy: String,
     confirm: String,
     can_confirm: bool,
+    /// The level the admin may change it to, and the form's token.
+    change_to: Option<&'static str>,
+    csrf: String,
     /// What went wrong with one of its buttons.
     notice: Option<String>,
     id: String,
@@ -64,6 +67,83 @@ struct MachinePage {
     containers: Vec<(String, String)>,
     updates: Option<UpdatesView>,
     binding: Option<BindingView>,
+    /// What it connected to in the last day, by container (7.7.1).
+    connections: Vec<ConnGroup>,
+    /// Quarantine, when the machine is in it: its state and who enforces it (D77).
+    quarantine: Option<QuarantineView>,
+}
+
+/// One container's connections, or the machine's own.
+struct ConnGroup {
+    container: String,
+    rows: Vec<ConnView>,
+}
+
+struct ConnView {
+    program: String,
+    destination: String,
+    country: String,
+    verdict: String,
+    count: i64,
+}
+
+struct QuarantineView {
+    state: String,
+    /// Who stops the traffic, in words.
+    by: &'static str,
+}
+
+/// How far back the Connections card looks.
+const CONNECTIONS_WINDOW_MS: i64 = 86_400_000;
+const CONNECTIONS_SHOWN: usize = 200;
+
+fn connections(web: &Web, id: &str, now_ms: i64) -> Vec<ConnGroup> {
+    type Row = (String, String, String, i64, String, String, i64);
+    let rows: Vec<Row> = web
+        .0
+        .db
+        .readers()
+        .with(|c| {
+            let mut s = c.prepare(
+                "SELECT container, exe, dest_ip, dest_port, coalesce(dest_country, ''), coalesce(verdict, ''), sum(count)
+                 FROM conn_records WHERE machine_id = ?1 AND bucket_ms > ?2
+                 GROUP BY container, exe, dest_ip, dest_port, proto, verdict
+                 ORDER BY container, 7 DESC LIMIT ?3",
+            )?;
+            s.query_map(rusqlite::params![id, now_ms - CONNECTIONS_WINDOW_MS, CONNECTIONS_SHOWN as i64], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+            })?
+            .collect()
+        })
+        .unwrap_or_default();
+    let mut groups: Vec<ConnGroup> = Vec::new();
+    for (container, exe, ip, port, country, verdict, count) in rows {
+        let destination = if ip.contains(':') { format!("[{ip}]:{port}") } else { format!("{ip}:{port}") };
+        let row = ConnView {
+            program: exe.rsplit('/').next().unwrap_or(&exe).to_string(),
+            destination,
+            country,
+            verdict,
+            count,
+        };
+        match groups.iter_mut().find(|g| g.container == container) {
+            Some(g) => g.rows.push(row),
+            None => groups.push(ConnGroup { container, rows: vec![row] }),
+        }
+    }
+    // the machine's own first (its container is empty, which sorts first), then each container by name
+    groups
+}
+
+fn quarantine_view(web: &Web, id: &str, state: &str) -> Option<QuarantineView> {
+    use crate::policy::quarantine::{Enforcement, State, enforcement, record};
+    let state = State::parse(state).filter(|s| *s != State::None)?;
+    let by = match record(&web.0.db, id).map(|r| enforcement(&r)) {
+        Some(Enforcement::Hypervisor) => "Enforced by the hypervisor's firewall",
+        Some(Enforcement::InGuest) => "Advisory: an attacker with root on the machine can undo it",
+        None => "Not isolated yet",
+    };
+    Some(QuarantineView { state: state.as_str().to_string(), by })
 }
 
 /// The guest binding (7.3.12): its state and the guests the admin may confirm.
@@ -139,9 +219,10 @@ pub(super) fn machine(web: &Web, ctx: &Ctx) -> Response<Body> {
 /// The machine's page, with what went wrong with one of its buttons.
 pub(super) fn show_machine(web: &Web, ctx: &Ctx, id: &str, code: StatusCode, notice: Option<&str>) -> Response<Body> {
     let id = id.to_string();
+    let id_for_view = id.clone();
     let found = web.0.db.readers().with(|c| {
         c.query_row(
-            "SELECT m.name, s.name, m.kind, coalesce(m.os, ''), m.access, m.state, m.proxmox_ref, m.proxmox_ref_state
+            "SELECT m.name, s.name, m.kind, coalesce(m.os, ''), m.access, m.state, m.proxmox_ref, m.proxmox_ref_state, m.quarantine
              FROM machines m JOIN sites s ON s.id = m.site_id WHERE m.id = ?1",
             [&id],
             |r| {
@@ -154,13 +235,14 @@ pub(super) fn show_machine(web: &Web, ctx: &Ctx, id: &str, code: StatusCode, not
                     r.get(5)?,
                     r.get::<_, Option<String>>(6)?,
                     r.get::<_, String>(7)?,
+                    r.get::<_, String>(8)?,
                 ))
             },
         )
         .optional()
     });
-    type MachineRow = (String, String, String, String, String, String, Option<String>, String);
-    let (name, site, kind, os, access, state, reference, binding_state): MachineRow = match found {
+    type MachineRow = (String, String, String, String, String, String, Option<String>, String, String);
+    let (name, site, kind, os, access, state, reference, binding_state, quarantined): MachineRow = match found {
         Ok(Some(row)) => row,
         Ok(None) => return status(StatusCode::NOT_FOUND, "No such machine"),
         Err(_) => return status(StatusCode::INTERNAL_SERVER_ERROR, "The database couldn't be read"),
@@ -223,6 +305,12 @@ pub(super) fn show_machine(web: &Web, ctx: &Ctx, id: &str, code: StatusCode, not
         policy: row.as_ref().map(|r| r.policy.clone()).unwrap_or_default(),
         confirm,
         can_confirm,
+        change_to: ctx
+            .user
+            .as_ref()
+            .filter(|u| allowed(u.role, Permission::Administer) && state == "enrolled" && kind != "appliance")
+            .map(|_| if access == "monitor" { "managed" } else { "monitor" }),
+        csrf: ctx.csrf.clone(),
         notice: notice.map(str::to_string),
         silent_since: silent_since(web, &id),
         id,
@@ -238,6 +326,8 @@ pub(super) fn show_machine(web: &Web, ctx: &Ctx, id: &str, code: StatusCode, not
         containers,
         updates,
         binding,
+        connections: connections(web, &id_for_view, ctx.now_ms),
+        quarantine: quarantine_view(web, &id_for_view, &quarantined),
     };
     html(code, page.render())
 }
@@ -367,6 +457,10 @@ struct IncidentPage {
     shell: Shell,
     incident: IncidentView,
     events: Vec<(String, String, String)>,
+    /// The assistant's jobs for it, with transcripts.
+    jobs: Vec<super::assistant::JobView>,
+    csrf: String,
+    can_resume: bool,
 }
 
 pub(super) fn incident(web: &Web, ctx: &Ctx) -> Response<Body> {
@@ -384,10 +478,22 @@ pub(super) fn incident(web: &Web, ctx: &Ctx) -> Response<Body> {
         Ok(Some((incident, events)))
     });
     match found {
-        Ok(Some((incident, events))) => html(
-            StatusCode::OK,
-            IncidentPage { shell: Shell::new(web, ctx, &incident.title), incident, events }.render(),
-        ),
+        Ok(Some((incident, events))) => {
+            let jobs = super::assistant::jobs_of(web, id, ctx.now_ms);
+            let can_resume = ctx.user.as_ref().is_some_and(|u| allowed(u.role, Permission::Operate));
+            html(
+                StatusCode::OK,
+                IncidentPage {
+                    shell: Shell::new(web, ctx, &incident.title),
+                    incident,
+                    events,
+                    jobs,
+                    csrf: ctx.csrf.clone(),
+                    can_resume,
+                }
+                .render(),
+            )
+        }
         Ok(None) => status(StatusCode::NOT_FOUND, "No such incident"),
         Err(_) => status(StatusCode::INTERNAL_SERVER_ERROR, "The database couldn't be read"),
     }

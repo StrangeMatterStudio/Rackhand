@@ -4,10 +4,14 @@
 
 mod coordinator;
 pub mod diagnostics;
+pub mod hypervisor_guard;
 pub mod jobs;
 mod locks;
 pub mod patching;
+pub mod provision;
+pub mod quarantining;
 mod reboots;
+mod recovery;
 pub mod runner;
 
 use std::collections::BTreeMap;
@@ -87,6 +91,8 @@ pub enum ActionsError {
     MachineBusy,
     #[error("monitor_only: the machine is at access level monitor")]
     MonitorOnly,
+    #[error("machine_quarantined: only the quarantine's release (and diagnostics) run on a quarantined machine")]
+    Quarantined,
     #[error("no such machine")]
     UnknownMachine,
     #[error("no such runbook or revision")]
@@ -137,6 +143,8 @@ struct Inner {
     runner: Arc<dyn StepRunner>,
     locks: locks::MachineLocks,
     reboots: reboots::Reboots,
+    /// The jobs of a stopped hub this one took up.
+    resumed: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 #[derive(Clone)]
@@ -155,7 +163,15 @@ impl std::fmt::Debug for Actions {
 impl Actions {
     pub fn new(db: Arc<Db>, audit: Audit, bus: Bus, runner: Arc<dyn StepRunner>) -> Actions {
         Actions {
-            inner: Arc::new(Inner { db, audit, bus, runner, locks: Default::default(), reboots: Default::default() }),
+            inner: Arc::new(Inner {
+                db,
+                audit,
+                bus,
+                runner,
+                locks: Default::default(),
+                reboots: Default::default(),
+                resumed: Default::default(),
+            }),
             lock_wait: DEFAULT_LOCK_WAIT,
             gate: None,
         }
@@ -182,3 +198,7 @@ impl Actions {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "quarantine_tests.rs"]
+mod quarantine;

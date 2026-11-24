@@ -1,0 +1,22 @@
+name = "quarantine"
+description = "Cut a machine off from everything but the hub, then take a forensic snapshot (Proxmox guests)"
+targets = { kinds = ["linux", "alpine", "windows"] }
+identity = "automation"
+risk = "high"
+autonomy = 1
+
+# A guest on Proxmox is isolated from its hypervisor with the guest firewall, after the hub has saved the guest's whole
+# firewall configuration (the datacenter firewall must already be on; the hub never turns it on). Any other managed Linux
+# machine loads the wrapper's nftables table. Windows machines are isolated through their hypervisor only.
+[[step]]
+id = "isolate"
+kind = "hub"
+call = "quarantine_isolate"
+timeout = "3m"
+
+# Proxmox guests only: `rackhand-quarantine-<time>`, which is never pruned automatically.
+[[step]]
+id = "snapshot"
+kind = "hub"
+call = "quarantine_snapshot"
+timeout = "10m"

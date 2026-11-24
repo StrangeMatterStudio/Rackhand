@@ -11,6 +11,8 @@ RestartSec=5
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=read-only
+# the hub users' keys (ApplyKeys, 7.3.3); a monitored machine has neither
+ReadWritePaths=-/home/rackhand/.ssh -/home/rackhand-ai/.ssh
 ProtectKernelTunables=yes
 ProtectControlGroups=yes
 LockPersonality=yes

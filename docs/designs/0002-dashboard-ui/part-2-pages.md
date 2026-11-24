@@ -116,6 +116,15 @@ Test: `web::tests::shell::a_newcomer_is_told_what_each_thing_is`, seen failing o
 choices longer than 32 characters) and passing. Measured again: 865 screens, scripts on and off, 0 problems. axe-core
 wasn't run again (only text in existing styles changed).
 
+### After merging `design/0001-architecture` (2026-11-23)
+
+That branch had taken this one up to the restyle and added Security, MCP keys and Assistant pages in its frame. The
+merge kept its version of the install commands with this branch's note. The three pages and the quarantine rule dialog
+joined the shell tests' list (Security is the ninth place in the side navigation) and the measured pages: 48 pages, 941
+screens, scripts on and off, 0 problems; no choice cut off at 375px. The MCP key choice "Read and ask for changes (each
+waits for an approval)" became "Read and ask", with the rest as the field's hint; the test that a viewer isn't offered
+it now looks for the option's value, not its words. Fast tier after the merge: 847 passed, 1 skipped.
+
 ## Deviations and limits
 
 - The overview's machine list has CPU and memory, not disk: a machine has several disks and the page has no rule for

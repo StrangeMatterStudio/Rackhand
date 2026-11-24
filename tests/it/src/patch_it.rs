@@ -82,10 +82,20 @@ mod patch {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
+    /// What a restarted hub is made from again.
+    struct Parts {
+        vault: Arc<Vault>,
+        host_keys: Arc<HostKeys>,
+        ingest: Ingest,
+        audit: Audit,
+        bus: Bus,
+    }
+
     struct Lab {
         db: Arc<Db>,
         machine: Container,
         actions: Actions,
+        parts: Parts,
         /// Whether the machine's reports have `/srv/data`.
         data_mounted: Arc<AtomicBool>,
     }
@@ -168,12 +178,13 @@ mod patch {
             .with(StepKind::WaitReport, Arc::new(ingest.clone()))
             .with(StepKind::Verify, Arc::new(Verify::new(db.clone(), ingest.clone())))
             .with(StepKind::Snapshot, Arc::new(Hypervisor::new(db.clone(), vault.clone())));
-        let executor = Executor::new(vault, host_keys)
+        let executor = Executor::new(vault.clone(), host_keys.clone())
             .with_poll(Duration::from_millis(500))
             .with_other(Arc::new(other))
             .with_reboot(Arc::new(Reboots), Duration::from_secs(10));
-        let actions = Actions::new(db.clone(), audit, bus, Arc::new(executor));
-        Lab { db, machine, actions, data_mounted }
+        let actions = Actions::new(db.clone(), audit.clone(), bus.clone(), Arc::new(executor));
+        let parts = Parts { vault, host_keys, ingest, audit, bus };
+        Lab { db, machine, actions, parts, data_mounted }
     }
 
     /// A report every half second: 10 GB free on `/`, a service, a container, and `/srv/data` while it is mounted.
@@ -215,6 +226,20 @@ mod patch {
     }
 
     impl Lab {
+        /// The hub as a restart makes it: new Actions and Executor over the same database and machine.
+        fn restarted(&self) -> Actions {
+            let p = &self.parts;
+            let other = ByKind::default()
+                .with(StepKind::WaitReport, Arc::new(p.ingest.clone()))
+                .with(StepKind::Verify, Arc::new(Verify::new(self.db.clone(), p.ingest.clone())))
+                .with(StepKind::Snapshot, Arc::new(Hypervisor::new(self.db.clone(), p.vault.clone())));
+            let executor = Executor::new(p.vault.clone(), p.host_keys.clone())
+                .with_poll(Duration::from_millis(500))
+                .with_other(Arc::new(other))
+                .with_reboot(Arc::new(Reboots), Duration::from_secs(10));
+            Actions::new(self.db.clone(), p.audit.clone(), p.bus.clone(), Arc::new(executor))
+        }
+
         async fn patch(&self) -> JobResult {
             self.actions.run(StartJob::runbook("patch-debian", M, "schedule:patch")).await.unwrap()
         }
@@ -392,5 +417,68 @@ mod patch {
             })
             .unwrap();
         assert_eq!(exit, Some(0));
+    }
+
+    /// AC63, E44, E54: the hub itself dies while the package manager runs. The update finishes on the machine; a hub
+    /// started afterwards takes the install step up where it is, records its output and exit code, and the job goes on
+    /// to verify.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hub_restart_during_patch_install_finishes_and_verifies() {
+        let lab = lab("restart", 20).await;
+        sh(&lab.machine, "echo 12 > /srv/ctl/seconds");
+        let dying = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let actions = lab.actions.clone();
+        dying.spawn(async move {
+            let _ = actions.run(StartJob::runbook("patch-debian", M, "schedule:patch")).await;
+        });
+        let deadline = Instant::now() + Duration::from_secs(90);
+        while !lab.machine.root("pgrep -f '[r]ackhand-demo.postinst'").status.success() {
+            assert!(Instant::now() < deadline, "the install never started");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        // the hub is gone; the package manager is not
+        dying.shutdown_background();
+        let job: String = lab
+            .db
+            .readers()
+            .with(|c| c.query_row("SELECT id FROM jobs WHERE name = 'patch-debian'", [], |r| r.get(0)))
+            .unwrap();
+        let hub = lab.restarted();
+        assert_eq!(hub.resume().await.unwrap(), 1, "the job is taken up");
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            let state: String = lab
+                .db
+                .readers()
+                .with(|c| c.query_row("SELECT state FROM jobs WHERE id = ?1", [&job], |r| r.get(0)))
+                .unwrap();
+            if state != "running" {
+                assert_eq!(state, "succeeded", "{}", lab.all_output(&job));
+                break;
+            }
+            assert!(Instant::now() < deadline, "the job never ended: {}", lab.all_output(&job));
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        assert_eq!(lab.version(), "2.0", "the package manager finished");
+        let install = lab.output(&job, "install");
+        assert!(install.contains("installing, 12 s left") && install.contains("installing, 1 s left"), "{install}");
+        let exit: Option<i64> = lab
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row(
+                    "SELECT exit_code FROM job_steps WHERE job_id = ?1 AND step_id = 'install'",
+                    [&job],
+                    |row| row.get(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(exit, Some(0));
+        let steps = lab.steps(&job);
+        assert_eq!(
+            steps.last().map(|(id, state)| (id.as_str(), state.as_str())),
+            Some(("verify", "succeeded")),
+            "{steps:?}"
+        );
     }
 }

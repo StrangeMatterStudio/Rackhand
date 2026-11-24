@@ -4,6 +4,7 @@ pub(crate) mod account;
 mod add;
 mod appliance;
 mod approvals;
+mod assistant;
 mod audit;
 mod find;
 mod first_run;
@@ -14,6 +15,7 @@ mod monitoring;
 mod notifiers;
 mod overview;
 mod patching;
+mod security;
 mod settings;
 mod users;
 
@@ -60,8 +62,10 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
         Page::Settings => settings::page(web, ctx),
         Page::SettingsSources => settings::sources(web, ctx).await,
         Page::SettingsGitMirror => settings::git_mirror(web, ctx).await,
+        Page::SettingsDeadman => settings::deadman(web, ctx).await,
         Page::AcceptHostKey => machines::accept_host_key(web, ctx).await,
         Page::BindingConfirm => machines::confirm_binding(web, ctx).await,
+        Page::MachineLevel => machines::level(web, ctx).await,
         Page::Add => add::page(web, ctx),
         Page::AddMachine => add::machine(web, ctx).await,
         Page::AddInvite => add::invite(web, ctx).await,
@@ -99,6 +103,15 @@ pub(crate) async fn render(web: &Web, page: Page, ctx: &Ctx) -> Response<Body> {
         Page::Incidents => monitoring::incidents(web, ctx),
         Page::Incident => monitoring::incident(web, ctx),
         Page::Audit => audit::page(web, ctx),
+        Page::Security => security::page(web, ctx),
+        Page::Keys => assistant::keys_page(web, ctx),
+        Page::KeyCreate => assistant::create_key(web, ctx).await,
+        Page::KeyRevoke => assistant::revoke_key(web, ctx).await,
+        Page::AssistantSettings => assistant::settings_page(web, ctx),
+        Page::AssistantInvite => assistant::invite(web, ctx).await,
+        Page::AssistantCap => assistant::set_cap(web, ctx).await,
+        Page::IncidentResume => assistant::resume(web, ctx).await,
+        Page::SecurityRuleSave => security::save_rule(web, ctx).await,
         Page::SettingsNotifiers => notifiers::page(web, ctx),
         Page::NotifierSave => notifiers::save(web, ctx).await,
         Page::NotifierTest => notifiers::test(web, ctx).await,

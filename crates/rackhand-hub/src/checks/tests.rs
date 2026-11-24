@@ -61,7 +61,8 @@ struct Env {
 }
 
 impl Env {
-    fn start(db: Arc<Db>, ingest: Ingest) -> Env {
+    async fn start(db: Arc<Db>, ingest: Ingest) -> Env {
+        ingest.start(0).await.unwrap();
         let incidents = Incidents::new(db.clone(), ingest.clone(), Bus::new());
         let checks = Checks::new(db.clone(), ingest.clone());
         Env { db, ingest, incidents, checks }
@@ -92,7 +93,7 @@ impl Env {
 async fn two_failures_warn_four_critical() {
     let db = db("failing");
     let ingest = Ingest::new(db.clone(), Bus::new(), Arc::new(Roomy));
-    let env = Env::start(db.clone(), ingest.clone());
+    let env = Env::start(db.clone(), ingest.clone()).await;
     // a TCP check of a port nothing listens on, from the hub (bound to no machine)
     let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let text = format!("[[check]]\nname = \"svc\"\nkind = \"tcp\"\ntarget = \"127.0.0.1:{port}\"\ninterval_s = 15\n");
@@ -108,7 +109,7 @@ async fn two_failures_warn_four_critical() {
     assert_eq!(env.incident(), Some(("open".into(), "critical".into())), "4 in a row");
     // the hub restarts: the count comes from the stored results, so the next failure keeps it critical
     drop(env);
-    let env = Env::start(db.clone(), ingest);
+    let env = Env::start(db.clone(), ingest).await;
     env.checks.sync(&text).await.unwrap();
     env.run(T0 + 60_000).await;
     assert_eq!(env.incident(), Some(("open".into(), "critical".into())), "after the restart");
@@ -179,10 +180,10 @@ mod agentless {
         vault.put(&format!("driver.{NAS}"), &Secret::new(v.to_string().into_bytes())).await.unwrap();
     }
 
-    fn setup(db: &Arc<Db>) -> (Env, Arc<Vault>) {
+    async fn setup(db: &Arc<Db>) -> (Env, Arc<Vault>) {
         let ingest = Ingest::new(db.clone(), Bus::new(), Arc::new(Roomy));
         let vault = Arc::new(Vault::new(MasterKey::from_bytes([5u8; 32]), db.clone()));
-        let mut env = Env::start(db.clone(), ingest);
+        let mut env = Env::start(db.clone(), ingest).await;
         env.checks =
             Checks::new(db.clone(), env.ingest.clone()).with_agentless(vault.clone(), vec![Arc::new(TrueNas::new())]);
         (env, vault)
@@ -216,7 +217,7 @@ mod agentless {
         let db = db("agentless-poll");
         let sim = Sim::start(Api::WebSocket).await;
         appliance(&db, &sim.url).await;
-        let (env, vault) = setup(&db);
+        let (env, vault) = setup(&db).await;
         credentials(&vault, KEY, &sim.fingerprint).await;
         env.checks.refresh().await.unwrap();
         assert_eq!(env.checks.run_due(T0).await.unwrap(), 1);
@@ -258,7 +259,7 @@ mod agentless {
         let db = db("agentless-silent");
         let sim = Sim::start(Api::WebSocket).await;
         appliance(&db, &sim.url).await;
-        let (env, vault) = setup(&db);
+        let (env, vault) = setup(&db).await;
         credentials(&vault, "1-revoked-key", &sim.fingerprint).await;
         env.incidents.set_started(T0 - 10 * MIN_MS);
         env.checks.refresh().await.unwrap();
@@ -272,7 +273,7 @@ mod agentless {
         assert_eq!(incident(&db, "machine.silent"), Some(("open".into(), "critical".into())), "5 in a row");
         assert_eq!(incident(&db, "check.failing"), None, "one incident for it, not a check's too");
         // the hub restarts: in its first 3 minutes the open incident stays
-        let (env, vault) = setup(&db);
+        let (env, vault) = setup(&db).await;
         env.incidents.set_started(T0 + 5 * MIN_MS);
         env.checks.refresh().await.unwrap();
         env.incidents.evaluate(T0 + 5 * MIN_MS + 1_000).await.unwrap();

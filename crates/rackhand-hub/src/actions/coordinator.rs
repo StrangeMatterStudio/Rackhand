@@ -1,6 +1,9 @@
 //! Running a job: resolve the runbook and machine, take the machine, use the approval, then run each step in order,
 //! recording it before it runs (9) and enforcing its timeout. A detached step that passes its timeout isn't killed
 //! (E55): the job ends `timed_out` and the machine stays locked until the step's result is recorded.
+//!
+//! A reboot step that was scheduled (7.5.3 steps 7 and 8) may take the hub down with its machine: the job is marked to go
+//! on at the verify step before anything waits, and `resume` (in `recovery`) goes on there in the hub that comes back.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -11,19 +14,22 @@ use rackhand_runbook::runbook::{Identity, Runbook, Step, StepKind};
 use rackhand_store::ids::{new_id, now_ms};
 use rusqlite::OptionalExtension;
 
-use super::jobs::{self, NewJob, StepEnd};
+pub(super) use super::jobs::StepEnd;
+use super::jobs::{self, NewJob};
 use super::locks::MachineGuard;
 use super::runner::{StepCtx, StepOutcome, StepResult, StepRunner, display};
-use super::{Actions, ActionsError, DEFAULT_STEP_TIMEOUT, JobKind, JobResult, StartJob};
+use super::{Actions, ActionsError, DEFAULT_STEP_TIMEOUT, JobKind, JobResult, StartJob, quarantining};
 use crate::bus::JobOutcome;
 use crate::library::items::{Kind, Library};
 use crate::policy::approvals::{ApprovalRequest, Approvals, approval_hash};
+use crate::policy::quarantine::State;
 
 pub(super) struct Machine {
     pub(super) id: String,
     pub(super) kind: String,
     pub(super) access: String,
     pub(super) address: Option<String>,
+    pub(super) quarantine: String,
 }
 
 impl Machine {
@@ -33,7 +39,7 @@ impl Machine {
 }
 
 /// Whole-argument substitution (7.3.7): an argument that is exactly `{{name}}` becomes the value.
-fn substitute_argv(cmd: &[String], params: &BTreeMap<String, String>) -> Vec<String> {
+pub(super) fn substitute_argv(cmd: &[String], params: &BTreeMap<String, String>) -> Vec<String> {
     cmd.iter()
         .map(|a| {
             let name = a.trim().strip_prefix("{{").and_then(|r| r.strip_suffix("}}")).map(str::trim);
@@ -56,7 +62,7 @@ fn substitute_text(text: &str, params: &BTreeMap<String, String>) -> String {
     out
 }
 
-fn with_params(step: &Step, params: &BTreeMap<String, String>) -> Step {
+pub(crate) fn with_params(step: &Step, params: &BTreeMap<String, String>) -> Step {
     let mut s = step.clone();
     s.checks = s.checks.map(|c| c.iter().map(|x| substitute_text(x, params)).collect());
     s.call = s.call.map(|c| substitute_text(&c, params));
@@ -65,11 +71,6 @@ fn with_params(step: &Step, params: &BTreeMap<String, String>) -> Step {
     s.dest = s.dest.map(|m| substitute_text(&m, params));
     s
 }
-
-fn needs_account(kind: StepKind) -> bool {
-    matches!(kind, StepKind::Ssh | StepKind::Transfer)
-}
-
 enum StepEndState {
     Done(StepResult),
     TimedOut,
@@ -81,15 +82,21 @@ impl Actions {
             .db
             .readers()
             .with(|c| {
-                c.query_row("SELECT id, kind, access, address FROM machines WHERE id = ?1", [id], |r| {
-                    Ok(Machine { id: r.get(0)?, kind: r.get(1)?, access: r.get(2)?, address: r.get(3)? })
+                c.query_row("SELECT id, kind, access, address, quarantine FROM machines WHERE id = ?1", [id], |r| {
+                    Ok(Machine {
+                        id: r.get(0)?,
+                        kind: r.get(1)?,
+                        access: r.get(2)?,
+                        address: r.get(3)?,
+                        quarantine: r.get(4)?,
+                    })
                 })
                 .optional()
             })?
             .ok_or(ActionsError::UnknownMachine)
     }
 
-    fn runbook(&self, start: &StartJob) -> Result<(i64, Runbook), ActionsError> {
+    pub(super) fn runbook(&self, start: &StartJob) -> Result<(i64, Runbook), ActionsError> {
         let db = &self.inner.db;
         let store = |e: crate::library::items::SaveError| ActionsError::Store(e.to_string());
         let (rev, source) = match start.rev {
@@ -118,6 +125,10 @@ impl Actions {
         let machine = self.machine(&start.machine_id)?;
         let (rev, runbook) = self.runbook(&start)?;
         check_params(&runbook, &start.params)?;
+        // A quarantined machine runs nothing but its release, whoever asks (7.5.6)
+        if !quarantining::allowed(&start.name, State::parse(&machine.quarantine).unwrap_or(State::None)) {
+            return Err(ActionsError::Quarantined);
+        }
         // The approval is checked now and used only once the machine is ours: a busy machine doesn't spend it.
         let approval = start.approval_id.as_ref().map(|id| {
             let request = ApprovalRequest {
@@ -160,6 +171,11 @@ impl Actions {
             self.finish(&job_id, &start.requested_by, JobOutcome::Failed, reason.as_deref()).await?;
             return Ok(JobResult { job_id, outcome: JobOutcome::Failed, reason });
         };
+        // the state may have changed while this job waited for the machine
+        let q_state = self.quarantine_state(&machine.id)?;
+        if !quarantining::allowed(&start.name, q_state) {
+            return Err(ActionsError::Quarantined);
+        }
         if let Some((id, hash)) = &approval {
             // Used now, once; another call may have used it while this one waited.
             approvals.use_approval(id, &start.requested_by, hash, now_ms()).await.map_err(ActionsError::Approval)?;
@@ -173,19 +189,24 @@ impl Actions {
             serde_json::json!({ "runbook": start.name, "rev": rev, "machine": machine.id }),
         )
         .await;
+        self.quarantine_begin(&start.name, &machine.id, q_state, &job_id, &start.requested_by).await?;
         let (outcome, reason) = match self.run_steps(&job_id, &machine, &runbook, &start.params, guard).await {
             Ok(end) => end,
             Err(e) => {
                 // A step row couldn't be written: the job still ends, so nothing waits on it forever.
                 let _ = self.finish(&job_id, &start.requested_by, JobOutcome::Failed, Some("store_error")).await;
+                let _ = self
+                    .quarantine_end(&start.name, &machine.id, &job_id, JobOutcome::Failed, &start.requested_by)
+                    .await;
                 return Err(e);
             }
         };
         self.finish(&job_id, &start.requested_by, outcome, reason.as_deref()).await?;
+        self.quarantine_end(&start.name, &machine.id, &job_id, outcome, &start.requested_by).await?;
         Ok(JobResult { job_id, outcome, reason })
     }
 
-    async fn finish(
+    pub(super) async fn finish(
         &self,
         job_id: &str,
         actor: &str,
@@ -214,14 +235,30 @@ impl Actions {
         params: &BTreeMap<String, String>,
         guard: MachineGuard,
     ) -> Result<(JobOutcome, Option<String>), ActionsError> {
+        let awaiting = self.inner.reboots.hold(&machine.id, runbook);
+        self.run_steps_from(0, job_id, machine, runbook, params, guard, awaiting).await
+    }
+
+    /// The steps from the `from`th on; `awaiting` is the hold on the machine's expected silence, if it has one.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn run_steps_from(
+        &self,
+        from: usize,
+        job_id: &str,
+        machine: &Machine,
+        runbook: &Runbook,
+        params: &BTreeMap<String, String>,
+        guard: MachineGuard,
+        mut awaiting: Option<super::reboots::Awaiting>,
+    ) -> Result<(JobOutcome, Option<String>), ActionsError> {
         let db = &self.inner.db;
-        let mut awaiting = self.inner.reboots.hold(&machine.id, runbook);
-        for (i, step) in runbook.steps.iter().enumerate() {
+        for (i, step) in runbook.steps.iter().enumerate().skip(from) {
+            let started_ms = now_ms();
             let step = with_params(step, params);
             let argv = step.cmd.as_deref().map(|c| substitute_argv(c, params));
             let command = argv.as_deref().map(display);
             jobs::step_started(db, job_id, &step.id, command.as_deref(), now_ms()).await?;
-            if machine.monitor_only() && needs_account(step.kind) {
+            if machine.monitor_only() && step.needs_account() {
                 let end = StepEnd {
                     state: "failed",
                     exit_code: None,
@@ -281,7 +318,17 @@ impl Actions {
                     }
                 }
             }
-            let result = last.unwrap_or_else(|| StepResult::failed("not_run"));
+            let mut result = last.unwrap_or_else(|| StepResult::failed("not_run"));
+            if step.kind == StepKind::RebootIfRequired && scheduled(&result) {
+                if let Some(next) = resume_step(runbook, i) {
+                    jobs::resume_at(db, job_id, &next).await?;
+                }
+                let back = match tokio::time::timeout(timeout, self.inner.runner.rebooted(&ctx, started_ms)).await {
+                    Ok(back) => back.outcome,
+                    Err(_) => StepOutcome::Failed("timeout".into()),
+                };
+                result.outcome = back;
+            }
             let failed = match &result.outcome {
                 StepOutcome::Succeeded => None,
                 StepOutcome::Failed(reason) => Some(reason.clone()),
@@ -298,7 +345,12 @@ impl Actions {
         Ok((JobOutcome::Succeeded, None))
     }
 
-    async fn record_step(&self, job_id: &str, step_id: &str, result: StepResult) -> Result<(), ActionsError> {
+    pub(super) async fn record_step(
+        &self,
+        job_id: &str,
+        step_id: &str,
+        result: StepResult,
+    ) -> Result<(), ActionsError> {
         let state = if result.outcome == StepOutcome::Succeeded { "succeeded" } else { "failed" };
         let end = StepEnd {
             state,
@@ -338,6 +390,22 @@ impl Actions {
         .await?;
         self.audit(requested_by, "job.started", &job_id, serde_json::json!({ "playbook": playbook })).await;
         Ok(job_id)
+    }
+
+    /// Assistant jobs whose token's deadline passed more than `grace_ms` ago and that nobody has ended: the operator never
+    /// reported, so they end `timed_out`. Returns how many it ended.
+    pub async fn sweep_assistant_jobs(&self, now_ms: i64, grace_ms: i64) -> Result<usize, ActionsError> {
+        let stale: Vec<String> = self.inner.db.readers().with(|c| {
+            let mut s = c.prepare(
+                "SELECT j.id FROM jobs j JOIN job_tokens t ON t.job_id = j.id
+                 WHERE j.kind = 'assistant' AND j.state = 'running' AND t.expires_at + ?1 < ?2",
+            )?;
+            s.query_map(rusqlite::params![grace_ms, now_ms], |r| r.get(0))?.collect()
+        })?;
+        for id in &stale {
+            self.finish(id, "hub", JobOutcome::TimedOut, Some("timed_out")).await?;
+        }
+        Ok(stale.len())
     }
 
     /// One assistant transcript event (7.3.5): Actions stores them, as it owns `assistant_transcripts`.
@@ -436,6 +504,18 @@ impl Actions {
         drop(guard);
         Ok(result)
     }
+}
+
+/// A reboot step's command only set the reboot's time.
+fn scheduled(result: &StepResult) -> bool {
+    result.outcome == StepOutcome::Succeeded
+        && serde_json::from_slice::<serde_json::Value>(&result.stdout).is_ok_and(|v| v["reboot"] == "scheduled")
+}
+
+/// Where a restarted hub goes on after the reboot step `reboot`: the next verify step, or the next step at all.
+fn resume_step(runbook: &Runbook, reboot: usize) -> Option<String> {
+    let rest = runbook.steps.get(reboot + 1..)?;
+    rest.iter().find(|s| s.kind == StepKind::Verify).or(rest.first()).map(|s| s.id.clone())
 }
 
 fn spawn_step(

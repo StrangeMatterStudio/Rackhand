@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "adler2"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
+
+[[package]]
 name = "aead"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -842,6 +848,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crc32fast"
+version = "1.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b929dd2a135771f40afabd1073f85eed59c800b7c61901e5c254270497dad64"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "crossbeam-utils"
 version = "0.8.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1377,6 +1392,16 @@ name = "fixedbitset"
 version = "0.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5905ec755cc8386d7928353e4d356d2be3e89e81e5ca01fe630a1ca4d08dc175"
+
+[[package]]
+name = "flate2"
+version = "1.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "626d4928326b646e70f65ed36fc7cf9f206bdb68a0019ee7c6b4709da4e084c4"
+dependencies = [
+ "crc32fast",
+ "miniz_oxide",
+]
 
 [[package]]
 name = "foldhash"
@@ -2631,6 +2656,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
+name = "miniz_oxide"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
+dependencies = [
+ "adler2",
+ "simd-adler32",
+]
+
+[[package]]
 name = "mio"
 version = "1.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3709,8 +3744,10 @@ dependencies = [
  "rackhand-drivers",
  "rackhand-hub",
  "rackhand-net",
+ "rackhand-operator",
  "rackhand-probe",
  "rackhand-proto",
+ "rackhand-relay",
  "rackhand-release",
  "rackhand-runbook",
  "rackhand-store",
@@ -3729,6 +3766,15 @@ dependencies = [
 [[package]]
 name = "rackhand-cli"
 version = "0.1.0"
+dependencies = [
+ "iroh",
+ "prost",
+ "rackhand-net",
+ "rackhand-proto",
+ "serde",
+ "tokio",
+ "toml 0.8.23",
+]
 
 [[package]]
 name = "rackhand-detect"
@@ -3772,8 +3818,10 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
+ "blake3",
  "chacha20poly1305",
  "ed25519-dalek 2.2.0",
+ "flate2",
  "form_urlencoded",
  "getrandom 0.3.4",
  "git2",
@@ -3784,6 +3832,7 @@ dependencies = [
  "jiff",
  "prost",
  "qrcodegen",
+ "rackhand-cli",
  "rackhand-detect",
  "rackhand-drivers",
  "rackhand-net",
@@ -3823,9 +3872,11 @@ dependencies = [
  "blake3",
  "ed25519-dalek 2.2.0",
  "iroh",
+ "prost",
  "rackhand-drivers",
  "rackhand-hub",
  "rackhand-net",
+ "rackhand-operator",
  "rackhand-probe",
  "rackhand-proto",
  "rackhand-release",
@@ -3855,6 +3906,8 @@ dependencies = [
 name = "rackhand-net"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "getrandom 0.3.4",
  "iroh",
  "iroh-relay",
  "prost",
@@ -3868,10 +3921,39 @@ dependencies = [
 [[package]]
 name = "rackhand-net-tests"
 version = "0.1.0"
+dependencies = [
+ "iroh",
+ "iroh-relay",
+ "rackhand-hub",
+ "rackhand-net",
+ "rackhand-proto",
+ "rackhand-relay",
+ "rackhand-store",
+ "rcgen",
+ "rusqlite",
+ "rustix",
+ "tokio",
+]
 
 [[package]]
 name = "rackhand-operator"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "iroh",
+ "prost",
+ "rackhand-net",
+ "rackhand-proto",
+ "rustix",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "toml 0.8.23",
+ "tracing",
+ "ulid",
+]
 
 [[package]]
 name = "rackhand-perf"
@@ -3882,6 +3964,7 @@ name = "rackhand-probe"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "data-encoding",
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
  "iroh",
@@ -3893,6 +3976,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
  "tokio",
  "toml 0.8.23",
@@ -3918,6 +4002,20 @@ dependencies = [
 [[package]]
 name = "rackhand-relay"
 version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek 2.2.0",
+ "iroh",
+ "iroh-relay",
+ "n0-future",
+ "rackhand-net",
+ "rustls",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "rackhand-release"
@@ -4757,6 +4855,12 @@ dependencies = [
  "digest 0.11.3",
  "rand_core 0.10.1",
 ]
+
+[[package]]
+name = "simd-adler32"
+version = "0.3.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
 name = "simd_cesu8"

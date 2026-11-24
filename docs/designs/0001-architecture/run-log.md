@@ -155,3 +155,31 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-22 | T59 done: integration tier 56 of 56 on 14520f2. T60 started |
 | 2026-11-22 | T60a done: the Proxmox host and hub host runbooks; hypervisors patched last and never rebooted automatically (D102) |
 | 2026-11-22 | At the owner's request: the test build (e3d843a) installed by hand on an LXC of theirs. The packaged unit runs in an unprivileged Debian 13 LXC; `/healthz` ok and first run reachable over the LAN; first run left to the owner |
+| 2026-11-22 | Owner: first-run's usability problems and an overhaul of the dashboard go to a session of their own (branch of its own, records in `0002-dashboard-ui`); this run goes on with the plan |
+| 2026-11-22 | T60b done: a hypervisor's reboot asked for with its guests listed, once per cluster and window (D103) |
+| 2026-11-22 | T60c built: the reboot of the machine the hub runs on, 60 s out, and the job resumed at verify (D104); integration tier next |
+| 2026-11-22 | T60 done: integration tier 58 of 58 on ac88ee9. T61 started |
+| 2026-11-22 | T61a done: five more built-in runbooks (D105) |
+| 2026-11-22 | T61b done: the helper applies signed key updates (D106) |
+| 2026-11-22 | Owner agreed to a `hub` step kind. T61c1 done: `sudoers-refresh` (D107) |
+| 2026-11-22 | T61 done: `keys-rotate`, `unenroll` and `rackhand-probe uninstall` (D108); its compose integration test moves to L4 (D109) |
+| 2026-11-23 | Dashboard branch merged (fast tier 611 passed). T62 done: access-level changes by a one-time command, the store's level guard, the hypervisor guard (D110 to D112) |
+| 2026-11-23 | T64 done: `provision-vm`, `provision-lxc` and `run install-guest` (D113, D114); the live pass is L4 |
+| 2026-11-23 | T65 done: jobs after a hub restart are adopted or interrupted (D115); the window gate on the rules |
+| 2026-11-23 | T66 done: the helper's file hashes, authentication events, socket owners, container names and process scan (D116) |
+| 2026-11-23 | T67 done: the sampling capture, its events and capabilities (D117) |
+| 2026-11-23 | T69 done: threat lists and GeoIP/ASN, their refresh, air-gapped mode and freshness (D118) |
+| 2026-11-23 | T70 done: connection scoring and storage (D119) |
+| 2026-11-23 | T71 done: security events, severities and exemptions (D120) |
+| 2026-11-23 | T72 done: quarantine, release, the rules and the proposals (D121 to D126) |
+| 2026-11-23 | T73 done: the security pages (D127) |
+| 2026-11-23 | T77 done: the operator binary, its bridge and runners (D128 to D130) |
+| 2026-11-23 | T78 done: incident routing to playbooks, briefs and the built-in playbooks (D131 to D133) |
+| 2026-11-23 | T79 done: the assistant pages and settings (D134) |
+| 2026-11-23 | T80 done: the peer contract (D135 to D136) |
+| 2026-11-23 | T81 done: peer watch, callout election and the dead-man URL (D137 to D138) |
+| 2026-11-23 | T82 done: the relay (keys, admission, limits), `rackhand relay run` and `key create`, relay lists (D139 to D142) |
+| 2026-11-23 | T83 done: path detection, the peer path status, and the network tier's NAT topology with its hole punching and relay rate tests (D143 to D144) |
+| 2026-11-23 | T84 done: tunnels for devices, the remote-mode probe's splice, the hub's SSH to remote-mode machines, and the tunnel step (D145 to D148) |
+| 2026-11-23 | T85 done: transfers (chunks, resume, streams), peer backups and export, the transfer step and the backup runbooks (D149 to D153) |
+| 2026-11-23 | T86 done: rackhand-cli (login, status, connect, forward, send, mcp), the hub resolving machine names; the Windows build waits for T89 (D154 to D155) |

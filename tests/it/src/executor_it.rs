@@ -74,11 +74,23 @@ timeout = "60s"
         auto: std::sync::atomic::AtomicBool,
         back: std::sync::atomic::AtomicBool,
         reporting: std::sync::atomic::AtomicBool,
+        hypervisor: std::sync::atomic::AtomicBool,
+        approved: std::sync::atomic::AtomicBool,
+        hub: std::sync::atomic::AtomicBool,
     }
 
     impl rackhand_hub::executor::RebootFacts for Facts {
         fn auto_reboot(&self, _machine: &str) -> bool {
             self.auto.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn approved(&self, _job: &str) -> bool {
+            self.approved.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn hosts_hub(&self, _machine: &str) -> bool {
+            self.hub.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn compares_kernels(&self, _machine: &str) -> bool {
+            self.hypervisor.load(std::sync::atomic::Ordering::SeqCst)
         }
         fn back_since(&self, _machine: &str, _since_ms: i64) -> bool {
             self.back.load(std::sync::atomic::Ordering::SeqCst)
@@ -109,11 +121,95 @@ timeout = "{timeout}"
     }
 
     pub(super) struct Lab {
+        /// The machine's id at the hub.
+        pub(super) id: String,
+        /// What keeps a remote-mode lab's relay and probe alive.
+        _keep: Vec<Box<dyn std::any::Any + Send>>,
         pub(super) db: Arc<Db>,
+        /// The Executor Actions runs steps with, for what drives the machine directly (transfers).
+        pub(super) executor: Arc<Executor>,
         pub(super) machine: Container,
         pub(super) actions: Actions,
         pub(super) events: Subscription,
         facts: Arc<Facts>,
+        vault: Arc<Vault>,
+        host_keys: Arc<HostKeys>,
+        pub(super) signer: Arc<Signer>,
+    }
+
+    /// The hub's side of `sudoers-refresh`: its node key and the runbooks whose commands it lists.
+    pub(super) struct Signer {
+        key: SigningKey,
+        pub(super) runbooks: std::sync::Mutex<Vec<Runbook>>,
+        /// The version to sign with instead of the time.
+        pub(super) version: std::sync::Mutex<Option<u64>>,
+        /// The addresses the machine takes the hub's SSH from.
+        from: Vec<String>,
+        /// Sign key updates with another key than the machine's pinned hub.
+        pub(super) forged: std::sync::atomic::AtomicBool,
+        db: Arc<Db>,
+        /// The machines revoked, in order.
+        pub(super) revoked: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl rackhand_hub::executor::HubSide for Signer {
+        fn signed_commands(&self, now_ms: i64) -> Vec<u8> {
+            let version = self.version.lock().unwrap().unwrap_or(now_ms as u64);
+            signed_command_list(&self.key, &self.runbooks.lock().unwrap(), version, now_ms, 600_000)
+        }
+
+        fn signed_keys(&self, now_ms: i64, body: &[u8]) -> Vec<u8> {
+            let key = if self.forged.load(std::sync::atomic::Ordering::SeqCst) {
+                SigningKey::from_bytes(&[9u8; 32])
+            } else {
+                self.key.clone()
+            };
+            let signed = rackhand_proto::signed::sign(&key, "keys", now_ms as u64, now_ms, now_ms + 600_000, body);
+            let mut out = Vec::new();
+            prost::Message::encode(&signed, &mut out).unwrap();
+            out
+        }
+
+        fn ssh_from(&self, _machine: &str) -> Vec<String> {
+            self.from.clone()
+        }
+
+        fn guest_enrollment(&self, _job: &str) -> Option<rackhand_hub::executor::GuestEnrollment> {
+            Some(rackhand_hub::executor::GuestEnrollment {
+                script_url: "https://example.net/rackhand/install.sh".into(),
+                args: ["--ticket", "rackhand1:ab@192.0.2.10:7443", "--token", "01JDTOKEN0123456789ABCDEF"]
+                    .map(String::from)
+                    .to_vec(),
+                self_signed: false,
+            })
+        }
+
+        fn signed_guest(&self, now_ms: i64, body: &[u8]) -> Vec<u8> {
+            let key = if self.forged.load(std::sync::atomic::Ordering::SeqCst) {
+                SigningKey::from_bytes(&[9u8; 32])
+            } else {
+                self.key.clone()
+            };
+            let signed = rackhand_proto::signed::sign(&key, "guest", now_ms as u64, now_ms, now_ms + 600_000, body);
+            let mut out = Vec::new();
+            prost::Message::encode(&signed, &mut out).unwrap();
+            out
+        }
+
+        fn managed(&self, _machine: &str) -> bool {
+            true
+        }
+
+        fn revoke<'a>(&'a self, machine: &'a str) -> rackhand_hub::actions::runner::BoxFuture<'a, Result<(), String>> {
+            Box::pin(async move {
+                self.revoked.lock().unwrap().push(machine.to_string());
+                let set = Row::from([("state", Value::Text("revoked".into()))]);
+                let update =
+                    rackhand_store::RowUpdate { table: "machines", key: ("id", Value::Text(machine.into())), set };
+                let change = rackhand_store::RegistryChange { updates: vec![update], ..Default::default() };
+                self.db.writer().send(WriteCmd::RegistryChange(change)).await.map(|_| ()).map_err(|e| e.to_string())
+            })
+        }
     }
 
     pub(super) fn sh(c: &Container, script: &str) {
@@ -122,6 +218,16 @@ timeout = "{timeout}"
     }
 
     pub(super) async fn lab(name: &str, slow_timeout: &str, lock_wait: Duration) -> Lab {
+        lab_with(name, slow_timeout, lock_wait, false).await
+    }
+
+    /// The machine of a lab in remote mode (D60): a ULID, since the hub names it to the probe.
+    const REMOTE_ID: &str = "01J1REM0TEAAAAAAAAAAAAAAAA";
+
+    /// The lab, with its machine in remote mode when `remote`: its probe runs in this process and splices to the machine's
+    /// SSH server, and the machine's own address is one nothing answers on, so only the tunnel reaches it.
+    pub(super) async fn lab_with(name: &str, slow_timeout: &str, lock_wait: Duration, remote: bool) -> Lab {
+        let id = if remote { REMOTE_ID } else { "m1" };
         let dir = std::env::temp_dir().join(format!("rackhand-it-exec-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -129,6 +235,35 @@ timeout = "{timeout}"
         let vault = Arc::new(Vault::new(MasterKey::from_bytes([5u8; 32]), db.clone()));
         let machine = Container::start_systemd("executor");
         let (ip, gateway) = machine.ip_and_gateway();
+        let mut keep: Vec<Box<dyn std::any::Any + Send>> = Vec::new();
+        let mut extra: Vec<(&'static str, Value)> = Vec::new();
+        let mut network = None;
+        if remote {
+            let (relay, relay_url) = rackhand_net::testing::local_relay().await;
+            let probe = rackhand_net::testing::endpoint(&relay_url, &[rackhand_proto::alpn::TUNNEL]).await;
+            let hub = rackhand_net::testing::endpoint(&relay_url, &[]).await;
+            let ssh: std::net::SocketAddr = format!("{ip}:22").parse().unwrap();
+            let machine_bytes = REMOTE_ID.parse::<ulid::Ulid>().unwrap().to_bytes();
+            keep.push(Box::new(rackhand_probe::remote::spawn(probe.clone(), hub.id(), machine_bytes, ssh)));
+            extra.push(("mode", Value::Text("remote".into())));
+            extra.push(("probe_endpoint_id", Value::Text(probe.id().to_string())));
+            network = Some(Arc::new(rackhand_hub::peers::tunnel::Network::new(hub, vec![relay_url])));
+            keep.push(Box::new(relay));
+            keep.push(Box::new(probe));
+        }
+        // a remote-mode machine's own address is one nothing answers on (a documentation address, RFC 5737)
+        let address = if remote { "192.0.2.1".to_string() } else { ip.clone() };
+        let mut machine_row = Row::from([
+            ("id", Value::Text(id.into())),
+            ("site_id", Value::Text("s".into())),
+            ("name", Value::Text("target".into())),
+            ("kind", Value::Text("linux".into())),
+            ("address", Value::Text(address)),
+            ("state", Value::Text("enrolled".into())),
+        ]);
+        for (column, value) in extra {
+            machine_row.insert(column, value);
+        }
         db.writer()
             .send(WriteCmd::Batch(vec![
                 RowWrite::insert(
@@ -137,19 +272,11 @@ timeout = "{timeout}"
                         ("id", Value::Text("s".into())),
                         ("name", Value::Text("home".into())),
                         ("timezone", Value::Text("UTC".into())),
+                        // this hub's own site: it opens tunnels only to machines of its site
+                        ("is_local", Value::Integer(i64::from(remote))),
                     ]),
                 ),
-                RowWrite::insert(
-                    "machines",
-                    Row::from([
-                        ("id", Value::Text("m1".into())),
-                        ("site_id", Value::Text("s".into())),
-                        ("name", Value::Text("target".into())),
-                        ("kind", Value::Text("linux".into())),
-                        ("address", Value::Text(ip.clone())),
-                        ("state", Value::Text("enrolled".into())),
-                    ]),
-                ),
+                RowWrite::insert("machines", machine_row),
             ]))
             .await
             .unwrap();
@@ -168,6 +295,9 @@ timeout = "{timeout}"
         // The wrapper, the pinned hub key, and the command list from the runbooks, signed and installed by the wrapper.
         machine.copy_in(&container_binary("rackhand-probe", "rackhand-probe"), WRAPPER);
         sh(&machine, &format!("chown root:root {WRAPPER} && chmod 0755 {WRAPPER}"));
+        // the binary where the installer puts it, which `unenroll` runs
+        let bin = "/usr/local/lib/rackhand/rackhand-probe";
+        sh(&machine, &format!("cp {WRAPPER} {bin} && chown root:root {bin} && chmod 0755 {bin}"));
         let node = SigningKey::from_bytes(&[7u8; 32]);
         let hex: String = node.verifying_key().to_bytes().iter().map(|b| format!("{b:02x}")).collect();
         sh(&machine, &format!("printf '[hub]\\nid = \"{hex}\"\\n' > /etc/rackhand-probe/probe.toml"));
@@ -178,25 +308,58 @@ timeout = "{timeout}"
         library.save(Kind::Runbook, "slow", &slow, "admin", 1).await.unwrap();
         library.save(Kind::Runbook, "wrapped", WRAPPED, "admin", 1).await.unwrap();
         library.save(Kind::Runbook, "reboot-now", REBOOT, "admin", 1).await.unwrap();
-        let runbooks = [PLAIN, slow.as_str(), WRAPPED, REBOOT].map(|r| Runbook::parse(r).unwrap());
+        let always = REBOOT.replace("reboot-now", "reboot-asked") + "always = true\n";
+        library.save(Kind::Runbook, "reboot-asked", &always, "admin", 1).await.unwrap();
+        let unenroll = rackhand_runbook::builtin::runbook("unenroll").unwrap();
+        let runbooks = [PLAIN, slow.as_str(), WRAPPED, REBOOT, unenroll].map(|r| Runbook::parse(r).unwrap());
         let now = rackhand_store::ids::now_ms();
-        let payload = signed_command_list(&node, &runbooks, 1, now, 3_600_000);
+        // versioned by the signing time in milliseconds, as the join's list is
+        let payload = signed_command_list(&node, &runbooks, now as u64, now, 3_600_000);
+        let signer = Arc::new(Signer {
+            key: node.clone(),
+            runbooks: std::sync::Mutex::new(runbooks.to_vec()),
+            version: Default::default(),
+            from: vec![gateway.clone()],
+            forged: Default::default(),
+            db: db.clone(),
+            revoked: Default::default(),
+        });
         let install = machine.exec(Some("rackhand"), &["sudo", "-n", WRAPPER, "install-commands"], Some(&payload));
         assert!(install.status.success(), "install-commands: {}", String::from_utf8_lossy(&install.stderr));
         // The host key from the join (T35), pinned.
         let (host_keys, _alerts) = HostKeys::new(db.clone());
         let host =
             String::from_utf8_lossy(&machine.root("cat /etc/ssh/ssh_host_ed25519_key.pub").stdout).trim().to_string();
-        host_keys.pin_from_join("m1", &[PublicKey::from_openssh(&host).unwrap()], 1).await.unwrap();
+        host_keys.pin_from_join(id, &[PublicKey::from_openssh(&host).unwrap()], 1).await.unwrap();
         wait_listening(&format!("{ip}:22")).await;
         let bus = Bus::new();
         let events = bus.subscribe("test");
         let facts = Arc::new(Facts::default());
-        let executor = Executor::new(vault, host_keys)
+        let transfer = Arc::new(rackhand_hub::executor::transfer_step::TransferStep::new(
+            db.clone(),
+            network.clone().unwrap_or_else(|| Arc::new(rackhand_hub::peers::tunnel::Network::deferred(Vec::new()))),
+        ));
+        let mut executor = Executor::new(vault.clone(), host_keys.clone())
+            .with_other(Arc::new(
+                rackhand_hub::executor::ByKind::default()
+                    .with(rackhand_runbook::runbook::StepKind::Transfer, transfer.clone()),
+            ))
             .with_poll(Duration::from_millis(500))
+            .with_hub(signer.clone())
             .with_reboot(facts.clone(), Duration::from_secs(6));
-        let actions = Actions::new(db.clone(), audit, bus, Arc::new(executor)).with_lock_wait(lock_wait);
-        Lab { db, machine, actions, events, facts }
+        if let Some(network) = network {
+            let forwards = rackhand_hub::peers::tunnel::Forwards::new(db.clone(), network);
+            executor = executor.with_remote(Arc::new(forwards));
+        }
+        let executor = Arc::new(executor);
+        let machines = rackhand_hub::peers::xfer_machine::MachineOpener::new(
+            db.clone(),
+            Audit::new(db.writer()),
+            executor.clone(),
+        );
+        transfer.bind(executor.clone(), Arc::new(machines));
+        let actions = Actions::new(db.clone(), audit, bus, executor.clone()).with_lock_wait(lock_wait);
+        Lab { id: id.into(), _keep: keep, db, executor, machine, actions, events, facts, vault, host_keys, signer }
     }
 
     async fn wait_listening(addr: &str) {
@@ -236,6 +399,27 @@ timeout = "{timeout}"
                 c.query_row(
                     "SELECT state, command, exit_code, stdout, stderr FROM job_steps WHERE job_id = ?1",
                     [job],
+                    |r| {
+                        Ok(StepRow {
+                            state: r.get(0)?,
+                            command: r.get(1)?,
+                            exit_code: r.get(2)?,
+                            stdout: r.get::<_, Option<Vec<u8>>>(3)?.unwrap_or_default(),
+                            stderr: r.get::<_, Option<Vec<u8>>>(4)?.unwrap_or_default(),
+                        })
+                    },
+                )
+            })
+            .unwrap()
+    }
+
+    /// The row of one step of a job.
+    fn step_of(db: &Db, job: &str, step_id: &str) -> StepRow {
+        db.readers()
+            .with(|c| {
+                c.query_row(
+                    "SELECT state, command, exit_code, stdout, stderr FROM job_steps WHERE job_id = ?1 AND step_id = ?2",
+                    [job, step_id],
                     |r| {
                         Ok(StepRow {
                             state: r.get(0)?,
@@ -482,6 +666,658 @@ timeout = "{timeout}"
         assert_eq!((up.outcome, up.reason.as_deref()), (JobOutcome::Failed, Some("did_not_reboot")));
     }
 
+    /// The `reboot` runbook's step reboots a machine that doesn't want it, whatever its policy does by itself; a
+    /// hypervisor isn't rebooted by it (E13): that takes `reboot-host` and its approval.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reboot_asked_for_reboots_all_but_a_hypervisor() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let lab = lab("rebootasked", "60s", Duration::from_secs(5)).await;
+        sh(
+            &lab.machine,
+            "rm -f /sbin/reboot; printf '#!/bin/sh\nid -un >> /root/rebooted\n' > /sbin/reboot; chmod 755 /sbin/reboot",
+        );
+        let run = || {
+            let a = lab.actions.clone();
+            async move {
+                a.run(StartJob { params: BTreeMap::new(), ..start("reboot-asked", ("unused", "")) }).await.unwrap()
+            }
+        };
+        lab.facts.back.store(true, SeqCst);
+        lab.facts.hypervisor.store(true, SeqCst);
+        let refused = run().await;
+        assert_eq!(
+            (refused.outcome, refused.reason.as_deref()),
+            (JobOutcome::Failed, Some("hypervisor_needs_reboot_host"))
+        );
+        assert!(!lab.machine.root("test -e /root/rebooted").status.success());
+        lab.facts.hypervisor.store(false, SeqCst);
+        let done = run().await;
+        assert_eq!(done.outcome, JobOutcome::Succeeded, "{done:?}");
+        assert!(lab.machine.root("test -e /root/rebooted").status.success(), "no flag, no auto_reboot: asked for");
+    }
+
+    /// 7.5.3 step 7: a hypervisor sets no flag, so it wants a reboot when its newest installed kernel isn't the one it
+    /// runs and none is pinned; only an approved job reboots it (E13). Asked in a real shell on the machine.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hypervisor_rebooted_for_a_newer_kernel_only_when_approved() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let lab = lab("hvreboot", "60s", Duration::from_secs(5)).await;
+        sh(
+            &lab.machine,
+            "rm -f /sbin/reboot; printf '#!/bin/sh\\nid -un >> /root/rebooted\\n' > /sbin/reboot; chmod 755 /sbin/reboot; \
+             mkdir -p /boot /etc/kernel; rm -f /boot/vmlinuz-*",
+        );
+        let said = |how: &'static str| {
+            let (a, db) = (lab.actions.clone(), lab.db.clone());
+            async move {
+                let job =
+                    a.run(StartJob { params: BTreeMap::new(), ..start("reboot-now", ("unused", "")) }).await.unwrap();
+                assert_eq!(job.outcome, JobOutcome::Succeeded, "{how}: {job:?}");
+                let out: serde_json::Value = serde_json::from_slice(&step(&db, &job.job_id).stdout).unwrap_or_default();
+                out["reboot"].as_str().unwrap_or_default().to_string()
+            }
+        };
+        lab.facts.back.store(true, SeqCst);
+        lab.facts.hypervisor.store(true, SeqCst);
+        assert_eq!(said("no kernels").await, "not_required");
+        sh(&lab.machine, "touch /boot/vmlinuz-$(uname -r) /boot/vmlinuz-0.0.1-1-pve");
+        assert_eq!(said("the newest is running").await, "not_required");
+        sh(&lab.machine, "touch /boot/vmlinuz-999.0.0-10-pve /boot/vmlinuz-999.0.0-9-pve");
+        assert_eq!(said("a newer one").await, "required_not_allowed");
+        sh(&lab.machine, "touch /etc/kernel/proxmox-boot-pin");
+        assert_eq!(said("pinned").await, "not_required");
+        sh(&lab.machine, "touch /run/reboot-required");
+        assert_eq!(said("pinned and flagged").await, "required_not_allowed");
+        assert!(!lab.machine.root("test -e /root/rebooted").status.success());
+        lab.facts.approved.store(true, SeqCst);
+        assert_eq!(said("approved").await, "done");
+        assert!(lab.machine.root("test -e /root/rebooted").status.success());
+        // a machine that isn't a hypervisor isn't asked about its kernels
+        sh(&lab.machine, "rm -f /run/reboot-required /etc/kernel/proxmox-boot-pin");
+        lab.facts.hypervisor.store(false, SeqCst);
+        assert_eq!(said("an ordinary machine").await, "not_required");
+    }
+
+    /// `sudoers-refresh` (7.3.7): the hub sends a newer signed command list through the wrapper.
+    mod commands {
+        use super::*;
+
+        const EXTRA: &str = r#"name = "extra"
+description = "A root command the first list doesn't have"
+identity = "automation"
+risk = "low"
+autonomy = 1
+[[step]]
+id = "who"
+kind = "ssh"
+cmd = ["sudo", "/usr/local/lib/rackhand/run", "/usr/bin/id", "-un"]
+timeout = "20s"
+"#;
+
+        fn list(lab: &Lab) -> serde_json::Value {
+            let out = lab.machine.root("cat /etc/rackhand/commands.json");
+            serde_json::from_slice(&out.stdout).unwrap_or_default()
+        }
+
+        async fn refresh(lab: &Lab) -> rackhand_hub::actions::JobResult {
+            lab.actions.run(StartJob::runbook("sudoers-refresh", "m1", "user:admin")).await.unwrap()
+        }
+
+        async fn save(lab: &Lab) {
+            let (library, _) = Library::new(lab.db.clone(), Audit::new(lab.db.writer()));
+            let refresh = rackhand_runbook::builtin::runbook("sudoers-refresh").unwrap();
+            library.save(Kind::Runbook, "sudoers-refresh", refresh, "admin", 1).await.unwrap();
+            library.save(Kind::Runbook, "extra", EXTRA, "admin", 1).await.unwrap();
+        }
+
+        /// A machine whose first list came with its join (versioned by the signing time) takes the refresh's list, which
+        /// is versioned the same way, and is newer.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn sudoers_refresh_after_join_list() {
+            let lab = lab("refresh-join", "60s", Duration::from_secs(5)).await;
+            save(&lab).await;
+            let joined = list(&lab)["version"].as_u64().unwrap();
+            assert!(joined > 1_000_000_000_000, "the join's version is a time in ms: {joined}");
+            let r = refresh(&lab).await;
+            assert_eq!(r.outcome, JobOutcome::Succeeded, "{r:?}");
+            let version = list(&lab)["version"].as_u64().unwrap();
+            assert!(version > joined, "{version} after {joined}");
+            let said = String::from_utf8_lossy(&step(&lab.db, &r.job_id).stdout).to_string();
+            assert!(said.contains(&format!("installed command list version {version}")), "{said}");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn sudoers_refresh_installs_newer_list() {
+            let lab = lab("refresh-new", "60s", Duration::from_secs(5)).await;
+            save(&lab).await;
+            let extra = Runbook::parse(EXTRA).unwrap();
+            let run_extra = || lab.actions.run(StartJob::runbook("extra", "m1", "user:admin"));
+            // before: the wrapper refuses a command the list doesn't have
+            let before = run_extra().await.unwrap();
+            assert_eq!(before.outcome, JobOutcome::Failed, "{before:?}");
+            lab.signer.runbooks.lock().unwrap().push(extra);
+            let r = refresh(&lab).await;
+            assert_eq!(r.outcome, JobOutcome::Succeeded, "{r:?}");
+            let after = run_extra().await.unwrap();
+            assert_eq!(after.outcome, JobOutcome::Succeeded, "{after:?}");
+            assert_eq!(String::from_utf8_lossy(&step(&lab.db, &after.job_id).stdout).trim(), "root");
+            // the list the hub sends is the machine's whole list: what it no longer has is gone
+            lab.signer.runbooks.lock().unwrap().retain(|r| r.name == "extra");
+            assert_eq!(refresh(&lab).await.outcome, JobOutcome::Succeeded);
+            let commands = list(&lab);
+            let steps: Vec<&str> =
+                commands["commands"].as_array().unwrap().iter().filter_map(|c| c["runbook"].as_str()).collect();
+            assert!(steps.contains(&"extra") && !steps.contains(&"wrapped"), "{steps:?}");
+            // a list that isn't newer is refused and the machine keeps its own
+            let kept = list(&lab);
+            *lab.signer.version.lock().unwrap() = Some(1);
+            let old = refresh(&lab).await;
+            assert_eq!((old.outcome, old.reason.as_deref()), (JobOutcome::Failed, Some("exit_code 1")), "{old:?}");
+            assert!(String::from_utf8_lossy(&step(&lab.db, &old.job_id).stderr).contains("newer"));
+            assert_eq!(list(&lab), kept);
+        }
+    }
+
+    /// `keys-rotate` (7.3.3, 7.3.7): the machine's hub key is replaced by one of its own, through the wrapper, and the old one
+    /// stops working.
+    mod rotation {
+        use rackhand_hub::ssh::keys::{load_for, load_or_create};
+
+        use super::*;
+
+        async fn save(lab: &Lab) {
+            let (library, _) = Library::new(lab.db.clone(), Audit::new(lab.db.writer()));
+            for name in ["keys-rotate", "sudoers-refresh"] {
+                library
+                    .save(Kind::Runbook, name, rackhand_runbook::builtin::runbook(name).unwrap(), "admin", 1)
+                    .await
+                    .unwrap();
+            }
+        }
+
+        /// Whether the machine lets `key` log in as the automation user.
+        async fn accepts(lab: &Lab, key: &russh::keys::PrivateKey) -> bool {
+            let (ip, _) = lab.machine.ip_and_gateway();
+            let addr = format!("{ip}:22").parse().unwrap();
+            let run = rackhand_hub::ssh::client::run(
+                addr,
+                "m1",
+                lab.host_keys.clone(),
+                Identity::Automation,
+                key,
+                "id -un",
+                Duration::from_secs(15),
+            )
+            .await;
+            match run {
+                Ok(out) => out.exit_code == Some(0),
+                Err(rackhand_hub::ssh::client::SshError::AuthRefused(_)) => false,
+                Err(e) => panic!("{e}"),
+            }
+        }
+
+        fn authorized(lab: &Lab, user: &str) -> String {
+            String::from_utf8_lossy(&lab.machine.root(&format!("cat /home/{user}/.ssh/authorized_keys")).stdout)
+                .to_string()
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn keys_rotate_new_key_works_old_refused() {
+            let lab = lab("rotate", "60s", Duration::from_secs(5)).await;
+            save(&lab).await;
+            let (_, gateway) = lab.machine.ip_and_gateway();
+            let hub_key = load_or_create(&lab.vault, Identity::Automation).await.unwrap();
+            let assistant = authorized(&lab, "rackhand-ai");
+            assert!(accepts(&lab, &hub_key).await);
+            let rotate = || lab.actions.run(StartJob::runbook("keys-rotate", "m1", "user:admin"));
+            let r = rotate().await.unwrap();
+            assert_eq!(
+                r.outcome,
+                JobOutcome::Succeeded,
+                "{r:?}\n{}",
+                String::from_utf8_lossy(&step(&lab.db, &r.job_id).stderr)
+            );
+            let first = load_for(&lab.vault, Identity::Automation, "m1").await.unwrap();
+            assert_ne!(first.public_key().to_openssh().unwrap(), hub_key.public_key().to_openssh().unwrap());
+            assert!(accepts(&lab, &first).await, "the new key works");
+            assert!(!accepts(&lab, &hub_key).await, "the old one is refused");
+            // the line: the new key only, from the hub's address only, no forwarding
+            let file = authorized(&lab, "rackhand");
+            let mine = first.public_key().to_openssh().unwrap();
+            let key_part = mine.split(' ').take(2).collect::<Vec<_>>().join(" ");
+            assert_eq!(file.lines().filter(|l| !l.starts_with('#')).count(), 1, "{file}");
+            assert!(file.contains(&key_part) && file.contains(&format!("from=\"{gateway}\"")), "{file}");
+            assert!(file.contains("no-agent-forwarding,no-X11-forwarding,no-port-forwarding"), "{file}");
+            assert_eq!(authorized(&lab, "rackhand-ai"), assistant, "the assistant's account isn't touched");
+            let said = String::from_utf8_lossy(&step(&lab.db, &r.job_id).stdout).to_string();
+            assert!(
+                said.contains("SHA256:") && !said.contains("PRIVATE KEY"),
+                "the log names the key, never gives it: {said}"
+            );
+            // the machine's runbooks go on working with it, and a second rotation does the same again
+            let refresh = lab.actions.run(StartJob::runbook("sudoers-refresh", "m1", "user:admin")).await.unwrap();
+            assert_eq!(refresh.outcome, JobOutcome::Succeeded, "{refresh:?}");
+            assert_eq!(rotate().await.unwrap().outcome, JobOutcome::Succeeded);
+            let second = load_for(&lab.vault, Identity::Automation, "m1").await.unwrap();
+            assert!(accepts(&lab, &second).await && !accepts(&lab, &first).await && !accepts(&lab, &hub_key).await);
+            assert_eq!(authorized(&lab, "rackhand").lines().filter(|l| !l.starts_with('#')).count(), 1);
+        }
+
+        /// A hub that isn't the one pinned on the machine can't change its keys, and the hub keeps the key it had.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn keys_rotate_refused_without_the_pinned_hubs_signature() {
+            let lab = lab("rotate-forged", "60s", Duration::from_secs(5)).await;
+            save(&lab).await;
+            let hub_key = load_or_create(&lab.vault, Identity::Automation).await.unwrap();
+            let before = authorized(&lab, "rackhand");
+            lab.signer.forged.store(true, std::sync::atomic::Ordering::SeqCst);
+            let r = lab.actions.run(StartJob::runbook("keys-rotate", "m1", "user:admin")).await.unwrap();
+            assert_eq!((r.outcome, r.reason.as_deref()), (JobOutcome::Failed, Some("exit_code 1")), "{r:?}");
+            assert!(String::from_utf8_lossy(&step(&lab.db, &r.job_id).stderr).contains("signature"));
+            assert_eq!(authorized(&lab, "rackhand"), before, "the machine's keys are as they were");
+            let kept = load_for(&lab.vault, Identity::Automation, "m1").await.unwrap();
+            assert_eq!(kept.public_key().to_openssh().unwrap(), hub_key.public_key().to_openssh().unwrap());
+            assert!(accepts(&lab, &kept).await);
+            // honest again, the same rotation goes through
+            lab.signer.forged.store(false, std::sync::atomic::Ordering::SeqCst);
+            let done = lab.actions.run(StartJob::runbook("keys-rotate", "m1", "user:admin")).await.unwrap();
+            assert_eq!(done.outcome, JobOutcome::Succeeded, "{done:?}");
+            assert!(!accepts(&lab, &hub_key).await);
+        }
+    }
+
+    /// A hub that dies in the middle of its jobs (T65, E44): a new one on the same database takes up the detached step
+    /// where the machine has it, and ends what it can't take up as interrupted, with an incident.
+    mod recovery {
+        use super::*;
+
+        /// The hub's tasks, all of them, stopped where they are (the in-process stand-in for `kill -9`).
+        fn kill(rt: tokio::runtime::Runtime) {
+            rt.shutdown_background();
+        }
+
+        fn restarted(lab: &Lab) -> Actions {
+            let executor = Executor::new(lab.vault.clone(), lab.host_keys.clone())
+                .with_poll(Duration::from_millis(500))
+                .with_hub(lab.signer.clone())
+                .with_reboot(lab.facts.clone(), Duration::from_secs(6));
+            Actions::new(lab.db.clone(), Audit::new(lab.db.writer()), Bus::new(), Arc::new(executor))
+        }
+
+        fn job_state(db: &Db, name: &str) -> (String, String, Option<String>) {
+            db.readers()
+                .with(|c| {
+                    c.query_row(
+                        "SELECT id, state, outcome FROM jobs WHERE name = ?1 ORDER BY started_at DESC LIMIT 1",
+                        [name],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                })
+                .unwrap()
+        }
+
+        async fn until_done(db: &Db, name: &str) -> (String, String, Option<String>) {
+            let deadline = std::time::Instant::now() + Duration::from_secs(60);
+            loop {
+                let job = job_state(db, name);
+                if job.1 != "running" {
+                    return job;
+                }
+                assert!(std::time::Instant::now() < deadline, "the job never ended: {job:?}");
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn hub_killed_mid_jobs_resumes_detached_and_resumable() {
+            let lab = lab("recover-detached", "60s", Duration::from_secs(5)).await;
+            let dying = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            let actions = lab.actions.clone();
+            dying.spawn(async move {
+                let _ = actions.run(start("slow", ("n", "8"))).await;
+            });
+            let deadline = std::time::Instant::now() + Duration::from_secs(60);
+            while !lab.machine.root("pgrep -f '[s]low-echo 8'").status.success() {
+                assert!(std::time::Instant::now() < deadline, "the detached step never started");
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            kill(dying);
+            let (job, state, _) = job_state(&lab.db, "slow");
+            assert_eq!(state, "running", "the dead hub recorded no end");
+            // the machine goes on with the step; a new hub takes it up where it is, and starts nothing again
+            let hub = restarted(&lab);
+            assert_eq!(hub.resume().await.unwrap(), 1);
+            let (_, state, reason) = until_done(&lab.db, "slow").await;
+            assert_eq!((state.as_str(), reason), ("succeeded", None));
+            let row = step(&lab.db, &job);
+            assert_eq!((row.state.as_str(), row.exit_code), ("succeeded", Some(0)));
+            let out = String::from_utf8_lossy(&row.stdout);
+            for i in 1..=8 {
+                assert!(out.contains(&format!("line {i}\n")), "every line of the step, from before and after: {out}");
+            }
+            let starts = lab.machine.root("ls /var/lib/rackhand-run/jobs 2>/dev/null | wc -l");
+            assert!(String::from_utf8_lossy(&starts.stdout).trim().parse::<u32>().unwrap() <= 1, "started once");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_job_in_a_plain_step_is_interrupted_with_an_incident() {
+            let lab = lab("recover-plain", "60s", Duration::from_secs(5)).await;
+            let dying = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            let actions = lab.actions.clone();
+            dying.spawn(async move {
+                let _ = actions.run(start("plain", ("mode", "sleep"))).await;
+            });
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            while !lab.machine.root("pgrep -f '[s]leep 600'").status.success() {
+                assert!(std::time::Instant::now() < deadline, "the step never started");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            kill(dying);
+            let hub = restarted(&lab);
+            assert_eq!(hub.resume().await.unwrap(), 0);
+            let (job, state, reason) = job_state(&lab.db, "plain");
+            assert_eq!((state.as_str(), reason.as_deref()), ("interrupted", Some("hub_restarted")));
+            assert_eq!(step(&lab.db, &job).state, "interrupted");
+            let kinds: Vec<(String, String)> = lab
+                .db
+                .readers()
+                .with(|c| {
+                    let mut s = c.prepare("SELECT kind, severity FROM events WHERE job_id = ?1")?;
+                    s.query_map([&job], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
+                })
+                .unwrap();
+            assert_eq!(kinds, [("job.interrupted".to_string(), "warning".to_string())]);
+        }
+    }
+
+    /// `send_guest` (T64): a hypervisor's wrapper gives a guest its enrollment: a VM's cloud-init user data, or the
+    /// installer run inside a container.
+    mod provision {
+        use super::*;
+
+        const VM: &str = "name = \"seed-vm\"\ndescription = \"d\"\ntargets = { kinds = [\"linux\"] }\nidentity = \"automation\"\n\
+            risk = \"normal\"\nautonomy = 1\n[[step]]\nid = \"seed\"\nkind = \"hub\"\ncall = \"send_guest kind=qemu vmid=300\"\ntimeout = \"1m\"\n";
+
+        async fn save(lab: &Lab) {
+            let (library, _) = Library::new(lab.db.clone(), Audit::new(lab.db.writer()));
+            library.save(Kind::Runbook, "seed-vm", VM, "admin", 1).await.unwrap();
+            let lxc = VM.replace("seed-vm", "seed-lxc").replace("kind=qemu vmid=300", "kind=lxc vmid=400");
+            library.save(Kind::Runbook, "seed-lxc", &lxc, "admin", 1).await.unwrap();
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn send_guest_writes_the_vms_user_data_and_answers_with_its_cicustom() {
+            let lab = lab("seed-vm", "60s", Duration::from_secs(5)).await;
+            save(&lab).await;
+            let r = lab.actions.run(StartJob::runbook("seed-vm", "m1", "user:admin")).await.unwrap();
+            let log = String::from_utf8_lossy(&step(&lab.db, &r.job_id).stderr).to_string();
+            assert_eq!(r.outcome, JobOutcome::Succeeded, "{r:?}\n{log}");
+            let out = String::from_utf8_lossy(&step(&lab.db, &r.job_id).stdout).to_string();
+            assert!(out.contains("user=local:snippets/rackhand-300.yml"), "{out}");
+            let file = "/var/lib/vz/snippets/rackhand-300.yml";
+            let data = String::from_utf8_lossy(&lab.machine.root(&format!("cat {file}")).stdout).to_string();
+            assert!(data.starts_with("#cloud-config\nruncmd:\n"), "{data}");
+            assert!(
+                data.contains("https://example.net/rackhand/install.sh")
+                    && data.contains("--token 01JDTOKEN0123456789ABCDEF"),
+                "{data}"
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&lab.machine.root(&format!("stat -c '%a %U' {file}")).stdout).trim(),
+                "644 root"
+            );
+            // the hub's request of a minute ago isn't one to take again: the second is newer and goes through
+            let again = lab.actions.run(StartJob::runbook("seed-vm", "m1", "user:admin")).await.unwrap();
+            assert_eq!(again.outcome, JobOutcome::Succeeded);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn send_guest_runs_the_installer_inside_the_container() {
+            let lab = lab("seed-lxc", "60s", Duration::from_secs(5)).await;
+            save(&lab).await;
+            // `pct` as a hypervisor has it, which only records what it was asked to run
+            sh(
+                &lab.machine,
+                "printf '#!/bin/sh\\ncase \"$1\" in status) echo \"status: running\";; exec) shift; echo \"$@\" > /tmp/pct-exec.log; echo enrolled as machine 01JD;; esac\\n' > /usr/sbin/pct && chmod 755 /usr/sbin/pct",
+            );
+            let r = lab.actions.run(StartJob::runbook("seed-lxc", "m1", "user:admin")).await.unwrap();
+            let log = String::from_utf8_lossy(&step(&lab.db, &r.job_id).stderr).to_string();
+            assert_eq!(r.outcome, JobOutcome::Succeeded, "{r:?}\n{log}");
+            let out = String::from_utf8_lossy(&step(&lab.db, &r.job_id).stdout).to_string();
+            assert!(out.contains("enrolled as machine"), "what the installer printed: {out}");
+            let asked = String::from_utf8_lossy(&lab.machine.root("cat /tmp/pct-exec.log").stdout).to_string();
+            assert!(asked.starts_with("400 -- sh -c "), "{asked}");
+            assert!(
+                asked.contains("https://example.net/rackhand/install.sh")
+                    && asked.contains("--ticket rackhand1:ab@192.0.2.10:7443"),
+                "{asked}"
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_request_the_pinned_hub_didnt_sign_does_nothing() {
+            let lab = lab("seed-forged", "60s", Duration::from_secs(5)).await;
+            save(&lab).await;
+            lab.signer.forged.store(true, std::sync::atomic::Ordering::SeqCst);
+            let r = lab.actions.run(StartJob::runbook("seed-vm", "m1", "user:admin")).await.unwrap();
+            assert_eq!(r.outcome, JobOutcome::Failed, "{r:?}");
+            assert!(String::from_utf8_lossy(&step(&lab.db, &r.job_id).stderr).contains("signature"));
+            assert!(!lab.machine.root("test -e /var/lib/vz/snippets/rackhand-300.yml").status.success());
+        }
+    }
+
+    /// `unenroll` (7.3.12): the machine removes what the hub put there, and only then does the hub revoke it.
+    mod unenroll {
+        use super::*;
+
+        async fn save(lab: &Lab) {
+            let (library, _) = Library::new(lab.db.clone(), Audit::new(lab.db.writer()));
+            let source = rackhand_runbook::builtin::runbook("unenroll").unwrap();
+            library.save(Kind::Runbook, "unenroll", source, "admin", 1).await.unwrap();
+        }
+
+        fn state(lab: &Lab) -> String {
+            lab.db
+                .readers()
+                .with(|c| c.query_row("SELECT state FROM machines WHERE id = 'm1'", [], |r| r.get(0)))
+                .unwrap()
+        }
+
+        fn present(lab: &Lab, test: &str) -> bool {
+            lab.machine.root(test).status.success()
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn unenroll_removes_users_keys_sudoers_list_and_revokes() {
+            let lab = lab("unenroll", "60s", Duration::from_secs(5)).await;
+            save(&lab).await;
+            sh(
+                &lab.machine,
+                "touch /etc/rackhand-keepme && mkdir -p /home/owner && useradd -m owner 2>/dev/null; true",
+            );
+            for here in [
+                "id rackhand",
+                "id rackhand-ai",
+                "test -e /etc/sudoers.d/rackhand",
+                "test -e /etc/rackhand/commands.json",
+                "test -e /home/rackhand/.ssh/authorized_keys",
+                "test -e /usr/local/lib/rackhand/run",
+            ] {
+                assert!(present(&lab, here), "{here}");
+            }
+            let r = lab.actions.run(StartJob::runbook("unenroll", "m1", "user:admin")).await.unwrap();
+            assert_eq!(
+                r.outcome,
+                JobOutcome::Succeeded,
+                "{r:?}\n{}",
+                String::from_utf8_lossy(&step(&lab.db, &r.job_id).stderr)
+            );
+            for gone in [
+                "id rackhand",
+                "id rackhand-ai",
+                "test -e /etc/sudoers.d/rackhand",
+                "test -e /etc/rackhand",
+                "test -e /etc/rackhand-probe",
+                "test -e /home/rackhand",
+                "test -e /usr/local/lib/rackhand",
+            ] {
+                assert!(!present(&lab, gone), "{gone}");
+            }
+            assert!(present(&lab, "test -e /etc/rackhand-keepme"), "what isn't Rackhand's stays");
+            assert!(present(&lab, "id owner"), "and so do other users");
+            assert!(present(&lab, "systemctl is-active ssh"), "the machine itself goes on");
+            assert_eq!(*lab.signer.revoked.lock().unwrap(), ["m1"]);
+            assert_eq!(state(&lab), "revoked");
+            let revoke = String::from_utf8_lossy(&step_of(&lab.db, &r.job_id, "revoke").stdout).to_string();
+            assert!(revoke.contains("refuses the hub's key"), "{revoke}");
+        }
+
+        /// A machine that doesn't uninstall is not revoked: the hub only revokes what it has seen stop taking its key.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn unenroll_that_fails_on_the_machine_revokes_nothing() {
+            let lab = lab("unenroll-failed", "60s", Duration::from_secs(5)).await;
+            save(&lab).await;
+            sh(&lab.machine, "rm /usr/local/lib/rackhand/rackhand-probe");
+            let r = lab.actions.run(StartJob::runbook("unenroll", "m1", "user:admin")).await.unwrap();
+            assert_eq!(r.outcome, JobOutcome::Failed, "{r:?}");
+            assert!(lab.signer.revoked.lock().unwrap().is_empty());
+            assert_eq!(state(&lab), "enrolled");
+            for here in ["id rackhand", "test -e /etc/sudoers.d/rackhand", "test -e /etc/rackhand/commands.json"] {
+                assert!(present(&lab, here), "{here}");
+            }
+        }
+    }
+
+    /// The machine the hub runs on (7.5.3 step 8).
+    mod hubhost {
+        use std::sync::atomic::Ordering::SeqCst;
+        use std::time::Instant;
+
+        use rackhand_hub::checks::steps::Verify;
+        use rackhand_hub::executor::ByKind;
+        use rackhand_hub::ingest::{DiskSpace, Ingest};
+        use rackhand_runbook::runbook::StepKind;
+
+        use super::*;
+
+        const HOST: &str = r#"name = "host"
+description = "Reboot the hub's host"
+identity = "automation"
+risk = "normal"
+autonomy = 2
+[[step]]
+id = "boot"
+kind = "reboot_if_required"
+timeout = "5m"
+[[step]]
+id = "report"
+kind = "wait_report"
+[[step]]
+id = "check"
+kind = "verify"
+checks = ["bound_checks"]
+timeout = "30s"
+"#;
+
+        #[derive(Debug)]
+        struct Roomy;
+
+        impl DiskSpace for Roomy {
+            fn free_fraction(&self) -> f64 {
+                0.5
+            }
+        }
+
+        fn docker(args: &[&str]) -> String {
+            let out = std::process::Command::new("docker").args(args).output().unwrap();
+            assert!(out.status.success(), "docker {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+
+        /// E14: the reboot is the machine's own timer, 60 s away; the hub goes down, the machine restarts, and the hub
+        /// that comes back finishes the job at its verify step.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn reboot_scheduled_60s_job_resumes_at_verify() {
+            let lab = lab("hubhost", "60s", Duration::from_secs(5)).await;
+            let (library, _) = Library::new(lab.db.clone(), Audit::new(lab.db.writer()));
+            library.save(Kind::Runbook, "host", HOST, "admin", 1).await.unwrap();
+            sh(&lab.machine, "touch /run/reboot-required");
+            lab.facts.auto.store(true, SeqCst);
+            lab.facts.hub.store(true, SeqCst);
+            let scheduled = Instant::now();
+            let run = tokio::spawn({
+                let a = lab.actions.clone();
+                async move { a.run(StartJob::runbook("host", "m1", "test")).await }
+            });
+            let marked = || -> Option<(String, String)> {
+                lab.db
+                    .readers()
+                    .with(|c| {
+                        c.query_row("SELECT id, resumable_step FROM jobs WHERE resumable_step IS NOT NULL", [], |r| {
+                            Ok((r.get(0)?, r.get(1)?))
+                        })
+                    })
+                    .ok()
+            };
+            while marked().is_none() {
+                assert!(scheduled.elapsed() < Duration::from_secs(45), "the job is never marked");
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            let (job, at) = marked().unwrap();
+            assert_eq!(at, "check");
+            let timers =
+                String::from_utf8_lossy(&lab.machine.root("systemctl list-timers --all --no-pager").stdout).to_string();
+            assert!(timers.contains("run-"), "the machine's own timer: {timers}");
+
+            // the hub goes down before its machine does
+            run.abort();
+            let name = lab.machine.name.clone();
+            while docker(&["inspect", "-f", "{{.State.Running}}", &name]) == "true" {
+                assert!(scheduled.elapsed() < Duration::from_secs(150), "the machine never went down");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            let down = scheduled.elapsed();
+            assert!(down >= Duration::from_secs(55), "not before the minute: {down:?}");
+            docker(&["start", &name]);
+            let (ip, _) = lab.machine.ip_and_gateway();
+            let set = Row::from([("address", Value::Text(ip.clone()))]);
+            let update = rackhand_store::RowUpdate { table: "machines", key: ("id", Value::Text("m1".into())), set };
+            let change = rackhand_store::RegistryChange { updates: vec![update], ..Default::default() };
+            lab.db.writer().send(WriteCmd::RegistryChange(change)).await.unwrap();
+            wait_listening(&format!("{ip}:22")).await;
+
+            // the hub that comes back
+            let bus = Bus::new();
+            let ingest = Ingest::new(lab.db.clone(), bus.clone(), Arc::new(Roomy));
+            let other = ByKind::default().with(StepKind::Verify, Arc::new(Verify::new(lab.db.clone(), ingest)));
+            let executor = Executor::new(lab.vault.clone(), lab.host_keys.clone())
+                .with_other(Arc::new(other))
+                .with_reboot(lab.facts.clone(), Duration::from_secs(30));
+            let actions = Actions::new(lab.db.clone(), Audit::new(lab.db.writer()), bus, Arc::new(executor));
+            assert_eq!(actions.resume().await.unwrap(), 1);
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            assert_eq!(job_state(&lab.db, &job), "running", "not before the machine is back");
+            lab.facts.back.store(true, SeqCst);
+            let resumed = Instant::now();
+            while job_state(&lab.db, &job) == "running" {
+                assert!(resumed.elapsed() < Duration::from_secs(60), "the resumed job never ends");
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            assert_eq!(job_state(&lab.db, &job), "succeeded");
+            let steps: Vec<(String, String)> = lab
+                .db
+                .readers()
+                .with(|c| {
+                    let mut s =
+                        c.prepare("SELECT step_id, state FROM job_steps WHERE job_id = ?1 ORDER BY started_at")?;
+                    s.query_map([&job], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
+                })
+                .unwrap();
+            let ok = |s: &str| (s.to_string(), "succeeded".to_string());
+            assert_eq!(steps, [ok("boot"), ok("check")]);
+        }
+    }
+
     /// A notifier that records messages, or fails every send.
     #[derive(Debug, Default)]
     struct Recorder {
@@ -526,6 +1362,358 @@ id = "say"
 kind = "notify"
 message = "Backup of web finished"
 "#;
+
+    /// AC46, D60, D80: a runbook runs on a machine in remote mode through the tunnel to its probe, never directly.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn runbook_on_remote_mode_machine_through_the_probes_tunnel() {
+        const WHO: &str = r#"name = "who"
+description = "Who the hub is on the machine"
+identity = "automation"
+risk = "low"
+autonomy = 1
+[[step]]
+id = "id"
+kind = "ssh"
+cmd = ["id", "-un"]
+timeout = "20s"
+"#;
+        let lab = lab_with("remote", "60s", Duration::from_secs(5), true).await;
+        let audit = Audit::new(lab.db.writer());
+        let (library, _) = Library::new(lab.db.clone(), audit);
+        library.save(Kind::Runbook, "who", WHO, "admin", 1).await.unwrap();
+        let job = StartJob { params: BTreeMap::new(), machine_id: lab.id.clone(), ..start("who", ("unused", "")) };
+        let result = lab.actions.run(job).await.unwrap();
+        assert_eq!((result.outcome, result.reason.as_deref()), (JobOutcome::Succeeded, None), "{result:?}");
+        let s = step(&lab.db, &result.job_id);
+        assert_eq!(String::from_utf8_lossy(&s.stdout), "rackhand\n", "ran as the automation account on the machine");
+        assert_eq!(s.command.as_deref(), Some("id -un"));
+        // the machine's own address answers nothing, so the only way in was the tunnel to its probe
+        let direct = std::net::TcpStream::connect_timeout(&"192.0.2.1:22".parse().unwrap(), Duration::from_millis(500));
+        assert!(direct.is_err());
+    }
+
+    /// Transfers to a machine (7.3.11, FR-19, E30, AC29) over the hub's xfer server and real SSH.
+    mod transfers {
+        use super::*;
+        use rackhand_hub::peers::xfer::Xfer;
+        use rackhand_hub::peers::xfer_machine::MachineOpener;
+        use rackhand_net::xfer::{CHUNK, XferError, send_file, send_stream};
+        use rackhand_proto::alpn;
+
+        const INCOMING: &str = "/var/lib/rackhand-run/incoming";
+
+        struct Send {
+            lab: Lab,
+            client: iroh::Endpoint,
+            addr: iroh::EndpointAddr,
+            dir: std::path::PathBuf,
+            _relay: Box<dyn std::any::Any + std::marker::Send>,
+        }
+
+        /// A machine in remote mode (so a transfer also goes through its probe) and a responder's device that may send.
+        async fn env(name: &str, role: &str) -> Send {
+            let lab = lab_with(name, "60s", Duration::from_secs(5), true).await;
+            let (relay, relay_url) = rackhand_net::testing::local_relay().await;
+            let server = rackhand_net::testing::endpoint(&relay_url, &[alpn::XFER]).await;
+            let client = rackhand_net::testing::endpoint(&relay_url, &[]).await;
+            let t = |s: &str| Value::Text(s.into());
+            let who = if role == "peer" {
+                // a linked peer: its endpoint is the peer's, and the machine's policy decides what it may ask
+                vec![
+                    RowWrite::insert(
+                        "peers",
+                        Row::from([
+                            ("id", t("p1")),
+                            ("site", t("beta")),
+                            ("endpoint_id", t(&client.id().to_string())),
+                            ("added_at", Value::Integer(1)),
+                        ]),
+                    ),
+                    RowWrite::insert(
+                        "policies",
+                        Row::from([("id", t("p-auto")), ("name", t("auto")), ("peer_requests", t("auto"))]),
+                    ),
+                ]
+            } else {
+                vec![
+                    RowWrite::insert(
+                        "users",
+                        Row::from([
+                            ("id", t("u1")),
+                            ("name", t("riley")),
+                            ("role", t(role)),
+                            ("created_at", Value::Integer(1)),
+                        ]),
+                    ),
+                    RowWrite::insert(
+                        "devices",
+                        Row::from([
+                            ("id", t("d1")),
+                            ("user_id", t("u1")),
+                            ("name", t("laptop")),
+                            ("endpoint_id", t(&client.id().to_string())),
+                            ("created_at", Value::Integer(1)),
+                        ]),
+                    ),
+                ]
+            };
+            lab.db.writer().send(WriteCmd::Batch(who)).await.unwrap();
+            let registry = Arc::new(rackhand_net::registry::MemoryRegistry::default());
+            registry.allow(alpn::XFER, client.id());
+            let audit = Audit::new(lab.db.writer());
+            let opener = MachineOpener::new(lab.db.clone(), audit, lab.executor.clone());
+            let xfer = Xfer::new(Arc::new(opener));
+            let router = rackhand_net::router::Router::new(server.clone(), registry).route(alpn::XFER, xfer.handler());
+            tokio::spawn(router.serve());
+            let mut addr = server.addr();
+            addr.addrs.insert(iroh::TransportAddr::Relay(relay_url));
+            let dir = std::env::temp_dir().join(format!("rackhand-it-xfer-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Send { lab, client, addr, dir, _relay: Box::new(relay) }
+        }
+
+        impl Send {
+            fn machine_id(&self) -> Vec<u8> {
+                REMOTE_ID.parse::<ulid::Ulid>().unwrap().to_bytes().to_vec()
+            }
+
+            fn file(&self, name: &str, len: usize) -> (std::path::PathBuf, Vec<u8>) {
+                let data: Vec<u8> = (0..len).map(|i| ((i * 31 + i / 4096) % 251) as u8).collect();
+                let path = self.dir.join(name);
+                std::fs::write(&path, &data).unwrap();
+                (path, data)
+            }
+
+            async fn connect(&self) -> iroh::endpoint::Connection {
+                self.client.connect(self.addr.clone(), alpn::XFER).await.unwrap()
+            }
+
+            fn sha_on_machine(&self, path: &str) -> String {
+                let out = self.lab.machine.root(&format!("sha256sum {path} | cut -d' ' -f1"));
+                String::from_utf8_lossy(&out.stdout).trim().to_string()
+            }
+
+            fn size_on_machine(&self, path: &str) -> u64 {
+                let out = self.lab.machine.root(&format!("stat -c %s {path} 2>/dev/null || echo 0"));
+                String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0)
+            }
+
+            /// Waits until the machine has no `receive` running, so its partial file has stopped changing.
+            async fn settled(&self) {
+                for _ in 0..60 {
+                    if !self.lab.machine.root("pgrep -f '[r]un receive'").status.success() {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                panic!("receive never ended");
+            }
+        }
+
+        fn sha256(data: &[u8]) -> String {
+            use sha2::{Digest, Sha256};
+            Sha256::digest(data).iter().map(|b| format!("{b:02x}")).collect()
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_file_arrives_on_the_machine_with_its_hash_and_mode() {
+            let env = env("xfer-file", "responder").await;
+            let (path, data) = env.file("a.bin", 3 * CHUNK + 4321);
+            let conn = env.connect().await;
+            let dest = format!("{INCOMING}/a.bin");
+            send_file(&conn, &env.machine_id(), &dest, &path, &mut |_, _| {}).await.unwrap();
+            assert_eq!(env.sha_on_machine(&dest), sha256(&data));
+            let mode = env.lab.machine.root(&format!("stat -c '%a %U' {dest}"));
+            assert_eq!(String::from_utf8_lossy(&mode.stdout).trim(), "640 root", "root's, mode 0640 (7.3.11)");
+            assert_eq!(env.size_on_machine(&format!("{dest}.rackhand-partial")), 0, "no partial file is left behind");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn send_interrupted_midway_resumes_from_the_partial_file() {
+            let env = env("xfer-resume", "responder").await;
+            let (path, data) = env.file("b.bin", 5 * CHUNK + 99);
+            let dest = format!("{INCOMING}/b.bin");
+            let conn = env.connect().await;
+            let result = send_file(&conn, &env.machine_id(), &dest, &path, &mut |done, _| {
+                if done == 2 {
+                    conn.close(1u32.into(), b"cut");
+                }
+            })
+            .await;
+            assert!(matches!(result, Err(XferError::Broken(_))), "{result:?}");
+            env.settled().await;
+            let partial = env.size_on_machine(&format!("{dest}.rackhand-partial"));
+            assert!(partial >= 2 * CHUNK as u64, "the machine kept what it was given: {partial}");
+            // the next attempt asks the machine how far it got and sends only the rest
+            let conn = env.connect().await;
+            let mut first = None;
+            send_file(&conn, &env.machine_id(), &dest, &path, &mut |done, _| {
+                first.get_or_insert(done);
+            })
+            .await
+            .unwrap();
+            assert_eq!(first, Some(partial / CHUNK as u64), "it went on from the last whole chunk");
+            assert_eq!(env.sha_on_machine(&dest), sha256(&data));
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_partial_file_ending_inside_a_chunk_is_continued_not_repeated() {
+            let env = env("xfer-torn", "responder").await;
+            let (path, data) = env.file("c.bin", 3 * CHUNK + 5);
+            let dest = format!("{INCOMING}/c.bin");
+            // the machine has the first chunk and half of the next (a write cut in the middle)
+            let prefix = env.dir.join("prefix");
+            std::fs::write(&prefix, &data[..CHUNK + CHUNK / 2]).unwrap();
+            let sh = &env.lab.machine;
+            sh.root(&format!("mkdir -p {INCOMING} && chmod 755 /var/lib/rackhand-run {INCOMING}"));
+            sh.copy_in(&prefix, &format!("{dest}.rackhand-partial"));
+            let conn = env.connect().await;
+            let mut first = None;
+            send_file(&conn, &env.machine_id(), &dest, &path, &mut |done, _| {
+                first.get_or_insert(done);
+            })
+            .await
+            .unwrap();
+            assert_eq!(first, Some(1), "it goes on in the second chunk");
+            assert_eq!(env.sha_on_machine(&dest), sha256(&data), "and the half chunk was neither lost nor sent twice");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_partial_file_of_other_content_starts_over_on_the_next_try() {
+            let env = env("xfer-stale", "responder").await;
+            let (path, data) = env.file("d.bin", 2 * CHUNK + 7);
+            let dest = format!("{INCOMING}/d.bin");
+            let stale = env.dir.join("stale");
+            std::fs::write(&stale, vec![0xAAu8; CHUNK + 10]).unwrap();
+            env.lab.machine.root(&format!("mkdir -p {INCOMING} && chmod 755 /var/lib/rackhand-run {INCOMING}"));
+            env.lab.machine.copy_in(&stale, &format!("{dest}.rackhand-partial"));
+            let conn = env.connect().await;
+            let first = send_file(&conn, &env.machine_id(), &dest, &path, &mut |_, _| {}).await;
+            assert!(matches!(&first, Err(XferError::Refused(why)) if why.contains("starts over")), "{first:?}");
+            send_file(&conn, &env.machine_id(), &dest, &path, &mut |_, _| {}).await.unwrap();
+            assert_eq!(env.sha_on_machine(&dest), sha256(&data));
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn refusals_a_viewer_a_path_outside_the_roots_and_a_stream_to_anything_else() {
+            let viewer = env("xfer-viewer", "viewer").await;
+            let (path, _) = viewer.file("e.bin", 10);
+            let conn = viewer.connect().await;
+            let e = send_file(&conn, &viewer.machine_id(), &format!("{INCOMING}/e.bin"), &path, &mut |_, _| {}).await;
+            assert!(matches!(&e, Err(XferError::Refused(why)) if why.contains("responder")), "{e:?}");
+            let env = env("xfer-refuse", "responder").await;
+            let (path, _) = env.file("f.bin", 10);
+            let conn = env.connect().await;
+            for dest in ["/etc/cron.d/evil", "/var/lib/rackhand-run/incoming/../../../etc/x", "relative"] {
+                let e = send_file(&conn, &env.machine_id(), dest, &path, &mut |_, _| {}).await;
+                assert!(matches!(&e, Err(XferError::Refused(why)) if why.contains("transfer roots")), "{dest}: {e:?}");
+            }
+            let mut input = tokio::io::empty();
+            let e = send_stream(&conn, &env.machine_id(), "sh -c id", &mut input).await;
+            assert!(matches!(&e, Err(XferError::Refused(why)) if why.contains("zfs-recv")), "{e:?}");
+            assert!(
+                env.lab.machine.root("ls /etc/cron.d/evil").status.code() != Some(0),
+                "nothing was written outside"
+            );
+        }
+
+        const FAKE_ZFS: &str = "printf '#!/bin/sh\\nif [ \"$1\" = send ]; then head -c 2500000 /dev/zero | tr '\"'\"'\\\\000'\"'\"' x; fi\\nif [ \"$1\" = recv ]; then echo \"$@\" > /tmp/zfs-args; cat > /tmp/zfs-recv.out; fi\\n' > /usr/bin/zfs && chmod 755 /usr/bin/zfs";
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn zfs_replicate_runbook_pipes_between_two_machines_of_this_hub() {
+            let env = env("xfer-replicate", "responder").await;
+            env.lab.machine.root(FAKE_ZFS);
+            let audit = Audit::new(env.lab.db.writer());
+            let (library, _) = Library::new(env.lab.db.clone(), audit);
+            library
+                .save(
+                    Kind::Runbook,
+                    "zfs-replicate",
+                    rackhand_runbook::builtin::runbook("zfs-replicate").unwrap(),
+                    "admin",
+                    1,
+                )
+                .await
+                .unwrap();
+            let params = BTreeMap::from([
+                ("snapshot".to_string(), "tank/data@weekly-1".to_string()),
+                ("site".to_string(), "home".to_string()),
+                ("machine".to_string(), "target".to_string()),
+                ("target_dataset".to_string(), "tank/replica".to_string()),
+            ]);
+            let job = StartJob { params, machine_id: env.lab.id.clone(), ..start("zfs-replicate", ("unused", "")) };
+            let result = env.lab.actions.run(job).await.unwrap();
+            assert_eq!((result.outcome, result.reason.as_deref()), (JobOutcome::Succeeded, None), "{result:?}");
+            let sent = env.lab.machine.root("head -c 2500000 /dev/zero | tr '\\000' x | sha256sum | cut -d' ' -f1");
+            assert_eq!(
+                env.sha_on_machine("/tmp/zfs-recv.out"),
+                String::from_utf8_lossy(&sent.stdout).trim(),
+                "what `zfs-send` wrote is what `zfs-recv` was given"
+            );
+            let args = env.lab.machine.root("cat /tmp/zfs-args");
+            assert_eq!(String::from_utf8_lossy(&args.stdout).trim(), "recv -u tank/replica");
+            // a destination that isn't a receiving command is refused before anything is sent
+            let params = BTreeMap::from([
+                ("snapshot".to_string(), "tank/data@weekly-1".to_string()),
+                ("site".to_string(), "home".to_string()),
+                ("machine".to_string(), "nowhere".to_string()),
+                ("target_dataset".to_string(), "tank/replica".to_string()),
+            ]);
+            let job = StartJob { params, machine_id: env.lab.id.clone(), ..start("zfs-replicate", ("unused", "")) };
+            let result = env.lab.actions.run(job).await.unwrap();
+            assert_eq!(
+                (result.outcome, result.reason.as_deref()),
+                (JobOutcome::Failed, Some("no_such_machine: nowhere"))
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_peers_stream_is_taken_only_where_the_policy_takes_peer_requests() {
+            let env = env("xfer-peer", "peer").await;
+            env.lab.machine.root(FAKE_ZFS);
+            let conn = env.connect().await;
+            let mut input = std::io::Cursor::new(vec![b'z'; 1000]);
+            // the machine's policy asks for an approval of what a peer wants: nothing is run
+            let e = send_stream(&conn, &env.machine_id(), "zfs-recv tank/replica", &mut input).await;
+            assert!(matches!(&e, Err(XferError::Refused(why)) if why.contains("needs_approval")), "{e:?}");
+            assert_eq!(env.size_on_machine("/tmp/zfs-recv.out"), 0);
+            // a policy that takes them without one: the stream arrives
+            let set = Row::from([("policy_id", Value::Text("p-auto".into()))]);
+            let update =
+                rackhand_store::RowUpdate { table: "machines", key: ("id", Value::Text(env.lab.id.clone())), set };
+            let change = rackhand_store::RegistryChange { updates: vec![update], ..Default::default() };
+            env.lab.db.writer().send(WriteCmd::RegistryChange(change)).await.unwrap();
+            let mut input = std::io::Cursor::new(vec![b'z'; 1000]);
+            send_stream(&conn, &env.machine_id(), "zfs-recv tank/replica", &mut input).await.unwrap();
+            assert_eq!(env.size_on_machine("/tmp/zfs-recv.out"), 1000);
+            // and a peer sends no file to a machine, whatever the policy
+            let (path, _) = env.file("g.bin", 10);
+            let e = send_file(&conn, &env.machine_id(), &format!("{INCOMING}/g.bin"), &path, &mut |_, _| {}).await;
+            assert!(matches!(&e, Err(XferError::Refused(why)) if why.contains("backup to this hub")), "{e:?}");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn zfs_style_stream_pipes_through_the_wrapper() {
+            let env = env("xfer-zfs", "responder").await;
+            // a stand-in `zfs`: `recv` writes its input where the test can read it
+            env.lab.machine.root(
+                "printf '#!/bin/sh\\nif [ \"$1\" = recv ]; then echo \"$@\" > /tmp/zfs-args; cat > /tmp/zfs-recv.out; fi\\n' > /usr/bin/zfs && chmod 755 /usr/bin/zfs",
+            );
+            let data: Vec<u8> = (0..(2 * CHUNK + 13)).map(|i| ((i * 7) % 253) as u8).collect();
+            let conn = env.connect().await;
+            let mut input = std::io::Cursor::new(data.clone());
+            let sent = send_stream(&conn, &env.machine_id(), "zfs-recv tank/backup", &mut input).await.unwrap();
+            assert_eq!(sent, data.len() as u64);
+            assert_eq!(
+                env.sha_on_machine("/tmp/zfs-recv.out"),
+                sha256(&data),
+                "the receiving command was given every byte"
+            );
+            let args = env.lab.machine.root("cat /tmp/zfs-args");
+            assert_eq!(String::from_utf8_lossy(&args.stdout).trim(), "recv -u tank/backup");
+        }
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn notify_step_sends_message() {

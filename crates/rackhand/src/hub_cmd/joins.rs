@@ -44,14 +44,282 @@ impl std::fmt::Debug for HubSetup {
     }
 }
 
+/// The runbooks enabled now: every runbook in the Library that parses.
+pub fn enabled_runbooks(db: &Db) -> Vec<rackhand_runbook::runbook::Runbook> {
+    Library::all_current(db)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(kind, _, _)| *kind == Kind::Runbook)
+        .filter_map(|(_, _, text)| rackhand_runbook::runbook::Runbook::parse(&text).ok())
+        .collect()
+}
+
+/// How long a command list sent by `sudoers-refresh` stays valid: it is installed at once.
+const REFRESH_COMMANDS_TTL_MS: i64 = 600_000;
+
+/// What the hub signs for `sudoers-refresh` and `keys-rotate`: the command list of the enabled runbooks and key updates,
+/// with the node key.
+pub struct CommandSigner {
+    pub db: Arc<Db>,
+    pub signing: ed25519_dalek::SigningKey,
+    /// The endpoint's id and addresses, set when it is bound.
+    pub addrs: Arc<std::sync::OnceLock<(String, HubAddrs)>>,
+    /// What `unenroll` revokes machines through.
+    pub registry: Arc<rackhand_hub::registry::Registry>,
+    pub provisioning: Provisioning,
+}
+
+/// What `provision-vm` and `provision-lxc` need beyond the registry (T64).
+#[derive(Default)]
+pub struct Provisioning {
+    /// Reads a hypervisor's node, for the binding.
+    pub hosts: Option<Arc<dyn rackhand_hub::actions::patching::hypervisor::Hosts>>,
+    /// The hypervisors' API, for a quarantined guest's firewall and its forensic snapshot (7.5.6).
+    pub hypervisor: Option<Arc<rackhand_hub::checks::steps::Hypervisor>>,
+    /// The release the hub holds; a guest takes its installer from the hub then, not from GitHub.
+    pub release_dir: Option<std::path::PathBuf>,
+    /// The dashboard's port, for the installer's address (8443 when not set).
+    pub web_port: u16,
+    /// The token of the machine each job made, until the guest has its enrollment.
+    pub made: std::sync::Mutex<std::collections::HashMap<String, String>>,
+}
+
+impl std::fmt::Debug for Provisioning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Provisioning").finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for CommandSigner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CommandSigner").finish_non_exhaustive()
+    }
+}
+
+impl rackhand_hub::executor::HubSide for CommandSigner {
+    fn provision_machine<'a>(
+        &'a self,
+        job: &'a str,
+        host: &'a str,
+        name: &'a str,
+    ) -> rackhand_hub::actions::runner::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let now = rackhand_store::ids::now_ms();
+            let (_, token) =
+                rackhand_hub::actions::provision::pending_guest(&self.registry, host, name, &format!("job:{job}"), now)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            self.provisioning.made.lock().unwrap_or_else(|e| e.into_inner()).insert(job.into(), token.as_str().into());
+            Ok(())
+        })
+    }
+
+    /// The installer's line for the guest: this hub's ticket and the machine's token, from the release (or, when the hub
+    /// holds one, from the hub itself, whose own certificate the download then trusts).
+    fn guest_enrollment(&self, job: &str) -> Option<rackhand_hub::executor::GuestEnrollment> {
+        let token = self.provisioning.made.lock().unwrap_or_else(|e| e.into_inner()).get(job)?.clone();
+        let (id, addrs) = self.addrs.get()?;
+        let addrs = addrs();
+        let ticket = format!("rackhand1:{id}@{}", addrs.join(","));
+        let mut args = vec!["--ticket".to_string(), ticket, "--token".into(), token];
+        let held = self.provisioning.release_dir.as_ref().is_some_and(|d| d.join("install.sh").is_file());
+        let ip = addrs.first().and_then(|a| a.parse::<std::net::SocketAddr>().ok()).map(|a| a.ip());
+        if let (true, Some(ip)) = (held, ip) {
+            let port = if self.provisioning.web_port == 0 { 8443 } else { self.provisioning.web_port };
+            let hub = std::net::SocketAddr::new(ip, port);
+            args.extend(["--release-url".into(), format!("https://{hub}/release"), "--self-signed".into()]);
+            return Some(rackhand_hub::executor::GuestEnrollment {
+                script_url: format!("https://{hub}/install.sh"),
+                args,
+                self_signed: true,
+            });
+        }
+        let url = format!(
+            "https://github.com/StrangeMatterStudio/Rackhand/releases/download/v{}/install.sh",
+            env!("CARGO_PKG_VERSION")
+        );
+        Some(rackhand_hub::executor::GuestEnrollment { script_url: url, args, self_signed: false })
+    }
+
+    fn signed_guest(&self, now_ms: i64, body: &[u8]) -> Vec<u8> {
+        use prost::Message;
+        rackhand_proto::signed::sign(
+            &self.signing,
+            "guest",
+            now_ms.max(0) as u64,
+            now_ms,
+            now_ms + REFRESH_COMMANDS_TTL_MS,
+            body,
+        )
+        .encode_to_vec()
+    }
+
+    fn bind_guest<'a>(
+        &'a self,
+        job: &'a str,
+        host: &'a str,
+        name: &'a str,
+        kind: &'a str,
+        vmid: u64,
+    ) -> rackhand_hub::actions::runner::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let hosts = self.provisioning.hosts.as_ref().ok_or("no_hypervisor_api")?;
+            let node = hosts.view(host).await?.node;
+            let (machine, _) = rackhand_hub::actions::provision::machine_named(&self.db, host, name)
+                .ok_or_else(|| "no_such_machine".to_string())?;
+            rackhand_hub::actions::provision::bind_guest(
+                &self.db,
+                host,
+                &node,
+                &machine,
+                kind,
+                vmid,
+                &format!("job:{job}"),
+            )
+            .await
+            .map_err(|e| e.to_string())
+        })
+    }
+
+    fn guest_host(&self, machine: &str) -> Option<rackhand_hub::executor::GuestHost> {
+        let ip = |a: &str| {
+            a.parse::<std::net::SocketAddr>()
+                .map(|s| s.ip().to_string())
+                .or_else(|_| a.parse::<std::net::IpAddr>().map(|i| i.to_string()))
+                .ok()
+        };
+        let (reference, address): (Option<String>, Option<String>) = self
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row("SELECT proxmox_ref, address FROM machines WHERE id = ?1", [machine], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+            })
+            .ok()?;
+        let reference: serde_json::Value = serde_json::from_str(&reference?).ok()?;
+        let host_id = reference["cluster"].as_str()?.to_string();
+        let (host_address, access): (Option<String>, String) = self
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row("SELECT address, access FROM machines WHERE id = ?1", [&host_id], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+            })
+            .ok()?;
+        Some(rackhand_hub::executor::GuestHost {
+            host_id,
+            host_address: host_address.as_deref().and_then(ip),
+            managed: access == "managed",
+            addresses: address.as_deref().and_then(ip).into_iter().collect(),
+        })
+    }
+
+    fn quarantine_addrs(&self) -> Vec<String> {
+        self.addrs.get().map(|(_, addrs)| addrs()).unwrap_or_default()
+    }
+
+    fn guest_firewall<'a>(
+        &'a self,
+        machine: &'a str,
+        op: &'a str,
+        args: serde_json::Value,
+        timeout: std::time::Duration,
+    ) -> rackhand_hub::actions::runner::BoxFuture<'a, Result<serde_json::Value, String>> {
+        Box::pin(async move {
+            let h = self.provisioning.hypervisor.as_ref().ok_or("no_hypervisor_api")?;
+            h.guest_firewall(machine, op, args, timeout).await
+        })
+    }
+
+    fn guest_snapshot<'a>(
+        &'a self,
+        machine: &'a str,
+        name: &'a str,
+        timeout: std::time::Duration,
+    ) -> rackhand_hub::actions::runner::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            use rackhand_hub::actions::hypervisor_guard::GuestAction;
+            let h = self.provisioning.hypervisor.as_ref().ok_or("no_hypervisor_api")?;
+            h.guest_call(machine, GuestAction::Snapshot, serde_json::json!({ "name": name }), timeout).await.map(|_| ())
+        })
+    }
+
+    /// What the machine's quarantine recorded when it isolated it.
+    fn quarantine_record(&self, machine: &str) -> Option<serde_json::Value> {
+        rackhand_hub::policy::quarantine::record(&self.db, machine)
+    }
+
+    fn machine_enrolled(&self, host: &str, name: &str) -> bool {
+        rackhand_hub::actions::provision::is_enrolled(&self.db, host, name)
+    }
+
+    fn signed_keys(&self, now_ms: i64, body: &[u8]) -> Vec<u8> {
+        use prost::Message;
+        rackhand_proto::signed::sign(
+            &self.signing,
+            "keys",
+            now_ms.max(0) as u64,
+            now_ms,
+            now_ms + REFRESH_COMMANDS_TTL_MS,
+            body,
+        )
+        .encode_to_vec()
+    }
+
+    fn managed(&self, machine: &str) -> bool {
+        self.db
+            .readers()
+            .with(|c| c.query_row("SELECT access FROM machines WHERE id = ?1", [machine], |r| r.get::<_, String>(0)))
+            .is_ok_and(|access| access == "managed")
+    }
+
+    fn revoke<'a>(&'a self, machine: &'a str) -> rackhand_hub::actions::runner::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            match self.registry.revoke_machine(machine).await {
+                Ok(true) => Ok(()),
+                Ok(false) => Err("no such machine".into()),
+                Err(e) => Err(e.to_string()),
+            }
+        })
+    }
+
+    /// As a join gives them: the hub's addresses (the machine's own loopback for a remote-mode probe, D60).
+    fn ssh_from(&self, machine: &str) -> Vec<String> {
+        let remote = self
+            .db
+            .readers()
+            .with(|c| c.query_row("SELECT mode FROM machines WHERE id = ?1", [machine], |r| r.get::<_, String>(0)))
+            .is_ok_and(|mode| mode == "remote");
+        if remote {
+            return vec!["127.0.0.1".into(), "::1".into()];
+        }
+        let Some((_, addrs)) = self.addrs.get() else { return Vec::new() };
+        let mut ips: Vec<String> = addrs()
+            .iter()
+            .map(|a| a.parse::<std::net::SocketAddr>().map(|s| s.ip().to_string()).unwrap_or_else(|_| a.clone()))
+            .collect();
+        ips.sort();
+        ips.dedup();
+        ips
+    }
+
+    fn signed_commands(&self, now_ms: i64) -> Vec<u8> {
+        // versioned by the time in milliseconds, as the list in a join is, so the machine finds it newer
+        rackhand_hub::executor::commands::signed_command_list(
+            &self.signing,
+            &enabled_runbooks(&self.db),
+            now_ms.max(0) as u64,
+            now_ms,
+            REFRESH_COMMANDS_TTL_MS,
+        )
+    }
+}
+
 impl ManagedSetupSource for HubSetup {
     fn managed_setup(&self, _machine_id: ulid::Ulid, with_assistant: bool) -> ManagedSetup {
-        let runbooks: Vec<_> = Library::all_current(&self.db)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|(kind, _, _)| *kind == Kind::Runbook)
-            .filter_map(|(_, _, text)| rackhand_runbook::runbook::Runbook::parse(&text).ok())
-            .collect();
+        let runbooks = enabled_runbooks(&self.db);
         let now = now_ms();
         let bytes = rackhand_hub::executor::commands::signed_command_list(
             &self.signing,
@@ -222,6 +490,8 @@ pub struct LazyJoin {
     /// The addresses joins hand out, read when the server is built.
     hub_addrs: HubAddrs,
     joined: UnboundedSender<Joined>,
+    /// The hub's own relays, which a join hands to the machine so that it can reach the hub through them.
+    relays: Vec<String>,
     server: Mutex<Option<Arc<JoinServer>>>,
 }
 
@@ -232,14 +502,15 @@ impl std::fmt::Debug for LazyJoin {
 }
 
 impl LazyJoin {
-    pub fn new(
+    pub fn with_relays(
         db: Arc<Db>,
         registry: Arc<Registry>,
         setup: Arc<dyn ManagedSetupSource>,
         hub_addrs: HubAddrs,
         joined: UnboundedSender<Joined>,
+        relays: Vec<String>,
     ) -> Arc<LazyJoin> {
-        Arc::new(LazyJoin { db, registry, setup, hub_addrs, joined, server: Mutex::new(None) })
+        Arc::new(LazyJoin { db, registry, setup, hub_addrs, joined, relays, server: Mutex::new(None) })
     }
 
     /// The server, built the first time this hub has a site; its joins are passed on to `joined`.
@@ -251,7 +522,7 @@ impl LazyJoin {
         let info = HubInfo {
             site: local_site(&self.db)?,
             version: env!("CARGO_PKG_VERSION").into(),
-            relays: Vec::new(),
+            relays: self.relays.clone(),
             hub_addrs: (self.hub_addrs)(),
             probe_config: probe_defaults(),
         };

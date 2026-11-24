@@ -41,7 +41,7 @@ pub fn tls(extra_roots: &[rustls::pki_types::CertificateDer<'static>]) -> Result
     Ok(tokio_rustls::TlsConnector::from(Arc::new(config)))
 }
 
-async fn send<I>(io: I, req: Request<Body>) -> Result<Response, String>
+async fn send<I>(io: I, req: Request<Body>, max_response: usize) -> Result<Response, String>
 where
     I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
@@ -55,7 +55,7 @@ where
         .iter()
         .filter_map(|(k, v)| Some((k.as_str().to_string(), v.to_str().ok()?.to_string())))
         .collect();
-    let body = axum::body::to_bytes(Body::new(resp.into_body()), MAX_RESPONSE).await.map_err(|e| e.to_string())?;
+    let body = axum::body::to_bytes(Body::new(resp.into_body()), max_response).await.map_err(|e| e.to_string())?;
     Ok(Response { status, headers, body: body.to_vec() })
 }
 
@@ -66,6 +66,18 @@ pub async fn request(
     headers: &[(&str, &str)],
     body: Vec<u8>,
     timeout: Duration,
+) -> Result<Response, String> {
+    request_up_to(method, url, headers, body, timeout, MAX_RESPONSE).await
+}
+
+/// The same, with an answer of at most `max_response` bytes (an answer past it is an error).
+pub async fn request_up_to(
+    method: Method,
+    url: &str,
+    headers: &[(&str, &str)],
+    body: Vec<u8>,
+    timeout: Duration,
+    max_response: usize,
 ) -> Result<Response, String> {
     let u = Url::parse(url).map_err(|e| e.to_string())?;
     let host_str = u.host_str().ok_or("no host")?.to_string();
@@ -98,9 +110,9 @@ pub async fn request(
         if u.scheme() == "https" {
             let name = rustls::pki_types::ServerName::try_from(host.clone()).map_err(|e| e.to_string())?;
             let stream = tls(&[])?.connect(name, tcp).await.map_err(|e| e.to_string())?;
-            send(stream, req).await
+            send(stream, req, max_response).await
         } else {
-            send(tcp, req).await
+            send(tcp, req, max_response).await
         }
     };
     tokio::time::timeout(timeout, work).await.map_err(|_| "timed out".to_string())?

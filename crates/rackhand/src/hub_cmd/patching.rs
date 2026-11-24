@@ -24,6 +24,10 @@ pub const WINDOW_POLL: Duration = Duration::from_secs(30);
 /// silence is judged (7.6.3).
 const HEARD_MS: i64 = 60_000;
 
+fn is_hypervisor(kind: &str, roles: &[String]) -> bool {
+    kind == "hypervisor" || roles.iter().any(|r| r == "hypervisor")
+}
+
 #[derive(Debug, Clone)]
 pub struct Machines {
     pub db: Arc<Db>,
@@ -83,10 +87,50 @@ impl RebootFacts for Machines {
         let Ok((policy, kind, roles)) = row else { return false };
         let roles: Vec<String> = serde_json::from_str(&roles).unwrap_or_default();
         // E13: whatever its policy says
-        if kind == "hypervisor" || roles.iter().any(|r| r == "hypervisor") {
+        if is_hypervisor(&kind, &roles) {
             return false;
         }
         policy.unwrap_or_else(|| defaults(&kind, &roles.iter().map(String::as_str).collect::<Vec<_>>()).auto_reboot)
+    }
+
+    fn approved(&self, job: &str) -> bool {
+        let row: rusqlite::Result<bool> = self.db.readers().with(|c| {
+            c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM jobs j JOIN approvals a ON a.id = j.approval_id
+                 WHERE j.id = ?1 AND j.name = ?2 AND a.target = j.target AND a.risk = 'high'
+                   AND a.state IN ('approved', 'used'))",
+                [job, rackhand_hub::actions::patching::hypervisor::REBOOT],
+                |r| r.get(0),
+            )
+        });
+        row.unwrap_or(false)
+    }
+
+    fn compares_kernels(&self, machine: &str) -> bool {
+        let row: rusqlite::Result<(String, String)> = self.db.readers().with(|c| {
+            c.query_row("SELECT kind, roles FROM machines WHERE id = ?1", [machine], |r| Ok((r.get(0)?, r.get(1)?)))
+        });
+        row.is_ok_and(|(kind, roles)| {
+            is_hypervisor(&kind, &serde_json::from_str::<Vec<String>>(&roles).unwrap_or_default())
+        })
+    }
+
+    fn hosts_hub(&self, machine: &str) -> bool {
+        let row: rusqlite::Result<bool> = self.db.readers().with(|c| {
+            c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM json_each(m.roles) WHERE value = 'hub')
+                     OR ((m.kind = 'hypervisor' OR EXISTS (SELECT 1 FROM json_each(m.roles) WHERE value = 'hypervisor'))
+                         AND EXISTS (SELECT 1 FROM machines h
+                                     WHERE h.proxmox_ref_state = 'confirmed' AND h.proxmox_ref IS NOT NULL
+                                       AND EXISTS (SELECT 1 FROM json_each(h.roles) WHERE value = 'hub')
+                                       AND (json_extract(h.proxmox_ref, '$.cluster') = m.id
+                                            OR json_extract(h.proxmox_ref, '$.node') = m.name)))
+                 FROM machines m WHERE m.id = ?1",
+                [machine],
+                |r| r.get(0),
+            )
+        });
+        row.unwrap_or(false)
     }
 
     fn back_since(&self, machine: &str, since_ms: i64) -> bool {

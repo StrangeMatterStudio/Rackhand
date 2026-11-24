@@ -4,6 +4,7 @@ pub mod approvals;
 pub mod decide;
 pub mod exclusions;
 pub mod exec_patterns;
+pub mod quarantine;
 pub mod risk;
 pub mod store;
 

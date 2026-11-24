@@ -300,6 +300,7 @@ impl rackhand_store::retention::Sleeper for NoWait {
 async fn rollup_and_retention_ticks_run() {
     let db = db("ticks");
     let ingest = Ingest::new(db.clone(), Bus::new(), Arc::new(Roomy));
+    ingest.start(0).await.unwrap();
     let incidents = rackhand_hub::incidents::Incidents::new(db.clone(), ingest.clone(), Bus::new());
     ingest.hello(M, 1, &[rackhand_proto::common::LabelEntry::default()]).await.unwrap();
     let t0 = 1_795_068_000_000i64; // the top of an hour

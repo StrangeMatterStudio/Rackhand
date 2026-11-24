@@ -1681,6 +1681,542 @@ mod pages {
                 .unwrap();
         assert_eq!((file.discord.len(), file.smtp.len()), (1, 1), "nothing refused was saved");
     }
+
+    /// 7.7.1, 7.8.2, D77 (plan T73): the Security page and what the Machine page shows of connections and quarantine.
+    mod security {
+        use super::*;
+
+        const SEC: &str = "01JD0000000000000000000001";
+
+        fn intel_app(name: &str, intel: crate::intel::Intel) -> impl std::future::Future<Output = App> {
+            app_with(name, move |web| web.with_intel(intel))
+        }
+
+        async fn insert(app: &App, table: &'static str, row: Row) {
+            app.db.writer().send(WriteCmd::Batch(vec![RowWrite::insert(table, row)])).await.unwrap();
+        }
+
+        async fn guest(app: &App, id: &str, name: &str, set: &[(&'static str, Value)]) {
+            let mut row = Row::from([
+                ("id", Value::Text(id.into())),
+                ("site_id", Value::Text(site_id(&app.db))),
+                ("name", Value::Text(name.into())),
+                ("kind", Value::Text("linux".into())),
+                ("state", Value::Text("enrolled".into())),
+            ]);
+            row.extend(set.iter().cloned());
+            insert(app, "machines", row).await;
+        }
+
+        async fn page(app: &App, path: &str, cookie: &str) -> String {
+            shell::plain(&text(send(&app.router, get(path, cookie)).await).await)
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn security_lists_not_downloaded_empty_state() {
+            let intel = crate::intel::Intel::default();
+            let app = intel_app("sec-lists", intel.clone()).await;
+            complete_first_run(&app, SETUP_CODE).await;
+            let viewer = session_for(&app.db, Role::Viewer).await;
+            let html = page(&app, "/security", &viewer).await;
+            assert!(html.contains("Lists not downloaded yet"), "{html}");
+            assert!(html.contains("No security events yet"), "the feed's own empty state: {html}");
+            // once a list is in, each source says what it holds and when it last worked
+            let now = now_ms();
+            let feodo = crate::intel::sources(now).into_iter().find(|s| s.id == "feodo").unwrap();
+            intel.load(&feodo, b"203.0.113.9\n198.51.100.7\n", now).unwrap();
+            let html = page(&app, "/security", &viewer).await;
+            assert!(!html.contains("Lists not downloaded yet"), "{html}");
+            assert!(html.contains("abuse.ch Feodo Tracker") && html.contains("2 entries"), "{html}");
+            // what the feed shows, and what each machine has learned
+            guest(&app, SEC, "web", &[]).await;
+            let event = |id: &str, kind: &str, severity: &str, at: i64| {
+                Row::from([
+                    ("id", Value::Text(id.into())),
+                    ("machine_id", Value::Text(SEC.into())),
+                    ("at_ms", Value::Integer(at)),
+                    ("kind", Value::Text(kind.into())),
+                    ("severity", Value::Text(severity.into())),
+                    ("subject", Value::Text("203.0.113.9".into())),
+                    ("data", Value::Text("{}".into())),
+                ])
+            };
+            insert(&app, "events", event("e1", "conn.known_bad", "critical", now - 60_000)).await;
+            insert(&app, "events", event("e2", "service.not_active", "warning", now - 30_000)).await;
+            let baseline = |first: i64| {
+                Row::from([
+                    ("machine_id", Value::Text(SEC.into())),
+                    ("exe", Value::Text("/usr/bin/curl".into())),
+                    ("dest_asn", Value::Integer(15169)),
+                    ("dest_country", Value::Text("US".into())),
+                    ("dest_port", Value::Integer(443)),
+                    ("proto", Value::Text("tcp".into())),
+                    ("first_seen_ms", Value::Integer(first)),
+                    ("last_seen_ms", Value::Integer(now)),
+                ])
+            };
+            insert(&app, "conn_baseline", baseline(now - 2 * 86_400_000)).await;
+            let html = page(&app, "/security", &viewer).await;
+            assert!(
+                html.contains("conn.known_bad") && html.contains("203.0.113.9") && html.contains("Critical"),
+                "{html}"
+            );
+            assert!(!html.contains("service.not_active"), "only security events are in the feed: {html}");
+            assert!(html.contains("Learning, 5 days left"), "{html}");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn machine_connections_grouped_by_container_with_verdicts() {
+            let app = app("sec-conns").await;
+            complete_first_run(&app, SETUP_CODE).await;
+            guest(&app, SEC, "web", &[]).await;
+            let at = now_ms() - 600_000;
+            let conn = |container: &str, exe: &str, ip: &str, port: i64, verdict: &str, count: i64| {
+                Row::from([
+                    ("machine_id", Value::Text(SEC.into())),
+                    ("bucket_ms", Value::Integer(at)),
+                    ("container", Value::Text(container.into())),
+                    ("exe", Value::Text(exe.into())),
+                    ("dest_ip", Value::Text(ip.into())),
+                    ("dest_port", Value::Integer(port)),
+                    ("proto", Value::Text("tcp".into())),
+                    ("dest_country", Value::Text("US".into())),
+                    ("verdict", Value::Text(verdict.into())),
+                    ("count", Value::Integer(count)),
+                ])
+            };
+            insert(&app, "conn_records", conn("shop-web-1", "/usr/bin/curl", "203.0.113.9", 443, "known_bad", 3)).await;
+            insert(&app, "conn_records", conn("shop-db-1", "/usr/sbin/postgres", "192.0.2.5", 5432, "known", 8)).await;
+            insert(&app, "conn_records", conn("", "/usr/bin/apt", "198.51.100.20", 80, "new", 1)).await;
+            let viewer = session_for(&app.db, Role::Viewer).await;
+            let html = page(&app, &format!("/machines/{SEC}"), &viewer).await;
+            let at_of = |needle: &str| html.find(needle).unwrap_or_else(|| panic!("no {needle}: {html}"));
+            // one heading per container, the host's own first, and under each what it connected to with the verdict
+            let (host, db, web) = (at_of("On the machine itself"), at_of("shop-db-1"), at_of("shop-web-1"));
+            assert!(host < db && db < web, "{html}");
+            let web_part = &html[web..];
+            assert!(web_part.contains("203.0.113.9:443") && web_part.contains("curl"), "{html}");
+            assert!(html[at_of("203.0.113.9:443")..].starts_with("203.0.113.9:443"), "{html}");
+            for verdict in ["Known bad", "Known", "New"] {
+                assert!(html.contains(verdict), "{verdict}: {html}");
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn quarantine_kind_enforced_or_advisory_shown() {
+            let app = app("sec-kind").await;
+            complete_first_run(&app, SETUP_CODE).await;
+            let viewer = session_for(&app.db, Role::Viewer).await;
+            // two quarantined machines: one isolated by its hypervisor's firewall, one by a table in the machine
+            let record = |job: &str, machine: &str, method: &str, enforced: bool| {
+                let out = serde_json::json!({ "method": method, "enforced": enforced }).to_string() + "\n";
+                (
+                    Row::from([
+                        ("id", Value::Text(job.into())),
+                        ("kind", Value::Text("runbook".into())),
+                        ("name", Value::Text("quarantine".into())),
+                        ("target", Value::Text(machine.into())),
+                        ("requested_by", Value::Text("user:admin".into())),
+                        ("state", Value::Text("succeeded".into())),
+                        ("started_at", Value::Integer(now_ms())),
+                    ]),
+                    Row::from([
+                        ("job_id", Value::Text(job.into())),
+                        ("step_id", Value::Text("isolate".into())),
+                        ("state", Value::Text("succeeded".into())),
+                        ("stdout", Value::Blob(out.into_bytes())),
+                    ]),
+                )
+            };
+            for (id, name, method, enforced) in [
+                ("01JD00000000000000000000A1", "guest", "proxmox", true),
+                ("01JD00000000000000000000A2", "plain", "in_guest", false),
+            ] {
+                guest(&app, id, name, &[("quarantine", Value::Text("active".into()))]).await;
+                let (job, step) = record(&format!("01JOB{name}"), id, method, enforced);
+                insert(&app, "jobs", job).await;
+                insert(&app, "job_steps", step).await;
+            }
+            let enforced = page(&app, "/machines/01JD00000000000000000000A1", &viewer).await;
+            assert!(
+                enforced.contains("Quarantine") && enforced.contains("Enforced by the hypervisor's firewall"),
+                "{enforced}"
+            );
+            assert!(!enforced.contains("Advisory"), "{enforced}");
+            let advisory = page(&app, "/machines/01JD00000000000000000000A2", &viewer).await;
+            assert!(
+                advisory.contains("Advisory") && advisory.contains("root on the machine can undo it"),
+                "{advisory}"
+            );
+            assert!(!advisory.contains("Enforced by"), "{advisory}");
+            // a machine that isn't quarantined says nothing of it
+            guest(&app, SEC, "free", &[]).await;
+            let free = page(&app, &format!("/machines/{SEC}"), &viewer).await;
+            assert!(!free.contains("Advisory") && !free.contains("Enforced by"), "{free}");
+        }
+
+        async fn save(app: &App, cookie: &str, fields: &[(&str, &str)]) -> Response<Body> {
+            let csrf = csrf_of(app, cookie).await;
+            let mut all = vec![("csrf", csrf.as_str())];
+            all.extend_from_slice(fields);
+            send(&app.router, post("/security/rules", cookie, &all)).await
+        }
+
+        fn rules(app: &App) -> Vec<(String, bool, Option<String>)> {
+            crate::policy::quarantine::rules(&app.db)
+                .unwrap()
+                .into_iter()
+                .map(|r| (r.name, r.enabled, r.enabled_by))
+                .collect()
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn quarantine_rule_edit_admin_only_with_step_up() {
+            let app = app("sec-rule").await;
+            complete_first_run(&app, SETUP_CODE).await;
+            let fields = |enabled: bool| {
+                let mut f = vec![
+                    ("name", "dmz known bad"),
+                    ("severity", "critical"),
+                    ("kinds", "conn.known_bad"),
+                    ("tags", "dmz"),
+                    ("roles", ""),
+                ];
+                if enabled {
+                    f.push(("enabled", "on"));
+                }
+                f
+            };
+            // only an admin edits
+            for role in [Role::Viewer, Role::Responder] {
+                let cookie = session_for(&app.db, role).await;
+                assert_eq!(save(&app, &cookie, &fields(false)).await.status(), StatusCode::FORBIDDEN, "{role:?}");
+            }
+            assert!(rules(&app).is_empty());
+            let admin = session_for(&app.db, Role::Admin).await;
+            // a rule that stays off needs nothing more
+            assert_eq!(save(&app, &admin, &fields(false)).await.status(), StatusCode::SEE_OTHER);
+            assert_eq!(rules(&app), [("dmz known bad".to_string(), false, None)]);
+            // turning it on needs a fresh step-up first, and nothing changes until it has one
+            let resp = save(&app, &admin, &fields(true)).await;
+            assert_eq!((resp.status(), location(&resp).as_deref()), (StatusCode::SEE_OTHER, Some("/step-up")));
+            assert!(!rules(&app)[0].1);
+            let token = admin.split_once('=').unwrap().1;
+            let hash: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+            session::set_step_up(&app.db, &hash, now_ms()).await.unwrap();
+            let resp = save(&app, &admin, &fields(true)).await;
+            assert_eq!((resp.status(), location(&resp).as_deref()), (StatusCode::SEE_OTHER, Some("/security")));
+            let stored = rules(&app);
+            assert!(stored[0].1 && stored[0].2.as_deref().is_some_and(|by| by.starts_with("admin-")), "{stored:?}");
+            let audited: i64 = app
+                .db
+                .readers()
+                .with(|c| {
+                    c.query_row("SELECT count(*) FROM audit_log WHERE action = 'quarantine.rule_saved'", [], |r| {
+                        r.get(0)
+                    })
+                })
+                .unwrap();
+            assert_eq!(audited, 2, "each save is recorded");
+            // the page shows the rule, who turned it on, and the edit button to an admin only
+            let html = page(&app, "/security", &admin).await;
+            assert!(
+                html.contains("dmz known bad") && html.contains("conn.known_bad") && html.contains("dmz"),
+                "{html}"
+            );
+            let viewer = session_for(&app.db, Role::Viewer).await;
+            let seen = text(send(&app.router, get("/security", &viewer)).await).await;
+            assert!(seen.contains("dmz known bad") && !seen.contains("/security?edit="), "{seen}");
+            assert!(text(send(&app.router, get("/security", &admin)).await).await.contains("/security?edit="));
+        }
+    }
+
+    /// 7.7.1, 7.7.2, 10, E21 (plan T79): the assistant's pages.
+    mod assistant {
+        use super::*;
+        use crate::actions::Actions;
+        use crate::actions::runner::{BoxFuture, StepCtx, StepResult, StepRunner};
+        use crate::assist::Assist;
+        use crate::audit::Audit;
+        use crate::bus::Bus;
+        use rackhand_runbook::runbook::Step;
+
+        const INC: &str = "01JINC00000000000000000001";
+        const JOB: &str = "01JJOB00000000000000000001";
+        const MACH: &str = "01JD0000000000000000000001";
+
+        #[derive(Debug)]
+        struct Nobody;
+
+        impl StepRunner for Nobody {
+            fn run<'a>(&'a self, _c: &'a StepCtx, _s: &'a Step, _a: Option<&'a [String]>) -> BoxFuture<'a, StepResult> {
+                Box::pin(async { StepResult::failed("unused") })
+            }
+        }
+
+        const TICKET: &str =
+            "rackhand1:0000000000000000000000000000000000000000000000000000000000000001@192.0.2.10:7443";
+
+        async fn assistant_app(name: &str) -> App {
+            let app = app_with(name, |web| {
+                let db = web.db().clone();
+                let audit = Audit::new(db.writer());
+                let actions = Actions::new(db.clone(), audit.clone(), Bus::new(), Arc::new(Nobody));
+                let registry = crate::registry::Registry::load(db.clone()).unwrap();
+                web.with_assist(Assist::new(db, audit, actions))
+                    .with_registry(registry)
+                    .with_ticket(Arc::new(|| Some(TICKET.to_string())))
+            })
+            .await;
+            complete_first_run(&app, SETUP_CODE).await;
+            app
+        }
+
+        async fn insert(app: &App, table: &'static str, row: Row) {
+            app.db.writer().send(WriteCmd::Batch(vec![RowWrite::insert(table, row)])).await.unwrap();
+        }
+
+        /// A machine, an incident on it, and an assistant job for the incident that ended as `outcome`.
+        async fn incident_with_job(app: &App, outcome: &str) {
+            let machine = Row::from([
+                ("id", Value::Text(MACH.into())),
+                ("site_id", Value::Text(site_id(&app.db))),
+                ("name", Value::Text("web".into())),
+                ("kind", Value::Text("linux".into())),
+                ("state", Value::Text("enrolled".into())),
+            ]);
+            insert(app, "machines", machine).await;
+            let incident = Row::from([
+                ("id", Value::Text(INC.into())),
+                ("machine_id", Value::Text(MACH.into())),
+                ("dedupe_key", Value::Text("k".into())),
+                ("kind", Value::Text("service.not_active".into())),
+                ("severity", Value::Text("warning".into())),
+                ("state", Value::Text("human".into())),
+                ("title", Value::Text("nginx is down".into())),
+                ("opened_at", Value::Integer(now_ms())),
+            ]);
+            insert(app, "incidents", incident).await;
+            let job = Row::from([
+                ("id", Value::Text(JOB.into())),
+                ("kind", Value::Text("assistant".into())),
+                ("name", Value::Text("service-down".into())),
+                ("requested_by", Value::Text("incidents".into())),
+                ("incident_id", Value::Text(INC.into())),
+                ("state", Value::Text("failed".into())),
+                ("outcome", Value::Text(outcome.into())),
+                ("started_at", Value::Integer(now_ms() - 600_000)),
+            ]);
+            insert(app, "jobs", job).await;
+        }
+
+        async fn transcript(app: &App, seq: i64, kind: &str, text: &str) {
+            let row = Row::from([
+                ("job_id", Value::Text(JOB.into())),
+                ("seq", Value::Integer(seq)),
+                ("at_ms", Value::Integer(now_ms())),
+                ("kind", Value::Text(kind.into())),
+                ("text", Value::Text(text.into())),
+            ]);
+            app.db.writer().send(WriteCmd::AppendTranscript(row)).await.unwrap();
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn transcript_rendered_escaped() {
+            let app = assistant_app("as-transcript").await;
+            incident_with_job(&app, "needs_human").await;
+            transcript(&app, 1, "tool_result", "<script>alert('pwned')</script> & \"quotes\"").await;
+            transcript(&app, 2, "message", "looking at the journal").await;
+            let viewer = session_for(&app.db, Role::Viewer).await;
+            let html = text(send(&app.router, get(&format!("/incidents/{INC}"), &viewer)).await).await;
+            assert!(html.contains("Assistant: service-down") && html.contains("looking at the journal"), "{html}");
+            assert!(!html.contains("<script>alert"), "tool output is escaped, never markup: {html}");
+            assert!(html.contains("&#60;script&#62;alert"), "{html}");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn resume_job_shown_after_late_approval() {
+            let app = assistant_app("as-resume").await;
+            incident_with_job(&app, "needs_human").await;
+            let responder = session_for(&app.db, Role::Responder).await;
+            let button = |html: &str| html.contains("Resume job") && html.contains(&format!("/incidents/{INC}/resume"));
+            // the job ended needs_human but nothing is waiting to be used: nothing to resume
+            let before = text(send(&app.router, get(&format!("/incidents/{INC}"), &responder)).await).await;
+            assert!(!button(&before), "{before}");
+            // an approval its call asked for is decided after the deadline, and still valid
+            let request = crate::policy::approvals::ApprovalRequest {
+                requester: format!("job:{JOB}"),
+                tool: "run_runbook".into(),
+                target: Some(MACH.into()),
+                args: serde_json::json!({ "name": "service-restart", "params": {} }),
+                runbook_rev: Some(1),
+                risk: rackhand_runbook::runbook::Risk::Low,
+                step_up: false,
+                reason: "restart nginx".into(),
+            };
+            let id = crate::policy::approvals::Approvals::new(app.db.clone())
+                .create(&request, now_ms(), 3_600_000)
+                .await
+                .unwrap();
+            let after = text(send(&app.router, get(&format!("/incidents/{INC}"), &responder)).await).await;
+            assert!(button(&after), "{after}");
+            // a viewer sees the job but can't resume it; a job that resolved has no button
+            let viewer = session_for(&app.db, Role::Viewer).await;
+            assert!(!button(&text(send(&app.router, get(&format!("/incidents/{INC}"), &viewer)).await).await));
+            let _ = id;
+            let app2 = assistant_app("as-resume-resolved").await;
+            incident_with_job(&app2, "resolved").await;
+            let responder = session_for(&app2.db, Role::Responder).await;
+            assert!(!button(&text(send(&app2.router, get(&format!("/incidents/{INC}"), &responder)).await).await));
+        }
+
+        fn user_of(app: &App, role: &str) -> String {
+            app.db
+                .readers()
+                .with(|c| {
+                    c.query_row("SELECT id FROM users WHERE role = ?1 ORDER BY rowid DESC LIMIT 1", [role], |r| {
+                        r.get(0)
+                    })
+                })
+                .unwrap()
+        }
+
+        async fn device(app: &App, user: &str, name: &str) -> String {
+            let id = ulid::Ulid::new().to_string();
+            let row = Row::from([
+                ("id", Value::Text(id.clone())),
+                ("user_id", Value::Text(user.into())),
+                ("name", Value::Text(name.into())),
+                ("endpoint_id", Value::Text(format!("{:0>64}", id.to_lowercase()))),
+                ("created_at", Value::Integer(0)),
+            ]);
+            insert(app, "devices", row).await;
+            id
+        }
+
+        async fn make_key(app: &App, cookie: &str, device: &str, scope: &str, days: &str) -> (StatusCode, String) {
+            let csrf = csrf_of(app, cookie).await;
+            let resp = send(
+                &app.router,
+                post(
+                    "/account/keys",
+                    cookie,
+                    &[("csrf", csrf.as_str()), ("device", device), ("scope", scope), ("days", days)],
+                ),
+            )
+            .await;
+            (resp.status(), text(resp).await)
+        }
+
+        fn key_count(app: &App) -> i64 {
+            app.db.readers().with(|c| c.query_row("SELECT count(*) FROM mcp_keys", [], |r| r.get(0))).unwrap()
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn mcp_key_scope_capped_by_role_and_expiry_max_1_year() {
+            let app = assistant_app("as-keys").await;
+            let viewer = session_for(&app.db, Role::Viewer).await;
+            let dev = device(&app, &user_of(&app, "viewer"), "laptop").await;
+            // a viewer's key can read only, and a longer-than-a-year key is refused
+            let (code, page) = make_key(&app, &viewer, &dev, "read_request", "90").await;
+            assert_eq!(code, StatusCode::BAD_REQUEST, "{page}");
+            assert!(page.contains("A viewer&#39;s keys can read only") || page.contains("read only"), "{page}");
+            assert_eq!(key_count(&app), 0);
+            for days in ["366", "0", "-5", "x", ""] {
+                assert_eq!(make_key(&app, &viewer, &dev, "read", days).await.0, StatusCode::BAD_REQUEST, "{days:?}");
+            }
+            assert_eq!(key_count(&app), 0);
+            let page = text(send(&app.router, get("/account/keys", &viewer)).await).await;
+            assert!(page.contains("name=\"scope\""), "the form is there: {page}");
+            assert!(!page.contains("value=\"read_request\""), "the option isn't offered: {page}");
+            // a read key for 90 days: the token is shown once
+            let (code, page) = make_key(&app, &viewer, &dev, "read", "90").await;
+            assert_eq!(code, StatusCode::OK, "{page}");
+            assert!(page.contains("Your new key") && page.contains("rk_"), "{page}");
+            assert_eq!(key_count(&app), 1);
+            let (expires, scope): (i64, String) = app
+                .db
+                .readers()
+                .with(|c| c.query_row("SELECT expires_at, scope FROM mcp_keys", [], |r| Ok((r.get(0)?, r.get(1)?))))
+                .unwrap();
+            assert_eq!(scope, "read");
+            assert!((expires - now_ms() - 90 * 86_400_000).abs() < 60_000);
+            let again = text(send(&app.router, get("/account/keys", &viewer)).await).await;
+            assert!(!again.contains("<code>rk_") && again.contains("Active"), "the token isn't shown again: {again}");
+            // a responder may ask for changes, up to 365 days
+            let responder = session_for(&app.db, Role::Responder).await;
+            let dev2 = device(&app, &user_of(&app, "responder"), "phone").await;
+            assert_eq!(make_key(&app, &responder, &dev2, "read_request", "365").await.0, StatusCode::OK);
+            assert_eq!(key_count(&app), 2);
+            // someone else's device isn't yours to make a key for
+            let (code, _) = make_key(&app, &responder, &dev, "read", "30").await;
+            assert_eq!(code, StatusCode::BAD_REQUEST);
+            assert_eq!(key_count(&app), 2);
+            // revoking is your own key only
+            let id: String = app
+                .db
+                .readers()
+                .with(|c| c.query_row("SELECT id FROM mcp_keys WHERE scope = 'read'", [], |r| r.get(0)))
+                .unwrap();
+            let csrf = csrf_of(&app, &responder).await;
+            let resp =
+                send(&app.router, post(&format!("/account/keys/{id}/revoke"), &responder, &[("csrf", csrf.as_str())]))
+                    .await;
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND, "another user's key");
+            let csrf = csrf_of(&app, &viewer).await;
+            let resp =
+                send(&app.router, post(&format!("/account/keys/{id}/revoke"), &viewer, &[("csrf", csrf.as_str())]))
+                    .await;
+            assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+            let revoked: Option<i64> = app
+                .db
+                .readers()
+                .with(|c| c.query_row("SELECT revoked_at FROM mcp_keys WHERE id = ?1", [&id], |r| r.get(0)))
+                .unwrap();
+            assert!(revoked.is_some());
+        }
+
+        async fn set_cap(app: &App, admin: &str, value: &str) -> Response<Body> {
+            let csrf = csrf_of(app, admin).await;
+            send(&app.router, post("/settings/assistant/cap", admin, &[("csrf", csrf.as_str()), ("daily_cap", value)]))
+                .await
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn operator_setup_states_provider_data_use() {
+            let app = assistant_app("as-setup").await;
+            let operator = Row::from([
+                ("id", Value::Text("op1".into())),
+                ("name", Value::Text("lab-operator".into())),
+                ("endpoint_id", Value::Text("ab".repeat(32))),
+                ("runners", Value::Text("[{\"name\":\"claude-code\",\"version\":\"2.1.328\"}]".into())),
+            ]);
+            insert(&app, "operators", operator).await;
+            let admin = session_for(&app.db, Role::Admin).await;
+            let page = shell::plain(&text(send(&app.router, get("/settings/assistant", &admin)).await).await);
+            assert!(page.contains("sends the brief and every tool result") && page.contains("AI provider"), "{page}");
+            assert!(page.contains("lab-operator") && page.contains("claude-code 2.1.328"), "{page}");
+            // an invite gives the command to run on the operator host
+            let csrf = csrf_of(&app, &admin).await;
+            let resp = send(&app.router, post("/settings/assistant/invite", &admin, &[("csrf", csrf.as_str())])).await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            let html = text(resp).await.replace("&#x2F;", "/");
+            assert!(html.contains(&format!("rackhand operator join --ticket {TICKET} --invite ")), "{html}");
+            let tokens: i64 =
+                app.db.readers().with(|c| c.query_row("SELECT count(*) FROM join_tokens", [], |r| r.get(0))).unwrap();
+            assert_eq!(tokens, 1);
+            // the daily cap is a number from 1 to 1000, saved and audited
+            assert_eq!(set_cap(&app, &admin, "0").await.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(set_cap(&app, &admin, "5000").await.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(set_cap(&app, &admin, "5").await.status(), StatusCode::SEE_OTHER);
+            assert_eq!(crate::library::config::hub(&app.db).unwrap().assistant.daily_cap, 5);
+            let page = text(send(&app.router, get("/settings/assistant", &admin)).await).await;
+            assert!(page.contains("name=\"daily_cap\" type=\"number\" min=\"1\" max=\"1000\" value=\"5\""), "{page}");
+            // only an admin sees or changes any of it
+            let responder = session_for(&app.db, Role::Responder).await;
+            assert_eq!(send(&app.router, get("/settings/assistant", &responder)).await.status(), StatusCode::FORBIDDEN);
+        }
+    }
 }
 
 mod metrics {
@@ -2238,6 +2774,168 @@ mod add {
     }
 }
 
+/// 7.3.12, D89, AC59: the dashboard issues a one-time command that changes a machine's access level; it changes nothing
+/// itself, and the command works only on the machine it names.
+mod level {
+    use super::*;
+
+    const TICKET: &str = "rackhand1:0000000000000000000000000000000000000000000000000000000000000001@192.0.2.10:7443";
+    const ID: &str = "01JD0000000000000000000009";
+
+    async fn level_app(name: &str, access: &str) -> App {
+        let app = app_with(name, move |web| {
+            let registry = crate::registry::Registry::load(web.db().clone()).unwrap();
+            web.with_registry(registry).with_ticket(Arc::new(|| Some(TICKET.to_string())))
+        })
+        .await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let site: String =
+            app.db.readers().with(|c| c.query_row("SELECT id FROM sites LIMIT 1", [], |r| r.get(0))).unwrap();
+        let row = Row::from([
+            ("id", Value::Text(ID.into())),
+            ("site_id", Value::Text(site)),
+            ("name", Value::Text("web1".into())),
+            ("kind", Value::Text("linux".into())),
+            ("access", Value::Text(access.into())),
+            ("state", Value::Text("enrolled".into())),
+        ]);
+        app.db.writer().send(WriteCmd::Batch(vec![RowWrite::insert("machines", row)])).await.unwrap();
+        app
+    }
+
+    fn access(app: &App) -> String {
+        app.db.readers().with(|c| c.query_row("SELECT access FROM machines WHERE id = ?1", [ID], |r| r.get(0))).unwrap()
+    }
+
+    fn tokens(app: &App) -> i64 {
+        app.db.readers().with(|c| c.query_row("SELECT count(*) FROM join_tokens", [], |r| r.get(0))).unwrap()
+    }
+
+    async fn ask(app: &App, cookie: &str, to: &str) -> (StatusCode, String) {
+        let csrf = csrf_of(app, cookie).await;
+        let path = format!("/machines/{ID}/level");
+        let resp = send(&app.router, post(&path, cookie, &[("csrf", csrf.as_str()), ("access", to)])).await;
+        let code = resp.status();
+        (code, text(resp).await.replace("&#x2F;", "/").replace("&#38;", "&").replace("&#x27;", "'"))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn level_command_binds_a_token_to_the_machine_and_changes_nothing() {
+        let app = level_app("level-command", "managed").await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let before = tokens(&app);
+        let (code, page) = ask(&app, &admin, "monitor").await;
+        assert_eq!(code, StatusCode::OK, "{page}");
+        assert!(page.contains(&format!("--ticket {TICKET}")) && page.contains("--monitor"), "{page}");
+        assert!(page.contains("--token "), "{page}");
+        assert_eq!(access(&app), "managed", "the dashboard changes no level");
+        assert_eq!(tokens(&app), before + 1);
+        let (bound, life): (String, i64) = app
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row("SELECT bound, expires_at FROM join_tokens ORDER BY rowid DESC LIMIT 1", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+            })
+            .unwrap();
+        let bound: serde_json::Value = serde_json::from_str(&bound).unwrap();
+        assert_eq!(
+            (bound["access"].as_str(), bound["machine_id"].as_str(), bound["level_change"].as_bool()),
+            (Some("monitor"), Some(ID), Some(true)),
+            "bound to this machine and the new level"
+        );
+        assert!((life - now_ms() - 3_600_000).abs() < 60_000, "60 minutes");
+        let audit: i64 = app
+            .db
+            .readers()
+            .with(|c| {
+                c.query_row("SELECT count(*) FROM audit_log WHERE action = 'machine.level_change_issued'", [], |r| {
+                    r.get(0)
+                })
+            })
+            .unwrap();
+        assert_eq!(audit, 1, "recorded");
+        // the other direction: no `--monitor`
+        let app = level_app("level-command-up", "monitor").await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let (_, page) = ask(&app, &admin, "managed").await;
+        assert!(page.contains("--token ") && !page.contains("--monitor"), "{page}");
+        assert_eq!(access(&app), "monitor");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn only_an_admin_asks_and_only_for_a_change() {
+        let app = level_app("level-refused", "managed").await;
+        let responder = session_for(&app.db, Role::Responder).await;
+        let before = tokens(&app);
+        assert_eq!(ask(&app, &responder, "monitor").await.0, StatusCode::FORBIDDEN);
+        let admin = session_for(&app.db, Role::Admin).await;
+        let (code, page) = ask(&app, &admin, "managed").await;
+        assert_eq!(code, StatusCode::BAD_REQUEST, "{page}");
+        assert!(page.contains("already managed"), "{page}");
+        let (code, _) = ask(&app, &admin, "root").await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        assert_eq!(tokens(&app), before, "no token for any of them");
+        // the machine page offers the change to an admin, and not to a responder
+        let page = shell::plain(&text(send(&app.router, get(&format!("/machines/{ID}"), &admin)).await).await);
+        assert!(page.contains("Change to monitor"), "{page}");
+        let page = shell::plain(&text(send(&app.router, get(&format!("/machines/{ID}"), &responder)).await).await);
+        assert!(!page.contains("Change to monitor"), "{page}");
+    }
+}
+
+/// 7.7.1, D65: the Settings page turns each outside source and air-gapped mode on and off; each change is audited, and what
+/// the form doesn't show (the sources that are off unless enabled) is kept.
+mod intel {
+    use super::*;
+
+    fn sources(app: &App) -> crate::library::config::Sources {
+        crate::library::config::hub(&app.db).unwrap().sources
+    }
+
+    async fn set(app: &App, admin: &str, fields: &[(&str, &str)]) {
+        let csrf = csrf_of(app, admin).await;
+        let mut all = vec![("csrf", csrf.as_str())];
+        all.extend_from_slice(fields);
+        let resp = send(&app.router, post("/settings/sources", admin, &all)).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn settings_toggle_each_source_and_air_gapped_mode() {
+        let app = app("intel-settings").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let page = shell::plain(&text(send(&app.router, get("/settings", &admin)).await).await);
+        for what in ["abuse.ch Feodo Tracker", "Spamhaus DROP", "DB-IP Lite", "Air-gapped"] {
+            assert!(page.contains(what), "{what}: {page}");
+        }
+        set(&app, &admin, &[("source_feodo", "on"), ("source_dbip", "on")]).await;
+        let s = sources(&app);
+        assert_eq!((s.feodo, s.spamhaus, s.dbip, s.airgapped), (true, false, true, false));
+        set(&app, &admin, &[("source_spamhaus", "on"), ("source_airgapped", "on")]).await;
+        let s = sources(&app);
+        assert_eq!((s.feodo, s.spamhaus, s.dbip, s.airgapped), (false, true, false, true));
+        assert!(!s.maxmind && !s.reputation && !s.relay_lists && !s.n0_relays, "the optional ones stay off");
+        let page = text(send(&app.router, get("/settings", &admin)).await).await;
+        assert!(page.contains("name=\"source_airgapped\" checked"), "the page shows the mode it is in");
+        set(&app, &admin, &[]).await;
+        assert!(!sources(&app).airgapped, "and turns it off again");
+        // each change is audited with what it set
+        let changes: Vec<String> = app
+            .db
+            .readers()
+            .with(|c| {
+                let mut st = c.prepare("SELECT data FROM audit_log WHERE action = 'settings.sources' ORDER BY seq")?;
+                st.query_map([], |r| r.get(0))?.collect()
+            })
+            .unwrap();
+        assert_eq!(changes.len(), 3, "{changes:?}");
+        assert!(changes[1].contains("\"airgapped\":true") && changes[2].contains("\"airgapped\":false"), "{changes:?}");
+    }
+}
+
 mod agentless {
     use super::*;
     use rackhand_drivers::{Driver, Proxmox, Redfish, Snmp, TrueNas};
@@ -2524,5 +3222,50 @@ mod agentless {
             send(&app.router, post("/add/appliance/accept", &responder, &fields)).await.status(),
             StatusCode::FORBIDDEN
         );
+    }
+}
+
+/// 7.5.5, 7.7.1 (plan T81): the dead-man URL is an admin's setting, saved and audited without the URL itself.
+mod deadman {
+    use super::*;
+
+    async fn set(app: &App, cookie: &str, url: &str) -> Response<Body> {
+        let csrf = csrf_of(app, cookie).await;
+        send(&app.router, post("/settings/deadman", cookie, &[("csrf", csrf.as_str()), ("url", url)])).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn url_set_in_settings_admin_only() {
+        let app = app("deadman-url").await;
+        complete_first_run(&app, SETUP_CODE).await;
+        let responder = session_for(&app.db, Role::Responder).await;
+        assert_eq!(set(&app, &responder, "https://hc.example/ping/secret-key").await.status(), StatusCode::FORBIDDEN);
+        assert!(crate::library::config::hub(&app.db).unwrap().deadman_url.is_none());
+        let admin = session_for(&app.db, Role::Admin).await;
+        // only an https address without spaces
+        for bad in ["http://hc.example/ping", "ftp://x", "https://a b", "not a url"] {
+            assert_eq!(set(&app, &admin, bad).await.status(), StatusCode::BAD_REQUEST, "{bad:?}");
+        }
+        assert_eq!(set(&app, &admin, "https://hc.example/ping/secret-key").await.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            crate::library::config::hub(&app.db).unwrap().deadman_url.as_deref(),
+            Some("https://hc.example/ping/secret-key")
+        );
+        let page = text(send(&app.router, get("/settings", &admin)).await).await;
+        assert!(page.contains("value=\"https:&#x2F;&#x2F;hc.example") || page.contains("hc.example"), "{page}");
+        // audited, with no trace of the key in the log
+        let logged: Vec<String> = app
+            .db
+            .readers()
+            .with(|c| {
+                let mut s = c.prepare("SELECT data FROM audit_log WHERE action = 'settings.deadman'")?;
+                s.query_map([], |r| r.get(0))?.collect()
+            })
+            .unwrap();
+        assert_eq!(logged.len(), 1, "{logged:?}");
+        assert!(logged[0].contains("\"set\":true") && !logged[0].contains("secret-key"), "{logged:?}");
+        // empty turns it off
+        assert_eq!(set(&app, &admin, "").await.status(), StatusCode::SEE_OTHER);
+        assert!(crate::library::config::hub(&app.db).unwrap().deadman_url.is_none());
     }
 }

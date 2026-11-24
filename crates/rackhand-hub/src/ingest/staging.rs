@@ -231,6 +231,30 @@ impl Ingest {
                 if let Some(e) = add_to_window(m, machine, &p.report, p.offset_ms, received_at_ms) {
                     events.push(e);
                 }
+                // the events the probe reported: known kinds only, stored before compaction deletes the frame (D91)
+                let facts = super::probe_events::DbFacts(self.inner.db.clone());
+                let db = self.inner.db.clone();
+                let known = move || -> Vec<(String, String)> {
+                    db.readers()
+                        .with(|c| {
+                            let mut s = c.prepare(
+                                "SELECT DISTINCT json_extract(data, '$.user'), json_extract(data, '$.source_ip') FROM events
+                                 WHERE machine_id = ?1 AND kind = 'auth.login'",
+                            )?;
+                            s.query_map([machine], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect()
+                        })
+                        .unwrap_or_default()
+                };
+                let mut ctx = super::probe_events::Context {
+                    facts: &facts,
+                    logins: &mut m.logins,
+                    last_overflow_ms: &mut m.last_overflow_ms,
+                    known_logins: &known,
+                };
+                let (reported, unknown) =
+                    super::probe_events::to_events(machine, &p.report.events, p.offset_ms, &mut ctx);
+                events.extend(reported);
+                m.unknown_events += u64::from(unknown);
                 if stream == Stream::Live {
                     keep_latest(m, &p.report, p.offset_ms);
                     count(m, &p.report, p.offset_ms, received_at_ms);
@@ -241,6 +265,12 @@ impl Ingest {
             m.received.get(&last).map(|r| r.list()).unwrap_or_default()
         };
         self.raise_events(events).await?;
+        // the connections the reports carried: scored, their events raised and their rows stored before compaction
+        for p in &prepared {
+            if !p.report.connections.is_empty() {
+                self.process_connections(machine, p.report.sampled_at_ms + p.offset_ms, &p.report.connections).await?;
+            }
+        }
         if let Ok(id) = machine.parse::<ulid::Ulid>() {
             self.inner.bus.publish(BusEvent::ReportIngested { machine: MachineId(id.to_bytes()) }).await;
         }

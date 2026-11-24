@@ -43,6 +43,7 @@ hyper = { workspace = true }
 hyper-util = { workspace = true }
 form_urlencoded = { workspace = true }
 toml = { workspace = true }
+blake3 = "1"
 russh = { workspace = true }
 git2 = { workspace = true }
 regex = "1"
@@ -52,6 +53,7 @@ base64 = { workspace = true }
 zstd = { workspace = true }
 rackhand-release = { path = "../rackhand-release" }
 webpki-roots = { workspace = true }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 qrcodegen = "1"
 
 [dev-dependencies]
@@ -63,6 +65,7 @@ tower = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 rackhand-net = { path = "../rackhand-net", features = ["testing"] }
 rackhand-probe = { path = "../rackhand-probe" }
+rackhand-cli = { path = "../rackhand-cli" }
 iroh-relay = { workspace = true }
 rackhand-release = { path = "../rackhand-release", features = ["test-keys", "signing"] }
 

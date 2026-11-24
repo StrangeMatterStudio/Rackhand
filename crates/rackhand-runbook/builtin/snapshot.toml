@@ -1,0 +1,11 @@
+name = "snapshot"
+description = "Take a snapshot of a Proxmox guest, rackhand-<job id>"
+targets = { kinds = ["linux", "alpine", "windows"] }
+identity = "automation"
+risk = "normal"
+autonomy = 1
+
+[[step]]
+id = "snapshot"
+kind = "snapshot"
+timeout = "10m"

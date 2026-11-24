@@ -203,7 +203,8 @@ mod ssh {
         assert_eq!(wrong.status(), StatusCode::CONFLICT, "only the key the admin was shown");
         let resp = router.clone().oneshot(accept()).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-        assert_eq!(resp.headers().get(header::LOCATION).unwrap(), "/");
+        // back to the machine's page, where the admin was (the dashboard's pages return to where they came from)
+        assert_eq!(resp.headers().get(header::LOCATION).unwrap(), "/machines/m1");
         assert!(hub.run(Identity::Automation, "true").await.is_ok());
         let audited: i64 = hub
             .db

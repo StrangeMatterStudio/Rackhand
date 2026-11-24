@@ -1,0 +1,15 @@
+name = "keys-rotate"
+description = "Give a machine a key of its own for the hub's automation user, and stop it accepting the one it had"
+targets = { kinds = ["linux", "alpine"] }
+identity = "automation"
+risk = "high"
+autonomy = 1
+
+# The hub makes the key and has the machine take it beside the old one (a payload signed with the node key, through the
+# wrapper's `install-keys`), logs in with it, keeps it, has the machine drop the old one, and checks that it is refused.
+# Stopped halfway, a second run takes up the same key.
+[[step]]
+id = "rotate"
+kind = "hub"
+call = "rotate_keys"
+timeout = "3m"

@@ -6,8 +6,40 @@ const RUNBOOKS: &[(&str, &str)] = &[
     ("patch-alpine", include_str!("../builtin/patch-alpine.toml")),
     ("patch-proxmox-host", include_str!("../builtin/patch-proxmox-host.toml")),
     ("patch-hub-host", include_str!("../builtin/patch-hub-host.toml")),
+    ("reboot-host", include_str!("../builtin/reboot-host.toml")),
     ("rollback", include_str!("../builtin/rollback.toml")),
+    ("sudoers-refresh", include_str!("../builtin/sudoers-refresh.toml")),
+    ("keys-rotate", include_str!("../builtin/keys-rotate.toml")),
+    ("unenroll", include_str!("../builtin/unenroll.toml")),
+    ("reboot", include_str!("../builtin/reboot.toml")),
+    ("snapshot", include_str!("../builtin/snapshot.toml")),
+    ("service-restart", include_str!("../builtin/service-restart.toml")),
+    ("compose-restart", include_str!("../builtin/compose-restart.toml")),
+    ("compose-update", include_str!("../builtin/compose-update.toml")),
+    ("provision-vm", include_str!("../builtin/provision-vm.toml")),
+    ("provision-lxc", include_str!("../builtin/provision-lxc.toml")),
+    ("quarantine", include_str!("../builtin/quarantine.toml")),
+    ("quarantine-release", include_str!("../builtin/quarantine-release.toml")),
+    ("conntrack-flush", include_str!("../builtin/conntrack-flush.toml")),
+    ("zfs-replicate", include_str!("../builtin/zfs-replicate.toml")),
+    ("pbs-sync", include_str!("../builtin/pbs-sync.toml")),
+    ("restic-backup", include_str!("../builtin/restic-backup.toml")),
 ];
+
+const PLAYBOOKS: &[(&str, &str)] = &[
+    ("patch-failure", include_str!("../builtin/playbooks/patch-failure.md")),
+    ("service-down", include_str!("../builtin/playbooks/service-down.md")),
+    ("disk-filling", include_str!("../builtin/playbooks/disk-filling.md")),
+    ("security-finding", include_str!("../builtin/playbooks/security-finding.md")),
+    ("machine-silent", include_str!("../builtin/playbooks/machine-silent.md")),
+    ("backup-stale", include_str!("../builtin/playbooks/backup-stale.md")),
+    ("guided-install", include_str!("../builtin/playbooks/guided-install.md")),
+];
+
+/// Every built-in playbook (7.8.8), as `(name, content)`.
+pub fn playbooks() -> &'static [(&'static str, &'static str)] {
+    PLAYBOOKS
+}
 
 /// Every built-in runbook, as `(name, content)`.
 pub fn runbooks() -> &'static [(&'static str, &'static str)] {

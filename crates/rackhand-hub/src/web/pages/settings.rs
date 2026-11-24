@@ -25,6 +25,8 @@ struct Settings<'a> {
     oidc: Form,
     deploy_key: Option<String>,
     notifiers: usize,
+    /// The dead-man URL, as set (7.5.5).
+    deadman: String,
 }
 
 const MIRROR: &[Spec] = &[Spec::text("url", "Repository")
@@ -84,6 +86,7 @@ fn show(web: &Web, ctx: &Ctx, code: StatusCode, mut sent: Option<Form>, notice: 
             oidc: oidc_form.or_sent(&mut sent),
             deploy_key: deploy_public_key(web),
             notifiers: super::notifiers::count(web),
+            deadman: current.deadman_url.clone().unwrap_or_default(),
         }
         .render(),
     )
@@ -114,11 +117,49 @@ async fn change(
     redirect("/settings")
 }
 
+/// The dead-man URL (7.5.5): a hub with no peers calls it every 5 minutes. Empty turns it off. The URL can hold a secret (a ping
+/// key), so the audit says only that it was set or cleared.
+pub(super) async fn deadman(web: &Web, ctx: &Ctx) -> Response<Body> {
+    let url = ctx.form.get("url").map(|u| u.trim().to_string()).filter(|u| !u.is_empty());
+    if let Some(u) = &url {
+        let fine =
+            u.starts_with("https://") && u.len() <= 512 && !u.chars().any(|c| c.is_whitespace() || c.is_control());
+        if !fine {
+            return show(
+                web,
+                ctx,
+                StatusCode::BAD_REQUEST,
+                None,
+                Some("The dead-man URL starts with https:// and has no spaces."),
+            );
+        }
+    }
+    change(web, ctx, "settings.deadman", |c| {
+        c.deadman_url = url.clone();
+        serde_json::json!({ "set": url.is_some() })
+    })
+    .await
+}
+
 pub(super) async fn sources(web: &Web, ctx: &Ctx) -> Response<Body> {
     let on = |k: &str| ctx.form.get(k).is_some_and(|v| v == "on");
-    let sources = Sources { feodo: on("source_feodo"), spamhaus: on("source_spamhaus"), dbip: on("source_dbip") };
+    let sources = Sources {
+        feodo: on("source_feodo"),
+        spamhaus: on("source_spamhaus"),
+        dbip: on("source_dbip"),
+        airgapped: on("source_airgapped"),
+        ..Sources::default()
+    };
     change(web, ctx, "settings.sources", |c| {
-        c.sources = sources;
+        // what this form doesn't show keeps its value
+        let kept = c.sources;
+        c.sources = Sources {
+            maxmind: kept.maxmind,
+            reputation: kept.reputation,
+            relay_lists: kept.relay_lists,
+            n0_relays: kept.n0_relays,
+            ..sources
+        };
         serde_json::to_value(sources).unwrap_or_default()
     })
     .await
