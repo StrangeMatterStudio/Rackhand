@@ -34,6 +34,7 @@ fn probe_layout(root: &std::path::Path) -> Layout {
         spool_dir: "var/lib/rackhand-probe/update".into(),
         spool_file: "probe",
         artifact: ARTIFACT.into(),
+        max_bytes: MAX_RELEASE_BYTES,
     }
 }
 
@@ -48,6 +49,7 @@ fn hub_layout(root: &std::path::Path) -> Layout {
         spool_dir: "var/lib/rackhand/update".into(),
         spool_file: "rackhand",
         artifact: "rackhand-x86_64-unknown-linux-musl".into(),
+        max_bytes: MAX_RELEASE_BYTES,
     }
 }
 

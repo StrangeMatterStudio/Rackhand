@@ -76,7 +76,13 @@ impl Machine {
         let sig = sign(&key(file_key), [file_key / 0x11; 8], bytes, &format!("file:{name} version:{version}"));
         std::fs::write(spool.join("rackhand"), bytes).unwrap();
         std::fs::write(spool.join("rackhand.minisig"), sig).unwrap();
-        let manifest = Manifest::new(manifest_version, [(name.clone(), bytes)]).to_json();
+        // a release lists more than the hub: the probe sorts first
+        let probe: &[u8] = b"a probe";
+        let manifest = Manifest::new(
+            manifest_version,
+            [(name.clone(), bytes), ("rackhand-probe-x86_64-unknown-linux-musl".into(), probe)],
+        )
+        .to_json();
         let msig =
             sign(&key(manifest_key), [manifest_key / 0x11; 8], manifest.as_bytes(), "file:manifest.json version:0");
         std::fs::write(spool.join(MANIFEST), &manifest).unwrap();
@@ -114,7 +120,13 @@ fn request_only_version_trusted() {
 fn unsigned_or_lower_version_refused_no_slot_change_audited() {
     // the release's bytes, its version, the manifest's version, the file's and the manifest's signing keys, the request
     type Release<'a> = (&'a [u8], &'a str, &'a str, (u8, u8), &'a str);
-    let cases: [(&str, Release<'_>, &str); 4] = [
+    let cases: [(&str, Release<'_>, &str); 5] = [
+        // the file and the request agree, the signed manifest is another release's
+        (
+            "manifest of another version",
+            (b"the new hub", "0.1.2", "0.1.1", (0x11, 0x11), r#"{"version":"0.1.2"}"#),
+            "version_mismatch",
+        ),
         // the manifest signed by a key this updater doesn't pin
         ("other key", (b"the new hub", "0.1.1", "0.1.1", (0x11, 0x33), r#"{"version":"0.1.1"}"#), "bad_signature"),
         // the file signed by one
@@ -287,4 +299,35 @@ fn the_dashboard_says_what_the_last_update_did() {
             "The updater refused 0.1.2: signed by a key that isn't pinned (bad_signature).",
         ]
     );
+}
+
+#[test]
+fn the_hub_takes_a_release_bigger_than_a_probe_up_to_its_own_limit() {
+    let m = Machine::new("limit");
+    // bigger than the probe's 64 MB: taken
+    let big = vec![7u8; (rackhand_release::slots::MAX_RELEASE_BYTES + 1) as usize];
+    m.release(&big, "0.1.1", "0.1.1", (0x11, 0x11), r#"{"version":"0.1.1"}"#);
+    let answer = run(&m.dir, Component::Hub, v("0.1.0"), &keys(), &Fake::default(), 1);
+    assert!(answer.ok, "{answer:?}");
+    // over the hub's own: refused before it is read
+    let m = Machine::new("limit-over");
+    m.release(b"x", "0.1.1", "0.1.1", (0x11, 0x11), r#"{"version":"0.1.1"}"#);
+    std::fs::File::create(m.spool().join("rackhand")).unwrap().set_len(MAX_SERVER_BYTES + 1).unwrap();
+    let answer = run(&m.dir, Component::Hub, v("0.1.0"), &keys(), &Fake::default(), 1);
+    assert_eq!(answer.code, "too_large", "{answer:?}");
+}
+
+/// A binary installed over the units' path after there were slots (the lab's deploy, an installer run again) is what runs:
+/// the next update takes it as the version to go back to, not an older slot.
+#[test]
+fn a_binary_installed_over_the_link_is_the_one_that_runs() {
+    let m = Machine::new("reinstalled");
+    m.release(b"the new hub", "0.1.1", "0.1.1", (0x11, 0x11), r#"{"version":"0.1.1"}"#);
+    assert!(run(&m.dir, Component::Hub, v("0.1.0"), &keys(), &Fake::default(), 1).ok);
+    // slots in place; then a deploy puts a binary at /usr/local/bin/rackhand, replacing the link
+    std::fs::remove_file(m.dir.join(BIN)).unwrap();
+    std::fs::write(m.dir.join(BIN), b"deployed by hand").unwrap();
+    prepare(&m.dir).unwrap();
+    assert_eq!(std::fs::read(m.dir.join(LIB).join("rackhand")).unwrap(), b"deployed by hand");
+    assert_eq!(std::fs::read_link(m.dir.join(BIN)).unwrap(), m.dir.join(LIB).join("rackhand"));
 }

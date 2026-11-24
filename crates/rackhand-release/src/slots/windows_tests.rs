@@ -67,6 +67,7 @@ impl Machine {
             spool_dir: dir.join("ProgramData").join("Rackhand").join("probe").join("update"),
             spool_file: "probe",
             artifact: ARTIFACT.into(),
+            max_bytes: MAX_RELEASE_BYTES,
         };
         std::fs::create_dir_all(layout.lib()).unwrap();
         std::fs::create_dir_all(layout.spool_dir()).unwrap();

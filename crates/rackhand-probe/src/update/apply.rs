@@ -22,6 +22,7 @@ pub fn paths(root: &Path) -> Layout {
         spool_dir: "var/lib/rackhand-probe/update".into(),
         spool_file: "probe",
         artifact: super::artifact_name(),
+        max_bytes: rackhand_release::slots::MAX_RELEASE_BYTES,
     }
 }
 
@@ -39,5 +40,6 @@ pub fn paths(root: &Path) -> Layout {
         spool_dir: data.join("probe").join("update"),
         spool_file: "probe",
         artifact: super::artifact_name(),
+        max_bytes: rackhand_release::slots::MAX_RELEASE_BYTES,
     }
 }

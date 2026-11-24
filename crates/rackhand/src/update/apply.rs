@@ -86,7 +86,6 @@ fn checked(
         signature: data_encoding::BASE64.encode(&minisig),
     };
     let applied = apply(&layout, &Link, installed, &request, keys).map_err(fail)?;
-    start_guard(root, component, &layout, &applied, launcher).map_err(fail)?;
     Ok((version, applied))
 }
 
@@ -126,29 +125,46 @@ pub fn run(
     launcher: &dyn Launcher,
     now_ms: i64,
 ) -> Answer {
-    let answer = match checked(root, component, installed, keys, launcher) {
-        Ok((version, applied)) => Answer {
-            ok: true,
-            version: Some(version.to_string()),
-            code: "started".into(),
-            message: format!("{} is in its slot; the guard switches to it", applied.version),
-            at_ms: now_ms,
-        },
-        Err((version, e)) => Answer {
-            ok: false,
-            version: version.map(|v| v.to_string()),
-            code: e.code.into(),
-            message: e.message,
-            at_ms: now_ms,
-        },
+    let (answer, started) = match checked(root, component, installed, keys, launcher) {
+        Ok((version, applied)) => (
+            Answer {
+                ok: true,
+                version: Some(version.to_string()),
+                code: "started".into(),
+                message: format!("{} is in its slot; the guard switches to it", applied.version),
+                at_ms: now_ms,
+            },
+            Some(applied),
+        ),
+        Err((version, e)) => (
+            Answer {
+                ok: false,
+                version: version.map(|v| v.to_string()),
+                code: e.code.into(),
+                message: e.message,
+                at_ms: now_ms,
+            },
+            None,
+        ),
     };
     let spool = spool_dir(component);
-    let text = serde_json::to_string(&answer).unwrap_or_default();
-    if let Err(e) = spool::write_in(root, &spool, ANSWER, text.as_bytes()) {
-        tracing::warn!(error = %e, "writing the update's answer");
-    }
+    let write = |answer: &Answer| {
+        let text = serde_json::to_string(answer).unwrap_or_default();
+        if let Err(e) = spool::write_in(root, &spool, ANSWER, text.as_bytes()) {
+            tracing::warn!(error = %e, "writing the update's answer");
+        }
+    };
+    // the answer is there before the guard starts: the new version reads it when it comes up
+    write(&answer);
     if let Err(e) = spool::remove_in(root, &spool, REQUEST) {
         tracing::warn!(error = %e, "removing the update's request");
+    }
+    if let Some(applied) = started {
+        if let Err(e) = start_guard(root, component, &layout(root, component), &applied, launcher) {
+            let failed = Answer { ok: false, code: e.code.into(), message: e.message, ..answer };
+            write(&failed);
+            return failed;
+        }
     }
     answer
 }

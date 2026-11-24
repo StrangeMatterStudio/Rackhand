@@ -252,6 +252,11 @@ fn ulid_like() -> u128 {
 /// A static musl binary built with `features` and told it is `version` (`RACKHAND_PROBE_VERSION`, which a `lab-build` of
 /// the probe honors), to play a newer release in the update tests.
 pub fn musl_binary_versioned(package: &str, bin: &str, features: &str, version: &str) -> PathBuf {
+    musl_binary_versioned_by(package, bin, features, "RACKHAND_PROBE_VERSION", version)
+}
+
+/// The same, with the version in `var` (`RACKHAND_LAB_VERSION` for `rackhand`).
+pub fn musl_binary_versioned_by(package: &str, bin: &str, features: &str, var: &str, version: &str) -> PathBuf {
     static BUILT: OnceLock<std::sync::Mutex<std::collections::HashMap<String, PathBuf>>> = OnceLock::new();
     let key = format!("{bin}+{features}@{version}");
     let cache = BUILT.get_or_init(Default::default);
@@ -263,7 +268,7 @@ pub fn musl_binary_versioned(package: &str, bin: &str, features: &str, version: 
     let out = Command::new(cargo)
         .args(["build", "-q", "-p", package, "--bin", bin, "--features", features, "--message-format=json"])
         .args(["--target", "x86_64-unknown-linux-musl"])
-        .args(["--config", &format!("env.RACKHAND_PROBE_VERSION=\"{version}\"")])
+        .args(["--config", &format!("env.{var}=\"{version}\"")])
         .stderr(Stdio::inherit())
         .output()
         .unwrap_or_else(|e| panic!("cargo build {bin}: {e}"));

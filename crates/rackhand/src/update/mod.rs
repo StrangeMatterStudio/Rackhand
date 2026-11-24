@@ -68,6 +68,10 @@ impl Component {
     }
 }
 
+/// The largest release the updater takes. The design gives the probe's spool 64 MB and nothing for the hub's, which is the bigger
+/// binary; a release build is well under this, a debug build (the integration tests') is not under the probe's.
+pub const MAX_SERVER_BYTES: u64 = 256 << 20;
+
 /// The slots' directory.
 pub const LIB: &str = "usr/local/lib/rackhand-server";
 /// What the units run: a link to the slots' link.
@@ -104,11 +108,13 @@ pub fn layout(root: &Path, component: Component) -> Layout {
         spool_dir: spool_dir(component),
         spool_file: "rackhand",
         artifact: artifact(),
+        max_bytes: MAX_SERVER_BYTES,
     }
 }
 
-/// A machine installed before there were slots has the binary itself at `/usr/local/bin/rackhand`: it moves into the slots'
-/// directory as the plain file the first update turns into slot A, and `/usr/local/bin/rackhand` becomes a link to it.
+/// A machine installed before there were slots, or a binary installed again over the link since, has the binary itself at
+/// `/usr/local/bin/rackhand`: it moves into the slots' directory as the plain file the next update turns into slot A, and
+/// `/usr/local/bin/rackhand` becomes a link to it.
 pub fn prepare(root: &Path) -> std::io::Result<()> {
     let bin = root.join(BIN);
     let lib = root.join(LIB);
@@ -118,9 +124,8 @@ pub fn prepare(root: &Path) -> std::io::Result<()> {
     if meta.file_type().is_symlink() {
         return Ok(());
     }
-    if std::fs::symlink_metadata(&link).is_err() {
-        Layout::replace(&link, &std::fs::read(&bin)?, 0o755)?;
-    }
+    // a plain file there is what was installed last, slots or not: it is what the next update goes back to
+    Layout::replace(&link, &std::fs::read(&bin)?, 0o755)?;
     let tmp = bin.with_extension("link");
     let _ = std::fs::remove_file(&tmp);
     std::os::unix::fs::symlink(&link, &tmp)?;

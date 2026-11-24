@@ -42,4 +42,7 @@ mod support;
 #[path = "update_it.rs"]
 mod update;
 #[cfg(test)]
+#[path = "updater_it.rs"]
+mod updater_it;
+#[cfg(test)]
 mod wrapper;

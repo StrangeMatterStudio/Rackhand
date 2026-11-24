@@ -183,6 +183,7 @@ mod tests {
             spool_dir: PathBuf::from(r"C:\ProgramData\Rackhand\probe\update"),
             spool_file: "probe",
             artifact: "rackhand-probe-x86_64-pc-windows-gnu.exe".into(),
+            max_bytes: rackhand_release::slots::MAX_RELEASE_BYTES,
         }
     }
 

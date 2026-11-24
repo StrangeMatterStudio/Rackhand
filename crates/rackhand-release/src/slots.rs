@@ -36,6 +36,8 @@ pub struct Layout {
     pub spool_file: &'static str,
     /// The name the signature's trusted comment gives the release file.
     pub artifact: String,
+    /// The largest release this layout takes: the probe's spool holds at most 64 MB ([`MAX_RELEASE_BYTES`]).
+    pub max_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -311,11 +313,11 @@ pub fn apply(
     let inactive = old.other();
     let mut bytes = Vec::new();
     layout
-        .open_in_spool(layout.spool_file, MAX_RELEASE_BYTES)?
-        .take(MAX_RELEASE_BYTES + 1)
+        .open_in_spool(layout.spool_file, layout.max_bytes)?
+        .take(layout.max_bytes + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| refuse("spool_unreadable", e.to_string()))?;
-    if bytes.len() as u64 > MAX_RELEASE_BYTES {
+    if bytes.len() as u64 > layout.max_bytes {
         return Err(refuse("too_large", "the spool file grew past the limit"));
     }
     let target = layout.slot(inactive);
