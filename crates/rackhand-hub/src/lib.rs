@@ -23,4 +23,5 @@ pub mod scheduler;
 pub mod selfwatch;
 pub mod ssh;
 pub mod vault;
+pub mod version;
 pub mod web;

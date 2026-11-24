@@ -620,7 +620,14 @@ pub fn probe_server_settings(db: &Db) -> ServerSettings {
         }
         Err(e) => tracing::warn!(error = %e, "probe settings: using the defaults"),
     }
-    ServerSettings { config, ..ServerSettings::default() }
+    let hub_version = crate::VERSION.to_string();
+    let rule = hub_version.clone();
+    ServerSettings {
+        hub_version,
+        supports: Arc::new(move |probe: &str| rackhand_hub::version::accepts(&rule, probe)),
+        config,
+        ..ServerSettings::default()
+    }
 }
 
 /// The systems that run the step kinds other than `ssh` (7.8.7): `notify` by Notify, `wait_report` by Ingest.

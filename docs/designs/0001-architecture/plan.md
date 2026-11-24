@@ -309,7 +309,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | T92 | Probe self-update | T91, T43 | unit + integration | done |
 | T93 | Hub, relay and operator updater | T91, T45 | unit + integration | done |
 | T94 | Site bootstrap and LXC script | T93, T44 | integration + live (L8, L9) | done |
-| T95 | Version compatibility | T42, T77, T82, T86 | contract | todo |
+| T95 | Version compatibility | T42, T77, T82, T86 | contract | in progress |
 | T96 | Performance tier | T42, T68, T05, T06 | performance | todo |
 | T97 | Offline operation | T59 | integration | todo |
 | T98 | Retention for every table and settings ranges | T85, T76, T70 | unit | todo |
@@ -4539,6 +4539,7 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-24 | cargo nextest run -p rackhand-hub --lib -E 'test(version::)'; cargo nextest run -p rackhand --bin rackhand -E 'test(probe_server_takes)' | 6 + 1 passed. Seen failing first: 5 of the 6 rule tests against a stub that accepts everything; the hub test against a planted fault (the probe server accepting any version). The rule (`rackhand_hub::version::accepts`): the hub's own minor or one minor older, any patch, the same major, a version that doesn't parse refused; the probe server now uses it with the hub's own version (it accepted any version before), so a probe two minors older closes with `0x12`. Fast tier: 985 of 986 passed; `probe_daemon::probe::unsupported_version_retries_hourly` (its own version settings, untouched here) timed out under load at 32 s and passed alone in 11 s. The operator, relay, CLI and peer checks and `xtask compat` follow |
 
 ### T96: Performance tier
 - **Design refs:** 5.2 (probe and hub footprint, latency), 11, AC2 (2-hour version), AC42, AC66 (load part), AC69

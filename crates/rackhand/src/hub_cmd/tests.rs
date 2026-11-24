@@ -286,6 +286,26 @@ async fn probe_welcome_from_settings() {
     }
 }
 
+#[test]
+fn probe_server_takes_its_own_minor_and_one_older() {
+    let dir = temp("probe-versions");
+    let db = Arc::new(Db::open(&dir.join("hub.db")).unwrap());
+    let settings = probe_server_settings(&db);
+    assert_eq!(settings.hub_version, crate::VERSION, "the Welcome names the hub's own version");
+    let v = rackhand_release::binary::Version::parse(crate::VERSION).unwrap();
+    let ok = |s: String| (settings.supports)(&s);
+    assert!(ok(crate::VERSION.into()));
+    assert!(ok(format!("{}.{}.99", v.0, v.1)), "any patch of the same minor");
+    if v.1 >= 1 {
+        assert!(ok(format!("{}.{}.0", v.0, v.1 - 1)), "one minor older");
+    }
+    if v.1 >= 2 {
+        assert!(!ok(format!("{}.{}.0", v.0, v.1 - 2)), "two minors older");
+    }
+    assert!(!ok(format!("{}.{}.0", v.0, v.1 + 1)), "a newer minor");
+    assert!(!ok(String::new()), "no version");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn step_kinds_reach_their_systems() {
     use rackhand_hub::actions::runner::{StepCtx, StepOutcome, StepRunner};
