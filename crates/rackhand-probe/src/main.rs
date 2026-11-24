@@ -1,9 +1,13 @@
 //! Composition root for the probe and its root helper (design 7.2).
 
 use std::process::ExitCode;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(not(windows))]
+use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use rackhand_probe::collect::{self, Config, RootHost, SelfUse, Stamp};
+#[cfg(not(windows))]
+use rackhand_probe::collect::RootHost;
+use rackhand_probe::collect::{self, Config, SelfUse, Stamp};
 
 const USAGE: &str = "usage: rackhand-probe --version
        rackhand-probe collect --once --json [--root <dir>] [--interval-ms <n>]
@@ -21,10 +25,14 @@ fn main() -> ExitCode {
     let argv0 = std::env::args().next().unwrap_or_default();
     let args: Vec<String> = std::env::args().skip(1).collect();
     // Installed as /usr/local/lib/rackhand/run, the binary is the command wrapper (7.3.7).
+    #[cfg(unix)]
     if std::path::Path::new(&argv0).file_name().is_some_and(|n| n == "run") {
         return rackhand_probe::runcmd::main(&args);
     }
+    #[cfg(not(unix))]
+    let _ = &argv0;
     match args.first().map(String::as_str) {
+        #[cfg(unix)]
         Some("run-cmd") => rackhand_probe::runcmd::main(&args[1..]),
         Some("--version") => {
             println!("rackhand-probe {}", env!("CARGO_PKG_VERSION"));
@@ -42,6 +50,10 @@ fn main() -> ExitCode {
         Some("set-hub") => set_hub(&args[1..]),
         #[cfg(target_os = "linux")]
         Some("helper") => helper(&args[1..]),
+        #[cfg(windows)]
+        Some("helper") => windows_cmd::helper(&args[1..]),
+        #[cfg(windows)]
+        Some("service") => windows_cmd::service(&args[1..]),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -68,15 +80,41 @@ fn collect_once(args: &[String]) -> ExitCode {
     if !(once && json) {
         return usage();
     }
-    let host = root.map_or_else(RootHost::system, RootHost::new);
     let cfg = Config::default();
+    // Windows has no /proc to read: the collection is CIM's, and the rates come from it already (FR-2)
+    #[cfg(windows)]
+    {
+        let _ = (&root, interval_ms);
+        let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("rackhand-probe: {e}");
+                return ExitCode::from(1);
+            }
+        };
+        let now = now_ms();
+        let at = Stamp { wall_ms: now, mono_ms: 0 };
+        let collection = runtime.block_on(rackhand_probe::windows::collect::collect(at, &cfg, SelfUse::default()));
+        println!("{}", collect::to_json(&collection, now));
+        ExitCode::SUCCESS
+    }
+    #[cfg(not(windows))]
+    {
+        let host = root.map_or_else(RootHost::system, RootHost::new);
+        two_snapshots(&host, &cfg, interval_ms)
+    }
+}
+
+/// Two snapshots an interval apart, printed as one sample set.
+#[cfg(not(windows))]
+fn two_snapshots(host: &RootHost, cfg: &Config, interval_ms: u64) -> ExitCode {
     let start = std::time::Instant::now();
-    let first = collect::collect_at(&host, None, Stamp { wall_ms: now_ms(), mono_ms: 0 }, &cfg, SelfUse::default());
+    let first = collect::collect_at(host, None, Stamp { wall_ms: now_ms(), mono_ms: 0 }, cfg, SelfUse::default());
     std::thread::sleep(Duration::from_millis(interval_ms));
     let now = now_ms();
     let self_use = SelfUse { rss_bytes: collect::own_rss_bytes(), ..SelfUse::default() };
     let at = Stamp { wall_ms: now, mono_ms: start.elapsed().as_millis() as i64 };
-    let second = collect::collect_at(&host, Some(&first.snapshot), at, &cfg, self_use);
+    let second = collect::collect_at(host, Some(&first.snapshot), at, cfg, self_use);
     println!("{}", collect::to_json(&second, now));
     ExitCode::SUCCESS
 }
@@ -304,6 +342,85 @@ fn uninstall(args: &[String]) -> ExitCode {
         Err(e) => {
             eprintln!("rackhand-probe: {e}");
             ExitCode::from(1)
+        }
+    }
+}
+
+/// The commands only Windows has (7.3.3): the helper and the services.
+#[cfg(windows)]
+mod windows_cmd {
+    use std::process::ExitCode;
+    use std::sync::Arc;
+
+    use rackhand_probe::windows::service;
+    use tokio::sync::Notify;
+
+    fn usage() -> ExitCode {
+        eprintln!("usage: rackhand-probe helper [--pipe <name>]\n       rackhand-probe service probe|helper");
+        ExitCode::from(2)
+    }
+
+    async fn helper_body(path: String) -> Result<(), String> {
+        let helper = rackhand_probe::helper::server::Helper::new(env!("CARGO_PKG_VERSION"));
+        rackhand_probe::windows::pipe::serve(&path, helper).await.map_err(|e| format!("{path}: {e}"))
+    }
+
+    /// `helper`: the helper in this console, for trying it by hand.
+    pub fn helper(args: &[String]) -> ExitCode {
+        rackhand_probe::logging::init();
+        let mut path = rackhand_probe::helper::SOCKET.to_string();
+        let mut it = args.iter();
+        while let Some(a) = it.next() {
+            match (a.as_str(), it.next()) {
+                ("--pipe", Some(v)) => path = v.clone(),
+                _ => return usage(),
+            }
+        }
+        let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("rackhand-probe: {e}");
+                return ExitCode::from(1);
+            }
+        };
+        match runtime.block_on(helper_body(path)) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("rackhand-probe helper: {e}");
+                ExitCode::from(1)
+            }
+        }
+    }
+
+    /// `service probe` and `service helper`: what the Service Control Manager starts.
+    pub fn service(args: &[String]) -> ExitCode {
+        let result = match args {
+            [which] if which == "probe" => service::dispatch("RackhandProbe", |stop: Arc<Notify>| {
+                Box::pin(async move {
+                    rackhand_probe::logging::init();
+                    tokio::select! {
+                        r = rackhand_probe::run::main(rackhand_probe::run::Paths::default()) => r.map(|_| ()),
+                        () = stop.notified() => Ok(()),
+                    }
+                })
+            }),
+            [which] if which == "helper" => service::dispatch("RackhandHelper", |stop: Arc<Notify>| {
+                Box::pin(async move {
+                    rackhand_probe::logging::init();
+                    tokio::select! {
+                        r = helper_body(rackhand_probe::helper::SOCKET.to_string()) => r,
+                        () = stop.notified() => Ok(()),
+                    }
+                })
+            }),
+            _ => return usage(),
+        };
+        match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("rackhand-probe service: {e}");
+                ExitCode::from(1)
+            }
         }
     }
 }

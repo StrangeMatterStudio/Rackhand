@@ -22,7 +22,7 @@ rackhand-net = { path = "../rackhand-net" }
 rackhand-drivers = { path = "../rackhand-drivers" }
 url = "2"
 iroh = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["process"] }
 getrandom = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -36,6 +36,7 @@ regex = "1"
 blake3 = "1"
 data-encoding = "2"
 sha2 = { workspace = true }
+sha1 = "0.11"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # statvfs without unsafe code.
@@ -43,3 +44,14 @@ rustix = { version = "1", default-features = false, features = ["std", "fs", "pr
 
 [lints]
 workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# The connection tables, the pipe's security descriptor and the service manager (T89); every call is in `src/windows`.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Services",
+] }

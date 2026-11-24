@@ -11,9 +11,10 @@ pub mod logging;
 pub mod probe_check;
 pub mod remote;
 pub mod run;
-pub mod runcmd;
 #[cfg(unix)]
+pub mod runcmd;
 pub mod security;
 pub mod set_hub;
 #[cfg(unix)]
 pub mod uninstall;
+pub mod windows;

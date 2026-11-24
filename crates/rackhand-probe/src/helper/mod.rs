@@ -11,6 +11,7 @@ pub mod containers;
 pub mod daemon;
 #[cfg(unix)]
 pub mod hash;
+#[cfg(unix)]
 pub mod keys;
 #[cfg(unix)]
 pub mod layout;
@@ -21,4 +22,8 @@ pub mod server;
 #[cfg(unix)]
 pub mod sockets;
 
+#[cfg(unix)]
 pub const SOCKET: &str = "/run/rackhand-helper/helper.sock";
+/// The helper's named pipe on Windows (7.3.3).
+#[cfg(windows)]
+pub const SOCKET: &str = r"\\.\pipe\rackhand-helper";

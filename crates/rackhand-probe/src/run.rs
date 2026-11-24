@@ -476,13 +476,20 @@ fn spawn_collector(
         });
     }
     tokio::spawn(async move {
+        #[cfg_attr(windows, allow(unused_assignments, unused_variables))]
         let mut prev: Option<Snapshot> = None;
         loop {
             let Settings { interval, collect: cfg } = settings.borrow().clone();
             let at = Stamp { wall_ms: clock.now_ms(), mono_ms: clock.mono_ms() };
             let self_use = SelfUse { rss_bytes: collect::own_rss_bytes(), ..SelfUse::default() };
+            #[cfg(not(windows))]
             let collection = collect::collect_at(host.as_ref(), prev.as_ref(), at, &cfg, self_use);
-            prev = Some(collection.snapshot.clone());
+            #[cfg(windows)]
+            let collection = crate::windows::collect::collect(at, &cfg, self_use).await;
+            #[cfg_attr(windows, allow(unused_assignments))]
+            {
+                prev = Some(collection.snapshot.clone());
+            }
             let helper = match &helper {
                 Some(h) => h.collect().await,
                 None => HelperData::default(),
@@ -509,11 +516,22 @@ pub struct Paths {
 }
 
 impl Default for Paths {
+    #[cfg(unix)]
     fn default() -> Paths {
         Paths {
             config: crate::config::PATH.into(),
             data_dir: "/var/lib/rackhand-probe".into(),
             state_file: "/run/rackhand-probe/probe.state".into(),
+            root: None,
+        }
+    }
+
+    #[cfg(windows)]
+    fn default() -> Paths {
+        Paths {
+            config: crate::config::PATH.into(),
+            data_dir: r"C:\ProgramData\Rackhand\probe\data".into(),
+            state_file: r"C:\ProgramData\Rackhand\probe\probe.state".into(),
             root: None,
         }
     }
@@ -576,7 +594,10 @@ pub async fn main(paths: Paths) -> Result<i32, String> {
     // the MACs the hub compares with the guests' configurations (guest binding, 7.3.12)
     link_cfg.interfaces = collect::interfaces(host.as_ref());
     // what this probe can do (E36): sampling until the eBPF capture is loaded, with the helper and the engine's socket
+    #[cfg(unix)]
     let containers = crate::helper::containers::SOCKETS.iter().any(|s| std::path::Path::new(s).exists());
+    #[cfg(not(unix))]
+    let containers = false;
     link_cfg.capabilities = crate::security::capability::all(host.as_ref(), false, true, containers);
     let link = Link::new(endpoint, link_cfg, buffer, crate::buffer::epoch::EpochState::start(backlog));
     if let Some(dir) = paths.state_file.parent() {

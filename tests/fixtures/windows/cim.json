@@ -1,0 +1,30 @@
+{
+  "os": {"TotalVisibleMemorySize": 16777216, "FreePhysicalMemory": 4194304, "TotalVirtualMemorySize": 19922944, "FreeVirtualMemory": 7340032, "UptimeS": 172800},
+  "cpu": [
+    {"Name": "_Total", "PercentProcessorTime": 23},
+    {"Name": "0", "PercentProcessorTime": 40},
+    {"Name": "1", "PercentProcessorTime": 6}
+  ],
+  "disks": [
+    {"DeviceID": "C:", "Size": 255000000000, "FreeSpace": 51000000000, "DriveType": 3},
+    {"DeviceID": "D:", "Size": 1000000000000, "FreeSpace": 900000000000, "DriveType": 3},
+    {"DeviceID": "E:", "Size": 0, "FreeSpace": 0, "DriveType": 5}
+  ],
+  "net": [
+    {"Name": "Ethernet Adapter #2", "BytesReceivedPersec": 12000, "BytesSentPersec": 8000, "PacketsReceivedPersec": 90, "PacketsSentPersec": 70, "PacketsReceivedErrors": 1, "PacketsOutboundErrors": 2},
+    {"Name": "isatap.{4D3F2A1B-0000-4000-8000-000000000001}", "BytesReceivedPersec": 0, "BytesSentPersec": 0, "PacketsReceivedPersec": 0, "PacketsSentPersec": 0, "PacketsReceivedErrors": 0, "PacketsOutboundErrors": 0},
+    {"Name": "Loopback Pseudo-Interface 1", "BytesReceivedPersec": 100, "BytesSentPersec": 100, "PacketsReceivedPersec": 1, "PacketsSentPersec": 1, "PacketsReceivedErrors": 0, "PacketsOutboundErrors": 0}
+  ],
+  "physdisk": [
+    {"Name": "0 C: D:", "DiskReadBytesPersec": 400000, "DiskWriteBytesPersec": 900000, "DiskReadsPersec": 30, "DiskWritesPersec": 60, "PercentDiskTime": 12},
+    {"Name": "_Total", "DiskReadBytesPersec": 400000, "DiskWriteBytesPersec": 900000, "DiskReadsPersec": 30, "DiskWritesPersec": 60, "PercentDiskTime": 12}
+  ],
+  "services": [
+    {"Name": "Spooler", "State": "Running", "StartMode": "Auto", "ExitCode": 0},
+    {"Name": "W32Time", "State": "Stopped", "StartMode": "Manual", "ExitCode": 0},
+    {"Name": "ExampleSync", "State": "Stopped", "StartMode": "Auto", "ExitCode": 1066},
+    {"Name": "WSearch", "State": "Stopped", "StartMode": "Auto", "ExitCode": 1077},
+    {"Name": "BITS", "State": "Start Pending", "StartMode": "Auto", "ExitCode": 0},
+    {"Name": "Fax", "State": "Stopped", "StartMode": "Disabled", "ExitCode": 0}
+  ]
+}

@@ -1,0 +1,15 @@
+[
+  {"Id": 4624, "TimeMs": 1763899400000, "LogonType": 10, "User": "alice", "Domain": "WS01", "Ip": "192.0.2.55"},
+  {"Id": 4624, "TimeMs": 1763899410000, "LogonType": 2, "User": "alice", "Domain": "WS01", "Ip": null},
+  {"Id": 4624, "TimeMs": 1763899420000, "LogonType": 3, "User": "bob", "Domain": "WS01", "Ip": "198.51.100.23"},
+  {"Id": 4624, "TimeMs": 1763899430000, "LogonType": 5, "User": "SYSTEM", "Domain": "NT AUTHORITY", "Ip": null},
+  {"Id": 4624, "TimeMs": 1763899440000, "LogonType": 4, "User": "alice", "Domain": "WS01", "Ip": null},
+  {"Id": 4624, "TimeMs": 1763899450000, "LogonType": 7, "User": "alice", "Domain": "WS01", "Ip": null},
+  {"Id": 4624, "TimeMs": 1763899460000, "LogonType": 11, "User": "alice", "Domain": "WS01", "Ip": null},
+  {"Id": 4624, "TimeMs": 1763899470000, "LogonType": 3, "User": "WS01$", "Domain": "EXAMPLE", "Ip": "192.0.2.80"},
+  {"Id": 4624, "TimeMs": 1763899480000, "LogonType": 3, "User": "ANONYMOUS LOGON", "Domain": "NT AUTHORITY", "Ip": "192.0.2.81"},
+  {"Id": 4625, "TimeMs": 1763899490000, "LogonType": 3, "User": "admin", "Domain": "WS01", "Ip": "203.0.113.9"},
+  {"Id": 4625, "TimeMs": 1763899500000, "LogonType": 10, "User": "administrator", "Domain": "WS01", "Ip": "203.0.113.9"},
+  {"Id": 4625, "TimeMs": 1763899510000, "LogonType": 8, "User": "alice", "Domain": "WS01", "Ip": null},
+  {"Id": 4672, "TimeMs": 1763899520000, "LogonType": 0, "User": "alice", "Domain": "WS01", "Ip": null}
+]

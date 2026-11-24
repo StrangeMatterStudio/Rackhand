@@ -1,0 +1,10 @@
+[
+  {"ProcessId": 4, "ParentProcessId": 0, "ExecutablePath": null, "StartMs": 1763890000000, "UserName": null},
+  {"ProcessId": 812, "ParentProcessId": 4, "ExecutablePath": "C:\\Windows\\System32\\svchost.exe", "StartMs": 1763890010000, "UserName": "NT AUTHORITY\\SYSTEM"},
+  {"ProcessId": 4120, "ParentProcessId": 3300, "ExecutablePath": "C:\\Users\\alice\\AppData\\Local\\Temp\\setup-3f9a.exe", "StartMs": 1763899000000, "UserName": "WS01\\alice"},
+  {"ProcessId": 4188, "ParentProcessId": 4120, "ExecutablePath": "C:\\Users\\alice\\Downloads\\tool.exe", "StartMs": 1763899005000, "UserName": "WS01\\alice"},
+  {"ProcessId": 5200, "ParentProcessId": 812, "ExecutablePath": "C:\\Program Files\\Example App\\app.exe", "StartMs": 1763890050000, "UserName": "WS01\\alice"},
+  {"ProcessId": 5300, "ParentProcessId": 812, "ExecutablePath": "C:\\Windows\\Temp\\update.exe", "StartMs": 1763899100000, "UserName": "NT AUTHORITY\\SYSTEM"},
+  {"ProcessId": 5400, "ParentProcessId": 812, "ExecutablePath": "C:\\Users\\alice\\Documents\\Downloads archive\\notes.exe", "StartMs": 1763899200000, "UserName": "WS01\\alice"},
+  {"ProcessId": 5500, "ParentProcessId": 812, "ExecutablePath": "D:\\USERS\\BOB\\APPDATA\\LOCAL\\TEMP\\Run.EXE", "StartMs": 1763899300000, "UserName": "WS01\\bob"}
+]

@@ -96,6 +96,14 @@ pub struct Snapshot {
     nets: BTreeMap<String, NetCounters>,
 }
 
+impl Snapshot {
+    /// A snapshot with no counters, for a collector that reads rates the system already computed (Windows).
+    #[cfg(windows)]
+    pub(crate) fn at(at_ms: i64, mono_ms: i64) -> Snapshot {
+        Snapshot { at_ms, mono_ms, ..Snapshot::default() }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Collection {
     pub series: Vec<Series>,
@@ -120,7 +128,7 @@ pub fn interfaces(host: &dyn Host) -> Vec<rackhand_proto::common::IfaceInfo> {
         .collect()
 }
 
-fn matches(name: &str, patterns: &[&str]) -> bool {
+pub(crate) fn matches(name: &str, patterns: &[&str]) -> bool {
     patterns.iter().any(|p| match p.strip_suffix('*') {
         Some(prefix) => name.starts_with(prefix),
         None => name == *p,
@@ -131,12 +139,12 @@ fn under(path: &str, root: &str) -> bool {
     path == root || path.strip_prefix(root).is_some_and(|rest| rest.starts_with('/'))
 }
 
-struct Out {
-    series: Vec<Series>,
+pub(crate) struct Out {
+    pub(crate) series: Vec<Series>,
 }
 
 impl Out {
-    fn push(&mut self, metric: &'static str, label: Option<String>, value: f64) {
+    pub(crate) fn push(&mut self, metric: &'static str, label: Option<String>, value: f64) {
         let Some(m) = catalogue::by_name(metric) else { return };
         let labels = match (m.label, label) {
             (Some(k), Some(v)) => BTreeMap::from([(k, v)]),
@@ -148,7 +156,7 @@ impl Out {
     }
 }
 
-fn pct(part: f64, whole: f64) -> f64 {
+pub(crate) fn pct(part: f64, whole: f64) -> f64 {
     if whole > 0.0 { 100.0 * part / whole } else { 0.0 }
 }
 

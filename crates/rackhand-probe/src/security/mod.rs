@@ -73,7 +73,14 @@ impl Sampler {
         now_ms: i64,
     ) -> (Vec<aggregate::Observed>, Vec<ProbeEvent>) {
         let (mut seen, mut events) = (Vec::new(), Vec::new());
+        #[cfg(not(windows))]
         let sockets = conntable::read(host);
+        // Windows has no /proc: the tables come from GetExtendedTcpTable and GetExtendedUdpTable (FR-4)
+        #[cfg(windows)]
+        let sockets = {
+            let _ = host;
+            crate::windows::conntable::read()
+        };
         let interesting = |s: &&conntable::Socket| s.outbound() || s.listening();
         let present: BTreeSet<u64> = sockets.iter().filter(interesting).map(|s| s.inode).collect();
         let wanted: Vec<u64> = present.iter().copied().filter(|i| !self.owners.contains_key(i)).take(4096).collect();

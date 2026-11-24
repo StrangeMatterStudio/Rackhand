@@ -2,6 +2,8 @@
 resolver = "2"
 members = ["crates/*", "tests/it", "tests/net", "tests/ebpf", "tests/perf", "tests/live", "xtask"]
 default-members = ["crates/*", "xtask"]
+# a patched copy of a dependency (see [patch.crates-io]) is built, not linted or tested as ours
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -78,3 +80,10 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+# iroh and iroh-relay 1.5.0 as published, except that their manifests ask for a cdylib too: it exports more than the 65535
+# symbols a Windows DLL can hold, so it stops the x86_64-pc-windows-gnu probe and CLI from linking (T89, D163). Only
+# `crate-type` differs, and the tests and examples are left out; remove this when upstream does.
+[patch.crates-io]
+iroh = { path = "vendor/iroh" }
+iroh-relay = { path = "vendor/iroh-relay" }

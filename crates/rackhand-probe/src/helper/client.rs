@@ -1,11 +1,11 @@
-//! The probe's side of the helper socket (7.3.3). Probe and helper must be the same version: on a mismatch the probe
+//! Th            let (read, mut write) = connect(&self.path).await.map_err(|e| e.to_string())?; probe's side of the helper socket (7.3.3). Probe and helper must be the same version: on a mismatch the probe
 //! runs without the helper's features and reports `helper_version_mismatch` (once, until the versions match again).
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use rackhand_proto::helper::{ContainerInfo, HelperRequest, HelperResponse, UpdateSummary};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -32,8 +32,7 @@ impl HelperClient {
 
     pub async fn request(&self, request: &HelperRequest) -> Result<HelperResponse, String> {
         tokio::time::timeout(TIMEOUT, async {
-            let stream = tokio::net::UnixStream::connect(&self.path).await.map_err(|e| e.to_string())?;
-            let (read, mut write) = stream.into_split();
+            let (read, mut write) = connect(&self.path).await.map_err(|e| e.to_string())?;
             let mut line = serde_json::to_string(request).map_err(|e| e.to_string())?;
             line.push('\n');
             write.write_all(line.as_bytes()).await.map_err(|e| e.to_string())?;
@@ -103,4 +102,21 @@ impl HelperClient {
         };
         HelperData { containers, updates, mismatch: None }
     }
+}
+
+type Halves = (Box<dyn AsyncRead + Unpin + Send>, Box<dyn AsyncWrite + Unpin + Send>);
+
+/// The helper's local socket on Unix.
+#[cfg(unix)]
+async fn connect(path: &std::path::Path) -> std::io::Result<Halves> {
+    let (read, write) = tokio::net::UnixStream::connect(path).await?.into_split();
+    Ok((Box::new(read), Box::new(write)))
+}
+
+/// The helper's named pipe on Windows (7.3.3): only `NT SERVICE\RackhandProbe` may open it.
+#[cfg(windows)]
+async fn connect(path: &std::path::Path) -> std::io::Result<Halves> {
+    let pipe = tokio::net::windows::named_pipe::ClientOptions::new().open(path)?;
+    let (read, write) = tokio::io::split(pipe);
+    Ok((Box::new(read), Box::new(write)))
 }

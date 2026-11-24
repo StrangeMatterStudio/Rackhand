@@ -10,6 +10,7 @@ use rackhand_proto::helper::{HelperRequest, HelperResponse, UpdateSummary, parse
 pub const MAX_LINE: usize = 64 * 1024;
 
 #[derive(Debug, Default)]
+#[cfg_attr(windows, allow(dead_code))]
 struct State {
     updates: Option<(UpdateSummary, i64)>,
     /// The critical files' hashes as of the last refresh (every 5 minutes and on a change, T66).
@@ -21,8 +22,11 @@ struct State {
 pub struct Machine {
     #[cfg(unix)]
     pub roots: super::hash::Roots,
+    #[cfg(unix)]
     pub proc: std::path::PathBuf,
+    #[cfg(unix)]
     pub cgroup: std::path::PathBuf,
+    #[cfg(unix)]
     pub passwd: std::path::PathBuf,
 }
 
@@ -31,8 +35,11 @@ impl Default for Machine {
         Machine {
             #[cfg(unix)]
             roots: super::hash::Roots::default(),
+            #[cfg(unix)]
             proc: "/proc".into(),
+            #[cfg(unix)]
             cgroup: "/sys/fs/cgroup".into(),
+            #[cfg(unix)]
             passwd: "/etc/passwd".into(),
         }
     }
@@ -44,10 +51,13 @@ pub struct Helper {
     version: String,
     state: Mutex<State>,
     /// One key update at a time, so an older one can't end after a newer one.
+    #[cfg(unix)]
     keys: Mutex<super::keys::Files>,
+    #[cfg(unix)]
     machine: Machine,
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
@@ -57,16 +67,25 @@ fn error(code: &str, message: impl Into<String>) -> HelperResponse {
 }
 
 impl Helper {
+    #[cfg(unix)]
     pub fn new(version: &str) -> Arc<Helper> {
         Helper::with_keys(version, super::keys::Files::default())
     }
 
+    /// The Windows helper: what it answers needs no files of a Unix machine.
+    #[cfg(windows)]
+    pub fn new(version: &str) -> Arc<Helper> {
+        Arc::new(Helper { version: version.into(), state: Mutex::new(State::default()) })
+    }
+
     /// The same, with key updates applied to `keys`.
+    #[cfg(unix)]
     pub fn with_keys(version: &str, keys: super::keys::Files) -> Arc<Helper> {
         Helper::with_machine(version, keys, Machine::default())
     }
 
     /// The same, reading `machine`.
+    #[cfg(unix)]
     pub fn with_machine(version: &str, keys: super::keys::Files, machine: Machine) -> Arc<Helper> {
         Arc::new(Helper {
             version: version.into(),
@@ -180,6 +199,7 @@ impl Helper {
                 let items = super::procscan::scan(&self.machine.proc, &self.passwd(), boot, 100);
                 HelperResponse::Processes { items }
             }
+            #[cfg(unix)]
             HelperRequest::ApplyKeys { payload, hub_signature } => {
                 let files = self.keys.lock().unwrap_or_else(|e| e.into_inner());
                 match super::keys::apply(&files, &payload, &hub_signature, now_ms()) {

@@ -7,7 +7,11 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+#[cfg(unix)]
 pub const PATH: &str = "/etc/rackhand-probe/probe.toml";
+/// Where the Windows probe keeps its files (7.3.3): ACLs allow only SYSTEM, Administrators and the probe service.
+#[cfg(windows)]
+pub const PATH: &str = r"C:\ProgramData\Rackhand\probe\probe.toml";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigError {

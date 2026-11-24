@@ -34,7 +34,15 @@ fn admin_group(group: &str) -> bool {
 pub fn severity(kind: &str, fields: &BTreeMap<String, String>) -> Option<Severity> {
     let field = |k: &str| fields.get(k).map(String::as_str).unwrap_or("");
     Some(match kind {
-        "proc.exec_from_tmp" => Severity::Critical,
+        // Linux: under /tmp, /var/tmp or /dev/shm, or deleted. Windows (a path with a drive letter): under %TEMP% or Downloads.
+        "proc.exec_from_tmp" => {
+            let exe = field("exe").as_bytes();
+            if exe.get(1) == Some(&b':') && exe.first().is_some_and(u8::is_ascii_alphabetic) {
+                Severity::Warning
+            } else {
+                Severity::Critical
+            }
+        }
         "port.new_listener" => Severity::Warning,
         "conn.overflow" | "series_cap_reached" | "auth.login" | "auth.failed" => Severity::Info,
         "helper_version_mismatch" => Severity::Warning,
@@ -144,6 +152,10 @@ mod tests {
         let cases: Vec<(&str, BTreeMap<String, String>, Option<Severity>)> = vec![
             ("conn.known_bad", f(&[]), None), // the hub's own scoring raises it, not a probe
             ("proc.exec_from_tmp", f(&[("exe", "/tmp/x")]), Some(Critical)),
+            // Windows: an executable under %TEMP% or Downloads is a warning, as a path with a drive letter says
+            ("proc.exec_from_tmp", f(&[("exe", r"C:\Users\alice\AppData\Local\Temp\setup.exe")]), Some(Warning)),
+            ("proc.exec_from_tmp", f(&[("exe", r"D:\Users\bob\Downloads\tool.exe")]), Some(Warning)),
+            ("proc.exec_from_tmp", f(&[("exe", "/home/u/c:/odd")]), Some(Critical)),
             ("user.added", f(&[("detail", "uid=0")]), Some(Critical)),
             ("user.added", f(&[("detail", "uid=1001")]), Some(Warning)),
             ("group.changed", f(&[("detail", "sudo")]), Some(Critical)),

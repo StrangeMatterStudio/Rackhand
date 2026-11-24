@@ -2113,8 +2113,6 @@ checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 [[package]]
 name = "iroh"
 version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40ac5d8330439176254581b6db4bc6f1d947d7cc741fda4e04b96d758addf1db"
 dependencies = [
  "backon",
  "blake3",
@@ -2240,8 +2238,6 @@ dependencies = [
 [[package]]
 name = "iroh-relay"
 version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aef6e9c979c78b0dadf6a2aac4ff629c4ffb91ec34586275673524248dc72f55"
 dependencies = [
  "blake3",
  "bytes",
@@ -3977,6 +3973,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "sha1",
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "tokio",
@@ -3985,6 +3982,7 @@ dependencies = [
  "tracing-subscriber",
  "ulid",
  "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
