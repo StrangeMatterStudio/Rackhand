@@ -35,12 +35,15 @@ pub fn read_release(dir: &Path) -> Result<Release, String> {
     let version = Version::parse(&manifest.version).ok_or("the manifest's version isn't x.y.z")?;
     let mut artifacts = std::collections::BTreeMap::new();
     for a in &manifest.artifacts {
-        let Some(arch) =
-            a.name.strip_prefix("rackhand-probe-").and_then(|rest| rest.strip_suffix("-unknown-linux-musl"))
+        let rest = a.name.strip_prefix("rackhand-probe-").unwrap_or("");
+        let Some((windows, arch)) = rest
+            .strip_suffix("-unknown-linux-musl")
+            .map(|arch| (false, arch))
+            .or_else(|| rest.strip_suffix("-pc-windows-gnu.exe").map(|arch| (true, arch)))
         else {
             continue;
         };
-        if Release::probe_file(arch) != a.name {
+        if Release::probe_file(windows, arch) != a.name {
             continue;
         }
         let (Ok(file), Ok(signature)) =
@@ -199,14 +202,14 @@ impl std::fmt::Debug for HubFleet {
 
 /// The machines that update themselves: enrolled, with a probe, on Linux or Alpine (a Windows probe doesn't update itself
 /// yet, and an appliance or a hypervisor has no probe of ours): machine id and site.
-pub fn updatable_machines(db: &Db) -> Vec<(String, String)> {
+pub fn updatable_machines(db: &Db) -> Vec<(String, String, bool)> {
     db.readers()
         .with(|c| {
             let mut stmt = c.prepare(
-                "SELECT id, site_id FROM machines
-                 WHERE state = 'enrolled' AND probe_endpoint_id IS NOT NULL AND kind IN ('linux', 'alpine')",
+                "SELECT id, site_id, kind = 'windows' FROM machines
+                 WHERE state = 'enrolled' AND probe_endpoint_id IS NOT NULL AND kind IN ('linux', 'alpine', 'windows')",
             )?;
-            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect()
         })
         .unwrap_or_default()
 }
@@ -230,10 +233,10 @@ impl Fleet for HubFleet {
         let connected = self.probes.connected();
         updatable_machines(&self.db)
             .into_iter()
-            .filter_map(|(machine, site)| {
+            .filter_map(|(machine, site, windows)| {
                 let (version, arch) = self.ingest.probe_build(&machine)?;
                 let version = Version::parse(&version)?;
-                Some(Probe { connected: connected.contains(&machine), machine, site, version, arch })
+                Some(Probe { connected: connected.contains(&machine), machine, site, version, arch, windows })
             })
             .collect()
     }

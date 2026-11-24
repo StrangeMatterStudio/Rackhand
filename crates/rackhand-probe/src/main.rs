@@ -46,7 +46,6 @@ fn main() -> ExitCode {
         Some("enroll") => enroll(&args[1..]),
         #[cfg(unix)]
         Some("uninstall") => uninstall(&args[1..]),
-        #[cfg(unix)]
         Some("update-guard") => rackhand_probe::update::guard::main(&args[1..]),
         #[cfg(unix)]
         Some("set-hub") => set_hub(&args[1..]),

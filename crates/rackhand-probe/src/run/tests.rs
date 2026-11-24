@@ -122,6 +122,7 @@ async fn disconnected_reports_are_buffered() {
     assert!(buffered >= 5, "collection goes on while the hub is away: {buffered}");
 }
 
+#[cfg(unix)]
 mod helper {
     use super::*;
     use crate::helper::client::HelperClient;

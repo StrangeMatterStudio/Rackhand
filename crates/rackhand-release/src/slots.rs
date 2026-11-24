@@ -1,10 +1,12 @@
 //! A/B binary slots (7.3.3, 7.5.7, D73, D91, D98): a program that updates itself keeps two copies of its binary, `x-a` and
-//! `x-b`, and a link the services run that points at one. An update is copied into the inactive slot by a root process that
-//! checks the copy (never the file it was copied from, which the unprivileged side can change at any moment), and a guard
-//! running the old, known-good binary switches the link and goes back when the new version doesn't come up. The probe's
-//! helper and the hub's updater are two users of this; each has its own [`Layout`].
+//! `x-b`, and its services run one of them. An update is copied into the inactive slot by a privileged process that checks
+//! the copy (never the file it was copied from, which the unprivileged side can change at any moment), and a guard running the
+//! old, known-good binary makes the services run the new slot and goes back when the new version doesn't come up.
+//!
+//! What "the services run a slot" means is an [`Activation`]: on Linux a link in the slots' directory that the units run
+//! ([`Link`]); on Windows the services' configured binary path. The probe's helper and the hub's updater are two users of
+//! this; each has its own [`Layout`].
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -16,21 +18,21 @@ use crate::{Pinned, PublicKey};
 /// At most this much is downloaded into a spool and copied into a slot.
 pub const MAX_RELEASE_BYTES: u64 = 64 << 20;
 
-/// Where one program's slots, link, spool and signed file name are, under the machine's root (`/` on a machine, a directory
-/// in a test).
+/// Where one program's slots, spool and signed file name are. `lib` and `spool_dir` are relative to `root` (`/` on a machine,
+/// a directory in a test), or absolute.
 #[derive(Debug, Clone)]
 pub struct Layout {
     pub root: PathBuf,
-    /// The directory of the slots, the link and the wrapper, relative to the root.
-    pub lib: &'static str,
+    /// The directory of the slots (and of the link and the wrapper).
+    pub lib: PathBuf,
     /// The slots' file names, A then B.
     pub slots: [&'static str; 2],
-    /// The link the services run: a link in `lib` to a slot's name.
+    /// The file the services run: on Linux a link to a slot's name; the installer's own file before there were slots.
     pub link: &'static str,
     /// A copy of the binary beside the slots that sudo runs, kept in step with the active slot (the probe's command wrapper).
     pub wrapper: Option<&'static str>,
-    /// The spool's directory, relative to the root, and the one file in it that is read.
-    pub spool_dir: &'static str,
+    /// The spool's directory and the one file in it that is read.
+    pub spool_dir: PathBuf,
     pub spool_file: &'static str,
     /// The name the signature's trusted comment gives the release file.
     pub artifact: String,
@@ -74,16 +76,57 @@ pub struct ApplyError {
     pub message: String,
 }
 
-fn refuse(code: &'static str, message: impl Into<String>) -> ApplyError {
+pub fn refuse(code: &'static str, message: impl Into<String>) -> ApplyError {
     ApplyError { code, message: message.into() }
+}
+
+/// Which slot a program's services run, and how they are made to run another.
+pub trait Activation {
+    /// The slot the services run, or `None` when they run the installer's own file (`link` in `lib`).
+    fn active(&self, layout: &Layout) -> Result<Option<Slot>, ApplyError>;
+    /// Makes the services run `slot` from their next start.
+    fn point_at(&self, layout: &Layout, slot: Slot) -> std::io::Result<()>;
+}
+
+/// Linux: the services run a link in the slots' directory, which points at a slot by its name.
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Link;
+
+#[cfg(unix)]
+impl Activation for Link {
+    fn active(&self, layout: &Layout) -> Result<Option<Slot>, ApplyError> {
+        let link = layout.link();
+        let meta =
+            std::fs::symlink_metadata(&link).map_err(|e| refuse("layout", format!("{}: {e}", link.display())))?;
+        if meta.file_type().is_symlink() {
+            let target = std::fs::read_link(&link).map_err(|e| refuse("layout", e.to_string()))?;
+            return match target.to_str().and_then(|t| layout.slot_named(t)) {
+                Some(slot) => Ok(Some(slot)),
+                None => Err(refuse("layout", format!("{} points somewhere that isn't a slot", link.display()))),
+            };
+        }
+        if meta.is_file() {
+            return Ok(None);
+        }
+        Err(refuse("layout", format!("{} is neither a link nor a file", link.display())))
+    }
+
+    fn point_at(&self, layout: &Layout, slot: Slot) -> std::io::Result<()> {
+        let link = layout.link();
+        let tmp = link.with_extension("link");
+        let _ = std::fs::remove_file(&tmp);
+        std::os::unix::fs::symlink(layout.slot_name(slot), &tmp)?;
+        std::fs::rename(&tmp, &link)
+    }
 }
 
 impl Layout {
     pub fn lib(&self) -> PathBuf {
-        self.root.join(self.lib)
+        self.root.join(&self.lib)
     }
 
-    /// What the services run: a link to the active slot.
+    /// The file the services run (a link on Linux).
     pub fn link(&self) -> PathBuf {
         self.lib().join(self.link)
     }
@@ -104,7 +147,7 @@ impl Layout {
     }
 
     pub fn spool_dir(&self) -> PathBuf {
-        self.root.join(self.spool_dir)
+        self.root.join(&self.spool_dir)
     }
 
     /// The one file that is read.
@@ -123,25 +166,29 @@ impl Layout {
         }
     }
 
-    /// Which slot the services run now.
-    fn active(&self) -> Result<Active, ApplyError> {
-        let link = self.link();
-        let meta =
-            std::fs::symlink_metadata(&link).map_err(|e| refuse("layout", format!("{}: {e}", link.display())))?;
-        if meta.file_type().is_symlink() {
-            let target = std::fs::read_link(&link).map_err(|e| refuse("layout", e.to_string()))?;
-            return match target.to_str().and_then(|t| self.slot_named(t)) {
-                Some(slot) => Ok(Active::Slot(slot)),
-                None => Err(refuse("layout", format!("{} points somewhere that isn't a slot", link.display()))),
-            };
+    /// Puts `bytes` at `path` atomically; on Linux the new file has `mode`, on Windows the directory's permissions.
+    pub fn replace(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
+        use std::io::Write;
+        let tmp = path.with_extension("new");
+        let _ = std::fs::remove_file(&tmp);
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(mode);
         }
-        if meta.is_file() {
-            return Ok(Active::Plain);
-        }
-        Err(refuse("layout", format!("{} is neither a link nor a file", link.display())))
+        #[cfg(not(unix))]
+        let _ = mode;
+        let mut f = options.open(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, path)
     }
 
     /// The spool file, opened without following a link anywhere below the root, and without blocking on a FIFO.
+    #[cfg(unix)]
     fn open_spool(&self) -> Result<std::fs::File, ApplyError> {
         use rustix::fs::{CWD, Mode, OFlags, openat};
         let unreadable = |e: rustix::io::Errno| refuse("spool_unreadable", format!("the spool file: {e}"));
@@ -174,44 +221,55 @@ impl Layout {
         Ok(std::fs::File::from(fd))
     }
 
-    /// Puts `bytes` at `path` atomically, the new file's mode as given.
-    pub fn replace(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let tmp = path.with_extension("new");
-        let _ = std::fs::remove_file(&tmp);
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-        drop(f);
-        std::fs::rename(&tmp, path)
-    }
-
-    /// Points the link at `slot`, atomically.
-    pub fn point_at(&self, slot: Slot) -> std::io::Result<()> {
-        let link = self.link();
-        let tmp = link.with_extension("link");
-        let _ = std::fs::remove_file(&tmp);
-        std::os::unix::fs::symlink(self.slot_name(slot), &tmp)?;
-        std::fs::rename(&tmp, &link)
-    }
-}
-
-/// Which slot the services run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Active {
-    Slot(Slot),
-    /// A file the installer put there, before there were slots.
-    Plain,
-}
-
-impl Active {
-    /// The slot that holds the running version (or will, for a plain file).
-    fn old(self) -> Slot {
-        match self {
-            Active::Slot(s) => s,
-            Active::Plain => Slot::A,
+    /// The spool file on Windows: no directory between the spool and the file, and not the file itself, may be a reparse
+    /// point (a junction or a link), and the file is opened as itself rather than as what a reparse point names. What is read
+    /// is checked against the signature, so a race here can only make the copy fail.
+    #[cfg(windows)]
+    fn open_spool(&self) -> Result<std::fs::File, ApplyError> {
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        let reparse = |m: &std::fs::Metadata| m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+        let dir = self.spool_dir();
+        let mut at = PathBuf::new();
+        for part in dir.components() {
+            at.push(part);
+            if matches!(part, std::path::Component::Normal(_)) {
+                let m = std::fs::symlink_metadata(&at)
+                    .map_err(|e| refuse("spool_unreadable", format!("{}: {e}", at.display())))?;
+                if reparse(&m) || !m.is_dir() {
+                    return Err(refuse("spool_unreadable", format!("{} is a link, not a directory", at.display())));
+                }
+            }
         }
+        let file = self.spool_file();
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(&file)
+            .map_err(|e| refuse("spool_unreadable", format!("the spool file: {e}")))?;
+        let m = f.metadata().map_err(|e| refuse("spool_unreadable", e.to_string()))?;
+        if reparse(&m) || !m.is_file() {
+            return Err(refuse("spool_unreadable", "the spool file isn't a regular file"));
+        }
+        if m.len() > MAX_RELEASE_BYTES {
+            return Err(refuse("too_large", format!("the spool file is over {MAX_RELEASE_BYTES} bytes")));
+        }
+        Ok(f)
+    }
+}
+
+/// The new file is executable on Linux; on Windows it has the directory's permissions.
+fn make_executable(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
     }
 }
 
@@ -220,6 +278,7 @@ impl Active {
 /// `installed`. A copy that fails any of it is deleted. The services still run what they ran; the guard switches.
 pub fn apply(
     layout: &Layout,
+    activation: &dyn Activation,
     installed: Version,
     request: &Request,
     keys: &[(Pinned, PublicKey)],
@@ -229,8 +288,9 @@ pub fn apply(
     if request.sha256.len() != 64 || !request.sha256.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
         return Err(refuse("bad_request", "the hash isn't a lower-case SHA-256"));
     }
-    let active = layout.active()?;
-    let inactive = active.old().other();
+    let active = activation.active(layout)?;
+    let old = active.unwrap_or(Slot::A);
+    let inactive = old.other();
     let mut bytes = Vec::new();
     layout
         .open_spool()?
@@ -270,15 +330,14 @@ pub fn apply(
     if signed <= installed {
         return Err(fail(refuse("downgrade", format!("{signed} isn't newer than the installed {installed}"))));
     }
-    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))
-        .map_err(|e| fail(refuse("copy_failed", e.to_string())))?;
-    if active == Active::Plain {
-        // the file the installer put there becomes slot A, so there is a known-good version to go back to
+    make_executable(&target).map_err(|e| fail(refuse("copy_failed", e.to_string())))?;
+    if active.is_none() {
+        // the installer's own file becomes slot A, so there is a known-good version to go back to
         let plain = std::fs::read(layout.link()).map_err(|e| fail(refuse("layout", e.to_string())))?;
         Layout::replace(&layout.slot(Slot::A), &plain, 0o755).map_err(|e| fail(refuse("layout", e.to_string())))?;
-        layout.point_at(Slot::A).map_err(|e| fail(refuse("layout", e.to_string())))?;
+        activation.point_at(layout, Slot::A).map_err(|e| fail(refuse("layout", e.to_string())))?;
     }
-    Ok(Applied { version: signed, old: active.old(), new: inactive })
+    Ok(Applied { version: signed, old, new: inactive })
 }
 
 // ---- the guard ----
@@ -311,15 +370,15 @@ pub trait Env {
     /// Whether the new version is up (the probe says `connected` with the new version; the hub answers `/healthz`).
     fn up(&self) -> bool;
     /// Called when the new version didn't come up, before the old slot is switched back and restarted: the hub restores its
-    /// backup here when the new version migrated its database.
+    /// database here when the new version migrated it.
     fn rolling_back(&self);
     fn sleep(&self, d: Duration);
     /// Since the guard started.
     fn elapsed(&self) -> Duration;
 }
 
-/// Makes `slot` the one the services run: the wrapper, if there is one, is its copy and the link points at it.
-fn switch(layout: &Layout, slot: Slot) -> std::io::Result<()> {
+/// Makes `slot` the one the services run: the wrapper, if there is one, is its copy, and the activation points at it.
+fn switch(layout: &Layout, activation: &dyn Activation, slot: Slot) -> std::io::Result<()> {
     let file = layout.slot(slot);
     if !std::fs::symlink_metadata(&file)?.is_file() {
         return Err(std::io::Error::other(format!("{} isn't a file", file.display())));
@@ -327,12 +386,12 @@ fn switch(layout: &Layout, slot: Slot) -> std::io::Result<()> {
     if let Some(wrapper) = layout.wrapper() {
         Layout::replace(&wrapper, &std::fs::read(&file)?, 0o755)?;
     }
-    layout.point_at(slot)
+    activation.point_at(layout, slot)
 }
 
 /// Switches to the new slot, restarts, waits for [`Env::up`] for up to [`GUARD_TIMEOUT`], and otherwise goes back.
-pub fn guard(plan: &Plan, env: &dyn Env) -> Outcome {
-    if let Err(e) = switch(&plan.layout, plan.new) {
+pub fn guard(plan: &Plan, activation: &dyn Activation, env: &dyn Env) -> Outcome {
+    if let Err(e) = switch(&plan.layout, activation, plan.new) {
         tracing::error!(error = %e, "the update guard couldn't switch to the new slot");
         return Outcome::NotSwitched;
     }
@@ -348,7 +407,7 @@ pub fn guard(plan: &Plan, env: &dyn Env) -> Outcome {
     }
     tracing::warn!("the new version didn't come up in time; going back");
     env.rolling_back();
-    if let Err(e) = switch(&plan.layout, plan.old) {
+    if let Err(e) = switch(&plan.layout, activation, plan.old) {
         tracing::error!(error = %e, "the update guard couldn't switch back");
     }
     if let Err(e) = env.restart() {
@@ -358,4 +417,9 @@ pub fn guard(plan: &Plan, env: &dyn Env) -> Outcome {
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests;
+
+#[cfg(test)]
+#[cfg(windows)]
+mod windows_tests;

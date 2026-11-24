@@ -2,16 +2,18 @@
 //! the inactive slot and checks the copy, and a guard running the old binary switches the slot and switches back when the new
 //! probe doesn't report `connected` in time. The probe never writes its own binary.
 
-#[cfg(unix)]
 pub mod apply;
 pub mod download;
-#[cfg(unix)]
 pub mod guard;
 pub mod offers;
 
 /// The release file of this machine's probe, as the release names it and the signature's trusted comment signs it.
 pub fn artifact_name() -> String {
-    format!("rackhand-probe-{}-unknown-linux-musl", std::env::consts::ARCH)
+    if cfg!(windows) {
+        format!("rackhand-probe-{}-pc-windows-gnu.exe", std::env::consts::ARCH)
+    } else {
+        format!("rackhand-probe-{}-unknown-linux-musl", std::env::consts::ARCH)
+    }
 }
 
 /// At most this much is downloaded into the spool and copied into a slot.
@@ -23,7 +25,8 @@ pub fn spool_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
     data_dir.parent().unwrap_or(data_dir).join("update")
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use std::path::Path;
 

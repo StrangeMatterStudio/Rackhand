@@ -39,6 +39,12 @@ pub struct System {
 }
 
 impl Env for System {
+    #[cfg(windows)]
+    fn restart(&self) -> Result<(), String> {
+        crate::windows::update::restart_services()
+    }
+
+    #[cfg(unix)]
     fn restart(&self) -> Result<(), String> {
         let systemd = std::path::Path::new("/run/systemd/system").exists();
         let mut failed = Vec::new();
@@ -79,9 +85,12 @@ pub fn main(args: &[String]) -> std::process::ExitCode {
             return std::process::ExitCode::from(2);
         }
     };
-    let system =
-        System { started: std::time::Instant::now(), state_file: "/run/rackhand-probe/probe.state".into(), version };
-    match guard(&plan, &system) {
+    #[cfg(unix)]
+    let (state_file, activation) = ("/run/rackhand-probe/probe.state", crate::update::apply::Link);
+    #[cfg(windows)]
+    let (state_file, activation) = (r"C:ProgramDataRackhandprobeprobe.state", crate::windows::update::Services);
+    let system = System { started: std::time::Instant::now(), state_file: state_file.into(), version };
+    match guard(&plan, &activation, &system) {
         Outcome::Kept => std::process::ExitCode::SUCCESS,
         Outcome::RolledBack | Outcome::NotSwitched => std::process::ExitCode::from(1),
     }

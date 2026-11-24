@@ -16,3 +16,5 @@ pub mod pipe;
 pub mod ps;
 #[cfg(windows)]
 pub mod service;
+/// Probe self-update on Windows (7.3.3): the services' binary path as the switch, a scheduled task as SYSTEM for the guard.
+pub mod update;

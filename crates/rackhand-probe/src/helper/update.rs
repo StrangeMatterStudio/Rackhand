@@ -11,7 +11,7 @@ use rackhand_proto::helper::HelperResponse;
 use rackhand_release::binary::Version;
 use rackhand_release::{Pinned, PublicKey};
 
-use crate::update::apply::{Layout, Request, apply, paths};
+use crate::update::apply::{Activation, Layout, Request, apply, paths};
 
 /// Another update isn't started while a guard that was started less than this long ago may still be working: it waits 2
 /// minutes for the probe and restarts the helper either way.
@@ -23,9 +23,11 @@ pub trait Launcher: Send + Sync + std::fmt::Debug {
 }
 
 /// A transient systemd unit, or an OpenRC one-shot on a machine without systemd.
+#[cfg(unix)]
 #[derive(Debug)]
 pub struct Units;
 
+#[cfg(unix)]
 impl Launcher for Units {
     fn start(&self, guard: &Path, args: &[String]) -> Result<(), String> {
         let mut command = if Path::new("/run/systemd/system").exists() {
@@ -43,21 +45,53 @@ impl Launcher for Units {
 }
 
 /// The keys an update is checked against and how its guard is started.
-#[derive(Debug)]
 pub struct Setup {
     keys: Vec<(Pinned, PublicKey)>,
     launcher: Box<dyn Launcher>,
+    activation: Box<dyn Activation + Send + Sync>,
+    /// Where the guard's copy of the running binary goes, under the root: a directory only the helper can write.
+    guard: std::path::PathBuf,
     started: Mutex<Option<Instant>>,
 }
 
+impl std::fmt::Debug for Setup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Setup").field("keys", &self.keys.len()).field("guard", &self.guard).finish_non_exhaustive()
+    }
+}
+
 impl Setup {
+    /// Linux: the link the units run, and the guard's copy in the helper's state directory.
+    #[cfg(unix)]
     pub fn new(keys: Vec<(Pinned, PublicKey)>, launcher: impl Launcher + 'static) -> Setup {
-        Setup { keys, launcher: Box::new(launcher), started: Mutex::new(None) }
+        Setup::with(keys, launcher, crate::update::apply::Link, "var/lib/rackhand-helper/update-guard".into())
+    }
+
+    pub fn with(
+        keys: Vec<(Pinned, PublicKey)>,
+        launcher: impl Launcher + 'static,
+        activation: impl Activation + Send + Sync + 'static,
+        guard: std::path::PathBuf,
+    ) -> Setup {
+        Setup { keys, launcher: Box::new(launcher), activation: Box::new(activation), guard, started: Mutex::new(None) }
     }
 
     /// The keys this build pins, and systemd or OpenRC.
+    #[cfg(unix)]
     pub fn system() -> Setup {
         Setup::new(rackhand_release::pinned(), Units)
+    }
+
+    /// The keys this build pins, the services' binary path, and a scheduled task as SYSTEM.
+    #[cfg(windows)]
+    pub fn system() -> Setup {
+        let (_, data) = crate::windows::update::dirs(Path::new(""));
+        Setup::with(
+            rackhand_release::pinned(),
+            crate::windows::update::Task,
+            crate::windows::update::Services,
+            data.join("helper").join("update-guard.exe"),
+        )
     }
 }
 
@@ -87,14 +121,17 @@ pub fn apply_update(
     }
     let paths = paths(root);
     let request = Request { version: version.into(), sha256: sha256.into(), signature: signature.into() };
-    let applied = match apply(&paths, installed, &request, &setup.keys) {
+    let applied = match apply(&paths, setup.activation.as_ref(), installed, &request, &setup.keys) {
         Ok(a) => a,
         Err(e) => {
             tracing::warn!(code = e.code, error = %e, "an update was refused");
             return error(e.code, e.message);
         }
     };
-    let guard = root.join("var/lib/rackhand-helper/update-guard");
+    let guard = root.join(&setup.guard);
+    if let Some(dir) = guard.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
     let copied = std::fs::read(paths.slot(applied.old)).and_then(|bytes| Layout::replace(&guard, &bytes, 0o700));
     if let Err(e) = copied {
         return error("guard_failed", format!("the guard's copy of the running binary: {e}"));
@@ -114,4 +151,5 @@ pub fn apply_update(
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests;

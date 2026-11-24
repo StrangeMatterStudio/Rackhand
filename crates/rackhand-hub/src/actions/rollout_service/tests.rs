@@ -25,11 +25,12 @@ fn release_dir(name: &str, version: &str, channel: Channel, manifest_signer: (u8
     let dir = std::env::temp_dir().join(format!("rackhand-releases-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let files: [(&str, &[u8]); 4] = [
+    let files: [(&str, &[u8]); 5] = [
         ("install.sh", b"#!/bin/sh\n"),
         ("rackhand-x86_64-unknown-linux-musl", b"the hub"),
         ("rackhand-probe-x86_64-unknown-linux-musl", b"the probe for x86_64"),
         ("rackhand-probe-aarch64-unknown-linux-musl", b"the probe for aarch64"),
+        ("rackhand-probe-x86_64-pc-windows-gnu.exe", b"the probe for Windows"),
     ];
     for (file, bytes) in files {
         std::fs::write(dir.join(file), bytes).unwrap();
@@ -55,7 +56,14 @@ fn the_probe_files_of_a_signed_release_are_read_with_their_signatures() {
     assert_eq!(release.version.to_string(), "0.1.4");
     assert_eq!(release.channel, Channel::Beta);
     let names: Vec<&str> = release.artifacts.keys().map(String::as_str).collect();
-    assert_eq!(names, ["rackhand-probe-aarch64-unknown-linux-musl", "rackhand-probe-x86_64-unknown-linux-musl"]);
+    assert_eq!(
+        names,
+        [
+            "rackhand-probe-aarch64-unknown-linux-musl",
+            "rackhand-probe-x86_64-pc-windows-gnu.exe",
+            "rackhand-probe-x86_64-unknown-linux-musl"
+        ]
+    );
     let x86 = &release.artifacts["rackhand-probe-x86_64-unknown-linux-musl"];
     use sha2::{Digest, Sha256};
     assert_eq!(x86.sha256.to_vec(), Sha256::digest(b"the probe for x86_64").to_vec());
@@ -83,11 +91,12 @@ fn a_probe_file_that_isnt_the_one_the_manifest_lists_is_left_out() {
     std::fs::write(dir.0.join("rackhand-probe-x86_64-unknown-linux-musl"), b"something else").unwrap();
     std::fs::remove_file(dir.0.join("rackhand-probe-aarch64-unknown-linux-musl.minisig")).unwrap();
     let release = read_release(&dir.0).unwrap();
-    assert!(release.artifacts.is_empty(), "{:?}", release.artifacts.keys().collect::<Vec<_>>());
+    let left: Vec<&str> = release.artifacts.keys().map(String::as_str).collect();
+    assert_eq!(left, ["rackhand-probe-x86_64-pc-windows-gnu.exe"], "only the file that is what the manifest lists");
     // a signature too big to be one
     let dir = release_dir("bigsig", "0.1.4", Channel::Stable, (0x11, [1; 8]));
     std::fs::write(dir.0.join("rackhand-probe-x86_64-unknown-linux-musl.minisig"), vec![b'a'; 4096]).unwrap();
-    assert_eq!(read_release(&dir.0).unwrap().artifacts.len(), 1);
+    assert_eq!(read_release(&dir.0).unwrap().artifacts.len(), 2);
 }
 
 #[test]
@@ -159,6 +168,7 @@ fn probe(machine: &str, version: &str) -> Probe {
         site: "S".into(),
         version: Version::parse(version).unwrap(),
         arch: "x86_64".into(),
+        windows: false,
         connected: true,
     }
 }
@@ -291,9 +301,9 @@ fn only_enrolled_linux_machines_with_a_probe_are_updated_and_incidents_are_found
         )
         .unwrap();
     }
-    let mut machines: Vec<String> = updatable_machines(&db).into_iter().map(|(m, _)| m).collect();
+    let mut machines: Vec<String> = updatable_machines(&db).into_iter().map(|(m, _, _)| m).collect();
     machines.sort();
-    assert_eq!(machines, ["m-alpine", "m-linux"]);
+    assert_eq!(machines, ["m-alpine", "m-linux", "m-windows"], "a Windows probe updates itself too");
     assert!(incident_opened_since(&db, "m-linux", 4999));
     assert!(!incident_opened_since(&db, "m-linux", 5000), "after, not at");
     assert!(!incident_opened_since(&db, "m-alpine", 0), "another machine's");

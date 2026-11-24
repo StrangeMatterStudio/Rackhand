@@ -22,7 +22,14 @@ fn release(version: &str, channel: Channel) -> Release {
 }
 
 fn probe(machine: &str, site: &str, version: &str) -> Probe {
-    Probe { machine: machine.into(), site: site.into(), version: v(version), arch: "x86_64".into(), connected: true }
+    Probe {
+        machine: machine.into(),
+        site: site.into(),
+        version: v(version),
+        arch: "x86_64".into(),
+        windows: false,
+        connected: true,
+    }
 }
 
 fn url(file: &str) -> String {
@@ -239,4 +246,38 @@ fn what_a_machine_is_offered_is_saved_so_its_files_changing_to_it_are_not_an_eve
     assert_eq!(offered.len(), 1);
     assert_eq!(offered[0].key, format!("x1/{}", "07".repeat(32)), "machine and the hash of the file it was offered");
     assert_eq!(offered[0].last_run_ms, Some(1_000 * HOUR));
+}
+
+/// 7.3.3: a Windows machine is offered the Windows probe, a Linux one the Linux probe, each from the same release.
+#[test]
+fn a_windows_machine_is_offered_the_windows_file() {
+    let mut rel = release("0.1.1", Channel::Stable);
+    rel.artifacts.insert(
+        "rackhand-probe-x86_64-pc-windows-gnu.exe".to_string(),
+        ReleaseFile { sha256: [9; 32], signature: b"windows minisig".to_vec() },
+    );
+    let mut win = probe("w1", "W", "0.1.0");
+    win.windows = true;
+    let plan = Rollout::new(Channel::Stable).tick(
+        1_000 * HOUR,
+        &rel,
+        &[win.clone(), probe("x1", "X", "0.1.0")],
+        &no_incidents,
+        &url,
+    );
+    let by: Vec<(&str, &str, Vec<u8>)> =
+        plan.offers.iter().map(|o| (o.machine.as_str(), o.update.url.as_str(), o.update.sha256.clone())).collect();
+    assert!(
+        by.contains(&("w1", "https://hub.test:8443/release/rackhand-probe-x86_64-pc-windows-gnu.exe", vec![9; 32])),
+        "{by:?}"
+    );
+    assert!(
+        by.contains(&("x1", "https://hub.test:8443/release/rackhand-probe-x86_64-unknown-linux-musl", vec![7; 32])),
+        "{by:?}"
+    );
+    // a release without a Windows file offers a Windows machine nothing
+    let linux_only = release("0.1.1", Channel::Stable);
+    assert!(
+        Rollout::new(Channel::Stable).tick(1_000 * HOUR, &linux_only, &[win], &no_incidents, &url).offers.is_empty()
+    );
 }

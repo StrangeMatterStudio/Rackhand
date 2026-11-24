@@ -47,9 +47,13 @@ pub struct Release {
 }
 
 impl Release {
-    /// The file name of the probe for `arch` (`x86_64`, `aarch64`) in a release.
-    pub fn probe_file(arch: &str) -> String {
-        format!("rackhand-probe-{arch}-unknown-linux-musl")
+    /// The file name of the probe for `arch` (`x86_64`, `aarch64`) in a release, for Linux or Windows.
+    pub fn probe_file(windows: bool, arch: &str) -> String {
+        if windows {
+            format!("rackhand-probe-{arch}-pc-windows-gnu.exe")
+        } else {
+            format!("rackhand-probe-{arch}-unknown-linux-musl")
+        }
     }
 }
 
@@ -60,6 +64,8 @@ pub struct Probe {
     pub site: String,
     pub version: Version,
     pub arch: String,
+    /// A Windows machine, which is offered the Windows probe.
+    pub windows: bool,
     pub connected: bool,
 }
 
@@ -157,7 +163,7 @@ impl Rollout {
     }
 
     fn offer(&mut self, plan: &mut Plan, p: &Probe, release: &Release, url: &dyn Fn(&str) -> String, now: i64) {
-        let file = Release::probe_file(&p.arch);
+        let file = Release::probe_file(p.windows, &p.arch);
         let Some(artifact) = release.artifacts.get(&file) else { return };
         self.offered.insert(p.machine.clone(), now);
         // what the machine is told, so that its files changing to exactly this isn't an event (E48)
@@ -207,7 +213,7 @@ impl Rollout {
                 .filter(|p| {
                     p.connected
                         && p.version < release.version
-                        && release.artifacts.contains_key(&Release::probe_file(&p.arch))
+                        && release.artifacts.contains_key(&Release::probe_file(p.windows, &p.arch))
                 })
                 .collect();
             let key = (site.to_string(), release.version);

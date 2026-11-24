@@ -30,6 +30,7 @@ pub struct Machine {
     pub passwd: std::path::PathBuf,
 }
 
+#[cfg_attr(windows, allow(clippy::derivable_impls))]
 impl Default for Machine {
     fn default() -> Machine {
         Machine {
@@ -53,7 +54,6 @@ pub struct Helper {
     /// One key update at a time, so an older one can't end after a newer one.
     #[cfg(unix)]
     keys: Mutex<super::keys::Files>,
-    #[cfg(unix)]
     update: super::update::Setup,
     #[cfg(unix)]
     machine: Machine,
@@ -77,7 +77,11 @@ impl Helper {
     /// The Windows helper: what it answers needs no files of a Unix machine.
     #[cfg(windows)]
     pub fn new(version: &str) -> Arc<Helper> {
-        Arc::new(Helper { version: version.into(), state: Mutex::new(State::default()) })
+        Arc::new(Helper {
+            version: version.into(),
+            state: Mutex::new(State::default()),
+            update: super::update::Setup::system(),
+        })
     }
 
     /// The same, with key updates applied to `keys`.
@@ -231,6 +235,15 @@ impl Helper {
             HelperRequest::ApplyUpdate { version, sha256, signature } => super::update::apply_update(
                 &self.version,
                 &self.machine.roots.root,
+                &self.update,
+                &version,
+                &sha256,
+                &signature,
+            ),
+            #[cfg(windows)]
+            HelperRequest::ApplyUpdate { version, sha256, signature } => super::update::apply_update(
+                &self.version,
+                std::path::Path::new(""),
                 &self.update,
                 &version,
                 &sha256,

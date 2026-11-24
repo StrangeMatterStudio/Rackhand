@@ -21,7 +21,6 @@ pub mod procscan;
 pub mod server;
 #[cfg(unix)]
 pub mod sockets;
-#[cfg(unix)]
 pub mod update;
 
 #[cfg(unix)]

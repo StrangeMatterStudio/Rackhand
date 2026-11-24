@@ -28,17 +28,19 @@ fn only_connected_with_the_new_version_counts() {
 
 #[test]
 fn the_slots_are_named_by_the_helper_and_nothing_else_is_accepted() {
-    let (plan, version) = parse_args(&["probe-a".into(), "probe-b".into(), "0.1.1".into()]).unwrap();
+    // the slots' own names: `probe-a` on Linux, `probe-a.exe` on Windows
+    let [a, b] = crate::update::apply::paths(std::path::Path::new("/")).slots;
+    let (plan, version) = parse_args(&[a.into(), b.into(), "0.1.1".into()]).unwrap();
     assert_eq!((plan.old, plan.new, version), (Slot::A, Slot::B, v("0.1.1")));
-    assert_eq!(plan.layout.link, "rackhand-probe");
+    assert_eq!(plan.layout.link, if cfg!(windows) { "rackhand-probe.exe" } else { "rackhand-probe" });
     for bad in [
-        vec!["probe-a", "probe-a", "0.1.1"],
-        vec!["/etc/passwd", "probe-b", "0.1.1"],
-        vec!["probe-a", "../probe-b", "0.1.1"],
+        vec![a, a, "0.1.1"],
+        vec!["/etc/passwd", b, "0.1.1"],
+        vec![a, "../probe-b", "0.1.1"],
         vec!["rackhand-a", "rackhand-b", "0.1.1"],
-        vec!["probe-a", "probe-b", "latest"],
-        vec!["probe-a", "probe-b"],
-        vec!["probe-a", "probe-b", "0.1.1", "extra"],
+        vec![a, b, "latest"],
+        vec![a, b],
+        vec![a, b, "0.1.1", "extra"],
     ] {
         let args: Vec<String> = bad.iter().map(|s| s.to_string()).collect();
         assert!(parse_args(&args).is_err(), "{bad:?}");
