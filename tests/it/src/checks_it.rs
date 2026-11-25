@@ -140,6 +140,7 @@ async fn probe_check_step_runs_check_on_probe() {
         clock: std::sync::Arc::new(rackhand_probe::run::SystemClock::default()),
         jitter: std::sync::Arc::new(|| 0.0),
         helper: None,
+        capture: None,
     };
     tokio::spawn(rackhand_probe::run::Daemon::new(link, opts).unwrap().run());
     let machine = ulid::Ulid::from_bytes(MACHINE).to_string();

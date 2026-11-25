@@ -60,6 +60,7 @@ async fn unreachable(name: &str, clock: Arc<FastClock>, jitter: f64) -> (Daemon,
         clock,
         jitter: Arc::new(move || jitter),
         helper: None,
+        capture: None,
     };
     (Daemon::new(link, opts).unwrap(), state)
 }

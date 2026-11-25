@@ -53,6 +53,15 @@ impl HelperClient {
         }
     }
 
+    /// The containers of these cgroup ids (the eBPF capture's, D103); a cgroup that is no container isn't listed.
+    pub async fn container_of(&self, cgroup_ids: &[u64]) -> Result<Vec<(u64, String)>, String> {
+        match self.request(&HelperRequest::ContainerOf { cgroup_ids: cgroup_ids.to_vec() }).await? {
+            HelperResponse::ContainerNames { names } => Ok(names),
+            HelperResponse::Error { code, message } => Err(format!("{code}: {message}")),
+            _ => Err("not a container-names answer".into()),
+        }
+    }
+
     /// The critical files' hashes (7.8.4).
     pub async fn hash_files(&self) -> Result<Vec<rackhand_proto::helper::FileHash>, String> {
         match self.request(&HelperRequest::HashFiles).await? {

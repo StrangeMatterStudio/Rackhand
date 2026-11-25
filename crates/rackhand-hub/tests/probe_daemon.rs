@@ -133,6 +133,7 @@ mod probe {
                 clock,
                 jitter: Arc::new(|| 0.0),
                 helper: None,
+                capture: None,
             }
         }
 

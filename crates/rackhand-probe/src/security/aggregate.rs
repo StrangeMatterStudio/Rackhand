@@ -25,6 +25,8 @@ pub struct Observed {
     pub port: u16,
     pub proto: Proto,
     pub inode: u64,
+    /// The connects and sends the eBPF capture counted; 0 for a sampled socket, which counts once by its inode.
+    pub count: u64,
     pub bytes: u64,
 }
 
@@ -33,6 +35,7 @@ type Key = (String, String, IpAddr, u16, Proto);
 #[derive(Debug, Default)]
 struct Entry {
     inodes: std::collections::BTreeSet<u64>,
+    counted: u64,
     bytes: u64,
     pid: u32,
     user: String,
@@ -62,7 +65,11 @@ impl Window {
     /// A socket seen again in the same window is the same socket: it counts once.
     pub fn add(&mut self, o: Observed) {
         let e = self.tuples.entry((o.container, o.exe, o.dest, o.port, o.proto)).or_default();
-        e.inodes.insert(o.inode);
+        if o.count == 0 {
+            e.inodes.insert(o.inode);
+        } else {
+            e.counted = e.counted.saturating_add(o.count);
+        }
         e.bytes = e.bytes.max(o.bytes);
         e.pid = o.pid;
         e.user = o.user;
@@ -84,7 +91,7 @@ impl Window {
                 dest_ip: octets(dest),
                 dest_port: u32::from(port),
                 proto: wire(proto),
-                count: e.inodes.len() as u32,
+                count: u32::try_from((e.inodes.len() as u64).saturating_add(e.counted)).unwrap_or(u32::MAX),
                 bytes: e.bytes,
                 pid: e.pid,
                 user: e.user,
@@ -139,6 +146,7 @@ mod tests {
             port: 443,
             proto: Proto::Tcp,
             inode: u64::from(i) + 1,
+            count: 0,
             bytes,
         }
     }
@@ -186,5 +194,20 @@ mod tests {
         assert_eq!(records[0].count, 2, "two sockets to it");
         assert_eq!(records[0].dest_ip, vec![10, 0, 0, 1]);
         assert_eq!((records[0].dest_port, records[0].proto), (443, WireProto::Tcp as i32));
+    }
+
+    #[test]
+    fn counted_connections_add_up_beside_sampled_sockets() {
+        let mut w = Window::default();
+        let mut captured = seen(1, "", 0);
+        (captured.inode, captured.count) = (0, 3);
+        w.add(captured.clone());
+        captured.count = 2;
+        w.add(captured);
+        w.add(seen(1, "", 0));
+        w.add(seen(1, "", 0));
+        let (records, _) = w.take(0);
+        assert_eq!(records.len(), 1, "one destination");
+        assert_eq!(records[0].count, 6, "five connections the capture counted and one sampled socket");
     }
 }

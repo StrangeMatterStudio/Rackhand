@@ -1,11 +1,15 @@
-//! What the probe reports about connections and what is new on the machine, without eBPF (7.3.2, FR-4, FR-5, D17, D103):
-//! every 5 seconds the connection tables are read, the owner of each socket (executable, user, container) is asked of the
+//! What the probe reports about connections and what is new on the machine (7.3.2, FR-4, FR-5, D17, D103, D196): every
+//! 5 seconds the connection tables are read, the owner of each socket (executable, user, container) is asked of the
 //! root helper by inode, and what was seen is kept per `(container, exe, dest_ip, dest_port, proto)` until the next report.
+//! With the eBPF capture the connections and starts come from its maps instead, drained at the same reads; the tables
+//! are still read for new listeners and for the executables of processes started before the capture.
 
 pub mod aggregate;
 pub mod capability;
 pub mod conntable;
 pub mod ebpf;
+#[cfg(target_os = "linux")]
+pub mod feed;
 pub mod listeners;
 pub mod signals;
 
@@ -30,7 +34,22 @@ pub struct Owner {
     pub container: String,
 }
 
-/// The sampling capture's state between reads.
+/// The eBPF capture's maps (Linux).
+#[cfg(target_os = "linux")]
+pub use ebpf::Capture as Captured;
+/// There is no eBPF capture off Linux.
+#[cfg(not(target_os = "linux"))]
+#[derive(Debug)]
+pub enum Captured {}
+
+/// How many reads between asking the helper for the capture again (5 minutes): a helper that restarted has new maps.
+#[cfg(target_os = "linux")]
+const ASK_AGAIN_EVERY: u64 = 60;
+/// The most cgroup ids kept named.
+#[cfg(target_os = "linux")]
+const MAX_CGROUPS: usize = 4096;
+
+/// The capture's state between reads.
 #[derive(Debug, Default)]
 pub struct Sampler {
     listeners: listeners::Listeners,
@@ -38,6 +57,10 @@ pub struct Sampler {
     owners: HashMap<u64, Owner>,
     signals: signals::Signals,
     ticks: u64,
+    capture: Option<Captured>,
+    /// The cgroup ids the helper named, a container's name or empty for none.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    cgroups: HashMap<u64, String>,
 }
 
 /// What the reads have seen since the last report. Reads take their time (they ask the helper), so a report never waits on
@@ -66,6 +89,44 @@ impl Pending {
 }
 
 impl Sampler {
+    /// A sampler reading `capture`'s maps for connections and starts, or the tables when there is none.
+    pub fn new(capture: Option<Captured>) -> Sampler {
+        Sampler { capture, ..Sampler::default() }
+    }
+
+    /// Whether connections come from the eBPF capture.
+    pub fn capturing(&self) -> bool {
+        self.capture.is_some()
+    }
+
+    /// Names the cgroup ids not named yet, by the helper; nothing is kept when it doesn't answer.
+    #[cfg(target_os = "linux")]
+    async fn name_cgroups(&mut self, conns: &[ebpf::Conn], helper: Option<&HelperClient>) {
+        let unknown: BTreeSet<u64> = conns.iter().map(|c| c.cgroup).filter(|g| !self.cgroups.contains_key(g)).collect();
+        let (false, Some(helper)) = (unknown.is_empty(), helper) else { return };
+        let ids: Vec<u64> = unknown.into_iter().take(1024).collect();
+        let Ok(names) = helper.container_of(&ids).await else { return };
+        if self.cgroups.len() + ids.len() > MAX_CGROUPS {
+            self.cgroups.clear();
+        }
+        for id in ids {
+            self.cgroups.insert(id, String::new());
+        }
+        self.cgroups.extend(names);
+    }
+
+    /// Asks the helper for the capture again; new maps (a restarted helper's) replace the old ones.
+    #[cfg(target_os = "linux")]
+    async fn ask_again(&mut self, helper: Option<&HelperClient>) {
+        let (Some(old), Some(helper)) = (self.capture.as_ref(), helper) else { return };
+        if let Ok(new) = helper.ebpf_capture().await {
+            if !old.same_maps(&new) {
+                tracing::info!("the helper passed new eBPF maps (it restarted)");
+                self.capture = Some(new);
+            }
+        }
+    }
+
     /// One read of the tables. Owners are asked of the helper (when there is one) for the sockets not yet known.
     pub async fn tick(
         &mut self,
@@ -74,6 +135,8 @@ impl Sampler {
         now_ms: i64,
     ) -> (Vec<aggregate::Observed>, Vec<ProbeEvent>) {
         let (mut seen, mut events) = (Vec::new(), Vec::new());
+        #[cfg(target_os = "linux")]
+        let drained = self.capture.as_mut().map(|c| c.drain());
         #[cfg(not(windows))]
         let sockets = conntable::read(host);
         // Windows has no /proc: the tables come from GetExtendedTcpTable and GetExtendedUdpTable (FR-4)
@@ -96,7 +159,24 @@ impl Sampler {
                 self.owners.entry(inode).or_default();
             }
         }
-        for s in sockets.iter().filter(|s| s.outbound()) {
+        #[cfg(target_os = "linux")]
+        if let Some((conns, execs)) = drained {
+            self.name_cgroups(&conns, helper).await;
+            let exes: HashMap<u32, String> = self
+                .owners
+                .values()
+                .filter(|o| o.pid != 0 && !o.exe.is_empty())
+                .map(|o| (o.pid, o.exe.clone()))
+                .collect();
+            let passwd = host.read("etc/passwd").unwrap_or_default();
+            let names = feed::Names { containers: &self.cgroups, exes: &exes, passwd: &passwd };
+            seen.extend(feed::observed(&conns, names));
+            let (started, pids) = feed::exec_events(&execs, &passwd, now_ms);
+            events.extend(started);
+            self.execs.captured(&pids);
+        }
+        let sampled = if self.capturing() { &[][..] } else { &sockets[..] };
+        for s in sampled.iter().filter(|s| s.outbound()) {
             let o = self.owners.get(&s.inode).cloned().unwrap_or_default();
             seen.push(aggregate::Observed {
                 container: o.container,
@@ -107,6 +187,7 @@ impl Sampler {
                 port: s.remote_port,
                 proto: s.proto,
                 inode: s.inode,
+                count: 0,
                 bytes: 0,
             });
         }
@@ -122,6 +203,10 @@ impl Sampler {
         // the helper's file hashes and authentication events, every third read (15 seconds)
         if let (0, Some(helper)) = (self.ticks % 3, helper) {
             events.extend(self.signals.poll(helper, now_ms).await);
+        }
+        #[cfg(target_os = "linux")]
+        if self.ticks % ASK_AGAIN_EVERY == ASK_AGAIN_EVERY - 1 {
+            self.ask_again(helper).await;
         }
         self.ticks += 1;
         (seen, events)

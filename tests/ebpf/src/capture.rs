@@ -14,7 +14,7 @@ use rackhand_probe::security::ebpf::{Capture, Conn, Exec, LoadError, MAPS, OBJEC
 const CHILD: &str = "RACKHAND_EBPF_CHILD";
 
 /// Loopback, cgroup v2 and tracefs, which the VM's init may leave down or unmounted.
-fn mounts() {
+pub(crate) fn mounts() {
     let _ = Command::new("ip").args(["link", "set", "lo", "up"]).status();
     // an address that isn't loopback, for what sampling only counts when it leaves the machine
     let _ = Command::new("ip").args(["addr", "add", "10.99.0.1/32", "dev", "lo"]).output();

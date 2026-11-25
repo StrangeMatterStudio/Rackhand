@@ -112,6 +112,8 @@ pub struct Options {
     pub jitter: Arc<dyn Fn() -> f64 + Send + Sync>,
     /// The root helper, when the machine has one.
     pub helper: Option<HelperClient>,
+    /// The eBPF capture's maps, when the helper passed them (D196); the collector takes it.
+    pub capture: Option<crate::security::Captured>,
 }
 
 impl std::fmt::Debug for Options {
@@ -192,7 +194,7 @@ impl Daemon {
     pub async fn run(mut self) -> i32 {
         let (tx, mut rx) = mpsc::channel(64);
         let (host, clock, helper) = (self.opts.host.clone(), self.opts.clock.clone(), self.opts.helper.clone());
-        spawn_collector(host, clock, helper, self.settings.subscribe(), tx);
+        spawn_collector(host, clock, helper, self.opts.capture.take(), self.settings.subscribe(), tx);
         loop {
             self.state("connecting", None, None);
             let now = self.opts.clock.now_ms();
@@ -502,6 +504,7 @@ fn spawn_collector(
     host: Arc<dyn Host + Send + Sync>,
     clock: Arc<dyn Clock>,
     helper: Option<HelperClient>,
+    capture: Option<crate::security::Captured>,
     settings: watch::Receiver<Settings>,
     tx: mpsc::Sender<Sampled>,
 ) {
@@ -510,7 +513,7 @@ fn spawn_collector(
     {
         let (host, clock, helper, pending) = (host.clone(), clock.clone(), helper.clone(), pending.clone());
         tokio::spawn(async move {
-            let mut sampler = crate::security::Sampler::default();
+            let mut sampler = crate::security::Sampler::new(capture);
             loop {
                 let now = clock.now_ms();
                 let (seen, events) = sampler.tick(host.as_ref(), helper.as_ref(), now).await;
@@ -638,12 +641,26 @@ pub async fn main(paths: Paths) -> Result<i32, String> {
     // the MACs the hub compares with the guests' configurations (guest binding, 7.3.12)
     link_cfg.interfaces = collect::interfaces(host.as_ref());
     link_cfg.os = Some(hello_os());
-    // what this probe can do (E36): sampling until the eBPF capture is loaded, with the helper and the engine's socket
+    // the eBPF capture, which the helper loads and passes the maps of (D196); without it, sampling (E36)
+    #[cfg(target_os = "linux")]
+    let capture = match HelperClient::new(crate::helper::SOCKET, version).ebpf_capture().await {
+        Ok(capture) => {
+            tracing::info!("connections and process starts come from the eBPF capture");
+            Some(capture)
+        }
+        Err(reason) => {
+            tracing::info!(%reason, "connections are sampled");
+            None
+        }
+    };
+    #[cfg(not(target_os = "linux"))]
+    let capture = None;
+    // what this probe can do (E36): the capture, the helper and the engine's socket
     #[cfg(unix)]
     let containers = crate::helper::containers::SOCKETS.iter().any(|s| std::path::Path::new(s).exists());
     #[cfg(not(unix))]
     let containers = false;
-    link_cfg.capabilities = crate::security::capability::all(host.as_ref(), false, true, containers);
+    link_cfg.capabilities = crate::security::capability::all(host.as_ref(), capture.is_some(), true, containers);
     let link = Link::new(endpoint, link_cfg, buffer, crate::buffer::epoch::EpochState::start(backlog));
     if let Some(dir) = paths.state_file.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -657,6 +674,7 @@ pub async fn main(paths: Paths) -> Result<i32, String> {
         clock,
         jitter: Arc::new(random_jitter),
         helper: Some(HelperClient::new(crate::helper::SOCKET, version)),
+        capture,
     };
     let daemon = Daemon::new(link, opts).map_err(|e| e.to_string())?;
     Ok(daemon.run().await)

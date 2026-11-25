@@ -189,6 +189,7 @@ async fn disk_rule_callouts_and_resolution() {
         clock: Arc::new(SystemClock::default()),
         jitter: Arc::new(|| 0.0),
         helper: None,
+        capture: None,
     };
     tokio::spawn(Daemon::new(link, opts).unwrap().run());
 

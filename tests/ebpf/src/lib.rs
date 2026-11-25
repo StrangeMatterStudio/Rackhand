@@ -4,4 +4,6 @@
 #[cfg(test)]
 mod capture;
 #[cfg(test)]
+mod sampler;
+#[cfg(test)]
 mod smoke;

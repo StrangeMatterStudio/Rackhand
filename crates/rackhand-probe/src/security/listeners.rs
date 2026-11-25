@@ -60,14 +60,22 @@ impl Listeners {
 #[derive(Debug, Default)]
 pub struct TempExecs {
     reported: BTreeSet<(u32, i64)>,
+    /// Pids the eBPF capture's events named since the last scan.
+    captured: BTreeSet<u32>,
 }
 
 impl TempExecs {
+    /// The pids the capture reported starting from a temporary directory: the next scan doesn't report them again.
+    pub fn captured(&mut self, pids: &[u32]) {
+        self.captured.extend(pids);
+    }
+
     /// An event for each process of `scan` not reported before (a pid is told apart from a later one by its start time).
     pub fn observe(&mut self, scan: &[ProcInfo], at_ms: i64) -> Vec<ProbeEvent> {
         let mut events = Vec::new();
+        let captured = std::mem::take(&mut self.captured);
         for p in scan {
-            if !self.reported.insert((p.pid, p.started_at_ms)) {
+            if !self.reported.insert((p.pid, p.started_at_ms)) || captured.contains(&p.pid) {
                 continue;
             }
             events.push(event(
@@ -146,5 +154,22 @@ mod tests {
         assert_eq!(t.observe(&[p(7, 100), p(8, 200)], 3).len(), 1, "another process");
         assert!(t.observe(&[], 4).is_empty());
         assert_eq!(t.observe(&[p(7, 900)], 5).len(), 1, "the pid used again by a later process");
+    }
+
+    #[test]
+    fn a_start_the_capture_reported_isnt_reported_again_by_the_scan() {
+        let mut t = TempExecs::default();
+        let p = |pid| ProcInfo {
+            pid,
+            ppid: 1,
+            exe: "/tmp/x".into(),
+            user: "root".into(),
+            started_at_ms: 100,
+            parent_exe: String::new(),
+        };
+        t.captured(&[7]);
+        assert!(t.observe(&[p(7)], 1).is_empty(), "the capture's event named it");
+        assert!(t.observe(&[p(7)], 2).is_empty(), "and it stays reported while it runs");
+        assert_eq!(t.observe(&[p(7), p(8)], 3).len(), 1, "another process still is");
     }
 }
