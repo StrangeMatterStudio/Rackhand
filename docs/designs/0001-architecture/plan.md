@@ -279,7 +279,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | L4 | Live pass for M3: actions and patching | T65, L3 | live (local lab) | todo |
 | T66 | Helper security scans | T43, T11 | integration (containers) | done |
 | T67 | Probe sampling capture and security signals | T66, T42 | collector + integration | done |
-| T68 | eBPF capture | T67, T10, T06 | eBPF tier | in progress |
+| T68 | eBPF capture | T67, T10, T06 | eBPF tier | done |
 | T69 | Threat intel and outside sources | T41, T15 | unit | done |
 | T70 | Connection scoring and connection storage | T67, T69 | unit + integration | done |
 | T71 | Security events, severities and exemptions | T70, T61 | unit + integration | done |
@@ -3398,6 +3398,9 @@ Only additions to that list are written out below.
 - **Regression (in addition):** none beyond the fast tier.
 - **Manual verification:** LXC attribution from the Proxmox host (E37) is tested in L5 on `pve9`, then on a real
   host as MV2 in L9.
+- **Left to the live passes:** the helper loading the capture under its own systemd unit (`ProtectControlGroups`,
+  `ProtectKernelTunables`) and a probe saying `ebpf` in its Hello on a real machine are checked in L5 (the VMs run no
+  systemd); D197 and D198 are the run's.
 - **Risk / rollback:** a kernel where loading fails uses sampling. Revert the commit.
 - **Evidence:**
   | When | Command | Result |
