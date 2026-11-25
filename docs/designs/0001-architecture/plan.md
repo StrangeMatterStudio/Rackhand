@@ -4702,7 +4702,8 @@ Only additions to that list are written out below.
     (`update` expects `rackhand-operator.service`); there is no relay installer.
   - The hub never downloads releases (7.8.5): its release directory is filled by hand.
   - Passkeys aren't wired (`with_passkeys` is never called); no way to give the dashboard your own certificate.
-  - MCP approvals last 60 minutes, the design says 24 hours; local backups are fixed at 2, the design has 1 to 14.
+  - MCP approvals last 60 minutes, the design says 24 hours; local backups are fixed at 2, the design has 1 to 14 (both
+    7.8.1 settings: T98's `settings::every_setting_in_7_8_1_has_default_and_range` covers them).
   - A machine can be revoked from the dashboard only through `unenroll` (Linux and Alpine); Windows has no uninstall.
   - (Fixed the same day, D200: the probe's uninstall removed all of `/etc/rackhand`.)
 
