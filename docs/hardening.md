@@ -35,10 +35,10 @@ Rackhand already does, and what you should do around it. It follows the threat t
   leave a copy on the hub's own disks or in its backups' location.
 - Keep `/etc/rackhand` root-owned. `hub.toml` is `root:rackhand-hub` 0640 and the master key root 0600; the self-watch
   reports config files that others can write.
-- The design says no assistant account exists on a hub's host. Machine roles can't be set from the dashboard yet, so a
-  hub host added as `managed` gets the `rackhand-ai` account (full sudo). Until roles can be set, add the hub's own host
-  at access level `monitor`.
-- Don't run `rackhand-probe uninstall` on the hub host: it removes `/etc/rackhand`, including the master key.
+- No assistant account exists on a hub's host: when you add the hub's own host, give it the role `hub` (or add it at
+  access level `monitor`). A hub host added as `managed` without the role would get the `rackhand-ai` account.
+- `rackhand-probe uninstall` on the hub's host removes only the probe's own files from `/etc/rackhand`; the master
+  key, node key and `hub.toml` stay. Keep an offline copy of the master key anyway.
 
 ## Network
 

@@ -4706,8 +4706,11 @@ Only additions to that list are written out below.
     passed in the two crates).
   - No command turns the recovery code back into `master.key` (E34; L8's `recovery_procedure_restores_the_master_key`
     depends on it), and a hub without its key doesn't start, where the design keeps monitoring going.
-  - Nothing sets a machine's roles (the Add page passes none, `--role` is ignored), so a hub's own host added as
-    managed gets `rackhand-ai`, against section 10.
+  - (Closed 2026-11-25.) Nothing set a machine's roles, so a hub's own host added as managed got `rackhand-ai`, against
+    section 10. The Add page now has a Role (none, or one of the closed set: hub, hypervisor, operator, relay, storage,
+    network, desktop); the token carries it, so the join leaves out the assistant's key for role `hub`. Test
+    `web::tests::add::machine_role_chosen_when_added` (failed first: no role offered; then 6 passed in `add::`). A role
+    can't be changed after the machine is added (add it again); `--role` from the machine stays ignored.
   - Hubs can't present a relay key, so private relays (the default and the packaged unit's mode) refuse them; the
     packaged relay unit has no certificate; the n0 relays setting is stored but unused.
   - `operator join` doesn't set up the AI provider's credential, and there is no operator unit or installer

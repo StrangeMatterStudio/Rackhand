@@ -2208,13 +2208,15 @@ mod pages {
             let tokens: i64 =
                 app.db.readers().with(|c| c.query_row("SELECT count(*) FROM join_tokens", [], |r| r.get(0))).unwrap();
             assert_eq!(tokens, 1);
-            // the daily cap is a number from 1 to 1000, saved and audited
-            assert_eq!(set_cap(&app, &admin, "0").await.status(), StatusCode::BAD_REQUEST);
-            assert_eq!(set_cap(&app, &admin, "5000").await.status(), StatusCode::BAD_REQUEST);
+            // the daily cap is a number from 0 to 500 (7.8.1), saved and audited
+            assert_eq!(set_cap(&app, &admin, "-1").await.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(set_cap(&app, &admin, "501").await.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(set_cap(&app, &admin, "0").await.status(), StatusCode::SEE_OTHER, "0 starts none");
+            assert_eq!(set_cap(&app, &admin, "500").await.status(), StatusCode::SEE_OTHER);
             assert_eq!(set_cap(&app, &admin, "5").await.status(), StatusCode::SEE_OTHER);
             assert_eq!(crate::library::config::hub(&app.db).unwrap().assistant.daily_cap, 5);
             let page = text(send(&app.router, get("/settings/assistant", &admin)).await).await;
-            assert!(page.contains("name=\"daily_cap\" type=\"number\" min=\"1\" max=\"1000\" value=\"5\""), "{page}");
+            assert!(page.contains("name=\"daily_cap\" type=\"number\" min=\"0\" max=\"500\" value=\"5\""), "{page}");
             // only an admin sees or changes any of it
             let responder = session_for(&app.db, Role::Responder).await;
             assert_eq!(send(&app.router, get("/settings/assistant", &responder)).await.status(), StatusCode::FORBIDDEN);
@@ -2604,6 +2606,50 @@ mod add {
         let (code, _) =
             add(&app, &admin, &[("os", "beos"), ("name", "x"), ("access", "managed"), ("mode", "local")]).await;
         assert_eq!(code, StatusCode::BAD_REQUEST);
+    }
+
+    /// A machine's role is chosen when it is added (10, D62): a hub's own host gets no assistant account.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn machine_role_chosen_when_added() {
+        let app = add_app("add-role").await;
+        let admin = session_for(&app.db, Role::Admin).await;
+        let page = unescape(&text(send(&app.router, get("/add?add=machine", &admin)).await).await);
+        assert!(page.contains("name=\"role\"") && page.contains("Hypervisor"), "the role is offered: {page}");
+        let roles_of = |name: &str| -> String {
+            app.db
+                .readers()
+                .with(|c| c.query_row("SELECT roles FROM machines WHERE name = ?1", [name], |r| r.get(0)))
+                .unwrap()
+        };
+        let bound_last = || -> String {
+            app.db
+                .readers()
+                .with(|c| c.query_row("SELECT bound FROM join_tokens ORDER BY rowid DESC LIMIT 1", [], |r| r.get(0)))
+                .unwrap()
+        };
+        let base = [("os", "linux"), ("access", "managed"), ("mode", "local")];
+        let with = |name: &'static str, role: Option<&'static str>| {
+            let mut f: Vec<(&str, &str)> = base.to_vec();
+            f.push(("name", name));
+            if let Some(r) = role {
+                f.push(("role", r));
+            }
+            f
+        };
+        let (code, html) = add(&app, &admin, &with("hub2", Some("hub"))).await;
+        assert_eq!(code, StatusCode::OK, "{html}");
+        assert_eq!(roles_of("hub2"), "[\"hub\"]");
+        assert!(
+            bound_last().contains("\"hub\""),
+            "the token carries it, so the join leaves out the assistant: {}",
+            bound_last()
+        );
+        let (code, _) = add(&app, &admin, &with("pve1", Some("hypervisor"))).await;
+        assert_eq!((code, roles_of("pve1")), (StatusCode::OK, "[\"hypervisor\"]".to_string()));
+        let (code, _) = add(&app, &admin, &with("web4", None)).await;
+        assert_eq!((code, roles_of("web4")), (StatusCode::OK, "[]".to_string()), "no role: an ordinary server");
+        let (code, _) = add(&app, &admin, &with("x1", Some("king"))).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST, "only the design's roles");
     }
 
     /// The offline variant's files (7.3.12): the hub serves `install.sh` and the release files it holds, to anyone (the

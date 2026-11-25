@@ -40,7 +40,7 @@ The Windows-only checks are in [windows-checklist.md](windows-checklist.md).
 | 17 | On the monitor machine's page, try a runbook or a diagnostic | It doesn't run: the hub has no account on a monitor machine |
 | 18 | Change the managed machine to `monitor` from its Machine page and run the command | The `rackhand` and `rackhand-ai` users and `/etc/sudoers.d/rackhand` are gone; its history is kept |
 | 19 | Add a Windows machine | Work through [windows-checklist.md](windows-checklist.md) |
-| 20 | Add the hub's own host at `monitor` (see hardening.md) | It reports; it has no `rackhand-ai` account |
+| 20 | Add the hub's own host with the role `hub` (see hardening.md) | It reports; it has no `rackhand-ai` account |
 
 ## Runbooks and approvals (operators.md)
 

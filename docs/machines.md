@@ -41,7 +41,9 @@ machine. The hub can't raise a machine from `monitor` to `managed` by itself; th
 ## The join ticket and token
 
 On the dashboard, open **Add**, choose **Machine**, and fill in the system (Linux, Alpine or Windows), the name, the
-access level and the mode. The hub shows the install command. It carries two values:
+access level, the mode and, for a machine that isn't an ordinary server, its role (`hub`, `hypervisor`, `operator`,
+`relay`, `storage`, `network` or `desktop`). A hub's own host gets the role `hub`, so it never gets the assistant's
+account. The hub shows the install command. It carries two values:
 
 - the **ticket**, which names the hub's endpoint id (its public key), addresses and relays. The probe pins that id, so
   it only ever talks to this hub.
@@ -196,8 +198,8 @@ their home directories, and removes `/etc/sudoers.d/rackhand`, `/etc/rackhand`, 
 and `/usr/local/lib/rackhand`. Nothing else is touched. `--after <seconds>` (at most 3600) returns at once and does it
 later.
 
-Warning: don't run `uninstall` on the hub's own machine. There, `/etc/rackhand` also holds the hub's master key, node
-key and `hub.toml`, and `uninstall` removes the whole directory.
+On the hub's own machine `/etc/rackhand` also holds the hub's master key, node key and `hub.toml`; `uninstall` removes
+only the probe's files there (`commands.json`, `helper-extra-paths`) and leaves the hub's.
 
 ## Not available yet
 
@@ -205,7 +207,5 @@ key and `hub.toml`, and `uninstall` removes the whole directory.
   targets Linux and Alpine.
 - The dashboard has no action that revokes a machine without the `unenroll` runbook. A monitor machine that ran
   `uninstall` stays listed and shows as silent.
-- Roles (`hub`, `operator`, `relay`, `hypervisor`, `storage`, `network`, `desktop`) can't be set from the dashboard
-  yet, and the hub doesn't take them from the machine. In particular a hub's own host added as `managed` gets the
-  `rackhand-ai` account, which the design rules out for hubs. Until roles can be set, add the hub's own host at access
-  level `monitor` (see [hardening.md](hardening.md)).
+- A role is chosen when the machine is added and can't be changed from the dashboard afterwards; the hub doesn't take
+  it from the machine (`--role` is ignored). To change it, add the machine again.

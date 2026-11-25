@@ -60,11 +60,24 @@ const ACCESS_HINT: &str = "Managed: the hub can also patch it and run runbooks o
 const MODES: Choices = &[("local", "Local"), ("remote", "Remote")];
 const MODES_HINT: &str = "Local when it is on this hub's network. Remote for a machine at a place with no hub of its own: its probe reports over the internet, and the hub reaches it through the probe.";
 
+/// The roles of section 10 a machine can have; none for an ordinary server.
+const ROLES: Choices = &[
+    ("hub", "Hub host"),
+    ("hypervisor", "Hypervisor"),
+    ("operator", "Operator host"),
+    ("relay", "Relay host"),
+    ("storage", "Storage"),
+    ("network", "Network"),
+    ("desktop", "Desktop"),
+];
+const ROLES_HINT: &str = "Leave it empty for an ordinary server. A hub host gets no assistant account; the assistant's commands on hypervisor, operator and relay hosts are high risk, and those are never quarantined; a desktop's connections are kept as a summary.";
+
 const MACHINE: &[Spec] = &[
     Spec::text("name", "Name").hint(NAME_HINT).pattern(NAME_PATTERN, NAME_RULE).attrs(PLAIN),
     Spec::select("os", "System", SYSTEMS),
     Spec::select("access", "Access", ACCESS).hint(ACCESS_HINT),
     Spec::select("mode", "Probe", MODES).hint(MODES_HINT),
+    Spec::select("role", "Role", ROLES).hint(ROLES_HINT).optional(),
 ];
 
 const DEVICE: &[Spec] = &[Spec::select("user", "Device of", &[])
@@ -239,7 +252,11 @@ pub(super) async fn machine(web: &Web, ctx: &Ctx) -> Response<Body> {
     };
     let access = if form.value("access") == "monitor" { Access::Monitor } else { Access::Managed };
     let mode = if form.value("mode") == "remote" { ProbeMode::Remote } else { ProbeMode::Local };
-    let add = AddMachine { site_id: site, name: name.clone(), kind: kind.into(), access, mode, roles: vec![] };
+    let roles = match form.value("role") {
+        "" => vec![],
+        role => vec![role.to_string()],
+    };
+    let add = AddMachine { site_id: site, name: name.clone(), kind: kind.into(), access, mode, roles };
     let (id, token) = match registry.add_machine(&add, &user.name, ctx.now_ms).await {
         Ok(r) => r,
         Err(e) => {
