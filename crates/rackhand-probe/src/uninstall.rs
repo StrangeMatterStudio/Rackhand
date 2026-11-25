@@ -7,10 +7,12 @@
 
 use std::path::{Path, PathBuf};
 
-/// Under the machine's root; the directory with the binary and the wrapper comes last.
+/// Under the machine's root; the directory with the binary and the wrapper comes last. In `/etc/rackhand` only the
+/// probe's own files: on the hub's own host the directory also holds the hub's master key, node key and settings.
 pub const PATHS: &[&str] = &[
     "etc/sudoers.d/rackhand",
-    "etc/rackhand",
+    "etc/rackhand/commands.json",
+    "etc/rackhand/helper-extra-paths",
     "etc/rackhand-probe",
     "var/lib/rackhand-probe",
     "var/lib/rackhand-helper",
@@ -23,6 +25,9 @@ pub const PATHS: &[&str] = &[
     "etc/init.d/rackhand-probe-helper",
     "usr/local/lib/rackhand",
 ];
+
+/// Removed after the probe's files in it, when nothing else is left in it.
+const SHARED_DIR: &str = "etc/rackhand";
 
 /// The users the installer made.
 pub const USERS: [&str; 3] = ["rackhand", "rackhand-ai", "rackhand-probe"];
@@ -55,6 +60,8 @@ pub trait Host {
     /// A fixed command, no shell; whether it succeeded.
     fn run(&self, argv: &[&str]) -> bool;
     fn remove(&self, path: &Path);
+    /// Removes a directory only when it is empty.
+    fn remove_if_empty(&self, path: &Path);
     fn spawn_detached(&self, argv: &[String]) -> std::io::Result<()>;
     fn sleep(&self, seconds: u64);
 }
@@ -87,6 +94,10 @@ pub fn uninstall(options: &Options, host: &dyn Host) -> Result<(), UninstallErro
         if host.exists(&path) {
             host.remove(&path);
         }
+    }
+    let shared = options.root.join(SHARED_DIR);
+    if host.exists(&shared) {
+        host.remove_if_empty(&shared);
     }
     for user in USERS {
         if systemd {
@@ -144,6 +155,11 @@ impl Host for System {
     fn remove(&self, path: &Path) {
         let is_dir = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_dir());
         let _ = if is_dir { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) };
+    }
+
+    fn remove_if_empty(&self, path: &Path) {
+        // remove_dir refuses a directory that isn't empty
+        let _ = std::fs::remove_dir(path);
     }
 
     fn spawn_detached(&self, argv: &[String]) -> std::io::Result<()> {

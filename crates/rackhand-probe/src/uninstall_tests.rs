@@ -34,7 +34,7 @@ impl Host for Fake {
     fn exists(&self, path: &Path) -> bool {
         let rel = path.strip_prefix("/m").unwrap();
         rel == Path::new("run/systemd/system") && self.systemd
-            || self.present.iter().any(|p| rel == Path::new(p) || rel.starts_with(p))
+            || self.present.iter().any(|p| rel == Path::new(p) || rel.starts_with(p) || Path::new(p).starts_with(rel))
     }
 
     fn run(&self, argv: &[&str]) -> bool {
@@ -44,6 +44,10 @@ impl Host for Fake {
 
     fn remove(&self, path: &Path) {
         self.log.borrow_mut().push(format!("remove {}", path.display()));
+    }
+
+    fn remove_if_empty(&self, path: &Path) {
+        self.log.borrow_mut().push(format!("remove-if-empty {}", path.display()));
     }
 
     fn spawn_detached(&self, argv: &[String]) -> std::io::Result<()> {
@@ -76,7 +80,8 @@ fn probe_uninstall_needs_root_and_touches_only_its_own() {
     got.sort_unstable();
     assert_eq!(got, expected, "exactly the table's paths");
     assert!(removed.iter().all(|p| !p.contains("..") && !p.starts_with('/')), "{removed:?}");
-    for must in ["etc/sudoers.d/rackhand", "etc/rackhand", "etc/rackhand-probe", "usr/local/lib/rackhand"] {
+    let must = ["etc/sudoers.d/rackhand", "etc/rackhand/commands.json", "etc/rackhand-probe", "usr/local/lib/rackhand"];
+    for must in must {
         assert!(PATHS.contains(&must), "{must}");
     }
 }
@@ -137,4 +142,18 @@ fn probe_uninstall_after_schedules_a_copy_and_returns() {
     let not_root = Fake::new(998, true);
     assert_eq!(uninstall(&options(Some(5)), &not_root), Err(UninstallError::NotRoot));
     assert!(not_root.log().is_empty(), "not even scheduled");
+}
+
+/// On a hub's own host `/etc/rackhand` also holds the hub's master key, node key and settings: only the probe's two
+/// files there go.
+#[test]
+fn probe_uninstall_keeps_the_hubs_files_in_etc_rackhand() {
+    let m = Fake::new(0, true);
+    uninstall(&options(None), &m).unwrap();
+    let log = m.log();
+    assert!(!log.iter().any(|l| l == "remove /m/etc/rackhand"), "not the whole directory: {log:?}");
+    let list = m.at("remove /m/etc/rackhand/commands.json");
+    m.at("remove /m/etc/rackhand/helper-extra-paths");
+    assert!(list < m.at("run userdel"), "the command list goes before the users");
+    assert!(m.at("remove-if-empty /m/etc/rackhand") > list, "the directory after them, if it is empty");
 }

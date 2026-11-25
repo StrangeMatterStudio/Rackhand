@@ -441,7 +441,7 @@ mod install {
         assert!(root.status.success(), "{}", String::from_utf8_lossy(&root.stderr));
         let left = sh(
             &c,
-            "ls /usr/local/lib/rackhand /etc/rackhand-probe /var/lib/rackhand-probe /var/lib/rackhand-helper \
+            "ls /usr/local/lib/rackhand /etc/rackhand /etc/rackhand-probe /var/lib/rackhand-probe /var/lib/rackhand-helper \
                 /etc/systemd/system/rackhand-probe.service /etc/systemd/system/rackhand-probe-helper.service 2>/dev/null; \
              id rackhand-probe 2>/dev/null; systemctl is-active rackhand-probe rackhand-probe-helper 2>/dev/null | grep -c '^active'",
         );

@@ -4687,6 +4687,24 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-25 | the pages written: README.md, docs/install.md, machines.md, operators.md, relays.md, hardening.md, recovery.md, lab-checklist.md | Written against the code, which wins where it differs from the design. Writing them found gaps between the design and the code, listed under *Gaps found writing the docs* below; the docs say what isn't available yet. `docs-check` isn't written yet |
+
+- **Gaps found writing the docs (2026-11-25), to close before final validation:**
+  - `rackhand` and `rackhand-probe` answer no `--help` (7.7.3); `rackhand-probe set-hub --help` takes `--help` as the
+    ticket, and `set-hub` isn't in the probe's usage text.
+  - No command turns the recovery code back into `master.key` (E34; L8's `recovery_procedure_restores_the_master_key`
+    depends on it), and a hub without its key doesn't start, where the design keeps monitoring going.
+  - Nothing sets a machine's roles (the Add page passes none, `--role` is ignored), so a hub's own host added as
+    managed gets `rackhand-ai`, against section 10.
+  - Hubs can't present a relay key, so private relays (the default and the packaged unit's mode) refuse them; the
+    packaged relay unit has no certificate; the n0 relays setting is stored but unused.
+  - `operator join` doesn't set up the AI provider's credential, and there is no operator unit or installer
+    (`update` expects `rackhand-operator.service`); there is no relay installer.
+  - The hub never downloads releases (7.8.5): its release directory is filled by hand.
+  - Passkeys aren't wired (`with_passkeys` is never called); no way to give the dashboard your own certificate.
+  - MCP approvals last 60 minutes, the design says 24 hours; local backups are fixed at 2, the design has 1 to 14.
+  - A machine can be revoked from the dashboard only through `unenroll` (Linux and Alpine); Windows has no uninstall.
+  - (Fixed the same day, D200: the probe's uninstall removed all of `/etc/rackhand`.)
 
 ### L8: Final local pass for M8
 - **Design refs:** 14, D107, AC32, AC37, AC41, AC67, E34
@@ -5232,6 +5250,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D197 | 2026-11-25 | T68 | how the probe uses the capture | the daemon asks the helper for the capture once at start, says `ebpf` in its Hello when it got it, and asks again every 5 minutes, taking new maps (a restarted helper's) by map id; the capability isn't updated until the probe restarts. With the capture the 5-second reads drain the maps as well as reading the tables as before, so a connection opened before the capture was attached (after an install or a helper restart) or open across reads is still reported as a sampled socket, and a short one the reads miss comes from the maps; the tables also give new listeners and the executables of processes started before the capture (through the helper's socket owners), and the helper's scan still runs for starts by a relative path and processes that run from a deleted file. A connection whose process neither the exec hook nor the helper knows has no executable (not its process name). A record's count is its connects and sends. The exec event has no parent (`ppid` 0) | the exec hook sees only starts after it is attached and records the path as asked (relative or through links); a helper request for a pid's executable would close what remains, and would need the design's helper contract changed |
 | D198 | 2026-11-25 | T68 | release builds, the lab build and CI | `xtask release build` (and so `repro` and the release tier) builds the eBPF object with the release's path remaps and fails when a Linux probe doesn't carry it; the lab's deploy build embeds it too. CI installs the tools in the jobs that build it (`ci/setup-toolchain.sh ebpf`: the eBPF crate's nightly with `rust-src`, and `bpf-linker` 0.13.0 checked by its sha256 and kept in the runner's cache), not in the runner images, as the Zeus session asked: the images are shared | a release probe without the program would sample on every machine, and nothing else would notice |
 | D199 | 2026-11-25 | outside a step (found by T68's fast tier) | the enrollment SSH test's retries | `hub_cmd::tests::ssh_test_after_first_report_wired` failed once at a load near 80 with three `machine.ssh_test_passed` events for one machine: the retry loop held a machine only while its logins ran, so a retry between the logins and the recording of the result tested it again and recorded another pass. `EnrollTest::begin` now holds the machine and the retry loop keeps it until the result and the enrollment are recorded (`run` does both, as before). New test `ssh::tests::enroll_test::not_tested_again_until_the_last_result_is_recorded` (failed first: `begin` and `test` missing; then passed); `ssh::` 8 passed, `hub_cmd::` 27 passed. A stress run (30 iterations, 8 at once) passed with and without the fix, so the race shows only under heavier load. A second hole closed the same day: a retry tick lists the machines before spawning, so a retry listed before the first result was recorded could begin after the guard was released; a retry now checks `has_passed` once it holds the machine (the test extended: failed first on `has_passed` missing; then `ssh::` 8 passed, `hub_cmd::` 27 passed). The event write waits for its commit, so the result is visible when the guard is released | a hub that records a pass several times shows it several times on the machine's page and events |
+| D200 | 2026-11-25 | outside a step (found writing T99's docs) | what `rackhand-probe uninstall` removes | it removed all of `/etc/rackhand`, which on the hub's own host also holds the hub's master key, node key and `hub.toml`. It now removes only the probe's `commands.json` and `helper-extra-paths` there, and the directory only when it is then empty. New test `uninstall::tests::probe_uninstall_keeps_the_hubs_files_in_etc_rackhand` (failed first: `not the whole directory`); `probe_uninstall_needs_root_and_touches_only_its_own` names the file instead of the directory; the integration test `probe_uninstall_locally_on_monitor_machine` also checks `/etc/rackhand` is gone on a monitor machine (run with the integration tier) | an uninstall on a hub's host would have destroyed the hub's keys |
 
 ## Follow-ups (out of scope)
 
