@@ -73,8 +73,9 @@ const fn rule(name: &'static str, table: &'static str, kind: RuleKind) -> Rule {
     Rule { name, table, kind }
 }
 
+/// The rules, in the order they run: a label table goes before its epoch's ranges, which it is judged by.
 pub fn rules(s: &RetentionSettings) -> Vec<Rule> {
-    use RuleKind::{Age, Later, Owner};
+    use RuleKind::{Age, Owner};
     vec![
         rule("series_chunks.tier0", "series_chunks", Age { keep_ms: s.tier0_ms }),
         rule("series_chunks.tier1", "series_chunks", Age { keep_ms: s.tier1_ms }),
@@ -82,23 +83,28 @@ pub fn rules(s: &RetentionSettings) -> Vec<Rule> {
         rule("events", "events", Age { keep_ms: s.events_ms }),
         rule("report_staging", "report_staging", Owner("compaction")),
         rule("rollup_dirty", "rollup_dirty", Owner("rollups")),
-        rule("probe_ranges", "probe_ranges", Later("T98")),
-        rule("conn_records", "conn_records", Later("T98")),
-        rule("job_steps", "job_steps", Later("T98")),
-        rule("assistant_transcripts", "assistant_transcripts", Later("T98")),
-        rule("incidents", "incidents", Later("T98")),
-        rule("incident_events", "incident_events", Later("T98")),
-        rule("approvals", "approvals", Later("T98")),
-        rule("audit_log", "audit_log", Later("T98")),
-        rule("check_results", "check_results", Later("T98")),
-        rule("notifications", "notifications", Later("T98")),
-        rule("peer_summaries", "peer_summaries", Later("T98")),
-        rule("probe_labels", "probe_labels", Later("T98")),
-        rule("conn_baseline", "conn_baseline", Later("T98")),
-        rule("join_tokens", "join_tokens", Later("T98")),
-        rule("job_tokens", "job_tokens", Later("T98")),
-        rule("sessions", "sessions", Later("T98")),
-        rule("known_devices", "known_devices", Later("T98")),
+        // an epoch's label table and committed ranges, 48 h after its last report once the machine has a newer epoch;
+        // the newest epoch's stay, so a machine back after days still knows what it already sent
+        rule("probe_labels", "probe_labels", Age { keep_ms: 2 * DAY }),
+        rule("probe_ranges", "probe_ranges", Age { keep_ms: 2 * DAY }),
+        rule("conn_records", "conn_records", Age { keep_ms: 30 * DAY }),
+        // output and transcript text only: the job's steps and turns stay
+        rule("job_steps", "job_steps", Age { keep_ms: 90 * DAY }),
+        rule("assistant_transcripts", "assistant_transcripts", Age { keep_ms: 90 * DAY }),
+        // resolved ones, a year after they were resolved
+        rule("incidents", "incidents", Age { keep_ms: 365 * DAY }),
+        rule("incident_events", "incident_events", Owner("incidents (deleted with their incident)")),
+        rule("approvals", "approvals", Age { keep_ms: 365 * DAY }),
+        // with a checkpoint row before each deletion, so the chain stays verifiable
+        rule("audit_log", "audit_log", Age { keep_ms: 365 * DAY }),
+        rule("check_results", "check_results", Age { keep_ms: 30 * DAY }),
+        rule("notifications", "notifications", Age { keep_ms: 90 * DAY }),
+        rule("peer_summaries", "peer_summaries", Owner("peer links (one row per peer, replaced)")),
+        rule("conn_baseline", "conn_baseline", Age { keep_ms: 180 * DAY }),
+        rule("join_tokens", "join_tokens", Age { keep_ms: 30 * DAY }),
+        rule("job_tokens", "job_tokens", Age { keep_ms: 30 * DAY }),
+        rule("sessions", "sessions", Age { keep_ms: 0 }),
+        rule("known_devices", "known_devices", Age { keep_ms: 365 * DAY }),
     ]
 }
 
@@ -108,6 +114,8 @@ pub struct Batch {
     pub rule: String,
     pub cutoff_ms: i64,
     pub limit: usize,
+    /// When the run started (an audit checkpoint's time).
+    pub now_ms: i64,
 }
 
 /// The delete statement of an age rule (`?1` the cutoff, `?2` the batch size).
@@ -119,6 +127,65 @@ pub(crate) fn delete_sql(rule: &str) -> Option<&'static str> {
                WHERE tier = ?3 AND end_ms < ?1 LIMIT ?2)"
         }
         "events" => "DELETE FROM events WHERE rowid IN (SELECT rowid FROM events WHERE at_ms < ?1 LIMIT ?2)",
+        "probe_labels" => {
+            "DELETE FROM probe_labels WHERE (machine_id, epoch, labels_id) IN (
+               SELECT l.machine_id, l.epoch, l.labels_id FROM probe_labels l
+               WHERE EXISTS (SELECT 1 FROM probe_ranges n WHERE n.machine_id = l.machine_id AND n.epoch > l.epoch)
+                 AND NOT EXISTS (SELECT 1 FROM probe_ranges r
+                                 WHERE r.machine_id = l.machine_id AND r.epoch = l.epoch AND r.updated_ms >= ?1)
+               LIMIT ?2)"
+        }
+        "probe_ranges" => {
+            "DELETE FROM probe_ranges WHERE (machine_id, epoch) IN (
+               SELECT r.machine_id, r.epoch FROM probe_ranges r
+               WHERE r.updated_ms < ?1
+                 AND EXISTS (SELECT 1 FROM probe_ranges n WHERE n.machine_id = r.machine_id AND n.epoch > r.epoch)
+               LIMIT ?2)"
+        }
+        "conn_records" => {
+            "DELETE FROM conn_records WHERE (machine_id, bucket_ms, container, exe, dest_ip, dest_port, proto) IN (
+               SELECT machine_id, bucket_ms, container, exe, dest_ip, dest_port, proto FROM conn_records
+               WHERE bucket_ms < ?1 LIMIT ?2)"
+        }
+        "job_steps" => {
+            "UPDATE job_steps SET stdout = NULL, stderr = NULL WHERE (job_id, step_id) IN (
+               SELECT job_id, step_id FROM job_steps
+               WHERE ended_at < ?1 AND (stdout IS NOT NULL OR stderr IS NOT NULL) LIMIT ?2)"
+        }
+        "assistant_transcripts" => {
+            "UPDATE assistant_transcripts SET text = NULL WHERE (job_id, seq) IN (
+               SELECT job_id, seq FROM assistant_transcripts WHERE at_ms < ?1 AND text IS NOT NULL LIMIT ?2)"
+        }
+        "incidents" => "DELETE FROM incidents WHERE id IN (SELECT id FROM incidents WHERE resolved_at < ?1 LIMIT ?2)",
+        "approvals" => {
+            "DELETE FROM approvals WHERE id IN (
+               SELECT id FROM approvals WHERE coalesce(decided_at, expires_at) < ?1 LIMIT ?2)"
+        }
+        "check_results" => {
+            "DELETE FROM check_results WHERE (check_id, at_ms) IN (
+               SELECT check_id, at_ms FROM check_results WHERE at_ms < ?1 LIMIT ?2)"
+        }
+        "notifications" => {
+            "DELETE FROM notifications WHERE id IN (SELECT id FROM notifications WHERE at_ms < ?1 LIMIT ?2)"
+        }
+        "conn_baseline" => {
+            "DELETE FROM conn_baseline WHERE (machine_id, container, exe, dest_asn, dest_country, dest_port, proto) IN (
+               SELECT machine_id, container, exe, dest_asn, dest_country, dest_port, proto FROM conn_baseline
+               WHERE last_seen_ms < ?1 LIMIT ?2)"
+        }
+        "join_tokens" => {
+            "DELETE FROM join_tokens WHERE id IN (SELECT id FROM join_tokens WHERE expires_at < ?1 LIMIT ?2)"
+        }
+        "job_tokens" => {
+            "DELETE FROM job_tokens WHERE job_id IN (SELECT job_id FROM job_tokens WHERE expires_at < ?1 LIMIT ?2)"
+        }
+        "sessions" => {
+            "DELETE FROM sessions WHERE id_hash IN (SELECT id_hash FROM sessions WHERE expires_at < ?1 LIMIT ?2)"
+        }
+        "known_devices" => {
+            "DELETE FROM known_devices WHERE (user_id, cookie_hash) IN (
+               SELECT user_id, cookie_hash FROM known_devices WHERE last_seen_at < ?1 LIMIT ?2)"
+        }
         _ => return None,
     })
 }
@@ -159,7 +226,7 @@ pub async fn run(
     for r in rules(settings) {
         let RuleKind::Age { keep_ms } = r.kind else { continue };
         loop {
-            let batch = Batch { rule: r.name.to_string(), cutoff_ms: now_ms - keep_ms, limit: BATCH };
+            let batch = Batch { rule: r.name.to_string(), cutoff_ms: now_ms - keep_ms, limit: BATCH, now_ms };
             let n = writer.send(WriteCmd::RetentionBatch(batch)).await?.rows;
             if n > 0 {
                 stats.deleted += n;

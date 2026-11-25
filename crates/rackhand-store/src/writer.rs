@@ -784,6 +784,31 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
             tx.commit()?;
             Ok(n)
         }
+        WriteCmd::RetentionBatch(b) if b.rule == "audit_log" => {
+            // the oldest rows up to the batch size, never the chain's head: a checkpoint row keeps the hash of the
+            // last one removed, then they go, in one transaction
+            let tx = conn.transaction()?;
+            let through: Option<i64> = tx.query_row(
+                "SELECT max(seq) FROM (SELECT seq FROM audit_log
+                   WHERE at_ms < ?1 AND seq < (SELECT max(seq) FROM audit_log) ORDER BY seq LIMIT ?2)",
+                rusqlite::params![b.cutoff_ms, b.limit as i64],
+                |r| r.get(0),
+            )?;
+            let Some(through) = through else { return Ok(0) };
+            let removed_hash: Vec<u8> =
+                tx.query_row("SELECT hash FROM audit_log WHERE seq = ?1", [through], |r| r.get(0))?;
+            let data =
+                format!("{{\"removed_through_seq\":{through},\"hash\":\"{}\"}}", crate::audit::hex(&removed_hash));
+            let mut cp = Row::new();
+            cp.insert("at_ms", Value::Integer(b.now_ms));
+            cp.insert("actor", Value::Text("hub".into()));
+            cp.insert("action", Value::Text("audit.checkpoint".into()));
+            cp.insert("data", Value::Text(data));
+            append_audit(&tx, &cp, true)?;
+            let removed = tx.execute("DELETE FROM audit_log WHERE seq <= ?1", [through])?;
+            tx.commit()?;
+            Ok(removed)
+        }
         WriteCmd::RetentionBatch(b) => {
             let sql = crate::retention::delete_sql(&b.rule).ok_or(StoreError::Conflict("no such retention rule"))?;
             let tier = crate::retention::tier_of(&b.rule);
