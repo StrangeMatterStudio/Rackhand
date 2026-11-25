@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Installs the Rust toolchain and the named tools without sudo (CI runners have none). Cached under CARGO_HOME and
-# RUSTUP_HOME when the runner provides a persistent cache. Tools: nextest, deny, vmtest, pwsh.
+# RUSTUP_HOME when the runner provides a persistent cache. Tools: nextest, deny, vmtest, pwsh, ebpf (the eBPF crate's
+# pinned nightly with rust-src, and bpf-linker; docs/maintainers/ebpf.md).
 set -euo pipefail
 export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
 export PATH="$CARGO_HOME/bin:$HOME/.local/bin:$PATH"
@@ -22,6 +23,30 @@ for tool in "$@"; do
         chmod +x "$HOME/.local/pwsh/pwsh" && ln -sf "$HOME/.local/pwsh/pwsh" "$HOME/.local/bin/pwsh"
       fi
       pwsh -NoProfile -c 'if (-not (Get-Module -ListAvailable Pester | ? { $_.Version.Major -ge 5 })) { Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck -MinimumVersion 5.0 }'
+      ;;
+    ebpf)
+      # the nightly named by the eBPF crate's rust-toolchain.toml
+      nightly=$(sed -n 's/^channel = "\(.*\)"$/\1/p' crates/rackhand-probe-ebpf/rust-toolchain.toml)
+      rustup toolchain install "$nightly" --profile minimal --component rust-src
+      if ! bpf-linker --version 2>/dev/null | grep -q '0\.13\.0'; then
+        url=https://github.com/aya-rs/bpf-linker/releases/download/v0.13.0/bpf-linker-x86_64-unknown-linux-musl.tar.zst
+        dir=$(mktemp -d)
+        curl -sSfL "$url" -o "$dir/bpf-linker.tar.zst"
+        echo "0e9b2b30f68898177f1cb6f0ecbfa909a82479473a49a0ef66529fd088e3e410  $dir/bpf-linker.tar.zst" | sha256sum -c -
+        if command -v zstd >/dev/null; then
+          tar --zstd -xf "$dir/bpf-linker.tar.zst" -C "$dir"
+        elif command -v node >/dev/null; then
+          # a runner without zstd: Node's own zstd decompressor
+          node -e "process.stdin.pipe(require('zlib').createZstdDecompress()).pipe(process.stdout)" \
+            < "$dir/bpf-linker.tar.zst" | tar -x -C "$dir"
+        else
+          echo "unpacking bpf-linker needs zstd or node" >&2
+          exit 1
+        fi
+        install -m 0755 "$dir/bpf-linker" "$CARGO_HOME/bin/bpf-linker"
+        rm -rf "$dir"
+      fi
+      bpf-linker --version
       ;;
     *) echo "unknown tool $tool" >&2; exit 1 ;;
   esac

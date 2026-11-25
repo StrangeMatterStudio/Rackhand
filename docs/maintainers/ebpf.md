@@ -29,3 +29,13 @@ cargo xtask ebpf build
 It prints the object's path. A probe build carries the capture when `RACKHAND_PROBE_EBPF` names that object at build
 time (the probe's `build.rs` embeds it); without it the probe captures by sampling. `cargo xtask ci ebpf` builds the
 object and the eBPF tier's tests with it, then runs them in a VM for each kernel in `tests/ebpf/kernels.toml`.
+
+`cargo xtask release build` (and `release repro`, and the release tier) builds the object too, with the same path
+remaps as the rest of the release, and refuses a Linux probe that doesn't carry it; so does the lab's deploy build.
+Machines that build releases need the nightly and `bpf-linker` above.
+
+## At run time
+
+The root helper loads and attaches the programs the first time the probe asks (`EbpfCapture`) and passes the maps'
+file descriptors over its socket; the probe reads and drains them with `CAP_BPF` only (D196). When the helper can't
+load them (no BTF, an old kernel, an LXC) the probe samples the connection tables instead and says so in its Hello.

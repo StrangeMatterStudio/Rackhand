@@ -98,10 +98,16 @@ fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-/// `cargo build --release --locked` of one binary for one target, as a release is built; returns its path.
-fn cargo_build(o: &Options, target: &str, package: &str, bin: &str) -> Result<PathBuf> {
+/// `cargo build --release --locked` of one binary for one target, as a release is built; returns its path. `ebpf` is the
+/// eBPF object a Linux probe embeds.
+fn cargo_build(o: &Options, target: &str, package: &str, bin: &str, ebpf: Option<&Path>) -> Result<PathBuf> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let out = Command::new(cargo)
+    let mut command = Command::new(cargo);
+    match ebpf {
+        Some(object) => command.env("RACKHAND_PROBE_EBPF", object),
+        None => command.env_remove("RACKHAND_PROBE_EBPF"),
+    };
+    let out = command
         .current_dir(&o.src)
         .args(["build", "--release", "--locked", "-q", "-p", package, "--bin", bin, "--target", target])
         .args(["--message-format=json", "--target-dir"])
@@ -239,17 +245,31 @@ fn windows_scripts(src: &Path) -> Result<Vec<(String, Vec<u8>)>> {
 pub fn build(o: &Options) -> Result<BTreeMap<String, String>> {
     std::fs::create_dir_all(&o.out)?;
     let wanted = |name: &str| o.only.as_ref().is_none_or(|only| only.iter().any(|n| n == name));
+    // a Linux probe carries the eBPF capture (T68), built once with the same path remaps as the rest
+    let ebpf = if wanted("rackhand-probe") && o.targets.iter().any(|t| t != WINDOWS) {
+        let dir = o.src.join("crates").join("rackhand-probe-ebpf");
+        let object = crate::ebpf::build_in(&dir, &o.target_dir.join("rackhand-probe-ebpf"), Some(&rustflags(&o.src)))?;
+        Some((std::fs::read(&object)?, object))
+    } else {
+        None
+    };
     for target in &o.targets {
         for (package, bin, name) in binaries(target) {
             if !wanted(name) {
                 continue;
             }
-            let built = cargo_build(o, target, package, bin)?;
+            let embeds = ebpf.as_ref().filter(|_| package == "rackhand-probe" && target != WINDOWS);
+            let built = cargo_build(o, target, package, bin, embeds.map(|(_, path)| path.as_path()))?;
             // a release binary needs nothing of the machine it runs on (AC43)
             if target != WINDOWS {
                 let bytes = std::fs::read(&built).with_context(|| built.display().to_string())?;
                 if elf_is_static(&bytes) != Ok(true) {
                     bail!("{bin} for {target} isn't statically linked");
+                }
+                if let Some((object, _)) = embeds {
+                    if !crate::ebpf::carries(&bytes, object) {
+                        bail!("{bin} for {target} doesn't carry the eBPF capture");
+                    }
                 }
             }
             std::fs::copy(&built, o.out.join(artifact_name(name, target)))

@@ -34,6 +34,10 @@ fn root() -> PathBuf {
 fn build(package: &str, bin: &str, features: &[&str]) -> Result<PathBuf> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let mut cmd = Command::new(cargo);
+    // the lab's probe carries the eBPF capture, as a release's does (T68)
+    if package == "rackhand-probe" {
+        cmd.env("RACKHAND_PROBE_EBPF", crate::ebpf::build()?);
+    }
     cmd.current_dir(root()).args([
         "build",
         "-q",
