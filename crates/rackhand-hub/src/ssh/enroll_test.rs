@@ -250,6 +250,11 @@ impl EnrollTest {
         self.test(machine_id).await
     }
 
+    /// Whether the machine's last test passed: a retry chosen before that result was recorded doesn't test again.
+    pub fn has_passed(&self, machine_id: &str) -> bool {
+        self.last_passed(machine_id)
+    }
+
     /// Holds the machine for one test and the recording of its result; none while another holds it.
     pub fn begin<'a>(&'a self, machine_id: &'a str) -> Option<Testing<'a>> {
         if !self.testing.lock().unwrap_or_else(|e| e.into_inner()).insert(machine_id.to_string()) {

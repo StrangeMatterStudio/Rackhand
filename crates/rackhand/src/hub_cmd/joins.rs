@@ -385,9 +385,13 @@ pub fn spawn_enroll_tests(
     mut greeted: UnboundedReceiver<String>,
     retry: std::time::Duration,
 ) {
-    let one = move |ingest: Ingest, test: Arc<EnrollTest>, machine: String| async move {
+    let one = move |ingest: Ingest, test: Arc<EnrollTest>, machine: String, retry: bool| async move {
         // held until the result is recorded: a retry in between would test it again and record a second pass
         let Some(_testing) = test.begin(&machine) else { return };
+        // a retry chosen before the last result was recorded
+        if retry && test.has_passed(&machine) {
+            return;
+        }
         let Some(outcome) = test.test(&machine).await else { return };
         if !test.already_recorded(&machine, &outcome) {
             if let Err(e) = ingest.raise_event(ssh_test_event(&machine, &outcome)).await {
@@ -408,14 +412,14 @@ pub fn spawn_enroll_tests(
                 machine = greeted.recv() => {
                     let Some(machine) = machine else { return };
                     if test.due(&machine) {
-                        tokio::spawn(one(ingest.clone(), test.clone(), machine));
+                        tokio::spawn(one(ingest.clone(), test.clone(), machine, false));
                     }
                 }
                 _ = tick.tick() => {
                     let since = rackhand_store::ids::now_ms() - REPORTING.as_millis() as i64;
                     for machine in test.waiting() {
                         if ingest.last_seen(&machine).is_some_and(|seen| seen >= since) {
-                            tokio::spawn(one(ingest.clone(), test.clone(), machine));
+                            tokio::spawn(one(ingest.clone(), test.clone(), machine, true));
                         }
                     }
                 }

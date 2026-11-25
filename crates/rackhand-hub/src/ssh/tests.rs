@@ -341,6 +341,10 @@ mod enroll_test {
         assert_eq!(login.calls().len(), 2, "one test's two logins");
         drop(testing);
         assert!(test.begin("web1").is_some(), "free once recorded");
+        // a retry listed before that result was recorded finds it passed
+        assert!(!test.has_passed("web1"));
+        event(&db, "web1", "machine.ssh_test_passed", 30).await;
+        assert!(test.has_passed("web1"));
     }
 }
 

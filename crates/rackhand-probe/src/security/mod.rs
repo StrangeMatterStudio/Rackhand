@@ -1,8 +1,9 @@
 //! What the probe reports about connections and what is new on the machine (7.3.2, FR-4, FR-5, D17, D103, D196): every
 //! 5 seconds the connection tables are read, the owner of each socket (executable, user, container) is asked of the
 //! root helper by inode, and what was seen is kept per `(container, exe, dest_ip, dest_port, proto)` until the next report.
-//! With the eBPF capture the connections and starts come from its maps instead, drained at the same reads; the tables
-//! are still read for new listeners and for the executables of processes started before the capture.
+//! With the eBPF capture its maps are drained at the same reads and add every connect and send, however short, and
+//! every start from a temporary directory; the tables are still read as without it, so a connection opened before the
+//! capture was attached, or open across reads, is reported as before.
 
 pub mod aggregate;
 pub mod capability;
@@ -175,8 +176,7 @@ impl Sampler {
             events.extend(started);
             self.execs.captured(&pids);
         }
-        let sampled = if self.capturing() { &[][..] } else { &sockets[..] };
-        for s in sampled.iter().filter(|s| s.outbound()) {
+        for s in sockets.iter().filter(|s| s.outbound()) {
             let o = self.owners.get(&s.inode).cloned().unwrap_or_default();
             seen.push(aggregate::Observed {
                 container: o.container,

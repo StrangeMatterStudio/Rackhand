@@ -35,12 +35,20 @@ fn reads_report_what_the_capture_saw() {
     assert!(!rackhand_probe::security::ebpf::OBJECT.is_empty(), "run `cargo xtask ci ebpf`");
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
     let client = helper(&runtime);
+    // a connection opened before the capture is attached, and kept open (to an address that isn't loopback, which
+    // sampling leaves out)
+    let early = TcpListener::bind("10.99.0.1:0").unwrap();
+    let early_port = early.local_addr().unwrap().port();
+    let _open = std::net::TcpStream::connect(("10.99.0.1", early_port)).unwrap();
     let capture = runtime.block_on(client.ebpf_capture()).unwrap_or_else(|e| panic!("the helper's capture: {e}"));
     let mut sampler = Sampler::new(Some(capture));
     assert!(sampler.capturing());
     let host = RootHost::new("/");
-    // a first read, so what follows is new
-    let _ = runtime.block_on(sampler.tick(&host, Some(&client), 1));
+    // a first read, so what follows is new; the connection from before the capture is in it, from the tables
+    let (seen, _) = runtime.block_on(sampler.tick(&host, Some(&client), 1));
+    let before: Vec<_> = seen.iter().filter(|o| o.port == early_port).collect();
+    assert_eq!(before.len(), 1, "opened before the capture, still reported: {seen:?}");
+    assert_eq!((before[0].count, before[0].pid), (0, std::process::id()), "a sampled socket: {:?}", before[0]);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     for _ in 0..3 {
