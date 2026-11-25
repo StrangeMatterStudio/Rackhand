@@ -82,8 +82,9 @@ pub struct EnrollTest {
     testing: Mutex<HashSet<String>>,
 }
 
-/// A machine's test in progress; the machine can be tested again once it is dropped.
-struct Testing<'a> {
+/// A machine's test in progress, until its result is recorded; the machine can be tested again once it is dropped.
+#[derive(Debug)]
+pub struct Testing<'a> {
     set: &'a Mutex<HashSet<String>>,
     machine: &'a str,
 }
@@ -245,10 +246,20 @@ impl EnrollTest {
 
     /// Tests the machine; none for a machine that isn't managed, or that is being tested already.
     pub async fn run(&self, machine_id: &str) -> Option<Outcome> {
+        let _testing = self.begin(machine_id)?;
+        self.test(machine_id).await
+    }
+
+    /// Holds the machine for one test and the recording of its result; none while another holds it.
+    pub fn begin<'a>(&'a self, machine_id: &'a str) -> Option<Testing<'a>> {
         if !self.testing.lock().unwrap_or_else(|e| e.into_inner()).insert(machine_id.to_string()) {
             return None;
         }
-        let _testing = Testing { set: &self.testing, machine: machine_id };
+        Some(Testing { set: &self.testing, machine: machine_id })
+    }
+
+    /// The test itself, for a machine [`begin`](Self::begin) holds; none for a machine that isn't managed.
+    pub async fn test(&self, machine_id: &str) -> Option<Outcome> {
         // this is the test that follows the join
         self.joined.lock().unwrap_or_else(|e| e.into_inner()).remove(machine_id);
         let target = self.target(machine_id).filter(|t| t.managed)?;

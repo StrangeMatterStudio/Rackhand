@@ -326,6 +326,22 @@ mod enroll_test {
         assert!(test.due("web1"), "a new join (a reinstall or a level change) tests again");
         assert!(!test.due("web1"), "once per join");
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn not_tested_again_until_the_last_result_is_recorded() {
+        let db = db("inflight");
+        machine(&db, "web1", "managed", "[]", Some("192.0.2.5")).await;
+        let login = Arc::new(Scripted::default());
+        let test = EnrollTest::new(db.clone(), login.clone());
+        // a test whose logins are over but whose result isn't recorded yet still holds the machine
+        let testing = test.begin("web1").expect("not being tested");
+        assert_eq!(test.test("web1").await, Some(Outcome::Passed));
+        assert!(test.begin("web1").is_none(), "held until the result is recorded");
+        assert_eq!(test.run("web1").await, None, "so a retry in between doesn't test it again");
+        assert_eq!(login.calls().len(), 2, "one test's two logins");
+        drop(testing);
+        assert!(test.begin("web1").is_some(), "free once recorded");
+    }
 }
 
 /// A machine's own hub key (7.3.7, `keys-rotate`): made as a pending one, which changes nothing until it is committed,

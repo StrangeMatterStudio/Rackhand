@@ -386,7 +386,9 @@ pub fn spawn_enroll_tests(
     retry: std::time::Duration,
 ) {
     let one = move |ingest: Ingest, test: Arc<EnrollTest>, machine: String| async move {
-        let Some(outcome) = test.run(&machine).await else { return };
+        // held until the result is recorded: a retry in between would test it again and record a second pass
+        let Some(_testing) = test.begin(&machine) else { return };
+        let Some(outcome) = test.test(&machine).await else { return };
         if !test.already_recorded(&machine, &outcome) {
             if let Err(e) = ingest.raise_event(ssh_test_event(&machine, &outcome)).await {
                 tracing::error!(error = %e, %machine, "SSH test event");
