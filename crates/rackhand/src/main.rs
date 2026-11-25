@@ -43,9 +43,49 @@ const USAGE: &str = "usage: rackhand hub init [--config-dir <dir>] [--data-dir <
        rackhand update-guard <hub|relay|operator> <old-slot> <new-slot> <version>
        rackhand relay run|key create ... (rackhand relay for the options)";
 
+/// Every command's usage: this binary's own, the operator's and the relay's.
+fn all_usage() -> String {
+    let own = USAGE.lines().filter(|l| !l.contains("for the options"));
+    own.chain(operator_cmd::USAGE.lines()).chain(relay_cmd::USAGE.lines()).collect::<Vec<_>>().join("\n")
+}
+
+/// `--help` after a command's words (7.7.3): that command's usage, or every command's when the words name none.
+fn help(words: &[&str]) -> Option<String> {
+    let at = words.iter().position(|w| *w == "--help")?;
+    Some(usage_of("rackhand", &words[..at], &all_usage()))
+}
+
+/// The usage of the command `words` name (`bin` and those words, then a space or nothing), or every command's when they
+/// name none; continuation lines go with the line before them.
+fn usage_of(bin: &str, words: &[&str], usage: &str) -> String {
+    let mut entries: Vec<String> = Vec::new();
+    for line in usage.lines() {
+        let line = line.strip_prefix("usage:").unwrap_or(line);
+        let start = line.trim_start();
+        if start.starts_with(&format!("{bin} ")) || start == bin {
+            entries.push(start.to_string());
+        } else if let Some(last) = entries.last_mut() {
+            last.push('\n');
+            last.push_str(line);
+        }
+    }
+    let prefix = std::iter::once(bin).chain(words.iter().copied()).collect::<Vec<_>>().join(" ");
+    let named: Vec<&String> = entries
+        .iter()
+        .filter(|e| e.strip_prefix(&prefix).is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '\n'])))
+        .collect();
+    let shown: Vec<&String> = if words.is_empty() || named.is_empty() { entries.iter().collect() } else { named };
+    let lines: Vec<String> = shown.iter().map(|e| e.to_string()).collect();
+    format!("usage: {}", lines.join("\n       "))
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    if let Some(text) = help(&words) {
+        println!("{text}");
+        return ExitCode::SUCCESS;
+    }
     match words.as_slice() {
         ["--version"] => {
             println!("rackhand {}", VERSION);
@@ -477,5 +517,33 @@ token={token}"
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod help_tests {
+    use super::help;
+
+    #[test]
+    fn help_names_the_command_before_it() {
+        let backup = help(&["hub", "backup", "--help"]).expect("help");
+        assert!(backup.contains("rackhand hub backup [--config <hub.toml>]"), "{backup}");
+        assert!(!backup.contains("hub init"), "only that command: {backup}");
+        let relay = help(&["relay", "run", "--help"]).expect("help");
+        assert!(
+            relay.contains("rackhand relay run") && relay.contains("[--acme-domain <name>]"),
+            "with its options: {relay}"
+        );
+        assert!(!relay.contains("relay key create"), "{relay}");
+        let join = help(&["operator", "join", "--help"]).expect("help");
+        assert!(join.contains("rackhand operator join --ticket <ticket>"), "{join}");
+        let all = help(&["--help"]).expect("help");
+        for each in ["rackhand hub init", "rackhand operator run", "rackhand relay key create", "rackhand hub restore"]
+        {
+            assert!(all.contains(each), "{each}: {all}");
+        }
+        assert!(!all.contains("for the options"), "the operator's and relay's own lines instead: {all}");
+        assert_eq!(help(&["no-such", "--help"]), help(&["--help"]), "an unknown command: all of it");
+        assert_eq!(help(&["hub", "init"]), None, "no --help, no help");
     }
 }

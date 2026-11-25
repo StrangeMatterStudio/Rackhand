@@ -16,10 +16,45 @@ const USAGE: &str = "usage: rackhand-probe --version
        rackhand-probe helper [--socket <path>]
        rackhand-probe enroll --ticket <ticket> --token <token> [--monitor] [--remote] [--role <role>]
        rackhand-probe uninstall [--after <seconds>]
+       rackhand-probe set-hub <ticket>
        rackhand-probe update-guard <old-slot> <new-slot> <version>";
 
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+/// `--help` after a command's words (7.7.3): that command's usage, or every command's when the words name none. Not
+/// for the command wrapper, whose arguments are the wrapped command's own.
+fn help(words: &[&str]) -> Option<String> {
+    if words.first() == Some(&"run-cmd") {
+        return None;
+    }
+    let at = words.iter().position(|w| *w == "--help")?;
+    Some(usage_of("rackhand-probe", &words[..at], USAGE))
+}
+
+/// The usage of the command `words` name (`bin` and those words, then a space or nothing), or every command's when they
+/// name none; continuation lines go with the line before them.
+fn usage_of(bin: &str, words: &[&str], usage: &str) -> String {
+    let mut entries: Vec<String> = Vec::new();
+    for line in usage.lines() {
+        let line = line.strip_prefix("usage:").unwrap_or(line);
+        let start = line.trim_start();
+        if start.starts_with(&format!("{bin} ")) || start == bin {
+            entries.push(start.to_string());
+        } else if let Some(last) = entries.last_mut() {
+            last.push('\n');
+            last.push_str(line);
+        }
+    }
+    let prefix = std::iter::once(bin).chain(words.iter().copied()).collect::<Vec<_>>().join(" ");
+    let named: Vec<&String> = entries
+        .iter()
+        .filter(|e| e.strip_prefix(&prefix).is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '\n'])))
+        .collect();
+    let shown: Vec<&String> = if words.is_empty() || named.is_empty() { entries.iter().collect() } else { named };
+    let lines: Vec<String> = shown.iter().map(|e| e.to_string()).collect();
+    format!("usage: {}", lines.join("\n       "))
 }
 
 fn main() -> ExitCode {
@@ -32,6 +67,11 @@ fn main() -> ExitCode {
     }
     #[cfg(not(unix))]
     let _ = &argv0;
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    if let Some(text) = help(&words) {
+        println!("{text}");
+        return ExitCode::SUCCESS;
+    }
     match args.first().map(String::as_str) {
         #[cfg(unix)]
         Some("run-cmd") => rackhand_probe::runcmd::main(&args[1..]),
@@ -422,5 +462,25 @@ mod windows_cmd {
                 ExitCode::from(1)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod help_tests {
+    use super::help;
+
+    #[test]
+    fn help_names_the_command_before_it() {
+        let set_hub = help(&["set-hub", "--help"]).expect("help");
+        assert!(set_hub.contains("rackhand-probe set-hub <ticket>"), "{set_hub}");
+        assert!(!set_hub.contains("uninstall"), "{set_hub}");
+        let all = help(&["--help"]).expect("help");
+        for each in
+            ["rackhand-probe collect", "rackhand-probe run ", "rackhand-probe set-hub", "rackhand-probe uninstall"]
+        {
+            assert!(all.contains(each), "{each}: {all}");
+        }
+        assert_eq!(help(&["run-cmd", "/usr/bin/df", "--help"]), None, "the wrapper's command is the command's own");
+        assert_eq!(help(&["collect", "--once"]), None);
     }
 }

@@ -4698,8 +4698,11 @@ Only additions to that list are written out below.
   | 2026-11-25 | the pages written: README.md, docs/install.md, machines.md, operators.md, relays.md, hardening.md, recovery.md, lab-checklist.md | Written against the code, which wins where it differs from the design. Writing them found gaps between the design and the code, listed under *Gaps found writing the docs* below; the docs say what isn't available yet. `docs-check` isn't written yet |
 
 - **Gaps found writing the docs (2026-11-25), to close before final validation:**
-  - `rackhand` and `rackhand-probe` answer no `--help` (7.7.3); `rackhand-probe set-hub --help` takes `--help` as the
-    ticket, and `set-hub` isn't in the probe's usage text.
+  - (Closed 2026-11-25.) `rackhand` and `rackhand-probe` answered no `--help` (7.7.3). Now `--help` after a command's
+    words prints that command's usage (all of it when the words name none) and exits 0, except in the command wrapper
+    (`run-cmd`, `run`), whose arguments are the wrapped command's; `set-hub` is in the probe's usage. Tests
+    `help_tests::help_names_the_command_before_it` in both binaries (failed first: `help` missing; then 2 passed; 191
+    passed in the two crates).
   - No command turns the recovery code back into `master.key` (E34; L8's `recovery_procedure_restores_the_master_key`
     depends on it), and a hub without its key doesn't start, where the design keeps monitoring going.
   - Nothing sets a machine's roles (the Add page passes none, `--role` is ignored), so a hub's own host added as
