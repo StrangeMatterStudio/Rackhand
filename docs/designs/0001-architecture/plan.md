@@ -4717,6 +4717,12 @@ Only additions to that list are written out below.
   - MCP approvals last 60 minutes, the design says 24 hours; local backups are fixed at 2, the design has 1 to 14 (both
     7.8.1 settings: T98's `settings::every_setting_in_7_8_1_has_default_and_range` covers them).
   - A machine can be revoked from the dashboard only through `unenroll` (Linux and Alpine); Windows has no uninstall.
+  - Windows, found writing its checklist: a managed Windows machine never passes the hub's SSH test (`true` as
+    `rackhand` is refused by the forced dispatcher, and `sudo -n true` as `rackhand-ai` has no Windows meaning), so it
+    stays pending; OpenSSH may start only after the join, leaving no host key to pin; the Windows helper reports no
+    pending updates, hashes no critical files, lists no containers and refuses key updates; PowerShell transcription
+    is turned on for every session, not only the assistant's; `probe.toml` sits where the probe's account can change
+    it; there is no watched-services setting.
   - (Fixed the same day, D200: the probe's uninstall removed all of `/etc/rackhand`.)
 
 ### L8: Final local pass for M8
