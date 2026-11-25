@@ -203,3 +203,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-25 | D199: the enrollment SSH test held a machine only during its logins, so a retry before the result was recorded could record a second pass; fixed, with a test |
 | 2026-11-25 | D197 changed: sampling keeps running beside the eBPF capture (a connection from before the capture was missing); D199 extended: a retry re-checks the pass once it holds the machine; eBPF tier 8 of 8 on each kernel |
 | 2026-11-25 | T99 (1/n): the user pages written; they found gaps between the design and the code (listed under T99) and one bug, fixed (D200: the probe uninstall removed the hub's keys on a hub host) |
+| 2026-11-25 | T97 done: offline operation (AC41) through a hub binary on a Docker network with no outside: collection, a LAN email, a runbook, and no outbound attempts when air-gapped (D201 to D204); with sources on it still works and only DNS is tried |

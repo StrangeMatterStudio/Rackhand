@@ -32,6 +32,13 @@ slow-timeout = { period = "60s", terminate-after = 30 }
 filter = 'test(probe_hub::) | test(callouts::) | test(checks::)'
 test-group = 'timed'
 
+# AC41 (plan T97): a hub, its machine and a mail server on a network of their own; the disk rule's 5 minutes, then the
+# runbook, after builds of the hub with the test SMTP roots and of the mail server. One at a time, like the timed ones.
+[[profile.it.overrides]]
+filter = 'test(offline::)'
+test-group = 'timed'
+slow-timeout = { period = "60s", terminate-after = 20 }
+
 [profile.net]
 retries = 0
 fail-fast = false
@@ -71,3 +78,8 @@ slow-timeout = { period = "300s", terminate-after = 24 }
 [[profile.default.overrides]]
 filter = 'test(release::slow_tests::)'
 slow-timeout = { period = "300s", terminate-after = 24 }
+
+# and the offline test (plan T97), whose verification runs it by name
+[[profile.default.overrides]]
+filter = 'package(rackhand-it) & test(offline::)'
+slow-timeout = { period = "60s", terminate-after = 20 }

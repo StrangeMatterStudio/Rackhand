@@ -18,6 +18,8 @@
 
 use std::sync::Arc;
 
+use rustls::pki_types::CertificateDer;
+use rustls::pki_types::pem::PemObject;
 use serde::{Deserialize, Serialize};
 
 use super::Transport;
@@ -78,6 +80,23 @@ pub fn to_toml(file: &NotifiersFile) -> Result<String, ConfigError> {
     toml::to_string(file).map_err(|e| ConfigError::Parse(e.to_string()))
 }
 
+/// Where a build with the `test-smtp-roots` feature (the offline test, plan T97) finds the roots of the test's mail server.
+pub const TEST_SMTP_ROOTS: &str = "/etc/rackhand/test-smtp-roots.pem";
+
+/// The roots SMTP trusts besides the public ones: none (D113), or in the offline test's build the certificates of
+/// `TEST_SMTP_ROOTS`.
+fn extra_roots() -> Vec<CertificateDer<'static>> {
+    if cfg!(feature = "test-smtp-roots") { roots_from_pem(std::path::Path::new(TEST_SMTP_ROOTS)) } else { Vec::new() }
+}
+
+/// Every certificate in a PEM file; none when it can't be read.
+pub fn roots_from_pem(path: &std::path::Path) -> Vec<CertificateDer<'static>> {
+    match CertificateDer::pem_file_iter(path) {
+        Ok(certs) => certs.filter_map(Result::ok).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// Builds the notifiers, resolving each `secret:<name>` through `secret`.
 pub fn build(
     file: &NotifiersFile,
@@ -108,7 +127,7 @@ pub fn build(
             password,
             from: s.from.clone(),
             to: s.to.clone(),
-            extra_roots: Vec::new(),
+            extra_roots: extra_roots(),
         };
         out.push(Arc::new(Smtp::new(&s.name, config)));
     }

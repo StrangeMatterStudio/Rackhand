@@ -22,7 +22,7 @@ pub fn musl_binary(package: &str, bin: &str) -> PathBuf {
 /// `exe` without its symbols, kept next to it for the other test processes. With them the probe is 270 MB: two dozen
 /// containers each writing a copy left the disk minutes behind, and everything that syncs (a container's systemd
 /// booting, the hub's database) waited for it.
-fn stripped(exe: &std::path::Path) -> PathBuf {
+pub fn stripped(exe: &std::path::Path) -> PathBuf {
     static STRIPPING: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _one = STRIPPING.lock().unwrap_or_else(|e| e.into_inner());
     let meta = std::fs::metadata(exe).unwrap_or_else(|e| panic!("{}: {e}", exe.display()));

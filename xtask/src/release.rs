@@ -98,6 +98,19 @@ fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+/// What `cargo` is asked for one binary of a release: no features, so nothing test-only is in it.
+fn cargo_args(target: &str, package: &str, bin: &str) -> Vec<String> {
+    ["build", "--release", "--locked", "-q", "-p", package, "--bin", bin, "--target", target, "--message-format=json"]
+        .map(String::from)
+        .to_vec()
+}
+
+/// The fixed part of a release build's environment: `RACKHAND_RELEASE=1` makes the build scripts refuse the test-only
+/// features (`lab-build`, `test-smtp-roots`).
+fn release_env() -> [(&'static str, &'static str); 5] {
+    [("RACKHAND_RELEASE", "1"), ("CARGO_INCREMENTAL", "0"), ("ZERO_AR_DATE", "1"), ("TZ", "UTC"), ("LC_ALL", "C")]
+}
+
 /// `cargo build --release --locked` of one binary for one target, as a release is built; returns its path. `ebpf` is the
 /// eBPF object a Linux probe embeds.
 fn cargo_build(o: &Options, target: &str, package: &str, bin: &str, ebpf: Option<&Path>) -> Result<PathBuf> {
@@ -109,18 +122,14 @@ fn cargo_build(o: &Options, target: &str, package: &str, bin: &str, ebpf: Option
     };
     let out = command
         .current_dir(&o.src)
-        .args(["build", "--release", "--locked", "-q", "-p", package, "--bin", bin, "--target", target])
-        .args(["--message-format=json", "--target-dir"])
+        .args(cargo_args(target, package, bin))
+        .arg("--target-dir")
         .arg(&o.target_dir)
-        .env("RACKHAND_RELEASE", "1")
+        .envs(release_env())
         .env("SOURCE_DATE_EPOCH", &o.epoch)
-        .env("CARGO_INCREMENTAL", "0")
         .env("CARGO_ENCODED_RUSTFLAGS", rustflags(&o.src).replace(' ', "\x1f"))
         .env_remove("RUSTFLAGS")
         .env("CFLAGS", cflags(&o.src))
-        .env("ZERO_AR_DATE", "1")
-        .env("TZ", "UTC")
-        .env("LC_ALL", "C")
         .stderr(Stdio::inherit())
         .output()
         .context("running cargo")?;
@@ -547,6 +556,20 @@ mod tests {
         assert_eq!(parse_channel(&["--channel".into(), "stable".into()]).unwrap(), Channel::Stable);
         assert_eq!(parse_channel(&["--channel".into(), "beta".into()]).unwrap(), Channel::Beta);
         assert!(parse_channel(&["--channel".into(), "nightly".into()]).is_err());
+    }
+
+    /// D113, T97: a release names no features, so no test-only one (`lab-build`, `test-smtp-roots`) is ever in it, and
+    /// `RACKHAND_RELEASE=1` makes the build scripts refuse them if they were.
+    #[test]
+    fn release_builds_name_no_features() {
+        for target in [LINUX_X86_64, LINUX_AARCH64, WINDOWS] {
+            for (package, bin, _) in binaries(target) {
+                let args = cargo_args(target, package, bin);
+                assert!(args.iter().all(|a| !a.contains("features")), "{target} {bin}: {args:?}");
+                assert!(args.contains(&"--release".to_string()) && args.contains(&"--locked".to_string()));
+            }
+        }
+        assert!(release_env().contains(&("RACKHAND_RELEASE", "1")));
     }
 
     #[test]

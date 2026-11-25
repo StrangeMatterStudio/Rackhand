@@ -23,6 +23,8 @@ mod jobs;
 #[cfg(test)]
 mod mirror_it;
 #[cfg(test)]
+mod offline;
+#[cfg(test)]
 #[path = "operator_it.rs"]
 mod operator_it;
 #[cfg(test)]

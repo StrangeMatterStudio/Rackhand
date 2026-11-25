@@ -245,6 +245,83 @@ async fn smtp_subject_and_multipart_body() {
     assert!(mail.data.contains("/var is 96% full"));
 }
 
+/// A mail server named by its address (a LAN server, no DNS): the certificate's IP SAN is what TLS checks (T97).
+#[tokio::test(flavor = "multi_thread")]
+async fn smtp_to_an_ip_address_checks_its_ip_san() {
+    let sink = smtp_sink::Sink::start_at("127.0.0.1:0", "127.0.0.1").await;
+    let config = |host: &str| smtp::SmtpConfig {
+        host: host.into(),
+        port: sink.port,
+        security: smtp::Security::StartTls,
+        username: None,
+        password: None,
+        from: "hub@example.net".into(),
+        to: vec!["ops@example.net".into()],
+        extra_roots: vec![sink.cert.clone()],
+    };
+    let msg = message(MessageKind::Callout, "critical", vec![callout("disk.used_pct over 95", "/data is 96% full")]);
+    smtp::Smtp::new("mail", config("127.0.0.1")).send(&msg).await.unwrap();
+    let mail = sink.received().await;
+    assert!(mail.tls && mail.data.contains("/data is 96% full"), "{mail:?}");
+    // the same server by a name its certificate doesn't carry is refused before anything is sent
+    let refused = smtp::Smtp::new("mail", config("localhost")).send(&msg).await;
+    assert!(matches!(refused, Err(SendError::Failed(_))), "{refused:?}");
+}
+
+/// The test-only roots file (T97) reads every certificate of a PEM file, and nothing from a file that isn't one.
+#[test]
+fn test_roots_read_from_a_pem_file() {
+    let dir = std::env::temp_dir().join(format!("rackhand-test-roots-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (a, b) = (
+        rcgen::generate_simple_self_signed(vec!["10.0.0.5".to_string()]).unwrap(),
+        rcgen::generate_simple_self_signed(vec!["mail.lan".to_string()]).unwrap(),
+    );
+    let file = dir.join("roots.pem");
+    std::fs::write(&file, format!("{}{}", a.cert.pem(), b.cert.pem())).unwrap();
+    assert_eq!(config::roots_from_pem(&file), vec![a.cert.der().clone(), b.cert.der().clone()]);
+    std::fs::write(&file, "not a certificate").unwrap();
+    assert!(config::roots_from_pem(&file).is_empty());
+    assert!(config::roots_from_pem(&dir.join("missing.pem")).is_empty());
+}
+
+/// D113: notifiers trust the public roots only. The `test-smtp-roots` feature, which adds a root file for the offline
+/// test's LAN mail server, is off in every build that doesn't ask for it, and no crate turns it on for another.
+#[test]
+fn test_smtp_roots_off_by_default() {
+    // at run time, so a build with it on fails here rather than not building the tests
+    let on = std::hint::black_box(cfg!(feature = "test-smtp-roots"));
+    assert!(!on, "this build has test-smtp-roots on");
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut manifests: Vec<std::path::PathBuf> = std::fs::read_dir(&crates)
+        .unwrap()
+        .map(|e| e.unwrap().path().join("Cargo.toml"))
+        .chain([crates.join("../tests/it/Cargo.toml"), crates.join("../xtask/Cargo.toml")])
+        .filter(|p| p.is_file())
+        .collect();
+    manifests.sort();
+    assert!(manifests.len() > 10, "{manifests:?}");
+    for path in manifests {
+        let manifest: toml::Value = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let default = manifest.get("features").and_then(|f| f.get("default")).map(ToString::to_string);
+        assert!(
+            !default.unwrap_or_default().contains("test-smtp-roots"),
+            "{}: test-smtp-roots is a default feature",
+            path.display()
+        );
+        for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+            for (name, dep) in manifest.get(section).and_then(toml::Value::as_table).into_iter().flatten() {
+                let features = dep.get("features").map(ToString::to_string).unwrap_or_default();
+                assert!(
+                    !features.contains("test-smtp-roots"),
+                    "{}: {section}.{name} turns on test-smtp-roots",
+                    path.display()
+                );
+            }
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn critical_sent_immediately_warnings_grouped_5_min() {
     let fake = Fake::new("fake");

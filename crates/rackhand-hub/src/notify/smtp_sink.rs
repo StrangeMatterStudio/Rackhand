@@ -21,6 +21,8 @@ pub struct Mail {
 pub struct Sink {
     pub port: u16,
     pub cert: CertificateDer<'static>,
+    /// The same certificate as PEM, for a hub in another process to trust.
+    pub cert_pem: String,
     rx: tokio::sync::Mutex<mpsc::Receiver<Mail>>,
 }
 
@@ -79,9 +81,17 @@ async fn commands<S: AsyncRead + AsyncWrite + Unpin>(s: &mut BufReader<S>, mail:
 }
 
 impl Sink {
+    /// On a free port of 127.0.0.1, its certificate for `localhost`.
     pub async fn start() -> Sink {
-        let generated = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("certificate");
+        Sink::start_at("127.0.0.1:0", "localhost").await
+    }
+
+    /// Listening on `bind`, its certificate for `name`: a host name, or an address (an IP SAN), for a server reached
+    /// without DNS.
+    pub async fn start_at(bind: &str, name: &str) -> Sink {
+        let generated = rcgen::generate_simple_self_signed(vec![name.to_string()]).expect("certificate");
         let cert = generated.cert.der().clone();
+        let cert_pem = generated.cert.pem();
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(generated.signing_key.serialize_der()));
         let config = rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
             .with_safe_default_protocol_versions()
@@ -90,7 +100,7 @@ impl Sink {
             .with_single_cert(vec![cert.clone()], key)
             .expect("server config");
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let listener = tokio::net::TcpListener::bind(bind).await.expect("bind");
         let port = listener.local_addr().expect("addr").port();
         let (tx, rx) = mpsc::channel(8);
         tokio::spawn(async move {
@@ -111,7 +121,7 @@ impl Sink {
                 });
             }
         });
-        Sink { port, cert, rx: tokio::sync::Mutex::new(rx) }
+        Sink { port, cert, cert_pem, rx: tokio::sync::Mutex::new(rx) }
     }
 
     pub async fn received(&self) -> Mail {
@@ -119,5 +129,10 @@ impl Sink {
             .await
             .expect("a mail within 10 s")
             .expect("the sink is running")
+    }
+
+    /// The next session's mail, however long it takes.
+    pub async fn next(&self) -> Mail {
+        self.rx.lock().await.recv().await.expect("the sink is running")
     }
 }

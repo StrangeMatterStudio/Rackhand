@@ -130,6 +130,27 @@ fn release_build_with_test_keys_fails() {
     assert!(!String::from_utf8_lossy(&token.stderr).contains("lab-token"), "nor mentions it");
 }
 
+/// D113: the offline test's extra SMTP roots (`test-smtp-roots`, plan T97) never reach a release build either: with
+/// `RACKHAND_RELEASE=1` the hub's build script stops it. Same target directory as the test above, so it reuses its build.
+#[test]
+#[ignore = "builds the hub; run with --run-ignored in the live tier"]
+fn release_build_with_test_smtp_roots_fails() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let target =
+        std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default().join(".cache/rackhand-target-guard");
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let release = std::process::Command::new(&cargo)
+        .current_dir(&root)
+        .args(["build", "-q", "-p", "rackhand", "--features", "test-smtp-roots", "--target-dir"])
+        .arg(&target)
+        .env("RACKHAND_RELEASE", "1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&release.stderr);
+    assert!(!release.status.success(), "a release build that trusts the test SMTP roots must fail");
+    assert!(stderr.contains("the `test-smtp-roots` feature"), "{stderr}");
+}
+
 /// A machine's own provisioning script (`lab/provision/<name>.sh`, plan L3: `snmpd` on `agentless`) runs at its
 /// first boot and is part of its stamp, so changing it provisions the machine again.
 #[test]

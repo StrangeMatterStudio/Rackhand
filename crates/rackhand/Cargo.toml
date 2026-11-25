@@ -36,6 +36,8 @@ rusqlite = { workspace = true }
 [features]
 # the local lab (plan L2): the test release keys pinned, and `rackhand hub lab-token`; refused in a release build
 lab-build = ["rackhand-release/test-keys"]
+# the offline test (plan T97): SMTP also trusts /etc/rackhand/test-smtp-roots.pem; refused in a release build (D113)
+test-smtp-roots = ["rackhand-hub/test-smtp-roots"]
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", default-features = false, features = ["std", "fs"] }

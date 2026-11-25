@@ -42,7 +42,7 @@ fn now_ms() -> i64 {
     rackhand_store::ids::now_ms()
 }
 
-fn copy_dir(from: &Path, to: &Path) {
+pub(crate) fn copy_dir(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for e in std::fs::read_dir(from).unwrap() {
         let e = e.unwrap();
@@ -56,7 +56,7 @@ fn copy_dir(from: &Path, to: &Path) {
 }
 
 /// The fixture machine with `/data` at `pct` percent used.
-fn set_data_usage(root: &Path, pct: u64) {
+pub(crate) fn set_data_usage(root: &Path, pct: u64) {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/proc/rates/b/statvfs.txt");
     let mut text = std::fs::read_to_string(fixture).unwrap();
     let free = 100 - pct;

@@ -10,6 +10,10 @@ publish = false
 [features]
 # test helpers for other crates' tests (the SMTP sink)
 testing = []
+# the offline test only (plan T97): SMTP notifiers also trust the roots in /etc/rackhand/test-smtp-roots.pem, so a hub
+# binary reaches the test's LAN mail server. Never turned on by another crate's dependency line, and refused in a release
+# build (RACKHAND_RELEASE=1); every other build trusts the public roots only (D113)
+test-smtp-roots = []
 
 [dependencies]
 rackhand-drivers = { path = "../rackhand-drivers" }
