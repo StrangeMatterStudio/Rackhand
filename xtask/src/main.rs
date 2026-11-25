@@ -3,6 +3,7 @@
 mod arch;
 mod ci_guard;
 mod compat;
+mod docs;
 mod ebpf;
 mod kernels;
 mod lab;
@@ -22,6 +23,7 @@ commands:
   golden --update            rewrite the wire format's golden files (review the diff)
   ci-guard                   check the workflow guards against the recorded event payloads
   compat                     the version-compatibility tests, saying which mode they ran in (T95)
+  docs-check                 every documented command answers --help; documentation addresses only (T99)
   ebpf build                 build the probe's eBPF programs with their nightly and bpf-linker (T68)
   kernels fetch              download, verify and build the test kernels
   rootfs build               build the root filesystem for test VMs
@@ -40,6 +42,7 @@ fn main() -> ExitCode {
         Some("ci") => tiers::run(rest),
         Some("ci-guard") => ci_guard::run(),
         Some("compat") => compat::run(),
+        Some("docs-check") => docs::run(),
         Some("ebpf") => ebpf::run(rest),
         Some("kernels") if rest.first().map(String::as_str) == Some("fetch") => kernels::fetch_all(),
         Some("rootfs") if rest.first().map(String::as_str) == Some("build") => vm::build_rootfs().map(|_| ()),

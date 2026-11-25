@@ -4696,6 +4696,7 @@ Only additions to that list are written out below.
   | When | Command | Result |
   | --- | --- | --- |
   | 2026-11-25 | the pages written: README.md, docs/install.md, machines.md, operators.md, relays.md, hardening.md, recovery.md, lab-checklist.md | Written against the code, which wins where it differs from the design. Writing them found gaps between the design and the code, listed under *Gaps found writing the docs* below; the docs say what isn't available yet. `docs-check` isn't written yet |
+  | 2026-11-25 | cargo nextest run -p xtask -E 'test(docs::)'; cargo xtask docs-check | Fails first: with the module's functions stubbed, the three tests failed on their assertions (no commands found, no usage). Then 3 passed: `docs::tests::commands_come_from_code_blocks_only` (commands from fenced blocks only, `sudo` and an install path allowed, other programs not), `docs::tests::every_documented_command_exists` (every documented command is a command line of a binary's usage text: 18), `docs::tests::no_lab_addresses_in_docs` (only documentation ranges, loopback and unspecified). `docs-check` builds the three binaries and runs each documented command with `--help`: 18 documented commands, 0 failed; 0 addresses outside the documentation ranges. xtask 38 passed |
 
 - **Gaps found writing the docs (2026-11-25), to close before final validation:**
   - (Closed 2026-11-25.) `rackhand` and `rackhand-probe` answered no `--help` (7.7.3). Now `--help` after a command's
