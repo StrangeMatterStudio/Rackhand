@@ -6,7 +6,7 @@ use rackhand_release::binary::Version;
 /// Whether a hub of version `hub` accepts a client that reports `client`.
 pub fn accepts(hub: &str, client: &str) -> bool {
     let (Some(hub), Some(client)) = (Version::parse(hub), Version::parse(client)) else { return false };
-    client.0 == hub.0 && (client.1 == hub.1 || client.1 + 1 == hub.1)
+    client.0 == hub.0 && (client.1 == hub.1 || client.1.checked_add(1) == Some(hub.1))
 }
 
 #[cfg(test)]

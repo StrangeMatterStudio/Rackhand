@@ -118,7 +118,7 @@ pub fn main(rest: &[&str]) -> ExitCode {
             };
             let max_jobs = o.get("max-jobs").and_then(|n| n.parse().ok()).unwrap_or(2);
             let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("rackhand"));
-            let op = Arc::new(Operator { dirs, runner, max_jobs, exe });
+            let op = Arc::new(Operator { dirs, runner, max_jobs, exe, version: crate::VERSION.into() });
             match rt.block_on(rackhand_operator::run::run(op)) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => failed(e),

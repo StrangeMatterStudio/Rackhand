@@ -39,3 +39,11 @@ fn unparsable_versions_refused() {
     }
     assert!(!accepts("garbage", "0.4.2"), "a hub version that doesn't parse accepts nothing");
 }
+
+#[test]
+fn the_largest_minor_does_not_overflow() {
+    let max = u64::MAX;
+    assert!(!accepts("0.5.0", &format!("0.{max}.0")));
+    assert!(accepts(&format!("0.{max}.0"), &format!("0.{max}.1")));
+    assert!(accepts(&format!("0.{max}.0"), &format!("0.{}.0", max - 1)));
+}

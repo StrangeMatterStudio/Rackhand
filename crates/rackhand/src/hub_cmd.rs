@@ -321,7 +321,8 @@ pub async fn run(config: &HubConfig) -> Result<(), String> {
     // incidents start runbooks through StartJob and hear back on the bus (7.5.2)
     let starter = Arc::new(ActionsStarter(actions.clone()));
     // an incident no runbook takes, or whose runbook failed, goes to an assistant job through Assist (7.5.2)
-    let assist = rackhand_hub::assist::Assist::new(db.clone(), audit.clone(), actions.clone());
+    let assist =
+        rackhand_hub::assist::Assist::new(db.clone(), audit.clone(), actions.clone()).with_hub_version(crate::VERSION);
     // linked hubs (7.3.4): their summaries, queries and requests
     let site_name: String = db
         .readers()

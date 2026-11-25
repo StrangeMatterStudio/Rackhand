@@ -74,15 +74,20 @@ struct Hub {
 }
 
 async fn hub(name: &str, site: &str, relay: &iroh::RelayUrl) -> Hub {
+    hub_at(name, site, relay, "0.1.0").await
+}
+
+/// A hub that reports `version`.
+async fn hub_at(name: &str, site: &str, relay: &iroh::RelayUrl, version: &str) -> Hub {
     let dir = std::env::temp_dir().join(format!("rackhand-link-{name}-{site}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let db = Arc::new(Db::open(&dir.join("hub.db")).unwrap());
-    serve(db, site, relay).await
+    serve_at(db, site, relay, version).await
 }
 
-/// A hub on a database that already exists (a restart).
-async fn serve(db: Arc<Db>, site: &str, relay: &iroh::RelayUrl) -> Hub {
+/// A hub that reports `version`, on a database that may already exist.
+async fn serve_at(db: Arc<Db>, site: &str, relay: &iroh::RelayUrl, version: &str) -> Hub {
     let known: i64 =
         db.readers().with(|c| c.query_row("SELECT count(*) FROM sites WHERE name = ?1", [site], |r| r.get(0))).unwrap();
     if known == 0 {
@@ -118,13 +123,13 @@ async fn serve(db: Arc<Db>, site: &str, relay: &iroh::RelayUrl) -> Hub {
     let registry = Registry::load(db.clone()).unwrap();
     let endpoint = rackhand_net::testing::endpoint(relay, &[alpn::PEER, alpn::JOIN]).await;
     let network = Arc::new(Network::new(endpoint.clone(), vec![relay.clone()]));
-    let peers = Peers::new(db.clone(), audit, actions, ingest, site, "0.1.0")
+    let peers = Peers::new(db.clone(), audit, actions, ingest, site, version)
         .with_registry(registry.clone())
         .with_network(network);
     peers.clone().spawn(bus.subscribe("peers"));
     let info = HubInfo {
         site: site.into(),
-        version: "0.1.0".into(),
+        version: version.into(),
         relays: vec![relay.to_string()],
         hub_addrs: Vec::new(),
         probe_config: ProbeConfig::default(),
@@ -292,4 +297,42 @@ async fn a_request_for_a_peers_machine_gets_the_owners_answer_and_the_path_is_kn
     let path = PeerReach::path(&alpha.peers, &row.id);
     assert!(["direct", "via relay"].contains(&path.label), "{}", path.label);
     assert_eq!(PeerReach::path(&alpha.peers, "nobody").label, "unreachable: no path");
+}
+
+/// Version compatibility (5.2, T95): peers of different minor versions still exchange summaries and requests; the
+/// minor rule that probes and operators meet doesn't apply between hubs.
+mod compat {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn peer_of_other_minor_exchanges_summary_and_request() {
+        use rackhand_hub::peers::PeerReach;
+        use rackhand_proto::peer::{ActionRequest, action_request_status};
+        let (relay, url) = rackhand_net::testing::local_relay().await;
+        let _relay = relay;
+        let alpha = hub_at("compat", "alpha", &url, "0.4.0").await;
+        let beta = hub_at("compat", "beta", &url, "0.2.3").await;
+        beta.peers.join(&alpha.invite().await, "admin").await.unwrap();
+        let (a_row, b_row) = (alpha.peers.peers().remove(0), beta.peers.peers().remove(0));
+        eventually("alpha heard from beta", || alpha.peers.latest_summary(&a_row.id).is_some()).await;
+        assert!(alpha.peers.push().await.iter().all(|(_, r)| r.is_ok()));
+        eventually("beta heard from alpha", || beta.peers.latest_summary(&b_row.id).is_some()).await;
+        let version = |s: &rackhand_proto::peer::SiteSummary| {
+            s.hub_health.as_ref().and_then(|h| h.version.as_ref()).map(|v| v.version.clone())
+        };
+        assert_eq!(version(&alpha.peers.latest_summary(&a_row.id).unwrap().1).as_deref(), Some("0.2.3"));
+        assert_eq!(version(&beta.peers.latest_summary(&b_row.id).unwrap().1).as_deref(), Some("0.4.0"));
+        let request = ActionRequest {
+            request_id: ulid::Ulid::new().to_bytes().to_vec(),
+            requested_by: "admin@alpha".into(),
+            runbook: "nope".into(),
+            target: ulid::Ulid::new().to_bytes().to_vec(),
+            params: Default::default(),
+            reason: "test".into(),
+        };
+        let answer = PeerReach::request(&alpha.peers, &a_row.id, &request).await.unwrap();
+        assert!(matches!(answer.status, Some(action_request_status::Status::Rejected(_))), "answered: {answer:?}");
+        let now = now_ms();
+        assert_eq!((alpha.peers.states(now)[0].1, beta.peers.states(now)[0].1), (PeerState::Ok, PeerState::Ok));
+    }
 }

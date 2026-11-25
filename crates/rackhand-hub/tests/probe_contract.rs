@@ -423,3 +423,57 @@ checks = [\"tcp:127.0.0.1:5432\", \"http:http://127.0.0.1:8080/health\"]
         "the passed ones are listed"
     );
 }
+
+/// Version compatibility (5.2, T95) with the hub's real rule, the versions forced, as no previous minor release exists.
+mod compat {
+    use super::*;
+    use rackhand_probe::link::Incoming;
+    use rackhand_proto::common::SemVer;
+    use rackhand_proto::probe::{HubToProbe, UpdateAvailable, hub_to_probe};
+
+    fn hub_at(version: &str) -> ServerSettings {
+        let hub = version.to_string();
+        let rule = hub.clone();
+        ServerSettings {
+            hub_version: hub,
+            supports: Arc::new(move |v: &str| rackhand_hub::version::accepts(&rule, v)),
+            ..ServerSettings::default()
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn older_probe_connects_reports_and_is_offered_update() {
+        let env = env("compat-older", hub_at("0.3.0")).await;
+        let mut link = env.probe_with("compat-older", M1, None, "0.2.5").await;
+        let mut s = connect(&mut link).await;
+        assert_eq!(s.welcome.hub_version.as_ref().map(|v| v.version.as_str()), Some("0.3.0"));
+        let r = report(&mut link, now_ms(), 5.0);
+        link.send_live(&mut s, r, now_ms()).await.unwrap();
+        drained(&mut link, &mut s).await;
+        assert_eq!(env.count("SELECT count(*) FROM report_staging"), 1, "its report is taken");
+        let offer = UpdateAvailable {
+            version: Some(SemVer { version: "0.3.0".into() }),
+            url: "https://hub.example/release/rackhand-probe".into(),
+            sha256: vec![7; 32],
+            signature: b"sig".to_vec(),
+        };
+        let msg = HubToProbe { msg: Some(hub_to_probe::Msg::UpdateAvailable(offer.clone())) };
+        assert!(env.server.send_to(&text(M1), msg).await, "the hub reaches the older probe");
+        let got = tokio::time::timeout(WAIT, s.next_message()).await.unwrap().unwrap();
+        match link.on_message(got).unwrap() {
+            Incoming::Update(u) => assert_eq!(u, offer),
+            other => panic!("expected the update offer, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn two_minors_older_refused_with_0x12() {
+        let env = env("compat-refused", hub_at("0.3.0")).await;
+        for version in ["0.1.4", "0.4.0", "1.3.0", ""] {
+            let mut link = env.probe_with("compat-refused", M1, None, version).await;
+            let stop = link.connect(&table(), now_ms()).await.unwrap_err();
+            assert_eq!(stop, Stop::Unsupported, "{version:?}");
+        }
+        assert_eq!(env.ingest.latest(&text(M1)), None);
+    }
+}

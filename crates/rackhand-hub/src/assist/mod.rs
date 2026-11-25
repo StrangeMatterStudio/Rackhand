@@ -61,6 +61,8 @@ struct Inner {
     audit: Audit,
     actions: Actions,
     daily_cap: u32,
+    /// The hub's version: operators of its minor and one older are served (5.2).
+    hub_version: String,
     links: Mutex<HashMap<String, Arc<Link>>>,
     jobs: Mutex<HashMap<String, Track>>,
 }
@@ -106,6 +108,7 @@ impl Assist {
                 audit,
                 actions,
                 daily_cap: DEFAULT_DAILY_CAP,
+                hub_version: env!("CARGO_PKG_VERSION").into(),
                 links: Mutex::new(HashMap::new()),
                 jobs: Mutex::new(HashMap::new()),
             }),
@@ -116,6 +119,14 @@ impl Assist {
     pub fn with_daily_cap(mut self, cap: u32) -> Assist {
         if let Some(inner) = Arc::get_mut(&mut self.inner) {
             inner.daily_cap = cap;
+        }
+        self
+    }
+
+    /// The version the hub reports (a lab build can play another); before serving.
+    pub fn with_hub_version(mut self, version: &str) -> Assist {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.hub_version = version.into();
         }
         self
     }
@@ -173,6 +184,12 @@ impl Assist {
         let Ok((mut send, mut recv)) = conn.accept_bi().await else { return };
         let hello = read_frame(&mut recv).await.and_then(|b| OperatorToHub::decode(b.as_slice()).ok());
         let Some(OperatorToHub { msg: Some(operator_to_hub::Msg::Hello(hello)) }) = hello else { return };
+        let version = hello.operator_version.as_ref().map(|v| v.version.as_str()).unwrap_or_default();
+        if !crate::version::accepts(&self.inner.hub_version, version) {
+            tracing::warn!(operator = %operator_id, version, hub = %self.inner.hub_version, "an operator of an unsupported version");
+            rackhand_net::close(&conn, rackhand_proto::close::CloseCode::UnsupportedVersion);
+            return;
+        }
         let (tx, mut rx) = mpsc::unbounded_channel::<HubToOperator>();
         let link = Arc::new(Link {
             operator_id: operator_id.clone(),

@@ -2,6 +2,7 @@
 
 mod arch;
 mod ci_guard;
+mod compat;
 mod kernels;
 mod lab;
 mod release;
@@ -19,6 +20,7 @@ commands:
   release build|repro        build the release artifacts, or build a commit twice and compare (T91)
   golden --update            rewrite the wire format's golden files (review the diff)
   ci-guard                   check the workflow guards against the recorded event payloads
+  compat                     the version-compatibility tests, saying which mode they ran in (T95)
   kernels fetch              download, verify and build the test kernels
   rootfs build               build the root filesystem for test VMs
   it-images                  build the integration tier's container images";
@@ -35,6 +37,7 @@ fn main() -> ExitCode {
         Some("arch-check") => arch::run(&workspace_root()),
         Some("ci") => tiers::run(rest),
         Some("ci-guard") => ci_guard::run(),
+        Some("compat") => compat::run(),
         Some("kernels") if rest.first().map(String::as_str) == Some("fetch") => kernels::fetch_all(),
         Some("rootfs") if rest.first().map(String::as_str) == Some("build") => vm::build_rootfs().map(|_| ()),
         Some("it-images") => tiers::build_it_images(),

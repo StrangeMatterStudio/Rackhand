@@ -36,6 +36,8 @@ pub struct Operator {
     pub max_jobs: u32,
     /// The `rackhand` binary the runner starts as its MCP bridge.
     pub exe: PathBuf,
+    /// The version the operator reports in its hello (the binary's; a lab build can play another).
+    pub version: String,
 }
 
 /// Cancels `cancel` once `connected` has been false for `limit` without a break; a hub that comes back in time resets the
@@ -176,7 +178,7 @@ impl Operator {
     fn hello(&self, link: &Link) -> OperatorHello {
         let info = self.runner.info();
         OperatorHello {
-            operator_version: Some(SemVer { version: env!("CARGO_PKG_VERSION").into() }),
+            operator_version: Some(SemVer { version: self.version.clone() }),
             runners: vec![RunnerInfo { name: info.name, version: info.version }],
             max_jobs: self.max_jobs,
             running: link.running_ids(),
@@ -360,6 +362,10 @@ impl Operator {
             }
         }
         writer.abort();
+        let refused = conn.close_reason().and_then(|r| rackhand_net::close_code(&r));
+        if refused == Some(rackhand_proto::close::CloseCode::UnsupportedVersion) {
+            return Err(format!("the hub doesn't take operator version {}: update the operator", self.version));
+        }
         Ok(())
     }
 }

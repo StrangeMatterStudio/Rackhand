@@ -69,6 +69,11 @@ struct Hub {
 
 /// A hub with three operators in that order, and an open incident on one machine.
 async fn hub(name: &str) -> Hub {
+    hub_at(name, env!("CARGO_PKG_VERSION")).await
+}
+
+/// A hub that reports `version`.
+async fn hub_at(name: &str, version: &str) -> Hub {
     let dir = std::env::temp_dir().join(format!("rackhand-operator-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -121,7 +126,7 @@ async fn hub(name: &str) -> Hub {
     library.save(Kind::Playbook, "service-down", PLAYBOOK, "admin", 1).await.unwrap();
     let bus = Bus::new();
     let actions = Actions::new(db.clone(), audit.clone(), bus.clone(), Arc::new(NoRunner));
-    let assist = Assist::new(db.clone(), audit.clone(), actions.clone());
+    let assist = Assist::new(db.clone(), audit.clone(), actions.clone()).with_hub_version(version);
     let mcp = Mcp::new(db.clone(), audit, Arc::new(Nothing)).with_actions(actions);
     let server = rackhand_net::testing::endpoint(&relay_url, &[alpn::OPERATOR, alpn::MCP]).await;
     let registry = Registry::load(db.clone()).unwrap();
@@ -149,11 +154,22 @@ async fn write_frame(send: &mut SendStream, msg: &impl Message) {
 
 impl FakeOperator {
     pub async fn connect(hub: &Hub, which: usize, running: Vec<Vec<u8>>, max_jobs: u32) -> FakeOperator {
+        FakeOperator::connect_as(hub, which, running, max_jobs, Some(env!("CARGO_PKG_VERSION"))).await
+    }
+
+    /// An operator that reports `version` (`None`: no version at all).
+    pub async fn connect_as(
+        hub: &Hub,
+        which: usize,
+        running: Vec<Vec<u8>>,
+        max_jobs: u32,
+        version: Option<&str>,
+    ) -> FakeOperator {
         let conn = hub.operators[which].connect(hub.addr.clone(), alpn::OPERATOR).await.unwrap();
         let (mut send, recv) = conn.open_bi().await.unwrap();
         let hello = OperatorToHub {
             msg: Some(operator_to_hub::Msg::Hello(OperatorHello {
-                operator_version: None,
+                operator_version: version.map(|v| rackhand_proto::common::SemVer { version: v.into() }),
                 runners: vec![],
                 max_jobs,
                 running,
@@ -377,7 +393,7 @@ async fn hub_restart_reattaches_running_jobs() {
     let (mut send, recv) = conn.open_bi().await.unwrap();
     let hello = OperatorToHub {
         msg: Some(operator_to_hub::Msg::Hello(OperatorHello {
-            operator_version: None,
+            operator_version: Some(rackhand_proto::common::SemVer { version: env!("CARGO_PKG_VERSION").into() }),
             runners: vec![],
             max_jobs: 1,
             running: vec![offer.job_id.clone()],
@@ -594,5 +610,42 @@ mod assist {
         assert!(next.brief_markdown.contains("restart-web"), "the new brief says what ran: {}", next.brief_markdown);
         let used = approvals.check(&id, &format!("job:{job_id}"), &approval_hash(&call), now_ms());
         assert_eq!(used, Err(ApprovalError::Used));
+    }
+}
+
+/// Version compatibility (5.2, T95): the hub's own minor and one older, with the versions forced, as no previous minor
+/// release exists yet.
+mod compat {
+    use super::*;
+    use rackhand_proto::close::CloseCode;
+
+    async fn closed_with(conn: &Connection) -> Option<CloseCode> {
+        let reason = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await.ok()?;
+        rackhand_net::close_code(&reason)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn older_operator_connects_and_works() {
+        let hub = hub_at("compat-older", "0.3.0").await;
+        let mut op = FakeOperator::connect_as(&hub, 0, vec![], 1, Some("0.2.7")).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let assist = hub.assist.clone();
+        let started = tokio::spawn(async move { assist.start(request()).await });
+        let offer = op.offer().await.expect("an operator one minor older is offered the job");
+        op.reply(true).await;
+        let AssistResult::Accepted { job_id, .. } = started.await.unwrap() else { panic!("not accepted") };
+        op.done(&offer.job_id, Outcome::Resolved, "done").await;
+        let db = hub.db.clone();
+        wait_until(move || job_state(&db, &job_id).0 == "succeeded").await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn two_minors_older_operator_refused_with_0x12() {
+        let hub = hub_at("compat-refused", "0.3.0").await;
+        for version in [Some("0.1.9"), Some("0.4.0"), Some("not-a-version"), None] {
+            let op = FakeOperator::connect_as(&hub, 0, vec![], 1, version).await;
+            assert_eq!(closed_with(&op.conn).await, Some(CloseCode::UnsupportedVersion), "{version:?}");
+        }
+        assert!(!hub.assist.attached("anything"));
     }
 }

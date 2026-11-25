@@ -194,3 +194,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-23 | T94 done: install.sh --hub and rackhand-lxc.sh, with their integration tests (D190 to D191) |
 | 2026-11-24 | The owner's test hub updated to the branch at `946b499` (a lab build), by hand: a backup, the binary in slot A of `/usr/local/lib/rackhand-server`, the updater's units and the release manifest installed; `/healthz` answers. The lab release now signs with versions and carries the manifest and the updater units, so the next update can go through the Settings page |
 | 2026-11-24 | T95 (1/n): the hub's version rule (own minor and one older), used by the probe server; the other contracts and `xtask compat` follow |
+| 2026-11-25 | T95 done: version compatibility: the hub's rule for probes and operators, peers of other minors, xtask compat; the CLI and relay carry no version (AC45 and AC53 unverified until a previous minor release) (D192 to D195) |
