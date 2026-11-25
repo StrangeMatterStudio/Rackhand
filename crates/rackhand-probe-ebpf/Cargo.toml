@@ -1,0 +1,31 @@
+# The probe's eBPF programs (design 5.3, FR-4, FR-5, D111). Not a workspace member: it builds for `bpfel-unknown-none`
+# with its own nightly toolchain and bpf-linker, through `cargo xtask ebpf build`, and the probe embeds the object.
+[package]
+name = "rackhand-probe-ebpf"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0 OR MIT"
+repository = "https://github.com/StrangeMatterStudio/Rackhand"
+publish = false
+
+[dependencies]
+aya-ebpf = "0.3"
+
+[[bin]]
+name = "rackhand-probe-ebpf"
+path = "src/main.rs"
+
+[profile.dev]
+opt-level = 3
+debug = false
+panic = "abort"
+codegen-units = 1
+
+[profile.release]
+opt-level = 3
+debug = false
+panic = "abort"
+codegen-units = 1
+lto = true
+
+[workspace]

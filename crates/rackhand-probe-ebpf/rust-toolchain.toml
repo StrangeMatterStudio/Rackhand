@@ -1,0 +1,5 @@
+# A dated nightly: bpf-linker's LLVM (23 in 0.13.0) must match this compiler's, and release builds compare hashes.
+[toolchain]
+channel = "nightly-2026-11-19"
+components = ["rust-src"]
+profile = "minimal"

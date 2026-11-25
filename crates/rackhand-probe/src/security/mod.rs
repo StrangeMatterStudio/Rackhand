@@ -5,6 +5,7 @@
 pub mod aggregate;
 pub mod capability;
 pub mod conntable;
+pub mod ebpf;
 pub mod listeners;
 pub mod signals;
 

@@ -2,8 +2,9 @@
 resolver = "2"
 members = ["crates/*", "tests/it", "tests/net", "tests/ebpf", "tests/perf", "tests/live", "xtask"]
 default-members = ["crates/*", "xtask"]
-# a patched copy of a dependency (see [patch.crates-io]) is built, not linted or tested as ours
-exclude = ["vendor"]
+# a patched copy of a dependency (see [patch.crates-io]) is built, not linted or tested as ours; the probe's eBPF
+# programs build for their own target with their own toolchain (`cargo xtask ebpf build`)
+exclude = ["vendor", "crates/rackhand-probe-ebpf"]
 
 [workspace.package]
 version = "0.1.0"

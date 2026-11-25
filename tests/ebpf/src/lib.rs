@@ -2,4 +2,6 @@
 //! `cargo xtask ci ebpf`.
 
 #[cfg(test)]
+mod capture;
+#[cfg(test)]
 mod smoke;

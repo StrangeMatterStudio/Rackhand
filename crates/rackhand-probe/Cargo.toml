@@ -42,6 +42,8 @@ rackhand-release = { path = "../rackhand-release" }
 [target.'cfg(target_os = "linux")'.dependencies]
 # statvfs without unsafe code.
 rustix = { version = "1", default-features = false, features = ["std", "fs", "process", "net", "event"] }
+# The eBPF capture's loader (T68): pure Rust, no libbpf; the programs are `crates/rackhand-probe-ebpf`.
+aya = { version = "0.16", default-features = false }
 
 [features]
 # the local lab and the integration tests: the test release keys pinned, and `RACKHAND_PROBE_VERSION` honored at build time;

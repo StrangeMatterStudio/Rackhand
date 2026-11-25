@@ -11,5 +11,9 @@ publish = false
 name = "ebpf_tests"
 path = "src/lib.rs"
 
+[dev-dependencies]
+rackhand-probe = { path = "../../crates/rackhand-probe" }
+rackhand-proto = { path = "../../crates/rackhand-proto" }
+
 [lints]
 workspace = true

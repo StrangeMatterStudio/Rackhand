@@ -279,7 +279,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | L4 | Live pass for M3: actions and patching | T65, L3 | live (local lab) | todo |
 | T66 | Helper security scans | T43, T11 | integration (containers) | done |
 | T67 | Probe sampling capture and security signals | T66, T42 | collector + integration | done |
-| T68 | eBPF capture | T67, T10, T06 | eBPF tier | todo |
+| T68 | eBPF capture | T67, T10, T06 | eBPF tier | in progress (owner decision: capabilities) |
 | T69 | Threat intel and outside sources | T41, T15 | unit | done |
 | T70 | Connection scoring and connection storage | T67, T69 | unit + integration | done |
 | T71 | Security events, severities and exemptions | T70, T61 | unit + integration | done |
@@ -3401,6 +3401,8 @@ Only additions to that list are written out below.
 - **Evidence:**
   | When | Command | Result |
   | --- | --- | --- |
+  | 2026-11-25 | cargo xtask ci ebpf (5.10.274) | Fails first: the six `capture::` tests failed against the first program (the verifier refused a context read through a moved pointer: "dereference of modified ctx ptr"; loopback was down in the VM). With the reads one field at a time, loopback up and cgroup links attached with flags 0, as root 5 of 6 passed: `short_connect_seen` (its one failure an expectation, `/usr/bin/bash` for the kernel's `/bin/bash`, now `/bin/bash`), `udp_flow_seen` (one flow for a connected socket; an IPv6 socket's send to `::ffff:127.0.0.1` came back as IPv4), `exec_from_tmp_seen`, `two_containers_same_exe_attributed` (two cgroups, the helper's `container_names` named both), `load_failure_falls_back_to_sampling` |
+  | 2026-11-25 | the same, `runs_with_only_cap_bpf_and_cap_perfmon` | Fails, and is the design question: as uid 65534 with `CAP_BPF` and `CAP_PERFMON` only, loading `cgroup/connect4` returns `EPERM` (cgroup socket programs need `CAP_NET_ADMIN`). A throwaway run with `CAP_NET_ADMIN` added loaded the connection hooks, and the exec tracepoint then failed ("tracefs not found": tracefs is closed to non-root users). Put to the owner; the step waits for the decision |
 
 ### T69: Threat intel and outside sources
 - **Design refs:** 7.8.5, 7.3.10 (relay list fetch rules apply the same parsing discipline), 10 (fetched lists), D19,

@@ -151,7 +151,16 @@ fn it() -> Result<()> {
 
 /// Builds a package's test binaries and returns their paths.
 fn test_binaries(package: &str) -> Result<Vec<PathBuf>> {
-    let out = cargo()
+    test_binaries_with(package, &[])
+}
+
+/// The test binaries of `package`, built with `env` set (the eBPF tier embeds the probe's program this way).
+fn test_binaries_with(package: &str, env: &[(&str, &std::ffi::OsStr)]) -> Result<Vec<PathBuf>> {
+    let mut cmd = cargo();
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    let out = cmd
         .args(["test", "-p", package, "--no-run", "--message-format=json"])
         .stderr(std::process::Stdio::inherit())
         .output()?;
@@ -284,7 +293,12 @@ fn net(args: &[String]) -> Result<()> {
 fn ebpf(args: &[String]) -> Result<()> {
     let spike = parse_spike(args)?;
     let spike_bin = spike.as_ref().map(Spike::build).transpose()?;
-    let bins = if spike.is_none() { test_binaries("rackhand-ebpf-tests")? } else { Vec::new() };
+    let bins = if spike.is_none() {
+        let object = crate::ebpf::build()?;
+        test_binaries_with("rackhand-ebpf-tests", &[("RACKHAND_PROBE_EBPF", object.as_os_str())])?
+    } else {
+        Vec::new()
+    };
     for kernel in kernels::load()? {
         let image = kernels::ensure(&kernel)?;
         println!("== eBPF tier on {}", kernel.version);
