@@ -1,7 +1,8 @@
-//! The eBPF capture (FR-4, FR-5, 11, D17, D103): loads `crates/rackhand-probe-ebpf`'s object, attaches its connection
-//! hooks to the root cgroup and its exec tracepoint, and drains what they counted every interval. Anything that stops
-//! it loading (no object in this build, no BTF, a kernel or a capability that refuses it) leaves the probe on sampling
-//! (E36), and the reason is logged once.
+//! The eBPF capture (FR-4, FR-5, 11, D17, D103, D196). The root helper loads `crates/rackhand-probe-ebpf`'s object
+//! built into this binary and attaches its connection hooks to the root cgroup and its exec tracepoint ([`Programs`]);
+//! the probe gets the maps' descriptors from it over the helper socket and drains them every interval ([`Capture`]),
+//! with `CAP_BPF` only. Anything that stops it (no object in this build, no BTF, no helper, a kernel or a capability
+//! that refuses it) leaves the probe on sampling (E36), and the reason is logged once.
 //!
 //! The layouts here mirror the eBPF crate's `ConnKey`, `Exe` and `ExecEvent`.
 
@@ -108,6 +109,9 @@ impl Exec {
     }
 }
 
+/// The maps the helper passes, in this order.
+pub const MAPS: [&str; 3] = ["CONNS", "EXES", "EXECS"];
+
 /// Why the capture didn't load.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadError {
@@ -117,6 +121,26 @@ pub enum LoadError {
     NoBtf,
     /// The kernel or the capabilities refused it.
     Refused(String),
+}
+
+impl LoadError {
+    /// The helper's error code for it.
+    pub fn code(&self) -> &'static str {
+        match self {
+            LoadError::NoProgram => "no_program",
+            LoadError::NoBtf => "no_btf",
+            LoadError::Refused(_) => "refused",
+        }
+    }
+
+    /// From the helper's error answer.
+    pub fn from_answer(code: &str, message: String) -> LoadError {
+        match code {
+            "no_program" => LoadError::NoProgram,
+            "no_btf" => LoadError::NoBtf,
+            _ => LoadError::Refused(message),
+        }
+    }
 }
 
 impl std::fmt::Display for LoadError {
@@ -130,19 +154,20 @@ impl std::fmt::Display for LoadError {
 }
 
 #[cfg(target_os = "linux")]
-pub use linux::Capture;
+pub use linux::{Capture, Programs};
 
 #[cfg(target_os = "linux")]
 // The maps' key and value types must be `aya::Pod`, an unsafe trait, and a ring buffer entry is read as bytes; the
 // unsafe code is these three lines.
 #[allow(unsafe_code)]
 mod linux {
+    use std::os::fd::{AsFd, OwnedFd};
     use std::path::Path;
 
-    use aya::maps::{HashMap, MapData, PerCpuHashMap, RingBuf};
+    use aya::maps::{HashMap, Map, MapData, PerCpuHashMap, RingBuf};
     use aya::programs::{CgroupAttachMode, CgroupSockAddr, TracePoint};
 
-    use super::{Conn, ConnKey, Exec, ExecEvent, LoadError, PATH_LEN};
+    use super::{Conn, ConnKey, Exec, ExecEvent, LoadError, MAPS, PATH_LEN};
 
     #[repr(C)]
     #[derive(Clone, Copy)]
@@ -155,33 +180,44 @@ mod linux {
     // SAFETY: as above.
     unsafe impl aya::Pod for Exe {}
 
-    /// The loaded programs and their maps; dropping it detaches them.
-    pub struct Capture {
-        _ebpf: aya::Ebpf,
-        conns: PerCpuHashMap<MapData, ConnKey, u64>,
-        exes: HashMap<MapData, u32, Exe>,
-        execs: RingBuf<MapData>,
-    }
-
-    impl std::fmt::Debug for Capture {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("Capture")
-        }
-    }
-
     fn refused(e: impl std::fmt::Display) -> LoadError {
         LoadError::Refused(e.to_string())
     }
 
-    impl Capture {
+    /// The loaded and attached programs, in the helper; dropping them detaches them.
+    pub struct Programs {
+        ebpf: aya::Ebpf,
+    }
+
+    impl std::fmt::Debug for Programs {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("Programs")
+        }
+    }
+
+    fn map_data(map: &Map) -> Option<&MapData> {
+        match map {
+            Map::PerCpuLruHashMap(d)
+            | Map::LruHashMap(d)
+            | Map::RingBuf(d)
+            | Map::HashMap(d)
+            | Map::PerCpuHashMap(d) => Some(d),
+            _ => None,
+        }
+    }
+
+    impl Programs {
         /// Loads `object` and attaches it. `root` is `/` outside tests: the kernel's BTF and the cgroup tree are under it.
-        pub fn load(object: &[u8], root: &Path) -> Result<Capture, LoadError> {
+        pub fn load(object: &[u8], root: &Path) -> Result<Programs, LoadError> {
             if object.is_empty() {
                 return Err(LoadError::NoProgram);
             }
             if !root.join("sys/kernel/btf/vmlinux").exists() {
                 return Err(LoadError::NoBtf);
             }
+            // kernels before 5.11 charge maps to the memlock limit, which the helper (root) may raise; later ones ignore it
+            let unlimited = rustix::process::Rlimit { current: None, maximum: None };
+            let _ = rustix::process::setrlimit(rustix::process::Resource::Memlock, unlimited);
             let mut ebpf = aya::Ebpf::load(object).map_err(refused)?;
             let cgroup = std::fs::File::open(root.join("sys/fs/cgroup")).map_err(refused)?;
             for name in ["connect4", "connect6", "sendmsg4", "sendmsg6"] {
@@ -198,15 +234,65 @@ mod linux {
                 ebpf.program_mut("exec").ok_or_else(|| refused("no program exec"))?.try_into().map_err(refused)?;
             exec.load().map_err(|e| refused(format!("exec: {e}")))?;
             exec.attach("sched", "sched_process_exec").map_err(|e| refused(format!("exec: {e}")))?;
-            let conns = ebpf.take_map("CONNS").ok_or_else(|| refused("no map CONNS"))?;
-            let exes = ebpf.take_map("EXES").ok_or_else(|| refused("no map EXES"))?;
-            let execs = ebpf.take_map("EXECS").ok_or_else(|| refused("no map EXECS"))?;
+            let programs = Programs { ebpf };
+            programs.map_fds().map_err(refused)?;
+            Ok(programs)
+        }
+
+        /// New descriptors for the maps, in [`MAPS`] order.
+        pub fn map_fds(&self) -> std::io::Result<Vec<OwnedFd>> {
+            MAPS.iter()
+                .map(|name| {
+                    let data = self.ebpf.map(name).and_then(map_data);
+                    data.ok_or_else(|| std::io::Error::other(format!("no map {name}")))?
+                        .fd()
+                        .as_fd()
+                        .try_clone_to_owned()
+                })
+                .collect()
+        }
+    }
+
+    /// The maps, in the probe; draining them needs `CAP_BPF` where unprivileged `bpf()` is off.
+    pub struct Capture {
+        conns: PerCpuHashMap<MapData, ConnKey, u64>,
+        exes: HashMap<MapData, u32, Exe>,
+        execs: RingBuf<MapData>,
+        ids: Vec<u32>,
+    }
+
+    impl std::fmt::Debug for Capture {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "Capture {:?}", self.ids)
+        }
+    }
+
+    fn open(fd: OwnedFd) -> Result<(Map, u32), LoadError> {
+        let data = MapData::from_fd(fd).map_err(refused)?;
+        let id = data.info().map_err(refused)?.id();
+        Ok((Map::from_map_data(data).map_err(refused)?, id))
+    }
+
+    impl Capture {
+        /// The maps from the descriptors the helper passed, named by `names`.
+        pub fn from_fds(fds: Vec<OwnedFd>, names: &[String]) -> Result<Capture, LoadError> {
+            if fds.len() != MAPS.len() || names.len() != MAPS.len() || names.iter().zip(MAPS).any(|(n, m)| n != m) {
+                return Err(refused(format!("the helper passed {} descriptors for {names:?}", fds.len())));
+            }
+            let mut fds = fds.into_iter();
+            let mut next = || fds.next().map(open).unwrap_or_else(|| Err(refused("a descriptor is missing")));
+            let ((conns, a), (exes, b), (execs, c)) = (next()?, next()?, next()?);
             Ok(Capture {
                 conns: PerCpuHashMap::try_from(conns).map_err(refused)?,
                 exes: HashMap::try_from(exes).map_err(refused)?,
                 execs: RingBuf::try_from(execs).map_err(refused)?,
-                _ebpf: ebpf,
+                ids: vec![a, b, c],
             })
+        }
+
+        /// Whether both are the same maps: the helper passes the same ones again until it restarts.
+        pub fn same_maps(&self, other: &Capture) -> bool {
+            self.ids == other.ids
         }
 
         /// What was counted since the last drain, and the execs since then; the counts start again from zero.
@@ -274,6 +360,14 @@ mod tests {
         );
         assert_eq!(Conn::from_key(&ConnKey { proto: 17, ..key }, 1, String::new()).unwrap().proto, Proto::Udp);
         assert_eq!(Conn::from_key(&ConnKey { proto: 1, ..key }, 1, String::new()), None, "only TCP and UDP");
+    }
+
+    #[test]
+    fn helper_codes_round_trip() {
+        for e in [LoadError::NoProgram, LoadError::NoBtf, LoadError::Refused("EPERM".into())] {
+            assert_eq!(LoadError::from_answer(e.code(), "EPERM".into()), e);
+        }
+        assert_eq!(LoadError::from_answer("bad_request", "x".into()), LoadError::Refused("x".into()));
     }
 
     #[test]

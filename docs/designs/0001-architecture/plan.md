@@ -279,7 +279,7 @@ ranges for its site networks; the real lab's details live only in the untracked 
 | L4 | Live pass for M3: actions and patching | T65, L3 | live (local lab) | todo |
 | T66 | Helper security scans | T43, T11 | integration (containers) | done |
 | T67 | Probe sampling capture and security signals | T66, T42 | collector + integration | done |
-| T68 | eBPF capture | T67, T10, T06 | eBPF tier | in progress (owner decision: capabilities) |
+| T68 | eBPF capture | T67, T10, T06 | eBPF tier | in progress |
 | T69 | Threat intel and outside sources | T41, T15 | unit | done |
 | T70 | Connection scoring and connection storage | T67, T69 | unit + integration | done |
 | T71 | Security events, severities and exemptions | T70, T61 | unit + integration | done |
@@ -3375,7 +3375,8 @@ Only additions to that list are written out below.
   (eBPF part), S1 finding, S6 finding
 - **Goal:** on systemd Linux with kernel 5.8 or later and BTF, the probe records every outbound TCP connect and UDP
   flow and every exec with pid, exe path, cgroup id (mapped to a container by the helper), user and destination,
-  through aya CO-RE programs with `CAP_BPF` and `CAP_PERFMON` only. It falls back to sampling when loading fails.
+  through aya CO-RE programs the root helper loads and attaches, reading their maps with `CAP_BPF` only (D196). It
+  falls back to sampling when loading fails.
 - **Depends on:** T67, T10, T06
 - **Changes:** `crates/rackhand-probe-ebpf/` (the eBPF programs, with the license the owner chose after T10);
   `crates/rackhand-probe/src/security/ebpf.rs` (loader, map draining every interval); `tests/ebpf/src/capture.rs`.
@@ -3386,7 +3387,7 @@ Only additions to that list are written out below.
   | `ebpf_tests::capture::udp_flow_seen` | one UDP send recorded | FR-4 |
   | `ebpf_tests::capture::exec_from_tmp_seen` | `sched_process_exec` from `/tmp` recorded | FR-5 |
   | `ebpf_tests::capture::two_containers_same_exe_attributed` | records name each container | AC71 |
-  | `ebpf_tests::capture::runs_with_only_cap_bpf_and_cap_perfmon` | as a non-root user with those capabilities | 7.3.3 |
+  | `ebpf_tests::capture::probe_with_only_cap_bpf_reads_the_helpers_capture` | the helper, as root, loads it; a non-root user with `CAP_BPF` only gets the maps over the helper socket and sees a connection and a start (D196) | 7.3.3 |
   | `ebpf_tests::capture::load_failure_falls_back_to_sampling` | with BTF hidden, the probe reports `sampling` and still captures long connections | E36 |
 - **Fails first:** compile errors; the eBPF crate doesn't exist.
 - **Verification:**
@@ -3402,7 +3403,10 @@ Only additions to that list are written out below.
   | When | Command | Result |
   | --- | --- | --- |
   | 2026-11-25 | cargo xtask ci ebpf (5.10.274) | Fails first: the six `capture::` tests failed against the first program (the verifier refused a context read through a moved pointer: "dereference of modified ctx ptr"; loopback was down in the VM). With the reads one field at a time, loopback up and cgroup links attached with flags 0, as root 5 of 6 passed: `short_connect_seen` (its one failure an expectation, `/usr/bin/bash` for the kernel's `/bin/bash`, now `/bin/bash`), `udp_flow_seen` (one flow for a connected socket; an IPv6 socket's send to `::ffff:127.0.0.1` came back as IPv4), `exec_from_tmp_seen`, `two_containers_same_exe_attributed` (two cgroups, the helper's `container_names` named both), `load_failure_falls_back_to_sampling` |
-  | 2026-11-25 | the same, `runs_with_only_cap_bpf_and_cap_perfmon` | Fails, and is the design question: as uid 65534 with `CAP_BPF` and `CAP_PERFMON` only, loading `cgroup/connect4` returns `EPERM` (cgroup socket programs need `CAP_NET_ADMIN`). A throwaway run with `CAP_NET_ADMIN` added loaded the connection hooks, and the exec tracepoint then failed ("tracefs not found": tracefs is closed to non-root users). Put to the owner; the step waits for the decision |
+  | 2026-11-25 | the same, `runs_with_only_cap_bpf_and_cap_perfmon` | Fails, and is the design question: as uid 65534 with `CAP_BPF` and `CAP_PERFMON` only, loading `cgroup/connect4` returns `EPERM` (cgroup socket programs need `CAP_NET_ADMIN`). A throwaway run with `CAP_NET_ADMIN` added loaded the connection hooks, and the exec tracepoint then failed ("tracefs not found": tracefs is closed to non-root users). Put to the owner, who chose the helper loading it (D196) |
+  | 2026-11-25 | cargo nextest run -p rackhand-proto -E 'test(helper)'; cargo nextest run -p rackhand-probe -E 'test(fdpass) \| test(ebpf)'; cargo nextest run -p rackhand-probe --test units | Fails first: compile errors (`EbpfCapture`, `EbpfMaps`, `fdpass::{send_line, recv_line}`, `answer_with_fds`, `Machine.ebpf`, `ebpf_capture` missing); `units::probe_keeps_cap_bpf_only` failed against the old unit (`["CAP_BPF CAP_PERFMON"]`). Then 3, 13 and 2 passed: the request and answer (`ebpf_capture_names_the_maps_it_passes`), descriptors with their line in order, in pieces, without any, too many and cut short (`fdpass::*`), the helper's reasons `no_program`, `no_btf`, `refused` with and without descriptors, the client bringing them back and no helper meaning sampling |
+  | 2026-11-25 | cargo xtask ci ebpf (5.10, 6.1, 7.0) | 7 passed, 0 failed on each of 5.10.274, 6.1.192 and 7.0.14: the five capture tests (the `short_connect_seen` exe expectation `/bin/bash` now holds), `probe_with_only_cap_bpf_reads_the_helpers_capture` (the helper as root loads it; uid 65534 with `CAP_BPF` only gets the maps over the socket, the same maps when it asks again, and sees its connection and its `/bin/true`), and the BTF smoke test. Its first run failed setting up, not in the capture: the socket's group couldn't be set on the VM's `/tmp`, which is the host's (`EINVAL`); the socket is on a tmpfs of the VM now |
+  | 2026-11-25 | cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo clippy -p rackhand-probe --all-targets --target x86_64-pc-windows-gnu -- -D warnings; cargo xtask arch-check; cargo xtask ci fast | clean; fast tier 1007 passed, 3 skipped, and under a load near 80 three that then passed alone: `helper::keys::tests::concurrent_updates_leave_the_newest` and `buffer::tests::buffer::cap_from_hub_drops_oldest_with_ranges` (timeouts, as earlier today) and `hub_cmd::tests::ssh_test_after_first_report_wired` (three `ssh_test_passed` events where one is expected; hub code this step doesn't touch, left to look at) |
 
 ### T69: Threat intel and outside sources
 - **Design refs:** 7.8.5, 7.3.10 (relay list fetch rules apply the same parsing discipline), 10 (fetched lists), D19,
@@ -5213,6 +5217,7 @@ criteria, data formats) need the owner's agreement and a design change-log entry
 | D193 | 2026-11-25 | T95 | the CLI and the relay | neither tells the hub its version: the CLI's MCP auth line, `TunnelOpen` and `XferOffer` carry none, and the relay never dials a Rackhand ALPN (hubs register with it). So the hub can't refuse an unsupported one with `0x12`; their main flows stay covered by the existing contract tests, and AC53's CLI and relay parts stay unverified with AC45 | Adding a version to those contracts changes them; put to the owner | design | owner |
 | D194 | 2026-11-25 | T95 | the rule's edges | the hub takes its own minor and the one before, with the same major and any patch; a newer minor, a hello without a version and one that doesn't parse are refused too (the design names only its own and the older minor); the operator, refused, keeps its 1 s to 30 s backoff and logs that it needs an update; the fake operators in `operator_contract.rs` now report the version | The design's wording, read strictly | design | owner |
 | D195 | 2026-11-25 | T95 | `xtask compat` | it runs the forced-version mode only, and when a release tag of the minor before exists it says so and that building that tag isn't written yet; it isn't, as there is no such tag to build or test it against | No previous minor release exists | plan | - |
+| D196 | 2026-11-25 | T68 | who loads the capture (design 7.3.3, owner decision) | the root helper loads and attaches the program built into it the first time the probe sends `EbpfCapture`, keeps it attached while it runs, and answers `EbpfMaps` with the maps' descriptors (`SCM_RIGHTS`; such an answer ends its connection); the probe keeps `CAP_BPF` only, to read and drain the maps where unprivileged `bpf()` is off. The helper raises its memlock limit before loading, for kernels before 5.11. The probe asks again later and keeps its maps when they are the same (`same_maps`, by map id), so a restarted helper's new maps replace the old ones | with `CAP_BPF CAP_PERFMON` the kernel refused the connection hooks (`CAP_NET_ADMIN`) and the tracepoint (tracefs is root's); the owner chose this of the three options |
 
 ## Follow-ups (out of scope)
 

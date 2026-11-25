@@ -501,12 +501,14 @@ enum HelperRequest {
     UpdatesStatus,                               // last package-list refresh result (below)
     ApplyUpdate { version: SemVer, sha256: [u8; 32], signature: Vec<u8> }, // no URL or path: the file is read from the spool
     ApplyKeys { payload: Vec<u8>, hub_signature: Vec<u8> },
+    EbpfCapture,                                 // eBPF mode: loads and attaches the built-in program once; the maps' fds come with the answer
 }
 enum HelperResponse {
     Pong { version: SemVer },
     Hashes { files: Vec<FileHash> },             // path, exists, sha256, mode, uid, gid, mtime
     AuthEvents { events: Vec<AuthEvent>, cursor: String },
     Containers { items: Vec<ContainerState> },   // id, name, image, state, health, restart_count, started_at
+    EbpfMaps { maps: Vec<String> },              // the map names, in the order of the descriptors passed with it (SCM_RIGHTS)
     SocketOwners { owners: Vec<SocketOwner> },
     ContainerNames { names: Vec<(u64, String)> },
     Processes { items: Vec<ProcInfo> },          // pid, ppid, exe, user, started_at
@@ -517,9 +519,12 @@ enum HelperResponse {
 ```
 
 - **Probe privileges.** Linux with systemd: the probe runs as `rackhand-probe` with `AmbientCapabilities` and
-  `CapabilityBoundingSet` set to `CAP_BPF CAP_PERFMON` (plus `CAP_SYS_RESOURCE` on kernels before 5.11 for the memlock
-  limit), `NoNewPrivileges=yes`, `ProtectSystem=strict`, `ProtectHome=read-only`, and write access only to its buffer
-  and state directories. Kernels without `CAP_BPF` (before 5.8) get no capabilities and use sampling. OpenRC (Alpine,
+  `CapabilityBoundingSet` set to `CAP_BPF`, `NoNewPrivileges=yes`, `ProtectSystem=strict`, `ProtectHome=read-only`, and
+  write access only to its buffer and state directories. The helper loads and attaches the eBPF capture (the program
+  built into the binary, never one from the socket) the first time the probe sends `EbpfCapture`, keeps it attached
+  while it runs, and passes the maps' descriptors over its socket; the probe only reads and drains the maps, which
+  needs `CAP_BPF` where unprivileged `bpf()` is off (D196). Kernels without `CAP_BPF` (before 5.8) get no capabilities
+  and use sampling. OpenRC (Alpine,
   LXCs): no capabilities, sampling only. Windows: the virtual service account `NT SERVICE\RackhandProbe` with no extra
   privileges. The helper is the only root process.
 - The helper never returns file contents. `AuthEvent`: time, kind (`ssh_login`, `ssh_failed`, `sudo`, `su`,
@@ -2264,6 +2269,7 @@ the owner and the document is updated before the work that depends on it starts.
 | D112 | Existing connections of a quarantined Proxmox guest | `conntrack -D` on the host through the hypervisor's managed enrollment (Owen); when the hypervisor isn't managed, the quarantine still applies and records `conntrack_not_flushed` (filled in by the implementation run, confirmed by the owner 2026-11-21) | Spike S4: the Proxmox API can't flush conntrack | Owen | 2026-11-20 |
 | D113 | Which certificates notifiers trust | Public CA roots only: no custom CA for SMTP or webhook notifiers. Mail goes through a mail service (Mailgun or another SMTP provider) with a public certificate, and the hub sits behind a reverse proxy with one | Owner decision on a T42 question | Owen | 2026-11-21 |
 | D114 | Probe files and probe settings | `/etc/rackhand-probe/probe.toml` holds `[hub] id, addrs, relays` and `[machine] id, access, mode`; `/run/rackhand-probe/probe.state` is JSON (`state`: `connecting`, `connected`, `disconnected` or `stopped`; `version`, `at_ms`, `reason`, `retry_in_ms`, `epoch`, `buffered`), replaced whole on each change. The probe settings of 7.8.1 are `config/hub.toml` `[probe]` (`interval_s` 5 to 300, `connection_tuples` 100 to 5000, `buffer_max_mb` 1 to 64), sent in `Welcome`, and an edit is pushed to connected probes as `ConfigUpdate` | Gaps found in T42; owner left the choice to the implementation | Claude (delegated) | 2026-11-21 |
+| D196 | Who loads the eBPF capture | The root helper loads and attaches it and passes the maps' descriptors to the probe, which keeps `CAP_BPF` only | The kernel refuses cgroup socket programs without `CAP_NET_ADMIN`, and tracefs is closed to non-root users, so `CAP_BPF CAP_PERFMON` can't load it (T68) | Owen | 2026-11-25 |
 | D115 | What a `probe_check` step does | A check run from the machine itself, for what only the machine can reach (a service on localhost): `checks = ["tcp:127.0.0.1:5432", "http:http://127.0.0.1:8080/health"]`, the hub's TCP and HTTP check kinds with their syntax. The hub sends `RunCheck { id, check, timeout_ms }` on stream 0 and the probe answers `CheckResult { id, ok, detail, latency_ms }`; the step fails with the first failing check. A probe only checks loopback addresses and the machine's own addresses | Gap found in T42 (the step kind had no fields and no message); owner left the choice to the implementation | Claude (delegated) | 2026-11-21 |
 
 ## 19. Deferred decisions
@@ -2402,3 +2408,4 @@ None.
 | 2026-11-23 | 7.5.7: the updater takes only the version from the hub's request and checks the release against its own pinned keys through the signed manifest in the spool (the hash) and the file's signature (its name and version); the slots are `/usr/local/lib/rackhand-server/rackhand-a` and `-b` with `/usr/local/bin/rackhand` a link to them; the guard's copy is in root's `/var/lib/rackhand-updater`; a rollback puts back the hub's copy of its database taken when it asked; the updater answers and the guard records a rollback in the spool, and the hub audits both when it starts and shows them on the Settings page, which also asks for an update; a server release may be up to 256 MB; T93 (D184 to D189), owner to confirm | Implementation (T93) | Implementation run |
 | 2026-11-23 | 7.7.4: `install.sh --hub` refuses anything but Debian 12 or later with systemd before downloading, installs the signed hub and its updater in the slot layout, initializes it once, installs the release manifest for the self-watch, and prints the dashboard's address, the setup code and the recovery code; `rackhand-lxc.sh` creates the Debian 12 LXC (2 vCPU, 1 GB RAM, 512 MB swap, 20 GB disk, unprivileged with nesting, DHCP on vmbr0, started at boot) from the newest template and runs the hub installer in it; T94 (D190 to D191), owner to confirm | Implementation (T94) | Implementation run |
 | 2026-11-25 | 5.2 and 13: a hub serves probes and operators of its own minor and the one before (same major, any patch) and closes others, including a newer minor or no version, with `0x12`; peers interoperate whatever their versions; the CLI and relays don't report a version, so the rule can't reach them yet; `xtask compat` runs the compatibility tests and says which mode it ran in; T95 (D192 to D195), owner to confirm | Implementation (T95) | Implementation run |
+| 2026-11-25 | 7.3.3 (D196): the root helper loads and attaches the probe's eBPF capture on the new `EbpfCapture` request and passes the maps' descriptors (`EbpfMaps`, `SCM_RIGHTS`); the probe keeps `CAP_BPF` only (was `CAP_BPF CAP_PERFMON`, plus `CAP_SYS_RESOURCE` before 5.11, which the helper as root now covers) | T68: with `CAP_BPF CAP_PERFMON` the kernel refuses the connection hooks (`EPERM`; they need `CAP_NET_ADMIN`) and the exec tracepoint (tracefs is root's) | Owen |

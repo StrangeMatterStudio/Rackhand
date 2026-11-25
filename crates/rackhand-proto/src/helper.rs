@@ -32,6 +32,9 @@ pub enum HelperRequest {
         payload: String,
         hub_signature: String,
     },
+    /// The eBPF capture's maps (D196): the helper loads and attaches the program built into it the first time it is
+    /// asked, and answers `EbpfMaps` with the maps' descriptors passed alongside the line.
+    EbpfCapture,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,17 +124,42 @@ pub struct UpdateSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HelperResponse {
-    Pong { version: String },
-    Hashes { files: Vec<FileHash> },
-    AuthEvents { events: Vec<AuthEvent>, cursor: String },
-    Containers { items: Vec<ContainerInfo> },
-    SocketOwners { owners: Vec<SocketOwner> },
-    ContainerNames { names: Vec<(u64, String)> },
-    Processes { items: Vec<ProcInfo> },
-    Updates { summary: UpdateSummary, refreshed_at_ms: i64 },
+    Pong {
+        version: String,
+    },
+    Hashes {
+        files: Vec<FileHash>,
+    },
+    AuthEvents {
+        events: Vec<AuthEvent>,
+        cursor: String,
+    },
+    Containers {
+        items: Vec<ContainerInfo>,
+    },
+    SocketOwners {
+        owners: Vec<SocketOwner>,
+    },
+    ContainerNames {
+        names: Vec<(u64, String)>,
+    },
+    Processes {
+        items: Vec<ProcInfo>,
+    },
+    Updates {
+        summary: UpdateSummary,
+        refreshed_at_ms: i64,
+    },
     UpdateStarted,
     KeysApplied,
-    Error { code: String, message: String },
+    /// The names of the maps whose descriptors came with this line, in their order.
+    EbpfMaps {
+        maps: Vec<String>,
+    },
+    Error {
+        code: String,
+        message: String,
+    },
 }
 
 /// Parses one request line; anything not exactly a known request is an error. Serde doesn't refuse unknown fields

@@ -83,6 +83,29 @@ impl HelperClient {
         }
     }
 
+    /// The eBPF capture's maps (D196): the helper loads and attaches the program the first time and passes the maps'
+    /// descriptors; why not, when it doesn't (no helper is a refusal: the probe samples).
+    #[cfg(target_os = "linux")]
+    pub async fn ebpf_capture(&self) -> Result<crate::security::ebpf::Capture, crate::security::ebpf::LoadError> {
+        use crate::security::ebpf::{Capture, LoadError};
+        let asked = tokio::time::timeout(TIMEOUT, async {
+            let stream = tokio::net::UnixStream::connect(&self.path).await.map_err(|e| e.to_string())?;
+            let mut line = serde_json::to_string(&HelperRequest::EbpfCapture).map_err(|e| e.to_string())?;
+            line.push('\n');
+            super::fdpass::send_line(&stream, line.as_bytes(), &[]).await.map_err(|e| e.to_string())?;
+            let (answer, fds) =
+                super::fdpass::recv_line(&stream, super::server::MAX_LINE).await.map_err(|e| e.to_string())?;
+            Ok::<_, String>((serde_json::from_str::<HelperResponse>(&answer).map_err(|e| e.to_string())?, fds))
+        })
+        .await
+        .unwrap_or_else(|_| Err("it didn't answer".into()));
+        match asked.map_err(|e| LoadError::Refused(format!("the helper: {e}")))? {
+            (HelperResponse::EbpfMaps { maps }, fds) => Capture::from_fds(fds, &maps),
+            (HelperResponse::Error { code, message }, _) => Err(LoadError::from_answer(&code, message)),
+            _ => Err(LoadError::Refused("the helper: not an eBPF answer".into())),
+        }
+    }
+
     /// The helper's version, then its containers and updates when it matches; nothing when it doesn't answer.
     pub async fn collect(&self) -> HelperData {
         match self.request(&HelperRequest::Ping).await {
@@ -119,4 +142,26 @@ async fn connect(path: &std::path::Path) -> std::io::Result<Halves> {
     let pipe = tokio::net::windows::named_pipe::ClientOptions::new().open(path)?;
     let (read, write) = tokio::io::split(pipe);
     Ok((Box::new(read), Box::new(write)))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::HelperClient;
+    use crate::helper::server::{Helper, Machine, bind, serve};
+    use crate::security::ebpf::LoadError;
+
+    #[tokio::test]
+    async fn ebpf_capture_brings_back_the_helpers_reason() {
+        let dir = std::env::temp_dir().join(format!("rackhand-client-ebpf-{}", std::process::id()));
+        let socket = dir.join("helper.sock");
+        let listener = bind(&socket, None).unwrap();
+        let machine = Machine { ebpf: &[], ..Machine::default() };
+        let helper = Helper::with_machine("0.1.0", crate::helper::keys::Files::default(), machine);
+        tokio::spawn(serve(listener, rustix::process::getuid().as_raw(), helper));
+        let client = HelperClient::new(&socket, "0.1.0");
+        assert_eq!(client.ebpf_capture().await.unwrap_err(), LoadError::NoProgram);
+        let gone = HelperClient::new(dir.join("missing.sock"), "0.1.0");
+        assert!(matches!(gone.ebpf_capture().await.unwrap_err(), LoadError::Refused(_)), "no helper: sampling");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

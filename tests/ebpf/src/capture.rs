@@ -1,6 +1,7 @@
-//! The probe's eBPF capture on a real kernel (T68: FR-4, FR-5, AC13, AC71, 7.3.3, E36). Runs as root in the eBPF tier's
-//! VM, one kernel at a time; the probe under test was built with the program (`cargo xtask ci ebpf` sets
-//! `RACKHAND_PROBE_EBPF`).
+//! The probe's eBPF capture on a real kernel (T68: FR-4, FR-5, AC13, AC71, 7.3.3, E36, D196). Runs as root in the eBPF
+//! tier's VM, one kernel at a time; the probe under test was built with the program (`cargo xtask ci ebpf` sets
+//! `RACKHAND_PROBE_EBPF`). The helper's loader attaches the programs and the probe's side reads the maps from their
+//! descriptors, as on a machine.
 
 use std::net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket};
 use std::path::Path;
@@ -8,7 +9,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use rackhand_probe::security::conntable::Proto;
-use rackhand_probe::security::ebpf::{Capture, Conn, Exec, LoadError, OBJECT};
+use rackhand_probe::security::ebpf::{Capture, Conn, Exec, LoadError, MAPS, OBJECT, Programs};
 
 const CHILD: &str = "RACKHAND_EBPF_CHILD";
 
@@ -25,10 +26,14 @@ fn mounts() {
     }
 }
 
-fn load() -> Capture {
+/// The helper's programs, attached, and the probe's capture reading their maps.
+fn load() -> (Programs, Capture) {
     assert!(!OBJECT.is_empty(), "the probe was built without the eBPF program: run `cargo xtask ci ebpf`");
     mounts();
-    Capture::load(OBJECT, Path::new("/")).unwrap_or_else(|e| panic!("loading the capture: {e}"))
+    let programs = Programs::load(OBJECT, Path::new("/")).unwrap_or_else(|e| panic!("loading the capture: {e}"));
+    let names: Vec<String> = MAPS.iter().map(|m| m.to_string()).collect();
+    let capture = Capture::from_fds(programs.map_fds().unwrap(), &names).unwrap();
+    (programs, capture)
 }
 
 /// Drains until `found` matches or 5 seconds pass; everything drained is returned.
@@ -57,7 +62,7 @@ fn bash(script: &str) -> u32 {
 
 #[test]
 fn short_connect_seen() {
-    let mut capture = load();
+    let (_programs, mut capture) = load();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     // a 10 ms connection, opened and closed between two 5 s polls, which sampling would miss
@@ -72,7 +77,7 @@ fn short_connect_seen() {
 
 #[test]
 fn udp_flow_seen() {
-    let mut capture = load();
+    let (_programs, mut capture) = load();
     let sink = UdpSocket::bind("127.0.0.1:0").unwrap();
     let port = sink.local_addr().unwrap().port();
     let pid = bash(&format!("echo hello > /dev/udp/127.0.0.1/{port}"));
@@ -90,7 +95,7 @@ fn udp_flow_seen() {
 
 #[test]
 fn exec_from_tmp_seen() {
-    let mut capture = load();
+    let (_programs, mut capture) = load();
     std::fs::copy("/bin/true", "/tmp/rackhand-ebpf-true").unwrap();
     let status = Command::new("/tmp/rackhand-ebpf-true").status().unwrap();
     assert!(status.success());
@@ -104,7 +109,7 @@ fn exec_from_tmp_seen() {
 
 #[test]
 fn two_containers_same_exe_attributed() {
-    let mut capture = load();
+    let (_programs, mut capture) = load();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let (a, b) = ("a".repeat(64), "b".repeat(64));
@@ -131,37 +136,71 @@ fn two_containers_same_exe_attributed() {
     drop(listener);
 }
 
-/// In the child: load the capture with only the capabilities the probe's unit gives, and see a connection.
-fn child_loads() {
-    let mut capture = Capture::load(OBJECT, Path::new("/")).unwrap_or_else(|e| panic!("as rackhand-probe would: {e}"));
+const SOCKET: &str = "/tmp/rackhand-ebpf-helper/helper.sock";
+const NOBODY: u32 = 65534;
+
+/// In the child, as the probe's unit runs it: the capture from the helper's socket, a connection and a start seen.
+fn child_reads_the_helpers_capture() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let client = rackhand_probe::helper::client::HelperClient::new(SOCKET, "0.1.0");
+    let mut capture =
+        runtime.block_on(client.ebpf_capture()).unwrap_or_else(|e| panic!("as rackhand-probe would: {e}"));
+    let again = runtime.block_on(client.ebpf_capture()).unwrap();
+    assert!(capture.same_maps(&again), "asking again gives the same maps");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let _c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    let (conns, _) = drain_until(&mut capture, |c, _| c.iter().any(|c| c.port == port));
-    assert!(conns.iter().any(|c| c.port == port && c.uid == 65534), "{conns:?}");
+    assert!(Command::new("/bin/true").status().unwrap().success());
+    let (conns, execs) =
+        drain_until(&mut capture, |c, e| c.iter().any(|c| c.port == port) && e.iter().any(|e| e.path == "/bin/true"));
+    assert!(conns.iter().any(|c| c.port == port && c.uid == NOBODY), "{conns:?}");
+    assert!(execs.iter().any(|e| e.path == "/bin/true" && e.uid == NOBODY), "{execs:?}");
 }
 
 #[test]
-fn runs_with_only_cap_bpf_and_cap_perfmon() {
+fn probe_with_only_cap_bpf_reads_the_helpers_capture() {
     if std::env::var_os(CHILD).is_some() {
-        return child_loads();
+        return child_reads_the_helpers_capture();
     }
     assert!(!OBJECT.is_empty(), "the probe was built without the eBPF program: run `cargo xtask ci ebpf`");
     mounts();
+    // the helper, as root, on a socket only the child's user may use
+    // the VM's /tmp is the host's, where the probe's group can't own a file: the socket goes on a tmpfs of the VM
+    let dir = Path::new(SOCKET).parent().unwrap();
+    std::fs::create_dir_all(dir).unwrap();
+    let mounted = std::fs::read_to_string("/proc/self/mounts").unwrap().contains(&format!(" {} tmpfs", dir.display()));
+    if !mounted {
+        let status = Command::new("mount").args(["-t", "tmpfs", "none"]).arg(dir).status().unwrap();
+        assert!(status.success(), "a tmpfs for the helper's socket");
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let listener = {
+        let _in_runtime = runtime.enter();
+        rackhand_probe::helper::server::bind(Path::new(SOCKET), Some(NOBODY)).unwrap()
+    };
+    std::thread::spawn(move || {
+        let helper = rackhand_probe::helper::server::Helper::new("0.1.0");
+        runtime.block_on(rackhand_probe::helper::server::serve(listener, NOBODY, helper));
+    });
     let me = std::env::current_exe().unwrap();
-    let caps = "-all,+bpf,+perfmon";
+    let caps = "-all,+bpf";
     let out = Command::new("setpriv")
         .args(["--reuid=65534", "--regid=65534", "--clear-groups"])
         .args([format!("--inh-caps={caps}"), format!("--ambient-caps={caps}"), format!("--bounding-set={caps}")])
         .arg("--no-new-privs")
         .arg("--")
         .arg(&me)
-        .args(["--exact", "capture::runs_with_only_cap_bpf_and_cap_perfmon", "--test-threads=1", "--nocapture"])
+        .args([
+            "--exact",
+            "capture::probe_with_only_cap_bpf_reads_the_helpers_capture",
+            "--test-threads=1",
+            "--nocapture",
+        ])
         .env(CHILD, "1")
         .output()
         .expect("setpriv runs");
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    assert!(out.status.success(), "as nobody with CAP_BPF and CAP_PERFMON only:\n{text}");
+    assert!(out.status.success(), "as nobody with CAP_BPF only:\n{text}");
 }
 
 #[test]
@@ -170,7 +209,7 @@ fn load_failure_falls_back_to_sampling() {
     // a root without the kernel's BTF: the capture isn't loaded, and the probe says sampling
     let root = std::env::temp_dir().join("rackhand-no-btf");
     std::fs::create_dir_all(root.join("sys/fs")).unwrap();
-    assert_eq!(Capture::load(OBJECT, &root).unwrap_err(), LoadError::NoBtf);
+    assert_eq!(Programs::load(OBJECT, &root).unwrap_err(), LoadError::NoBtf);
     let host = rackhand_probe::collect::RootHost::new(&root);
     assert_eq!(
         rackhand_probe::security::capability::capture(&host, false),

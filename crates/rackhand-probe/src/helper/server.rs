@@ -28,6 +28,9 @@ pub struct Machine {
     pub cgroup: std::path::PathBuf,
     #[cfg(unix)]
     pub passwd: std::path::PathBuf,
+    /// The eBPF program the helper loads for the probe (D196): the one built into this binary outside tests.
+    #[cfg(target_os = "linux")]
+    pub ebpf: &'static [u8],
 }
 
 #[cfg_attr(windows, allow(clippy::derivable_impls))]
@@ -42,6 +45,8 @@ impl Default for Machine {
             cgroup: "/sys/fs/cgroup".into(),
             #[cfg(unix)]
             passwd: "/etc/passwd".into(),
+            #[cfg(target_os = "linux")]
+            ebpf: crate::security::ebpf::OBJECT,
         }
     }
 }
@@ -57,6 +62,9 @@ pub struct Helper {
     update: super::update::Setup,
     #[cfg(unix)]
     machine: Machine,
+    /// The eBPF capture, loaded the first time the probe asks; the last reason it didn't load, logged once.
+    #[cfg(target_os = "linux")]
+    ebpf: Mutex<(Option<crate::security::ebpf::Programs>, Option<crate::security::ebpf::LoadError>)>,
 }
 
 #[cfg_attr(windows, allow(dead_code))]
@@ -110,6 +118,8 @@ impl Helper {
             keys: Mutex::new(keys),
             update,
             machine,
+            #[cfg(target_os = "linux")]
+            ebpf: Mutex::new((None, None)),
         })
     }
 
@@ -149,10 +159,54 @@ impl Helper {
     }
 
     pub fn answer(&self, line: &str) -> HelperResponse {
-        let request = match parse_request(line) {
-            Ok(r) => r,
-            Err(e) => return error("bad_request", e.to_string()),
-        };
+        #[cfg(target_os = "linux")]
+        return self.answer_with_fds(line).0;
+        #[cfg(not(target_os = "linux"))]
+        match parse_request(line) {
+            Ok(request) => self.respond(request),
+            Err(e) => error("bad_request", e.to_string()),
+        }
+    }
+
+    /// The answer, and the descriptors that go with it (only `EbpfCapture`'s maps).
+    #[cfg(target_os = "linux")]
+    pub fn answer_with_fds(&self, line: &str) -> (HelperResponse, Vec<std::os::fd::OwnedFd>) {
+        match parse_request(line) {
+            Ok(HelperRequest::EbpfCapture) => self.ebpf_capture(),
+            Ok(request) => (self.respond(request), Vec::new()),
+            Err(e) => (error("bad_request", e.to_string()), Vec::new()),
+        }
+    }
+
+    /// Loads and attaches the capture the first time; then new descriptors for its maps each time.
+    #[cfg(target_os = "linux")]
+    fn ebpf_capture(&self) -> (HelperResponse, Vec<std::os::fd::OwnedFd>) {
+        use crate::security::ebpf::{MAPS, Programs};
+        let mut slot = self.ebpf.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.0.is_none() {
+            match Programs::load(self.machine.ebpf, &self.machine.roots.root) {
+                Ok(programs) => {
+                    tracing::info!("the eBPF capture is loaded and attached");
+                    *slot = (Some(programs), None);
+                }
+                Err(e) => {
+                    if slot.1.as_ref() != Some(&e) {
+                        tracing::warn!(error = %e, "the eBPF capture isn't loaded: the probe samples");
+                    }
+                    let answer = error(e.code(), e.to_string());
+                    slot.1 = Some(e);
+                    return (answer, Vec::new());
+                }
+            }
+        }
+        match slot.0.as_ref().map(Programs::map_fds) {
+            Some(Ok(fds)) => (HelperResponse::EbpfMaps { maps: MAPS.iter().map(|m| m.to_string()).collect() }, fds),
+            Some(Err(e)) => (error("refused", e.to_string()), Vec::new()),
+            None => (error("refused", "not loaded"), Vec::new()),
+        }
+    }
+
+    fn respond(&self, request: HelperRequest) -> HelperResponse {
         match request {
             HelperRequest::Ping => HelperResponse::Pong { version: self.version.clone() },
             HelperRequest::UpdatesStatus => match self.state.lock().ok().and_then(|s| s.updates.clone()) {
@@ -249,6 +303,10 @@ impl Helper {
                 &sha256,
                 &signature,
             ),
+            #[cfg(not(target_os = "linux"))]
+            HelperRequest::EbpfCapture => error("no_program", "no eBPF capture on this system"),
+            #[cfg(target_os = "linux")]
+            HelperRequest::EbpfCapture => error("bad_request", "answered with its descriptors"),
             #[cfg(windows)]
             _ => error("unsupported", "not provided by this helper version"),
         }
@@ -301,9 +359,18 @@ async fn connection(stream: tokio::net::UnixStream, helper: Arc<Helper>) {
             Ok(n) if n > MAX_LINE => return,
             Ok(_) => {}
         }
-        let mut out = serde_json::to_string(&helper.answer(&line)).unwrap_or_default();
+        let (answer, fds) = helper.answer_with_fds(&line);
+        let mut out = serde_json::to_string(&answer).unwrap_or_default();
         out.push('\n');
-        if write.write_all(out.as_bytes()).await.is_err() {
+        if fds.is_empty() {
+            if write.write_all(out.as_bytes()).await.is_err() {
+                return;
+            }
+        } else {
+            use std::os::fd::AsFd;
+            let borrowed: Vec<_> = fds.iter().map(|f| f.as_fd()).collect();
+            // the descriptors' answer ends its connection (the probe reads it with recvmsg, not a buffered reader)
+            let _ = super::fdpass::send_line(write.as_ref(), out.as_bytes(), &borrowed).await;
             return;
         }
     }
@@ -326,5 +393,38 @@ mod tests {
         assert!(
             matches!(h.answer("{\"op\":\"updates_status\"}"), HelperResponse::Error { ref code, .. } if code == "not_refreshed")
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn code(r: &HelperResponse) -> &str {
+        match r {
+            HelperResponse::Error { code, .. } => code,
+            _ => "not an error",
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ebpf_capture_says_why_it_isnt_loaded() {
+        let root = std::env::temp_dir().join(format!("rackhand-helper-ebpf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut machine = Machine::default();
+        machine.roots.root = root.clone();
+        let ask = |machine: &Machine| {
+            let h = Helper::with_machine("0.1.0", super::super::keys::Files::default(), machine.clone());
+            let (answer, fds) = h.answer_with_fds("{\"op\":\"ebpf_capture\"}\n");
+            assert!(fds.is_empty(), "no maps without a capture");
+            assert_eq!(h.answer("{\"op\":\"ebpf_capture\"}"), answer, "the same answer without the descriptors");
+            answer
+        };
+        machine.ebpf = &[];
+        assert_eq!(code(&ask(&machine)), "no_program", "a build without the program");
+        machine.ebpf = b"not an eBPF object";
+        assert_eq!(code(&ask(&machine)), "no_btf", "a kernel without BTF");
+        std::fs::create_dir_all(root.join("sys/kernel/btf")).unwrap();
+        std::fs::write(root.join("sys/kernel/btf/vmlinux"), b"").unwrap();
+        assert_eq!(code(&ask(&machine)), "refused", "an object the loader refuses");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

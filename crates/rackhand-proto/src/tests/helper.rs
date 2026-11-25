@@ -13,6 +13,7 @@ fn request_lines_parse_and_reject_unknown_fields() {
         HelperRequest::UpdatesStatus,
         HelperRequest::ApplyUpdate { version: "0.1.1".into(), sha256: "00".repeat(32), signature: "c2ln".into() },
         HelperRequest::ApplyKeys { payload: "cA==".into(), hub_signature: "c2ln".into() },
+        HelperRequest::EbpfCapture,
     ];
     for req in requests {
         let line = serde_json::to_string(&req).unwrap();
@@ -31,4 +32,14 @@ fn unit_request_with_extra_field_refused() {
     assert!(parse_request(r#"{"op":"containers","url":"http://x"}"#).is_err());
     assert_eq!(parse_request(r#"{"op":"ping"}"#).unwrap(), HelperRequest::Ping);
     assert!(parse_request(r#"{"op":"auth_events_since","cursor":null}"#).is_ok());
+}
+
+#[test]
+fn ebpf_capture_names_the_maps_it_passes() {
+    assert_eq!(parse_request(r#"{"op":"ebpf_capture"}"#).unwrap(), HelperRequest::EbpfCapture);
+    assert!(parse_request(r#"{"op":"ebpf_capture","object":"/tmp/x.o"}"#).is_err(), "the probe names no program");
+    let maps = HelperResponse::EbpfMaps { maps: vec!["CONNS".into(), "EXES".into(), "EXECS".into()] };
+    let line = serde_json::to_string(&maps).unwrap();
+    assert_eq!(line, r#"{"kind":"ebpf_maps","maps":["CONNS","EXES","EXECS"]}"#);
+    assert_eq!(serde_json::from_str::<HelperResponse>(&line).unwrap(), maps);
 }

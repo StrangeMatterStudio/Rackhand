@@ -14,6 +14,7 @@ path = "src/lib.rs"
 [dev-dependencies]
 rackhand-probe = { path = "../../crates/rackhand-probe" }
 rackhand-proto = { path = "../../crates/rackhand-proto" }
+tokio = { workspace = true, features = ["rt"] }
 
 [lints]
 workspace = true

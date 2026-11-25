@@ -12,9 +12,10 @@ ExecStart=/usr/local/lib/rackhand/rackhand-probe run
 Restart=on-failure
 RestartSec=5
 RestartPreventExitStatus=3
-# eBPF connection capture (7.3.3); kernels without CAP_BPF sample instead
-AmbientCapabilities=CAP_BPF CAP_PERFMON
-CapabilityBoundingSet=CAP_BPF CAP_PERFMON
+# eBPF connection capture (7.3.3, D196): the helper loads and attaches it and passes the maps; CAP_BPF reads them
+# where unprivileged bpf() is off. Kernels without CAP_BPF sample instead
+AmbientCapabilities=CAP_BPF
+CapabilityBoundingSet=CAP_BPF
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only

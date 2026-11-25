@@ -3857,6 +3857,7 @@ version = "0.1.0"
 dependencies = [
  "rackhand-probe",
  "rackhand-proto",
+ "tokio",
 ]
 
 [[package]]

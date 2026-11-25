@@ -9,6 +9,8 @@ pub mod client;
 pub mod containers;
 #[cfg(target_os = "linux")]
 pub mod daemon;
+#[cfg(target_os = "linux")]
+pub mod fdpass;
 #[cfg(unix)]
 pub mod hash;
 #[cfg(unix)]
