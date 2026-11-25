@@ -828,6 +828,10 @@ pub async fn every_minute(
         if let Err(e) = rackhand_store::retention::run(&db.writer(), &settings, now, sleeper).await {
             tracing::warn!(error = %e, "retention");
         }
+        let budget = rackhand_hub::actions::output_budget::DEFAULT_BUDGET;
+        if let Err(e) = rackhand_hub::actions::output_budget::enforce(db, budget).await {
+            tracing::warn!(error = %e, "job output budget");
+        }
     }
 }
 

@@ -107,6 +107,10 @@ pub enum WriteCmd {
     ResumeJobAt(Row),
     FinishJob(Row),
     AppendTranscript(Row),
+    /// Trims the oldest job output and transcript text until the two together fit in `budget_bytes` (7.4.1).
+    TrimOutput {
+        budget_bytes: u64,
+    },
     // Policy
     PutPolicy(Row),
     CreateApproval(Row),
@@ -174,6 +178,7 @@ impl WriteCmd {
             ResumeJobAt,
             FinishJob,
             AppendTranscript,
+            TrimOutput,
             PutPolicy,
             CreateApproval,
             DecideApproval,
@@ -750,6 +755,12 @@ fn apply(conn: &mut Connection, cmd: WriteCmd) -> Result<usize, StoreError> {
         WriteCmd::PutMcpKey(row) => insert_or_update(conn, "mcp_keys", "id", "hash", row),
         // A new token has its expiry; a row without one rebinds (another operator) or revokes the job's token.
         WriteCmd::PutJobToken(row) => insert_or_update(conn, "job_tokens", "job_id", "expires_at", row),
+        WriteCmd::TrimOutput { budget_bytes } => {
+            let tx = conn.transaction()?;
+            let n = trim_output(&tx, budget_bytes)?;
+            tx.commit()?;
+            Ok(n)
+        }
         WriteCmd::AppendTranscript(row) => {
             let tx = conn.transaction()?;
             let n = write_row(&tx, &RowWrite::insert("assistant_transcripts", row))?;
@@ -948,6 +959,53 @@ fn text<'a>(row: &'a Row, col: &'static str) -> Result<&'a str, StoreError> {
 }
 
 /// Appends one audit row after the current head, inside the caller's transaction (the single writer keeps one chain).
+/// The oldest job output and transcript text first, until what is left fits the budget; the rows stay.
+fn trim_output(tx: &rusqlite::Transaction<'_>, budget: u64) -> Result<usize, StoreError> {
+    let total: i64 = tx.query_row(
+        "SELECT (SELECT coalesce(sum(coalesce(length(stdout), 0) + coalesce(length(stderr), 0)), 0) FROM job_steps)
+              + (SELECT coalesce(sum(coalesce(length(text), 0)), 0) FROM assistant_transcripts)",
+        [],
+        |r| r.get(0),
+    )?;
+    let mut over = total - i64::try_from(budget).unwrap_or(i64::MAX);
+    if over <= 0 {
+        return Ok(0);
+    }
+    // the oldest first: a step by when it ended (or started), a transcript turn by its time
+    let items: Vec<(bool, String, String, i64)> = {
+        let mut s = tx.prepare(
+            "SELECT 1, job_id, step_id, coalesce(length(stdout), 0) + coalesce(length(stderr), 0),
+                    coalesce(ended_at, started_at, 0) AS at
+               FROM job_steps WHERE stdout IS NOT NULL OR stderr IS NOT NULL
+             UNION ALL
+             SELECT 0, job_id, cast(seq AS TEXT), length(text), at_ms AS at
+               FROM assistant_transcripts WHERE text IS NOT NULL
+             ORDER BY at",
+        )?;
+        s.query_map([], |r| Ok((r.get::<_, i64>(0)? == 1, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<Result<_, _>>()?
+    };
+    let mut trimmed = 0;
+    for (step, job, key, size) in items {
+        if over <= 0 {
+            break;
+        }
+        trimmed += if step {
+            tx.execute(
+                "UPDATE job_steps SET stdout = NULL, stderr = NULL WHERE job_id = ?1 AND step_id = ?2",
+                [&job, &key],
+            )?
+        } else {
+            tx.execute(
+                "UPDATE assistant_transcripts SET text = NULL WHERE job_id = ?1 AND seq = cast(?2 AS INTEGER)",
+                [&job, &key],
+            )?
+        };
+        over -= size;
+    }
+    Ok(trimmed)
+}
+
 fn append_audit(tx: &rusqlite::Transaction<'_>, row: &Row, checkpoint: bool) -> Result<(), StoreError> {
     let head: Option<(i64, Vec<u8>)> = tx
         .query_row("SELECT seq, hash FROM audit_log ORDER BY seq DESC LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?)))

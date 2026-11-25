@@ -139,5 +139,10 @@ pub(crate) async fn finish(
     ]
     .into_iter()
     .collect();
-    db.writer().send(WriteCmd::FinishJob(row)).await.map(|_| ())
+    db.writer().send(WriteCmd::FinishJob(row)).await?;
+    // the output the job left counts toward the budget at once (7.4.1)
+    if let Err(e) = super::output_budget::enforce(db, super::output_budget::DEFAULT_BUDGET).await {
+        tracing::warn!(error = %e, "job output budget");
+    }
+    Ok(())
 }

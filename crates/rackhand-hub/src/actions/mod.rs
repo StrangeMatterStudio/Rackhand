@@ -8,6 +8,7 @@ pub mod diagnostics;
 pub mod hypervisor_guard;
 pub mod jobs;
 mod locks;
+pub mod output_budget;
 pub mod patching;
 pub mod probe_rollout;
 pub mod provision;
