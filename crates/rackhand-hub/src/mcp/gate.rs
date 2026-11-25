@@ -16,8 +16,7 @@ use crate::library::items::{Kind, Library};
 use crate::policy::approvals::{ApprovalError, ApprovalRequest, Approvals, approval_hash};
 use crate::policy::decide::{Access, Decision, Deny, Requester};
 
-/// How long a requested approval stays open.
-pub const APPROVAL_TTL_MS: i64 = 60 * 60_000;
+// How long a requested approval stays open is the approval expiry of `config/hub.toml` (7.8.1).
 
 /// What gating needs to know about the target machine.
 #[derive(Debug, Clone)]
@@ -124,7 +123,8 @@ pub(super) async fn request_approval(
     req: &ApprovalRequest,
     now_ms: i64,
 ) -> ToolError {
-    match Approvals::new(db.clone()).create(req, now_ms, APPROVAL_TTL_MS).await {
+    let ttl = crate::library::config::hub_or_default(db).approvals.expiry_ms();
+    match Approvals::new(db.clone()).create(req, now_ms, ttl).await {
         Ok(id) => {
             let data = json!({ "tool": req.tool, "target": req.target, "step_up": req.step_up });
             if let Err(e) = audit.append(&req.requester, "approval.requested", Some(&id), &data.to_string()).await {

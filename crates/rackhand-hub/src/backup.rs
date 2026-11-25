@@ -1,6 +1,6 @@
 //! Hub backups (9, D58): `VACUUM INTO` a temporary file, zstd-compress it, add the node key, and encrypt with the master
-//! key; 2 kept locally. `rackhand hub restore <file>` with the master key restores the database and the node key, so
-//! probes stay pinned to the same hub (AC47).
+//! key; as many kept locally as the `[backups] kept` setting says (2 by default, 7.8.1). `rackhand hub restore <file>`
+//! with the master key restores the database and the node key, so probes stay pinned to the same hub (AC47).
 //!
 //! The file is `RHBK1\n` and then sealed chunks of at most 1 MiB, each `[u32 length][24-byte nonce][ciphertext]`. A
 //! chunk's associated data names its index and whether it is the last, so a reordered or truncated file is refused.
@@ -15,8 +15,6 @@ pub mod peer;
 
 const MAGIC: &[u8] = b"RHBK1\n";
 const CHUNK: usize = 1024 * 1024;
-/// Local copies kept (D58).
-pub const KEEP: usize = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BackupError {
@@ -146,8 +144,9 @@ fn copy_key(key: &MasterKey) -> MasterKey {
     MasterKey::from_bytes(*key.bytes())
 }
 
-/// Takes a backup of the database at `db_path` into `dir` as `hub-<created_at_ms>.rhbk`; keeps the newest [`KEEP`].
-/// `VACUUM INTO` runs on a connection of its own, which only reads the hub's database (WAL keeps the hub writing).
+/// Takes a backup of the database at `db_path` into `dir` as `hub-<created_at_ms>.rhbk`; keeps the newest, as many as
+/// that database's `[backups] kept` setting says (7.8.1). `VACUUM INTO` runs on a connection of its own, which only
+/// reads the hub's database (WAL keeps the hub writing).
 pub fn take(db_path: &Path, key: &MasterKey, node_key: &Path, dir: &Path, now_ms: i64) -> Result<PathBuf, BackupError> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir)?;
@@ -157,13 +156,24 @@ pub fn take(db_path: &Path, key: &MasterKey, node_key: &Path, dir: &Path, now_ms
     let target = snapshot.to_string_lossy().into_owned();
     let conn = rusqlite::Connection::open(db_path).map_err(|e| BackupError::Db(e.to_string()))?;
     conn.busy_timeout(std::time::Duration::from_secs(30)).map_err(|e| BackupError::Db(e.to_string()))?;
+    let keep = kept(&conn);
     conn.execute("VACUUM INTO ?1", [target.as_str()]).map_err(|e| BackupError::Db(e.to_string()))?;
     drop(conn);
     let result = seal_snapshot(&snapshot, key, node_key, dir, now_ms);
     let _ = std::fs::remove_file(&snapshot);
     let path = result?;
-    prune(dir)?;
+    prune(dir, keep)?;
     Ok(path)
+}
+
+/// The local backups kept: the `[backups] kept` setting in the database, or its default.
+fn kept(conn: &rusqlite::Connection) -> usize {
+    use crate::library::config;
+    let text = config::current_on(conn, config::HUB).ok().flatten();
+    let kept = text
+        .and_then(|t| config::read_hub(&t).ok())
+        .map_or_else(|| config::BackupSettings::default().kept, |c| c.backups.kept);
+    kept as usize
 }
 
 fn seal_snapshot(
@@ -213,9 +223,9 @@ pub fn list(dir: &Path) -> Vec<PathBuf> {
     found.into_iter().map(|(_, p)| p).collect()
 }
 
-fn prune(dir: &Path) -> Result<(), BackupError> {
+fn prune(dir: &Path, keep: usize) -> Result<(), BackupError> {
     let all = list(dir);
-    for old in all.iter().take(all.len().saturating_sub(KEEP)) {
+    for old in all.iter().take(all.len().saturating_sub(keep)) {
         std::fs::remove_file(old)?;
     }
     Ok(())

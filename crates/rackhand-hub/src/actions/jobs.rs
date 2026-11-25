@@ -140,8 +140,9 @@ pub(crate) async fn finish(
     .into_iter()
     .collect();
     db.writer().send(WriteCmd::FinishJob(row)).await?;
-    // the output the job left counts toward the budget at once (7.4.1)
-    if let Err(e) = super::output_budget::enforce(db, super::output_budget::DEFAULT_BUDGET).await {
+    // the output the job left counts toward the budget (the setting of 7.8.1) at once (7.4.1)
+    let budget = crate::library::config::hub_or_default(db).jobs.output_budget_bytes();
+    if let Err(e) = super::output_budget::enforce(db, budget).await {
         tracing::warn!(error = %e, "job output budget");
     }
     Ok(())

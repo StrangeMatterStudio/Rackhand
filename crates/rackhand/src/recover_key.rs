@@ -37,5 +37,6 @@ pub fn recover(code: &str, key_path: &Path, db_path: &Path) -> Result<usize, Str
     Ok(opened)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests;

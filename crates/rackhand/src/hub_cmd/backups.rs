@@ -14,7 +14,7 @@ pub fn backups_dir(config: &HubConfig) -> PathBuf {
     config.data_dir.join("backups")
 }
 
-/// One backup now; the newest 2 are kept.
+/// One backup now; the newest are kept, as many as the `[backups] kept` setting says (2 by default, 7.8.1).
 pub fn backup_now(config: &HubConfig, now_ms: i64) -> Result<PathBuf, String> {
     let key = MasterKey::load(Some(&config.master_key))
         .map_err(|_| format!("the master key {} can't be read", config.master_key.display()))?;

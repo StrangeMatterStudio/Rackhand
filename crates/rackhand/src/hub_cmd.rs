@@ -37,8 +37,8 @@ pub struct HubConfig {
 impl HubConfig {
     pub fn defaults(config_dir: &Path, data_dir: &Path) -> HubConfig {
         HubConfig {
-            web: SocketAddr::from(([0, 0, 0, 0], 8443)),
-            quic: SocketAddr::from(([0, 0, 0, 0], 7443)),
+            web: SocketAddr::from(([0, 0, 0, 0], rackhand_hub::library::config::DASHBOARD_PORT)),
+            quic: SocketAddr::from(([0, 0, 0, 0], rackhand_hub::library::config::QUIC_PORT)),
             data_dir: data_dir.to_path_buf(),
             master_key: config_dir.join("master.key"),
             node_key: config_dir.join("node.key"),
@@ -610,17 +610,7 @@ impl rackhand_hub::incidents::routing::playbook_routing::AssistStarter for Assis
 
 /// What the probe server's Welcome tells probes: the probe settings of `config/hub.toml`, or their defaults (7.8.1).
 pub fn probe_server_settings(db: &Db) -> ServerSettings {
-    let mut config = joins::probe_defaults();
-    match rackhand_hub::library::config::hub(db) {
-        Ok(settings) => {
-            if let Some(p) = settings.probe {
-                config.interval_s = p.interval_s;
-                config.max_connection_tuples = p.connection_tuples;
-                config.buffer_max_mb = p.buffer_max_mb;
-            }
-        }
-        Err(e) => tracing::warn!(error = %e, "probe settings: using the defaults"),
-    }
+    let config = joins::probe_config(db);
     let hub_version = crate::VERSION.to_string();
     let rule = hub_version.clone();
     ServerSettings {
@@ -824,12 +814,12 @@ pub async fn every_minute(
             tracing::warn!(error = %e, "hour rollup");
         }
         let _ = incidents.baseline_hourly(hour, now).await;
-        let settings = rackhand_store::retention::RetentionSettings::default();
-        if let Err(e) = rackhand_store::retention::run(&db.writer(), &settings, now, sleeper).await {
+        // the retention tiers and the output budget of `config/hub.toml` (7.8.1), read for each run
+        let hub = rackhand_hub::library::config::hub_or_default(db);
+        if let Err(e) = rackhand_store::retention::run(&db.writer(), &hub.retention.store(), now, sleeper).await {
             tracing::warn!(error = %e, "retention");
         }
-        let budget = rackhand_hub::actions::output_budget::DEFAULT_BUDGET;
-        if let Err(e) = rackhand_hub::actions::output_budget::enforce(db, budget).await {
+        if let Err(e) = rackhand_hub::actions::output_budget::enforce(db, hub.jobs.output_budget_bytes()).await {
             tracing::warn!(error = %e, "job output budget");
         }
     }

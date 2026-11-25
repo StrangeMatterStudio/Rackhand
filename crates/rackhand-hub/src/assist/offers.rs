@@ -8,7 +8,7 @@ use rackhand_runbook::playbook::Playbook;
 use rackhand_store::ids::now_ms;
 use tokio::sync::oneshot;
 
-use super::{Assist, DEFAULT_DEADLINE_MS, DEFAULT_MAX_TURNS, Link, MAX_DEADLINE_MS, MAX_DECLINES, Track, cap};
+use super::{Assist, Link, MAX_DEADLINE_MS, MAX_DECLINES, Track, cap};
 use crate::library::items::{Kind, Library};
 use crate::mcp::keys;
 
@@ -101,9 +101,10 @@ impl Assist {
     /// Starts an assistant job for an incident and offers it.
     pub async fn start(&self, req: AssistRequest) -> AssistResult {
         let now = now_ms();
-        // the settings page's cap, else the one the hub started with
-        let cap =
-            crate::library::config::hub(&self.inner.db).map(|c| c.assistant.daily_cap).unwrap_or(self.inner.daily_cap);
+        // the settings page's cap, deadline and turns (7.8.1), else the cap the hub started with and the defaults
+        let settings = crate::library::config::hub(&self.inner.db).ok();
+        let cap = settings.as_ref().map_or(self.inner.daily_cap, |c| c.assistant.daily_cap);
+        let assistant = settings.map(|c| c.assistant).unwrap_or_default();
         if cap::started_today(&self.inner.db, now) >= cap {
             let note = format!("The daily assistant cap ({cap}) is reached; this incident goes to a person.");
             return self.to_person(None, &req.incident_id, "daily_cap", Some(note)).await;
@@ -115,7 +116,7 @@ impl Assist {
         let Some((rev, playbook)) = book else {
             return self.to_person(None, &req.incident_id, "no_playbook", None).await;
         };
-        let deadline = req.deadline_ms.unwrap_or(now + DEFAULT_DEADLINE_MS).min(now + MAX_DEADLINE_MS);
+        let deadline = req.deadline_ms.unwrap_or(now + assistant.deadline_ms()).min(now + MAX_DEADLINE_MS);
         let job = match self.inner.actions.open_assistant_job(&req.playbook, "incidents", Some(&req.incident_id)).await
         {
             Ok(j) => j,
@@ -149,7 +150,7 @@ impl Assist {
                 autonomy: u32::from(playbook.autonomy),
                 hosts: req.hosts.iter().map(|h| id_bytes(h)).collect(),
                 deadline_ms: deadline,
-                max_turns: req.max_turns.unwrap_or(DEFAULT_MAX_TURNS),
+                max_turns: req.max_turns.unwrap_or(assistant.max_turns),
                 job_token: token,
             };
             if self.offer_to(&link, offer).await {

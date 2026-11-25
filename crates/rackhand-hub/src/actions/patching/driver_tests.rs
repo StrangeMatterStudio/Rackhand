@@ -310,6 +310,18 @@ async fn site_limit_holds_across_policies() {
     assert_eq!(e.jobs.started().len(), 4);
 }
 
+/// The limit is the `[patching] max_jobs_per_site` setting (7.8.1), taken when the window opens.
+#[tokio::test(flavor = "multi_thread")]
+async fn site_limit_follows_the_setting() {
+    let e = env("limit-setting").await;
+    crate::library::config::put(&e.db, "hub", "[patching]\nmax_jobs_per_site = 1\n", "admin", e.now).await.unwrap();
+    for id in ["a1", "a2", "a3"] {
+        e.machine(id, "linux", "auto", "[]").await;
+    }
+    e.tick(vec![e.window("auto", Window::Security)], e.now).await;
+    assert_eq!(e.jobs.started().len(), 1, "{:?}", e.jobs.started());
+}
+
 /// A machine is tried once per window: not again after its job, nor by a hub that restarted during the window.
 #[tokio::test(flavor = "multi_thread")]
 async fn once_per_window_also_after_a_restart() {

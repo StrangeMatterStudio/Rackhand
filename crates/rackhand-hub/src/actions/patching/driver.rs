@@ -30,7 +30,7 @@ use tokio::sync::Mutex;
 use super::hypervisor::{self, HostGuest, HostView, Hosts};
 use super::rollback::{Failure, rolls_back};
 pub use super::select::Window;
-use super::select::{Candidate, DEFAULT_PER_SITE, Order, Others, PatchMode, Run};
+use super::select::{Candidate, Order, Others, PatchMode, Run};
 use crate::actions::{Actions, ActionsError, JobResult, StartJob};
 use crate::policy::approvals::{ApprovalRequest, Approvals};
 
@@ -243,7 +243,9 @@ impl Driver {
             });
             machines.insert(id, Selected { runbook, ask, tags });
         }
-        let run = Run::new(open.window, open.starts_ms, open.ends_ms, candidates, DEFAULT_PER_SITE);
+        // the jobs at once per site of `config/hub.toml` (7.8.1), as the window opens
+        let per_site = crate::library::config::hub_or_default(&self.db).patching.max_jobs_per_site as usize;
+        let run = Run::new(open.window, open.starts_ms, open.ends_ms, candidates, per_site);
         Ok(Active { open: open.clone(), run, machines })
     }
 

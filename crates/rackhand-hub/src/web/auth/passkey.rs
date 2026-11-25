@@ -92,7 +92,7 @@ fn passkeys_of(account: &Account) -> Vec<Passkey> {
 pub(crate) fn register_options(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some(pk) = &web.0.passkeys else { return unavailable() };
     let Some(user) = &ctx.user else { return redirect("/sign-in") };
-    if !step_up::fresh(user.step_up_at, ctx.now_ms) {
+    if !step_up::fresh(&web.0.db, user.step_up_at, ctx.now_ms) {
         return status(StatusCode::FORBIDDEN, "Step up first: adding a passkey needs a fresh second factor");
     }
     let Ok(Some(account)) = users::find_by_id(&web.0.db, &user.user_id) else {

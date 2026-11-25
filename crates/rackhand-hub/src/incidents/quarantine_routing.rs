@@ -126,8 +126,8 @@ impl Routing {
             step_up: true,
             reason: format!("finding: {}", inc.title),
         };
-        let id = match Approvals::new(self.incidents.inner.db.clone()).create(&approval, now_ms, APPROVAL_TTL_MS).await
-        {
+        let ttl = self.settings().approvals.expiry_ms();
+        let id = match Approvals::new(self.incidents.inner.db.clone()).create(&approval, now_ms, ttl).await {
             Ok(id) => id,
             Err(e) => {
                 let why = format!("quarantine couldn't ask for an approval: {e}");

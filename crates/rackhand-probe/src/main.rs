@@ -193,7 +193,7 @@ fn security(args: &[String]) -> ExitCode {
         loop {
             let (seen, found) = sampler.tick(&host, Some(&helper), now_ms()).await;
             pending.add(seen, found);
-            let (r, e) = pending.take(now_ms());
+            let (r, e) = pending.take(now_ms(), rackhand_probe::security::aggregate::MAX_TUPLES);
             records.extend(r);
             events.extend(e);
             if std::time::Instant::now() >= end {

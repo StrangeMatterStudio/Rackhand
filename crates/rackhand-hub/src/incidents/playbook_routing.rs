@@ -1,6 +1,6 @@
 //! Routing to a playbook (7.5.2, 7.5.4, D76, D96). A runbook is tried first; a playbook only when no runbook matches or the
 //! runbook failed (or its condition persisted), and when a failed step names `on_failure = { playbook = ... }` that playbook is
-//! used and `incident_kinds` matching is skipped. An incident gets at most one assistant job in any 24 hours, however often
+//! used and `incident_kinds` matching is skipped. An incident gets at most one assistant job (a setting) in any 24 hours, however often
 //! it reopens. The assistant's end is judged here too: an event incident (security and system events) is resolved by an
 //! assistant only at level 2 or 3 and only for a warning, and every other end goes to a person.
 
@@ -9,11 +9,10 @@ use rackhand_runbook::playbook::{Hosts, Playbook};
 use super::*;
 use crate::incidents::brief;
 
-/// Assistant jobs for one incident in any 24 hours (D96).
-pub const MAX_ASSISTANT_STARTS: i64 = 1;
+// Assistant jobs for one incident in any 24 hours (D96) and the deadline of a playbook that sets no `max_runtime` are
+// settings of `config/hub.toml` (7.8.1).
 const ASSISTANT_STARTED: &str = "assistant.started";
 const ASSISTANT_RESOLVED: &str = "assistant.resolved";
-const DEFAULT_RUNTIME_S: i64 = 30 * 60;
 
 /// What routing asks of Assist (through the composition: Incidents never depends on it).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,7 +78,8 @@ impl Routing {
             let note = format!("level 0: playbook `{}` would run for this incident; nothing was run", book.name);
             return self.to_person(&inc.id, &note, now_ms).await;
         }
-        if self.assistant_starts(&inc.id, now_ms)? >= MAX_ASSISTANT_STARTS {
+        let settings = self.settings();
+        if self.assistant_starts(&inc.id, now_ms)? >= i64::from(settings.incidents.assistant_jobs_24h) {
             let note = format!(
                 "attempt limit reached: an assistant job started for this incident in the last 24 hours (playbook `{}`)",
                 book.name
@@ -87,8 +87,8 @@ impl Routing {
             return self.to_person(&inc.id, &note, now_ms).await;
         }
         let hosts = self.hosts_for(book, machine_id)?;
-        let runtime_s = book.max_runtime_s().map_or(DEFAULT_RUNTIME_S, |s| s as i64);
-        let deadline_ms = now_ms + runtime_s * 1000;
+        let runtime_ms = book.max_runtime_s().map_or(settings.assistant.deadline_ms(), |s| s as i64 * 1000);
+        let deadline_ms = now_ms + runtime_ms;
         let input =
             brief::gather(self.db(), &self.incidents.inner.ingest, inc, book, hosts.clone(), deadline_ms, now_ms);
         let request = PlaybookRequest {
@@ -242,21 +242,26 @@ impl Routing {
         Ok(true)
     }
 
-    /// Incidents whose assistant said resolved but whose condition hasn't cleared in 10 minutes go to a person.
+    /// Incidents whose assistant said resolved but whose condition hasn't cleared in the wait (10 minutes by default,
+    /// 7.8.1) go to a person.
     pub(super) async fn assistant_waits(&self, now_ms: i64) -> Result<(), IncidentsError> {
+        let wait = self.settings().incidents;
         let waiting: Vec<String> = self.db().readers().with(|c| {
             let mut s = c.prepare(
                 "SELECT i.id FROM incidents i JOIN incident_events e ON e.incident_id = i.id
                  WHERE i.state = 'assistant' AND e.kind = ?1 AND e.at_ms <= ?2
                    AND NOT EXISTS (SELECT 1 FROM incident_events s WHERE s.incident_id = i.id AND s.kind = ?3 AND s.at_ms > e.at_ms)",
             )?;
-            s.query_map(rusqlite::params![ASSISTANT_RESOLVED, now_ms - CLEAR_WAIT_MS, ASSISTANT_STARTED], |r| r.get(0))?
-                .collect()
+            s.query_map(rusqlite::params![ASSISTANT_RESOLVED, now_ms - wait.clear_wait_ms(), ASSISTANT_STARTED], |r| {
+                r.get(0)
+            })?
+            .collect()
         })?;
         for id in waiting {
             let inc = by_id(self.db(), &id)?;
-            self.needs_a_person(&inc, "the condition persists 10 minutes after the assistant said resolved", now_ms)
-                .await?;
+            let why =
+                format!("the condition persists {} minutes after the assistant said resolved", wait.clear_wait_min);
+            self.needs_a_person(&inc, &why, now_ms).await?;
         }
         Ok(())
     }

@@ -94,6 +94,15 @@ impl Env {
         Env { db, incidents, library, starts, routing }
     }
 
+    /// `config/hub.toml` (7.8.1).
+    async fn settings(&self, text: &str) {
+        crate::library::config::put(&self.db, crate::library::config::HUB, text, "admin", T0).await.unwrap();
+    }
+
+    fn approval_expires_at(&self) -> i64 {
+        self.db.readers().with(|c| c.query_row("SELECT expires_at FROM approvals", [], |r| r.get(0))).unwrap()
+    }
+
     async fn save(&self, name: &str, autonomy: u8, targets: &str) {
         self.library.save(Kind::Runbook, name, &runbook(name, autonomy, targets), "admin", T0).await.unwrap();
     }
@@ -312,6 +321,36 @@ mod routing {
         assert_eq!(env.state(&id), "resolved");
     }
 
+    /// The wait is the `[incidents] clear_wait_min` setting (7.8.1), and the note says how long it was.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_clear_wait_follows_the_setting() {
+        let env = Env::new("clear-setting").await;
+        env.settings("[incidents]\nclear_wait_min = 2\n").await;
+        env.save("nginx-restart", 2, "").await;
+        let id = env.open(T0).await;
+        let start = env.starts.taken().pop().unwrap();
+        env.finish(&start, "01JOB0000000000000000000A4", JobOutcome::Succeeded, T0 + MIN).await;
+        env.routing.tick(T0 + 2 * MIN).await.unwrap();
+        assert_eq!(env.state(&id), "automation", "within the 2 minutes");
+        env.routing.tick(T0 + 3 * MIN).await.unwrap();
+        assert_eq!(env.state(&id), "human", "the condition persisted 2 minutes");
+        assert!(env.notes(&id).iter().any(|n| n.contains("persists 2 minutes")), "{:?}", env.notes(&id));
+    }
+
+    /// An approval routing asks for expires after 24 hours by default, else after `[approvals] expiry_h` (7.8.1).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_routing_approval_expires_at_the_setting() {
+        let env = Env::new("expiry-default").await;
+        env.save("nginx-restart", 1, "").await;
+        env.open(T0).await;
+        assert_eq!(env.approval_expires_at(), T0 + 24 * 60 * MIN);
+        let env = Env::new("expiry-setting").await;
+        env.settings("[approvals]\nexpiry_h = 2\n").await;
+        env.save("nginx-restart", 1, "").await;
+        env.open(T0).await;
+        assert_eq!(env.approval_expires_at(), T0 + 2 * 60 * MIN);
+    }
+
     /// A failed job goes to a person (no playbooks until T78), with the reason.
     #[tokio::test(flavor = "multi_thread")]
     async fn failed_job_goes_to_a_person() {
@@ -352,6 +391,24 @@ mod attempts {
         assert!(env.starts.taken().is_empty(), "no third start");
         assert_eq!(env.state(&id), "human");
         assert!(env.notes(&id).iter().any(|n| n.contains("attempt limit reached")), "{:?}", env.notes(&id));
+    }
+
+    /// The limit is the `[incidents] runbook_starts_24h` setting (7.8.1), and the note names it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_starts_limit_follows_the_setting() {
+        let env = Env::new("limit-setting").await;
+        env.settings("[incidents]\nrunbook_starts_24h = 3\n").await;
+        env.save("nginx-restart", 2, "").await;
+        for n in 0..3 {
+            let at = T0 + n * 20 * MIN;
+            let id = env.open(at).await;
+            let start = env.starts.taken().pop().unwrap_or_else(|| panic!("start {}", n + 1));
+            env.finish(&start, &format!("01JOB000000000000000000E{n}"), JobOutcome::Failed, at + MIN).await;
+            env.resolve(&id, at + 2 * MIN).await;
+        }
+        let id = env.open(T0 + 60 * MIN).await;
+        assert!(env.starts.taken().is_empty(), "no fourth start");
+        assert!(env.notes(&id).iter().any(|n| n.contains("started 3 times")), "{:?}", env.notes(&id));
     }
 
     /// A job a person starts from the dashboard isn't counted (7.5.2).
@@ -601,10 +658,17 @@ mod quarantine {
         let env = Env::new("q-expire").await;
         env.finding(KIND, Severity::Critical, T0).await;
         assert_eq!(env.quarantine_state(), "pending");
-        env.routing.tick(T0 + 30 * MIN).await.unwrap();
-        assert_eq!(env.quarantine_state(), "pending", "still within the hour it can be approved");
-        env.routing.tick(T0 + 61 * MIN).await.unwrap();
+        // the approval expiry of 7.8.1: 24 hours by default
+        env.routing.tick(T0 + 23 * 60 * MIN).await.unwrap();
+        assert_eq!(env.quarantine_state(), "pending", "still within the 24 hours it can be approved");
+        env.routing.tick(T0 + 24 * 60 * MIN + MIN).await.unwrap();
         assert_eq!(env.quarantine_state(), "none");
+        // and `[approvals] expiry_h` when set
+        let env = Env::new("q-expire-setting").await;
+        env.settings("[approvals]\nexpiry_h = 1\n").await;
+        env.finding(KIND, Severity::Critical, T0).await;
+        env.routing.tick(T0 + 61 * MIN).await.unwrap();
+        assert_eq!(env.quarantine_state(), "none", "an hour, as set");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -786,6 +850,27 @@ mod playbook_routing {
         let other = p.open("cpu.busy", Severity::Warning, T0).await;
         assert!(p.asked().is_empty());
         assert_eq!(p.env.state(&other), "human");
+    }
+
+    /// `[incidents] assistant_jobs_24h` allows more assistant jobs per incident, and a playbook with no `max_runtime`
+    /// gets the `[assistant] deadline_min` setting (7.8.1).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn assistant_jobs_per_incident_and_the_deadline_follow_the_settings() {
+        let p = pb("pb-settings").await;
+        p.env.settings("[incidents]\nassistant_jobs_24h = 2\n\n[assistant]\ndeadline_min = 45\n").await;
+        let book = playbook("service-down", "\"service.not_active\"", 1).replace("max_runtime = \"20m\"\n", "");
+        p.env.library.save(Kind::Playbook, "service-down", &book, "admin", T0).await.unwrap();
+        let id = p.open(KIND, Severity::Warning, T0).await;
+        let asked = p.asked();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].deadline_ms, T0 + 45 * MIN, "the setting, for a playbook that sets no runtime");
+        p.env.resolve(&id, T0 + 5 * MIN).await;
+        p.open(KIND, Severity::Warning, T0 + 30 * MIN).await;
+        assert_eq!(p.asked().len(), 1, "a second assistant job within the day");
+        p.env.resolve(&id, T0 + 35 * MIN).await;
+        p.open(KIND, Severity::Warning, T0 + 60 * MIN).await;
+        assert!(p.asked().is_empty(), "no third");
+        assert!(p.env.notes(&id).iter().any(|n| n.contains("attempt limit reached")), "{:?}", p.env.notes(&id));
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -275,11 +275,17 @@ async fn probe_welcome_from_settings() {
     let dir = temp("probe-settings");
     let db = Arc::new(Db::open(&dir.join("hub.db")).unwrap());
     let config = probe_server_settings(&db).config;
-    assert_eq!((config.interval_s, config.max_connection_tuples, config.buffer_max_mb), (15, 500, 64), "defaults");
-    put(&db, HUB, "[probe]\ninterval_s = 5\nbuffer_max_mb = 1\n", "admin", now_ms()).await.unwrap();
+    let got = (config.interval_s, config.max_connection_tuples, config.buffer_max_mb, config.series_cap);
+    assert_eq!(got, (15, 500, 64, 200), "defaults");
+    let settings = "[probe]\ninterval_s = 5\nbuffer_max_mb = 1\nseries_cap = 400\n";
+    put(&db, HUB, settings, "admin", now_ms()).await.unwrap();
     let config = probe_server_settings(&db).config;
-    let got = (config.interval_s, config.max_connection_tuples, config.buffer_max_mb);
-    assert_eq!(got, (5, 500, 1), "from config/hub.toml");
+    let got = (config.interval_s, config.max_connection_tuples, config.buffer_max_mb, config.series_cap);
+    assert_eq!(got, (5, 500, 1, 400), "from config/hub.toml");
+    assert_eq!(super::joins::probe_config(&db), config, "a joining probe is told the same");
+    let defaults =
+        HubConfig::defaults(std::path::Path::new("/etc/rackhand"), std::path::Path::new("/var/lib/rackhand"));
+    assert_eq!((defaults.web.port(), defaults.quic.port()), (8443, 7443), "the ports of 7.8.1");
     for bad in ["[probe]\ninterval_s = 2\n", "[probe]\nconnection_tuples = 99\n", "[probe]\nbuffer_max_mb = 65\n"] {
         assert!(parse_hub(bad).is_err(), "{bad} is out of range");
         assert!(validate(Kind::Config, "hub", bad).is_err(), "{bad} is refused on save");

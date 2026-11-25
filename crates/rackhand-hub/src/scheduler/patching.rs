@@ -8,8 +8,8 @@ use rackhand_store::Db;
 
 use super::rrule::Recurrence;
 
-const SECURITY: &str = "daily 04:00";
-const FULL: &str = "weekly sun 03:00";
+pub const SECURITY: &str = "daily 04:00";
+pub const FULL: &str = "weekly sun 03:00";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenWindow {

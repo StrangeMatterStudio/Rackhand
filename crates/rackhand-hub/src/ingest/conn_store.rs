@@ -1,7 +1,7 @@
 //! Connection storage (7.4.1, 7.6.5, E59, AC55, AC69, D56): what a machine's records become in `conn_records`, in 5-minute
-//! buckets. At most 20 000 rows per machine per day; past that, summary rows per container and executable. A machine whose
-//! policy says `summary` stores only counts per country and ASN, and one that says `off` stores nothing; the threat-list
-//! checks run on every tuple in every mode.
+//! buckets. At most 20 000 rows per machine per day (a setting, 7.8.1); past that, summary rows per container and
+//! executable. A machine whose policy says `summary` stores only counts per country and ASN, and one that says `off`
+//! stores nothing; the threat-list checks run on every tuple in every mode.
 
 use std::collections::{HashMap, HashSet};
 
@@ -10,8 +10,8 @@ use rusqlite::types::Value;
 
 use super::conn_score::{Conn, Outcome};
 
-/// Rows per machine per day before records are summarized.
-pub const DAILY_ROWS: usize = 20_000;
+/// Rows per machine per day before records are summarized, by default (`[connections] records_per_day`, 7.8.1).
+pub const DAILY_ROWS: usize = crate::library::config::CONNECTION_RECORDS.default as usize;
 const BUCKET_MS: i64 = 300_000;
 const DAY_MS: i64 = 86_400_000;
 
@@ -116,8 +116,15 @@ fn verdict_name(o: &Outcome) -> Option<&'static str> {
     }
 }
 
-/// The rows for the scored records of one report (placed at `at_ms`), by `mode`.
-pub fn plan(machine: &str, at_ms: i64, scored: &[(Conn, Outcome)], mode: Mode, today: &mut Today) -> Rows {
+/// The rows for the scored records of one report (placed at `at_ms`), by `mode`, with at most `daily_rows` rows a day.
+pub fn plan(
+    machine: &str,
+    at_ms: i64,
+    scored: &[(Conn, Outcome)],
+    mode: Mode,
+    daily_rows: usize,
+    today: &mut Today,
+) -> Rows {
     let mut rows = Rows::default();
     if mode == Mode::Off {
         return rows;
@@ -160,7 +167,7 @@ pub fn plan(machine: &str, at_ms: i64, scored: &[(Conn, Outcome)], mode: Mode, t
                 let dest = c.dest.map(|d| d.to_string()).unwrap_or_default();
                 let full: Key = (bucket, c.container.clone(), c.exe.clone(), dest.clone(), c.port, proto);
                 let known_row = today.keys.contains(&full);
-                if c.dest.is_none() || (!known_row && today.rows() >= DAILY_ROWS) {
+                if c.dest.is_none() || (!known_row && today.rows() >= daily_rows) {
                     // past the cap, or a folded record: one summary row per container and executable
                     let key = (c.container.clone(), c.exe.clone(), String::new(), 0, "");
                     let row = record(
@@ -263,7 +270,7 @@ mod tests {
         let mut summary_count = 0i64;
         for report in 0..100 {
             let batch: Vec<(Conn, Outcome)> = (0..1000).map(|i| scored(report * 1000 + i, Verdict::Known)).collect();
-            let rows = plan("m1", AT + i64::from(report as i32) * 60_000, &batch, Mode::Full, &mut today);
+            let rows = plan("m1", AT + i64::from(report as i32) * 60_000, &batch, Mode::Full, DAILY_ROWS, &mut today);
             for r in &rows.records {
                 if text_of(r, "verdict") == "summary" {
                     summary += 1;
@@ -279,17 +286,28 @@ mod tests {
         // a restart in the middle of the day starts from what the table has
         let mut after_restart = Today::default();
         after_restart.load(AT, DAILY_ROWS);
-        let rows = plan("m1", AT, &[scored(900_000, Verdict::Known)], Mode::Full, &mut after_restart);
+        let rows = plan("m1", AT, &[scored(900_000, Verdict::Known)], Mode::Full, DAILY_ROWS, &mut after_restart);
         assert_eq!(text_of(&rows.records[0], "verdict"), "summary");
         // the next day has its own 20 000
         assert!(today.needs_load(AT + DAY_MS));
+    }
+
+    /// The cap is the `[connections] records_per_day` setting (7.8.1) the caller passes.
+    #[test]
+    fn the_daily_cap_is_the_setting() {
+        let mut today = Today::default();
+        today.load(AT, 0);
+        let batch: Vec<(Conn, Outcome)> = (0..1500).map(|i| scored(i, Verdict::Known)).collect();
+        let rows = plan("m1", AT, &batch, Mode::Full, 1_000, &mut today);
+        let full = rows.records.iter().filter(|r| text_of(r, "verdict") != "summary").count();
+        assert_eq!(full, 1_000, "1 000 destination rows, then summaries");
     }
 
     #[test]
     fn summary_mode_stores_country_asn_counts_only_known_bad_still_named() {
         let mut today = Today::default();
         let batch = vec![scored(1, Verdict::Known), scored(2, Verdict::Known), scored(3, Verdict::KnownBad)];
-        let rows = plan("m1", AT, &batch, Mode::Summary, &mut today);
+        let rows = plan("m1", AT, &batch, Mode::Summary, DAILY_ROWS, &mut today);
         assert_eq!(rows.records.len(), 1, "one row per ASN and country");
         let r = &rows.records[0];
         assert_eq!(
@@ -311,7 +329,14 @@ mod tests {
     #[test]
     fn off_mode_stores_nothing() {
         let mut today = Today::default();
-        let rows = plan("m1", AT, &[scored(1, Verdict::Known), scored(2, Verdict::KnownBad)], Mode::Off, &mut today);
+        let rows = plan(
+            "m1",
+            AT,
+            &[scored(1, Verdict::Known), scored(2, Verdict::KnownBad)],
+            Mode::Off,
+            DAILY_ROWS,
+            &mut today,
+        );
         assert!(rows.records.is_empty() && rows.baseline.is_empty());
         assert_eq!(
             (Mode::parse("off"), Mode::parse("summary"), Mode::parse("full"), Mode::parse("x")),

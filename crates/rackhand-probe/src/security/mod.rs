@@ -80,9 +80,9 @@ impl Pending {
         self.events.extend(events);
     }
 
-    /// The connection records and the events for the next report.
-    pub fn take(&mut self, at_ms: i64) -> (Vec<ConnRecord>, Vec<ProbeEvent>) {
-        let (records, overflow) = self.window.take(at_ms);
+    /// The connection records (at most `max_tuples` with a destination) and the events for the next report.
+    pub fn take(&mut self, at_ms: i64, max_tuples: usize) -> (Vec<ConnRecord>, Vec<ProbeEvent>) {
+        let (records, overflow) = self.window.take(at_ms, max_tuples);
         let mut events = std::mem::take(&mut self.events);
         events.extend(overflow);
         (records, events)

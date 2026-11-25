@@ -26,11 +26,11 @@ use crate::audit::Audit;
 
 pub use offers::{AssistRequest, AssistResult};
 
-/// Jobs a day the assistant may take, by default (7.7.1 Settings).
-pub const DEFAULT_DAILY_CAP: u32 = 20;
-pub const DEFAULT_DEADLINE_MS: i64 = 30 * 60_000;
-pub const MAX_DEADLINE_MS: i64 = 2 * 60 * 60_000;
-pub const DEFAULT_MAX_TURNS: u32 = 60;
+/// Jobs a day the assistant may take, by default (7.7.1 Settings). The default deadline and max turns of a job are the
+/// `[assistant]` settings too (7.8.1).
+pub const DEFAULT_DAILY_CAP: u32 = crate::library::config::ASSISTANT_DAILY_CAP.default as u32;
+/// The longest deadline a job is given: the most the deadline setting allows (120 minutes, 7.8.1).
+pub const MAX_DEADLINE_MS: i64 = crate::library::config::ASSISTANT_DEADLINE.max * 60_000;
 /// How long after its deadline a job may stay silent before it ends `timed_out`.
 pub const SWEEP_GRACE_MS: i64 = 5 * 60_000;
 /// Declines after which the incident goes to a person.

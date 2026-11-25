@@ -1,15 +1,13 @@
 //! Window selection (7.5.3 steps 2 and 3): which machines a patch window takes and when. Managed machines with
 //! policy `auto` (or an approval) and updates pending for the window, outside maintenance windows and quarantine; at
-//! most 3 per site at once; hypervisors and the hub after every other machine at their site, one at a time, the hub
-//! last; a machine offline at its turn is tried again every 15 minutes until the window ends. Alpine has no security
-//! marker, so it patches only in the full window (D54).
+//! most 3 per site at once (a setting, 7.8.1); hypervisors and the hub after every other machine at their site, one at
+//! a time, the hub last; a machine offline at its turn is tried again every 15 minutes until the window ends. Alpine
+//! has no security marker, so it patches only in the full window (D54).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// How often a machine that was offline at its turn is tried again.
 pub const RETRY_MS: i64 = 15 * 60_000;
-/// Jobs at once per site (7.5.3; configurable).
-pub const DEFAULT_PER_SITE: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Window {

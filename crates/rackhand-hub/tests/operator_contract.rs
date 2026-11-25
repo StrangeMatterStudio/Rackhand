@@ -513,6 +513,24 @@ mod assist {
         assert!(offer.deadline_ms <= now_ms() + 2 * 3_600_000);
     }
 
+    /// The default deadline and max turns of an offer are the `[assistant]` settings of 7.8.1.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn offer_deadline_and_turns_follow_the_settings() {
+        let hub = hub("offer-settings").await;
+        let settings = "[assistant]\ndeadline_min = 10\nmax_turns = 25\n";
+        rackhand_hub::library::config::put(&hub.db, "hub", settings, "admin", now_ms()).await.unwrap();
+        let mut op = FakeOperator::connect(&hub, 0, vec![], 1).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let before = now_ms();
+        let assist = hub.assist.clone();
+        let started = tokio::spawn(async move { assist.start(request()).await });
+        let offer = op.offer().await.unwrap();
+        op.reply(true).await;
+        started.await.unwrap();
+        assert!((before + 10 * 60_000..=now_ms() + 10 * 60_000).contains(&offer.deadline_ms), "10 minutes, as set");
+        assert_eq!(offer.max_turns, 25);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn daily_cap_routes_to_person_with_note() {
         let hub = hub("cap").await;

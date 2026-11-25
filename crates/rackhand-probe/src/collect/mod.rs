@@ -60,6 +60,15 @@ pub struct Config {
     pub extra_mount_excludes: Vec<String>,
     pub extra_iface_excludes: Vec<String>,
     pub per_core_cpu: bool,
+    /// The most series a collection keeps (7.8.1); 0 means [`SERIES_CAP`].
+    pub series_cap: usize,
+}
+
+impl Config {
+    /// The series cap in use.
+    pub fn series_cap(&self) -> usize {
+        if self.series_cap == 0 { SERIES_CAP } else { self.series_cap }
+    }
 }
 
 /// The probe's own use, measured by the caller.
@@ -307,12 +316,10 @@ pub fn collect_at(host: &dyn Host, prev: Option<&Snapshot>, at: Stamp, cfg: &Con
         };
         key(a).cmp(&key(b))
     });
-    if series.len() > SERIES_CAP {
-        events.push(Event {
-            kind: "series_cap_reached",
-            detail: format!("{} series, {} kept", series.len(), SERIES_CAP),
-        });
-        series.truncate(SERIES_CAP);
+    let cap = cfg.series_cap();
+    if series.len() > cap {
+        events.push(Event { kind: "series_cap_reached", detail: format!("{} series, {cap} kept", series.len()) });
+        series.truncate(cap);
     }
     Collection { series, services: services(host, cfg), events, snapshot }
 }

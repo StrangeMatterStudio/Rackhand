@@ -887,6 +887,30 @@ async fn level_1_run_runbook_needs_approval_then_runs_once() {
     assert_eq!(jobs_named(&env, "restart-web"), 2);
 }
 
+/// The approval a gated call asks for expires after the approval expiry of 7.8.1: 24 hours, or `[approvals] expiry_h`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_gated_calls_approval_expires_at_the_setting() {
+    let expires = |env: &Env, id: &str| -> i64 {
+        env.db
+            .readers()
+            .with(|c| c.query_row("SELECT expires_at FROM approvals WHERE id = ?1", [id], |r| r.get(0)))
+            .unwrap()
+    };
+    let call = json!({ "name": "restart-web", "target": "m1", "params": {}, "reason": "nginx is down" });
+    for (settings, hours) in [("", 24), ("[approvals]\nexpiry_h = 3\n", 3)] {
+        let env = env(&format!("expiry-{hours}")).await;
+        if !settings.is_empty() {
+            rackhand_hub::library::config::put(&env.db, "hub", settings, "admin", now_ms()).await.unwrap();
+        }
+        let mut s = job_session(&env, J1, "service-down", &["m1"], &["run_runbook"]).await;
+        let before = now_ms();
+        let id = needs_approval(&mut s, "run_runbook", call.clone()).await;
+        let after = now_ms();
+        let ttl = hours * 3_600_000;
+        assert!((before + ttl..=after + ttl).contains(&expires(&env, &id)), "{hours} hours");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn different_arguments_give_approval_mismatch() {
     let env = env("mismatch").await;

@@ -44,7 +44,7 @@ pub(crate) fn show(web: &Web, ctx: &Ctx, code: StatusCode, notice: Option<&str>)
             totp: account.totp.is_some(),
             passkeys: account.passkeys.len(),
             offered: web.passkeys_offered(),
-            stepped_up: step_up::fresh(user.step_up_at, ctx.now_ms),
+            stepped_up: step_up::fresh(&web.0.db, user.step_up_at, ctx.now_ms),
             notice,
         }
         .render(),

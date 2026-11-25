@@ -342,3 +342,30 @@ async fn rollup_and_retention_ticks_run() {
     assert_eq!(count("SELECT count(*) FROM series_chunks WHERE machine_id = 'old'"), 0, "retention ran");
     assert_eq!(count("SELECT count(*) FROM report_staging"), 0, "compaction ran every 5 minutes");
 }
+
+/// The hourly retention run keeps tier 0 as long as the `[retention] tier0_h` setting says (7.8.1), not 48 hours.
+#[tokio::test(flavor = "multi_thread")]
+async fn retention_follows_the_tier_settings() {
+    let db = db("tier-settings");
+    let ingest = Ingest::new(db.clone(), Bus::new(), Arc::new(Roomy));
+    ingest.start(0).await.unwrap();
+    let incidents = rackhand_hub::incidents::Incidents::new(db.clone(), ingest.clone(), Bus::new());
+    let t0 = 1_795_068_000_000i64; // the top of an hour
+    rackhand_hub::library::config::put(&db, "hub", "[retention]\ntier0_h = 12\n", "admin", t0).await.unwrap();
+    let count = |sql: &str| -> i64 { db.readers().with(|c| c.query_row(sql, [], |r| r.get(0))).unwrap() };
+    let path =
+        std::env::temp_dir().join(format!("rackhand-composition-tier-settings-{}", std::process::id())).join("hub.db");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    for (machine, age_h) in [("old", 13), ("kept", 11)] {
+        conn.execute(
+            "INSERT INTO series_chunks (machine_id, metric_key_id, tier, start_ms, end_ms, count, closed, data)
+             VALUES (?1, 99, 0, ?2, ?2, 1, 1, x'00')",
+            rusqlite::params![machine, t0 - age_h * 3_600_000],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    crate::hub_cmd::every_minute(&ingest, &incidents, &db, t0 + 1_000, &NoWait).await;
+    assert_eq!(count("SELECT count(*) FROM series_chunks WHERE machine_id = 'old'"), 0, "past the 12 hours");
+    assert_eq!(count("SELECT count(*) FROM series_chunks WHERE machine_id = 'kept'"), 1, "inside them");
+}

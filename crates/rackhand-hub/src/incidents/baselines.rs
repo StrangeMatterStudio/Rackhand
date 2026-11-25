@@ -125,6 +125,8 @@ impl Incidents {
     /// Checks each baseline's new tier 1 values; a deviation for 15 minutes opens a warning (never critical), and the
     /// baseline itself clears after 2 values back inside its band.
     pub async fn evaluate_baselines(&self, now_ms: i64) -> Result<(), IncidentsError> {
+        // how long a baseline learns: the setting of `config/hub.toml` (7.8.1), read before the state is locked
+        let learning_ms = crate::library::config::hub_or_default(&self.inner.db).baseline.learning_ms();
         let keys: Vec<CondKey> = self.eval().baselines.keys().cloned().collect();
         for key in keys {
             let Some(metric) = key.rule.strip_prefix("baseline.").map(str::to_string) else { continue };
@@ -140,6 +142,7 @@ impl Incidents {
             let severity = {
                 let mut eval = self.eval();
                 let Some(learned) = eval.baselines.get_mut(&key) else { continue };
+                learned.baseline.learning_ms = learning_ms;
                 let mut last = None;
                 for (t, v) in &points {
                     last = learned.baseline.evaluate(*t, v.get(2).copied().unwrap_or(v[0]));

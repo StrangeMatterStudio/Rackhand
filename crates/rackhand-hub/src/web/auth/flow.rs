@@ -346,6 +346,6 @@ pub(crate) async fn step_up(web: &Web, ctx: &Ctx) -> Response<Body> {
         tracing::error!(error = %e, "step-up");
         return status(StatusCode::INTERNAL_SERVER_ERROR, "The step-up couldn't be recorded");
     }
-    debug_assert!(step_up::fresh(Some(ctx.now_ms), ctx.now_ms));
+    debug_assert!(step_up::fresh(&web.0.db, Some(ctx.now_ms), ctx.now_ms));
     onward(ctx)
 }

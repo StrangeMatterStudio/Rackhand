@@ -13,7 +13,7 @@
 <section class="card"><h2>Daily cap</h2>
 <form method="post" action="/settings/assistant/cap" novalidate>
 <input type="hidden" name="csrf" value="{{ csrf }}">
-<div class="field"><label for="cap">Assistant jobs a day</label><input id="cap" name="daily_cap" type="number" min="1" max="1000" value="{{ daily_cap }}"><p class="hint">Past it, an incident goes to a person.</p></div>
+<div class="field"><label for="cap">Assistant jobs a day</label><input id="cap" name="daily_cap" type="number" min="0" max="500" value="{{ daily_cap }}"><p class="hint">Past it, an incident goes to a person; 0 starts none.</p></div>
 <button type="submit" class="primary">Save</button>
 </form></section>
 </div>

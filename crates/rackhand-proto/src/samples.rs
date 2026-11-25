@@ -38,6 +38,8 @@ fn config() -> Option<ProbeConfig> {
         hub_addrs: vec![],
         hub_relays: vec![],
         buffer_max_mb: 64,
+        // 0: the default 200, so the golden encodings stay as they were (an additive field)
+        series_cap: 0,
     })
 }
 

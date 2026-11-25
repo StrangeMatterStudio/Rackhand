@@ -206,3 +206,4 @@ the background while T01 was written, since T01 needs only Rust.
 | 2026-11-25 | T97 done: offline operation (AC41) through a hub binary on a Docker network with no outside: collection, a LAN email, a runbook, and no outbound attempts when air-gapped (D201 to D204); with sources on it still works and only DNS is tried |
 | 2026-11-25 | the fast tier on a quiet machine at `76b2228`: 1022 passed, 4 skipped. T98 (1/n): retention rules for every table of 7.4.1 (D205) |
 | 2026-11-25 | T98 (2/n): the shared 100 MB budget for job output and transcripts, oldest first, enforced when a job ends and hourly |
+| 2026-11-25 | T98 (3/n): every 7.8.1 setting a key of config/hub.toml with its default and range, applied where used; approval expiry 24 h; ProbeConfig.series_cap (D206, D207); fast tier 1055 passed |

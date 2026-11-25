@@ -7,4 +7,7 @@ pub mod mirror;
 pub mod scan;
 
 #[cfg(test)]
+#[path = "settings_tests.rs"]
+mod settings;
+#[cfg(test)]
 pub(crate) mod tests;

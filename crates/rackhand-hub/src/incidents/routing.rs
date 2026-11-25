@@ -1,8 +1,9 @@
 //! Routing an incident to a runbook (7.5.2, 7.6.8): the most specific automatic runbook for its kind starts through
 //! `StartJob` as the policy allows (level 0 tells a person, level 1 waits for an approval, 2 and 3 run). A job that
-//! succeeds isn't the end: the incident waits 10 minutes for its condition to clear, then goes on as if the job had
-//! failed. Automatic starts are limited per incident (across reopens) in any 24 hours; past the limit a person gets the
-//! incident with "attempt limit reached". Playbooks after a failed runbook come with T78; until then a person does.
+//! succeeds isn't the end: the incident waits for its condition to clear (10 minutes by default, 7.8.1), then goes on
+//! as if the job had failed. Automatic starts are limited per incident (across reopens) in any 24 hours (2 by default);
+//! past the limit a person gets the incident with "attempt limit reached". Playbooks after a failed runbook come with
+//! T78; until then a person does.
 //!
 //! What happened is kept in the incident's events (`runbook.started`, `runbook.succeeded`), so the limits and the wait
 //! survive a restart.
@@ -27,13 +28,9 @@ use crate::policy::decide::{Access, Action, Decision, Deny, Request, Requester, 
 
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
-/// How long a succeeded job's incident waits for its condition to clear (7.8.1).
-pub const CLEAR_WAIT_MS: i64 = 10 * 60_000;
-/// Automatic runbook starts per incident in any 24 hours (7.8.1).
-pub const MAX_AUTOMATIC_STARTS: i64 = 2;
+// How long a succeeded job's incident waits for its condition to clear, the automatic runbook starts per incident in
+// any 24 hours and how long an approval routing asks for stays open are settings of `config/hub.toml` (7.8.1).
 const ATTEMPT_WINDOW_MS: i64 = 24 * 3_600_000;
-/// An approval routing asks for, as an MCP call's (7.6.8).
-const APPROVAL_TTL_MS: i64 = 60 * 60_000;
 const BY: &str = "rackhand";
 const STARTED: &str = "runbook.started";
 const SUCCEEDED: &str = "runbook.succeeded";
@@ -117,6 +114,11 @@ impl Routing {
         &self.incidents.inner.db
     }
 
+    /// The settings of `config/hub.toml` now (7.8.1).
+    fn settings(&self) -> crate::library::config::HubConfig {
+        crate::library::config::hub_or_default(self.db())
+    }
+
     fn machine(&self, id: &str) -> Result<Option<Machine>, IncidentsError> {
         let found = self.db().readers().with(|c| {
             c.query_row("SELECT name, kind, tags, roles, access FROM machines WHERE id = ?1", [id], |r| {
@@ -198,9 +200,11 @@ impl Routing {
         let Some(rb) = choose(&runbooks, &inc.kind, &machine.facts) else {
             return self.to_playbook(&inc, &machine_id, None, "", now_ms).await;
         };
-        if self.attempts(incident_id, now_ms)? >= MAX_AUTOMATIC_STARTS {
+        let settings = self.settings();
+        let limit = i64::from(settings.incidents.runbook_starts_24h);
+        if self.attempts(incident_id, now_ms)? >= limit {
             let why = format!(
-                "attempt limit reached: runbook `{}` started {MAX_AUTOMATIC_STARTS} times for this incident in 24 hours",
+                "attempt limit reached: runbook `{}` started {limit} times for this incident in 24 hours",
                 rb.name
             );
             return self.to_person(incident_id, &why, now_ms).await;
@@ -239,7 +243,7 @@ impl Routing {
                     reason: format!("incident: {}", inc.title),
                 };
                 let id = match Approvals::new(self.incidents.inner.db.clone())
-                    .create(&approval, now_ms, APPROVAL_TTL_MS)
+                    .create(&approval, now_ms, settings.approvals.expiry_ms())
                     .await
                 {
                     Ok(id) => id,
@@ -439,8 +443,10 @@ impl Routing {
         self.start(inc, job, now_ms).await
     }
 
-    /// Incidents whose runbook succeeded but whose condition hasn't cleared in 10 minutes go on as failed.
+    /// Incidents whose runbook succeeded but whose condition hasn't cleared in the wait (10 minutes by default, 7.8.1)
+    /// go on as failed.
     pub async fn tick(&self, now_ms: i64) -> Result<(), IncidentsError> {
+        let wait = self.settings().incidents;
         let waiting: Vec<(String, String)> = self.db().readers().with(|c| {
             let mut s = c.prepare(
                 "SELECT i.id, coalesce(json_extract(e.data, '$.runbook'), '') FROM incidents i
@@ -449,11 +455,14 @@ impl Routing {
                    AND NOT EXISTS (SELECT 1 FROM incident_events s WHERE s.incident_id = i.id AND s.kind = ?3
                                    AND s.at_ms > e.at_ms)",
             )?;
-            s.query_map(rusqlite::params![SUCCEEDED, now_ms - CLEAR_WAIT_MS, STARTED], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .collect()
+            s.query_map(rusqlite::params![SUCCEEDED, now_ms - wait.clear_wait_ms(), STARTED], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?
+            .collect()
         })?;
         for (id, runbook) in waiting {
-            let why = format!("the condition persists 10 minutes after runbook `{runbook}` succeeded");
+            let why =
+                format!("the condition persists {} minutes after runbook `{runbook}` succeeded", wait.clear_wait_min);
             let inc = by_id(self.db(), &id)?;
             match inc.machine_id.clone() {
                 Some(machine) if self.assist.is_some() => self.to_playbook(&inc, &machine, None, &why, now_ms).await?,

@@ -102,6 +102,23 @@ fn no_alerts_during_7_day_learning() {
     assert_eq!(fresh.evaluate(at, 95.0), None, "no data at all");
 }
 
+/// The learning period is the hub's baseline learning setting (7.8.1), given to the baseline: 2 days learns for 2 days.
+#[test]
+fn learning_lasts_as_long_as_the_setting() {
+    let at = TUESDAY + 2 * HOUR;
+    let mut b = Baseline::new(floor_for("cpu.busy_pct").unwrap());
+    b.learning_ms = 2 * DAY;
+    b.first_data_ms = Some(at - 3 * DAY);
+    *b.hod_mut(at) = Bucket { mean: 5.0, var: 1.0, n: 6, frozen_until_ms: None };
+    assert!(feed(&mut b, at, at + 30 * MIN, 95.0).is_some(), "day 3 of a 2-day learning");
+    let mut longer = Baseline::new(floor_for("cpu.busy_pct").unwrap());
+    longer.learning_ms = 30 * DAY;
+    longer.first_data_ms = Some(at - 10 * DAY);
+    *longer.hod_mut(at) = Bucket { mean: 5.0, var: 1.0, n: 6, frozen_until_ms: None };
+    assert_eq!(feed(&mut longer, at, at + 30 * MIN, 95.0), None, "day 10 of 30 is still learning");
+    assert_eq!(Baseline::new(1.0).learning_ms, 7 * DAY, "7 days by default");
+}
+
 #[test]
 fn unfreezes_after_2_hours_without_deviation() {
     let mut b = learned(floor_for("cpu.busy_pct").unwrap());

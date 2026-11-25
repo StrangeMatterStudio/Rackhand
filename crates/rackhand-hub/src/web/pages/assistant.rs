@@ -393,14 +393,14 @@ pub(super) async fn invite(web: &Web, ctx: &Ctx) -> Response<Body> {
 pub(super) async fn set_cap(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some(user) = &ctx.user else { return redirect("/sign-in") };
     let cap: u32 = match ctx.form.get("daily_cap").and_then(|c| c.trim().parse().ok()) {
-        Some(c) if (1..=1000).contains(&c) => c,
+        Some(c) if config::ASSISTANT_DAILY_CAP.check(i64::from(c)).is_ok() => c,
         _ => {
             return show_settings(
                 web,
                 ctx,
                 StatusCode::BAD_REQUEST,
                 None,
-                Some("The daily cap is a number from 1 to 1000."),
+                Some("The daily cap is a number from 0 to 500."),
             );
         }
     };

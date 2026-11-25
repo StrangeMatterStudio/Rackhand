@@ -48,12 +48,10 @@ use crate::ingest::Ingest;
 pub use link::{PeerLink, Statuses};
 pub use reach::PeerReach;
 pub use summary::HubHealthSource;
-pub use watch::{DOWN_AFTER_MS, PeerState, SILENT_AFTER_MS, state};
+pub use watch::{DOWN_AFTER_MS, PeerState, state};
 
 /// Queries a peer may make in a second.
 pub const QUERIES_PER_SECOND: usize = 10;
-/// How often a hub sends its summary.
-pub const SUMMARY_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub(crate) mod kind {
     pub const HELLO: u8 = 0;

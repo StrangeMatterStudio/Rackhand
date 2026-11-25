@@ -74,6 +74,8 @@ message ProbeConfig {
   // nothing to say.
   repeated string hub_addrs = 9;
   repeated string hub_relays = 10;
+  // The most series a probe reports per collection (7.8.1, 50 to 2000); 0 means the default, 200.
+  uint32 series_cap = 11;
 }
 
 // Hub-signed, versioned payload with an expiry (7.3.3, 7.3.7): `payload` is an encoded `SignedEnvelope`.

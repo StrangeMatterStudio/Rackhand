@@ -40,12 +40,10 @@ pub async fn collect(at: Stamp, cfg: &Config, self_use: SelfUse) -> Collection {
     let outbound = conntable::read().iter().filter(|s| s.outbound()).count();
     out.push("conn.outbound_count", None, outbound as f64);
     let mut series: Vec<Series> = out.series;
-    if series.len() > crate::collect::SERIES_CAP {
-        events.push(Event {
-            kind: "series_cap_reached",
-            detail: format!("{} series, {} kept", series.len(), crate::collect::SERIES_CAP),
-        });
-        series.truncate(crate::collect::SERIES_CAP);
+    let cap = cfg.series_cap();
+    if series.len() > cap {
+        events.push(Event { kind: "series_cap_reached", detail: format!("{} series, {cap} kept", series.len()) });
+        series.truncate(cap);
     }
     Collection { series, services, events, snapshot: Snapshot::at(at.wall_ms, at.mono_ms) }
 }

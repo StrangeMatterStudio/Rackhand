@@ -213,7 +213,7 @@ async fn register_and_assert_with_software_authenticator() {
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);
     let token = other.cookies.iter().find(|(k, _)| k == session::COOKIE).unwrap().1.clone();
     let user = session::lookup(&app.db, &token, app.now()).unwrap().unwrap();
-    assert!(crate::web::auth::step_up::fresh(user.step_up_at, app.now()));
+    assert!(crate::web::auth::step_up::fresh(&app.db, user.step_up_at, app.now()));
     // The passkey's counter was stored.
     let stored: Vec<u8> = app
         .db

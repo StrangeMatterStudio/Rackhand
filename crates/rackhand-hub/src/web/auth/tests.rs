@@ -314,15 +314,26 @@ async fn step_up_valid_5_minutes() {
     let resp = b.post(&app, "/step-up", "/step-up", &[("code", &app.code())]).await;
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);
     let stepped = app.now();
-    assert!(step_up::fresh(Some(stepped), stepped + 5 * MIN - 1_000), "valid at 4:59");
-    assert!(!step_up::fresh(Some(stepped), stepped + 5 * MIN + 1_000), "prompts at 5:01");
-    assert!(!step_up::fresh(None, stepped));
+    assert!(step_up::fresh(&app.db, Some(stepped), stepped + 5 * MIN - 1_000), "valid at 4:59");
+    assert!(!step_up::fresh(&app.db, Some(stepped), stepped + 5 * MIN + 1_000), "prompts at 5:01");
+    assert!(!step_up::fresh(&app.db, None, stepped));
     let token = b.cookies.iter().find(|(k, _)| k == session::COOKIE).unwrap().1.clone();
     let user = session::lookup(&app.db, &token, stepped + 1_000).unwrap().unwrap();
     assert_eq!(user.step_up_at, Some(stepped), "recorded on the session");
     // A step-up code is single use too.
     let again = b.post(&app, "/step-up", "/step-up", &[("code", &app.code())]).await;
     assert_eq!(again.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// The step-up freshness is the `[auth] step_up_min` setting (7.8.1).
+#[tokio::test(flavor = "multi_thread")]
+async fn step_up_freshness_follows_the_setting() {
+    let app = app("step-up-setting").await;
+    crate::library::config::put(&app.db, "hub", "[auth]\nstep_up_min = 1\n", "admin", T0).await.unwrap();
+    assert!(step_up::fresh(&app.db, Some(T0), T0 + MIN), "a minute");
+    assert!(!step_up::fresh(&app.db, Some(T0), T0 + MIN + 1), "and no more");
+    crate::library::config::put(&app.db, "hub", "[auth]\nstep_up_min = 15\n", "admin", T0).await.unwrap();
+    assert!(step_up::fresh(&app.db, Some(T0), T0 + 15 * MIN));
 }
 
 #[tokio::test(flavor = "multi_thread")]

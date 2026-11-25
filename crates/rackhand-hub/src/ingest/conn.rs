@@ -139,11 +139,15 @@ impl Ingest {
                     .unwrap_or(0) as usize
             })
         };
+        // the baseline learning and the daily cap of `config/hub.toml` (7.8.1), read before the state is locked
+        let hub = crate::library::config::hub_or_default(&self.inner.db);
+        let daily_rows = hub.connections.records_per_day as usize;
         let ctx = Context {
             now_ms: at_ms,
             watch_internal: settings.watch_internal,
             intel: &intel,
             patch_job_running: patching,
+            learning_ms: hub.baseline.learning_ms(),
         };
         let (mut events, mut scored, mut baseline) = (Vec::new(), Vec::new(), Vec::new());
         let rows = {
@@ -182,7 +186,7 @@ impl Ingest {
                 }
                 scored.push((c, outcome));
             }
-            conn_store::plan(machine, at_ms, &scored, settings.mode, &mut st.today)
+            conn_store::plan(machine, at_ms, &scored, settings.mode, daily_rows, &mut st.today)
         };
         self.raise_events(events).await?;
         if !rows.records.is_empty() {

@@ -211,3 +211,17 @@ fn the_hello_names_the_architecture() {
     assert_eq!(os.arch, std::env::consts::ARCH);
     assert!(!os.arch.is_empty());
 }
+
+/// The hub's connection tuples and series cap reach the probe (7.8.1): in their ranges, and the defaults (500 and 200)
+/// when the hub sends 0.
+#[test]
+fn the_hubs_tuples_and_series_cap_apply() {
+    let mut s = Settings::default();
+    assert_eq!((s.max_tuples, s.collect.series_cap()), (500, 200));
+    s.apply(&ProbeConfig { max_connection_tuples: 1200, series_cap: 300, ..ProbeConfig::default() });
+    assert_eq!((s.max_tuples, s.collect.series_cap()), (1200, 300));
+    s.apply(&ProbeConfig { max_connection_tuples: 9000, series_cap: 10, ..ProbeConfig::default() });
+    assert_eq!((s.max_tuples, s.collect.series_cap()), (5000, 50), "kept in their ranges");
+    s.apply(&ProbeConfig::default());
+    assert_eq!((s.max_tuples, s.collect.series_cap()), (500, 200), "a hub that sends neither");
+}

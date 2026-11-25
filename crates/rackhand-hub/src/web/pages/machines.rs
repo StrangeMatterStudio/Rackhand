@@ -22,7 +22,7 @@ fn here(path: &str) -> String {
 
 pub(super) async fn accept_host_key(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some(user) = &ctx.user else { return redirect("/sign-in") };
-    if !step_up::fresh(user.step_up_at, ctx.now_ms) {
+    if !step_up::fresh(&web.0.db, user.step_up_at, ctx.now_ms) {
         return to_step_up(&here(&ctx.path));
     }
     let Some(id) = machine_id(&ctx.path) else { return status(StatusCode::NOT_FOUND, "No such machine") };
@@ -60,7 +60,7 @@ pub(super) async fn accept_host_key(web: &Web, ctx: &Ctx) -> Response<Body> {
 /// Confirms the guest the form names as the machine's (its proposal or binding, or the guest it now looks like).
 pub(super) async fn confirm_binding(web: &Web, ctx: &Ctx) -> Response<Body> {
     let Some(user) = &ctx.user else { return redirect("/sign-in") };
-    if !step_up::fresh(user.step_up_at, ctx.now_ms) {
+    if !step_up::fresh(&web.0.db, user.step_up_at, ctx.now_ms) {
         return to_step_up(&here(&ctx.path));
     }
     let Some(id) = machine_id(&ctx.path) else { return status(StatusCode::NOT_FOUND, "No such machine") };

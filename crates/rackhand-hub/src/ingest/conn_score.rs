@@ -4,8 +4,8 @@
 //! 1. A private, loopback or link-local destination is skipped unless the policy has `watch_internal`.
 //! 2. A destination on a threat list is a critical `conn.known_bad`.
 //! 3. The destination's ASN and country are looked up.
-//! 4. For a machine's first 7 days the tuple `(container, exe, asn, country, port, proto)` goes into its baseline and
-//!    nothing is raised.
+//! 4. For a machine's first 7 days (the baseline learning setting, 7.8.1) the tuple `(container, exe, asn, country, port,
+//!    proto)` goes into its baseline and nothing is raised.
 //! 5. After that a tuple not in the baseline is `conn.new_destination`: info, and warning when the country is new for the
 //!    machine, the executable is new on it, the port is on the watch list, or the port is above 49151 from a server process.
 //! 6. Over 1 GB to one new destination within an hour is `conn.large_egress` (warning).
@@ -17,8 +17,8 @@ use std::net::IpAddr;
 
 use crate::intel::{Intel, Threat};
 
-/// A machine's first days: nothing is raised, the baseline is learned.
-pub const LEARNING_MS: i64 = 7 * 86_400_000;
+/// A machine's first days by default (`[baseline] learning_days`, 7.8.1): nothing is raised, the baseline is learned.
+pub const LEARNING_MS: i64 = crate::library::config::BASELINE_LEARNING.default * 86_400_000;
 /// Ports that are warning on their own for a destination never seen before.
 pub const WATCH_PORTS: [u16; 8] = [22, 23, 1080, 3389, 4444, 5555, 6667, 9001];
 /// More than this to one new destination within an hour is `conn.large_egress`.
@@ -131,6 +131,8 @@ pub struct Context<'a> {
     pub intel: &'a Intel,
     /// A Rackhand patch job is running on the machine.
     pub patch_job_running: bool,
+    /// How long a machine learns before a new destination is raised: the baseline learning setting (7.8.1).
+    pub learning_ms: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,7 +201,7 @@ pub fn score(c: &Conn, st: &mut State, ctx: &Context<'_>) -> Outcome {
     let (asn, country) = (geo.asn.unwrap_or(0), geo.country.clone().unwrap_or_default());
     let key = (c.container.clone(), c.exe.clone(), asn, country.clone(), c.port, c.tcp);
     let first = *st.first_seen_ms.get_or_insert(ctx.now_ms);
-    let learning = ctx.now_ms - first < LEARNING_MS;
+    let learning = ctx.now_ms - first < ctx.learning_ms;
     let known = st.keys.contains(&key);
     let (new_country, new_exe) = (!st.countries.contains(&country), !st.exes.contains(&c.exe));
     let mut events = Vec::new();
@@ -302,7 +304,7 @@ mod tests {
     }
 
     fn ctx(intel: &Intel, now_ms: i64) -> Context<'_> {
-        Context { now_ms, watch_internal: false, intel, patch_job_running: false }
+        Context { now_ms, watch_internal: false, intel, patch_job_running: false, learning_ms: LEARNING_MS }
     }
 
     /// A machine that has been learning for a week and knows `curl` to the US on 443.
@@ -373,6 +375,22 @@ mod tests {
         assert_eq!((new.verdict, new.events[0].severity), (Verdict::New, Severity::Info), "same country and exe: info");
         let again = score(&conn("93.184.216.34", 8443), &mut st, &ctx(&intel, NOW + 7 * DAY + 1));
         assert_eq!(again.verdict, Verdict::Known, "once told, it is known");
+    }
+
+    /// The learning period is the baseline learning setting the context carries (7.8.1): 2 days learns for 2 days.
+    #[test]
+    fn learning_lasts_as_long_as_the_setting() {
+        let intel = intel();
+        let mut st = State::default();
+        let two_days = |now| Context { learning_ms: 2 * DAY, ..ctx(&intel, now) };
+        assert_eq!(score(&conn("93.184.216.34", 443), &mut st, &two_days(NOW)).verdict, Verdict::Learning);
+        let new = score(&conn("93.184.216.34", 8443), &mut st, &two_days(NOW + 2 * DAY));
+        assert_eq!(new.verdict, Verdict::New, "learned after 2 days");
+        let mut longer = State::default();
+        let month = |now| Context { learning_ms: 30 * DAY, ..ctx(&intel, now) };
+        score(&conn("93.184.216.34", 443), &mut longer, &month(NOW));
+        let out = score(&conn("93.184.216.34", 8443), &mut longer, &month(NOW + 10 * DAY));
+        assert_eq!(out.verdict, Verdict::Learning, "day 10 of 30");
     }
 
     #[test]

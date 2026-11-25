@@ -5,8 +5,8 @@
 use rackhand_store::{Db, StoreError, WriteCmd};
 
 pub const MB: u64 = 1024 * 1024;
-/// 100 MB; a setting from 50 MB to 20 GB (7.8.1).
-pub const DEFAULT_BUDGET: u64 = 100 * MB;
+/// 100 MB by default; the `[jobs] output_budget_mb` setting, 50 MB to 20 GB (7.8.1).
+pub const DEFAULT_BUDGET: u64 = crate::library::config::OUTPUT_BUDGET.default as u64 * MB;
 
 /// Trims until the output fits `budget_bytes`; how many steps and transcript turns were trimmed.
 pub async fn enforce(db: &Db, budget_bytes: u64) -> Result<usize, StoreError> {

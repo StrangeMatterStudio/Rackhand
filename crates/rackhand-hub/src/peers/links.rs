@@ -129,17 +129,16 @@ impl Peers {
         results
     }
 
-    /// Every 30 seconds until the hub stops: this hub's summary to each peer.
+    /// Every summary interval (7.8.1, read before each wait) until the hub stops: this hub's summary to each peer.
     pub fn spawn_push(self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            let mut tick = tokio::time::interval(super::SUMMARY_EVERY);
             loop {
-                tick.tick().await;
                 for (site, result) in self.push().await {
                     if let Err(e) = result {
                         tracing::debug!(peer = %site, error = %e, "pushing the summary");
                     }
                 }
+                tokio::time::sleep(self.summary_every()).await;
             }
         })
     }

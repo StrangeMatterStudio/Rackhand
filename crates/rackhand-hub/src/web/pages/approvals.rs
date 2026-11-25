@@ -135,7 +135,7 @@ pub(super) async fn decide(web: &Web, ctx: &Ctx, approve: bool) -> Response<Body
     let by = Decider {
         user: user.name.clone(),
         role: user.role,
-        step_up_fresh: step_up::fresh(user.step_up_at, ctx.now_ms),
+        step_up_fresh: step_up::fresh(&web.0.db, user.step_up_at, ctx.now_ms),
     };
     match Approvals::new(web.0.db.clone()).decide(id, &by, approve, ctx.now_ms).await {
         Ok(()) => {

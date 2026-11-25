@@ -10,7 +10,8 @@ const WEIGHT: f64 = 0.1;
 const USABLE_N: u32 = 3;
 const SIGMAS: f64 = 4.0;
 const SUSTAIN_MS: i64 = 15 * MIN_MS;
-const LEARNING_MS: i64 = 7 * DAY_MS;
+/// A baseline learns for this long before it warns, unless it is given the hub's setting (7.8.1).
+pub const DEFAULT_LEARNING_MS: i64 = 7 * DAY_MS;
 const UNFREEZE_MS: i64 = 2 * HOUR_MS;
 /// A deviation clears after this many samples in a row inside the band, as threshold rules do.
 const CALM_TO_CLEAR: u32 = 2;
@@ -78,6 +79,8 @@ pub struct Baseline {
     pub first_data_ms: Option<i64>,
     pub deviating_since_ms: Option<i64>,
     pub active: bool,
+    /// How long the baseline learns before it warns: the hub's baseline learning setting (7.8.1).
+    pub learning_ms: i64,
     calm: u32,
 }
 
@@ -90,6 +93,7 @@ impl Baseline {
             first_data_ms: None,
             deviating_since_ms: None,
             active: false,
+            learning_ms: DEFAULT_LEARNING_MS,
             calm: 0,
         }
     }
@@ -122,7 +126,7 @@ impl Baseline {
     /// Evaluates one tier-1 sample. A warning while the deviation is active; never critical.
     pub fn evaluate(&mut self, at_ms: i64, value: f64) -> Option<Severity> {
         let first = *self.first_data_ms.get_or_insert(at_ms);
-        let learning = at_ms - first < LEARNING_MS;
+        let learning = at_ms - first < self.learning_ms;
         let Some(bucket) = self.bucket_for(at_ms).copied().filter(|_| !learning) else {
             self.deviating_since_ms = None;
             self.active = false;

@@ -63,20 +63,34 @@ impl Clock for SystemClock {
 pub struct Settings {
     pub interval: Duration,
     pub collect: collect::Config,
+    /// Connection tuples per report (7.8.1).
+    pub max_tuples: usize,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { interval: DEFAULT_INTERVAL, collect: collect::Config::default() }
+        Settings {
+            interval: DEFAULT_INTERVAL,
+            collect: collect::Config::default(),
+            max_tuples: crate::security::aggregate::MAX_TUPLES,
+        }
     }
 }
 
 impl Settings {
-    /// The hub's probe config (from `Welcome` or `ConfigUpdate`); an unset interval keeps the current one.
+    /// The hub's probe config (from `Welcome` or `ConfigUpdate`); an unset interval keeps the current one. The tuples per
+    /// report and the series cap are the hub's, in their ranges (7.8.1), or their defaults when it sends 0 (a hub that
+    /// doesn't know the setting).
     pub fn apply(&mut self, cfg: &ProbeConfig) {
         if cfg.interval_s > 0 {
             self.interval = Duration::from_secs(cfg.interval_s.into()).clamp(MIN_INTERVAL, MAX_INTERVAL);
         }
+        let or = |sent: u32, default: usize, min: usize, max: usize| match sent {
+            0 => default,
+            n => (n as usize).clamp(min, max),
+        };
+        self.max_tuples = or(cfg.max_connection_tuples, crate::security::aggregate::MAX_TUPLES, 100, 5000);
+        self.collect.series_cap = or(cfg.series_cap, collect::SERIES_CAP, 50, 2000);
         self.collect.per_core_cpu = cfg.per_core_cpu;
         self.collect.extra_mount_excludes = cfg.extra_mount_excludes.clone();
         self.collect.extra_iface_excludes = cfg.extra_iface_excludes.clone();
@@ -526,7 +540,7 @@ fn spawn_collector(
         #[cfg_attr(windows, allow(unused_assignments, unused_variables))]
         let mut prev: Option<Snapshot> = None;
         loop {
-            let Settings { interval, collect: cfg } = settings.borrow().clone();
+            let Settings { interval, collect: cfg, max_tuples } = settings.borrow().clone();
             let at = Stamp { wall_ms: clock.now_ms(), mono_ms: clock.mono_ms() };
             let self_use = SelfUse { rss_bytes: collect::own_rss_bytes(), ..SelfUse::default() };
             #[cfg(not(windows))]
@@ -541,7 +555,8 @@ fn spawn_collector(
                 Some(h) => h.collect().await,
                 None => HelperData::default(),
             };
-            let (connections, security_events) = pending.lock().unwrap_or_else(|e| e.into_inner()).take(at.wall_ms);
+            let (connections, security_events) =
+                pending.lock().unwrap_or_else(|e| e.into_inner()).take(at.wall_ms, max_tuples);
             let sampled = Sampled { collection, sampled_at_ms: at.wall_ms, helper, connections, security_events };
             if tx.send(sampled).await.is_err() {
                 return;

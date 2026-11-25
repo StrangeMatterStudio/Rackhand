@@ -81,6 +81,8 @@ struct Linked {
     quota: u64,
     added_at: i64,
     summary: Option<(i64, SiteSummary)>,
+    /// When a peer is silent, from the settings (7.8.1).
+    silent_after_ms: i64,
 }
 
 impl Linked {
@@ -89,7 +91,7 @@ impl Linked {
     }
 
     fn state(&self, now: i64) -> &'static str {
-        match crate::peers::state(now - self.last_heard()) {
+        match crate::peers::state(now - self.last_heard(), self.silent_after_ms) {
             PeerState::Ok => "peer_up",
             PeerState::Silent => "silent",
             PeerState::Down => "peer_down",
@@ -98,6 +100,7 @@ impl Linked {
 }
 
 fn linked(web: &Web) -> Vec<Linked> {
+    let silent_after_ms = config::hub_or_default(&web.0.db).peers.silent_after_ms();
     type R = (String, String, String, i64, i64, Option<(i64, Vec<u8>)>);
     let rows: Vec<R> = web
         .0
@@ -124,6 +127,7 @@ fn linked(web: &Web) -> Vec<Linked> {
             quota: u64::try_from(quota).unwrap_or(0),
             added_at,
             summary: summary.and_then(|(at, blob)| Some((at, SiteSummary::decode(blob.as_slice()).ok()?))),
+            silent_after_ms,
         })
         .collect()
 }

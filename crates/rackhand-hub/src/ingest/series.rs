@@ -12,7 +12,8 @@ use super::{Ingest, IngestError, WINDOW_MS, labels_json};
 
 const MINUTE_MS: i64 = 60_000;
 const HOUR_MS: i64 = 3_600_000;
-/// Ranges up to this long read tier 0 (its retention), up to [`TIER1_SPAN_MS`] tier 1, longer ones tier 2.
+/// Ranges up to this long read tier 0 (its default retention), up to [`TIER1_SPAN_MS`] tier 1, longer ones tier 2; a
+/// shorter retention setting (7.8.1) makes the span shorter, so a range never reads a tier past what it keeps.
 pub const TIER0_SPAN_MS: i64 = 2 * 86_400_000;
 pub const TIER1_SPAN_MS: i64 = 30 * 86_400_000;
 
@@ -159,9 +160,10 @@ impl Ingest {
         to_ms: i64,
     ) -> Result<Vec<(i64, f64)>, IngestError> {
         let span = to_ms - from_ms;
-        let tier = if span <= TIER0_SPAN_MS {
+        let kept = crate::library::config::hub_or_default(&self.inner.db).retention.store();
+        let tier = if span <= TIER0_SPAN_MS.min(kept.tier0_ms) {
             Tier::Raw
-        } else if span <= TIER1_SPAN_MS {
+        } else if span <= TIER1_SPAN_MS.min(kept.tier1_ms) {
             Tier::Minute
         } else {
             Tier::Hour

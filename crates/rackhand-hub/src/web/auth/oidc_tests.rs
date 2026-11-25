@@ -92,7 +92,7 @@ async fn step_up_requires_local_factor() {
     let resp = bare.post(&app, "/step-up", "/step-up", &[("code", "123456")]).await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     let user = session_user(&app, &bare);
-    let fresh = crate::web::auth::step_up::fresh(user.step_up_at, app.now());
+    let fresh = crate::web::auth::step_up::fresh(&app.db, user.step_up_at, app.now());
     assert_eq!(can_approve(user.role, Risk::High, fresh), Err(ApprovalError::StepUpRequired));
     // An OIDC admin with the TOTP their admin issued steps up with it and can approve.
     let secret = totp::new_secret().unwrap();
@@ -105,7 +105,7 @@ async fn step_up_requires_local_factor() {
     let resp = b.post(&app, "/step-up", "/step-up", &[("code", code.as_str())]).await;
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);
     let user = session_user(&app, &b);
-    assert!(crate::web::auth::step_up::fresh(user.step_up_at, app.now()));
+    assert!(crate::web::auth::step_up::fresh(&app.db, user.step_up_at, app.now()));
     assert_eq!(can_approve(user.role, Risk::High, true), Ok(()));
 }
 

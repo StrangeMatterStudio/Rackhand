@@ -62,6 +62,23 @@ async fn backup_is_encrypted_and_restores_identically() {
     assert!(!other.join("hub.db").exists());
 }
 
+/// The copies kept are the `[backups] kept` setting of the database being backed up (7.8.1).
+#[tokio::test(flavor = "multi_thread")]
+async fn keeps_as_many_copies_as_the_setting_says() {
+    let dir = temp("keep-setting");
+    let db = hub_db(&dir).await;
+    crate::library::config::put(&db, "hub", "[backups]\nkept = 3\n", "admin", 1).await.unwrap();
+    std::fs::write(dir.join("node.key"), [7u8; 32]).unwrap();
+    let key = MasterKey::generate();
+    let backups = dir.join("backups");
+    for at in [1_000, 2_000, 3_000, 4_000] {
+        take(&dir.join("hub.db"), &key, &dir.join("node.key"), &backups, at).unwrap();
+    }
+    let kept = list(&backups);
+    assert_eq!(kept.len(), 3, "{kept:?}");
+    assert!(!backups.join("hub-1000.rhbk").exists(), "the oldest goes");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn keeps_two_local_copies() {
     let dir = temp("keep");

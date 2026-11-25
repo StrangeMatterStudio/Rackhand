@@ -18,8 +18,6 @@ use crate::library::items::{Kind, Library};
 use crate::policy::approvals::{ApprovalRequest, Approvals};
 use crate::policy::decide::{Access, Action, Decision, Request, Requester, Target, decide};
 
-/// How long a request's approval lasts, as an MCP call's does.
-const APPROVAL_TTL_MS: i64 = 60 * 60_000;
 /// How often a request's status is looked at.
 const STATUS_EVERY: Duration = Duration::from_millis(500);
 /// How long an approved request may wait for its job to start before it is called not started.
@@ -132,7 +130,7 @@ impl Peers {
                     reason: format!("peer {}: {}", peer.site, req.reason),
                 };
                 Approvals::new(db.clone())
-                    .create(&approval, now_ms(), APPROVAL_TTL_MS)
+                    .create(&approval, now_ms(), crate::library::config::hub_or_default(db).approvals.expiry_ms())
                     .await
                     .map_err(|e| e.to_string())?;
             }

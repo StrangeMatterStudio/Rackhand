@@ -8,7 +8,6 @@ use axum::http::{Response, StatusCode};
 use rusqlite::params_from_iter;
 
 use super::{html, redirect, see_other, status};
-use crate::ingest::conn_score::LEARNING_MS;
 use crate::policy::quarantine::{self, QuarantineError, Rule, SECURITY_PREFIXES, Severity};
 use crate::web::auth::flow::to_step_up;
 use crate::web::auth::step_up;
@@ -133,9 +132,11 @@ fn feed(web: &Web) -> Vec<EventView> {
         .unwrap_or_default()
 }
 
-/// What each enrolled machine's connection baseline has learned: a week of learning raises nothing (7.6.5).
+/// What each enrolled machine's connection baseline has learned: the learning (a week by default, 7.8.1) raises nothing
+/// (7.6.5).
 fn baselines(web: &Web, now_ms: i64) -> Vec<BaselineView> {
     type Row = (String, String, String, Option<i64>);
+    let learning_ms = crate::library::config::hub_or_default(&web.0.db).baseline.learning_ms();
     let rows: Vec<Row> = web
         .0
         .db
@@ -154,8 +155,8 @@ fn baselines(web: &Web, now_ms: i64) -> Vec<BaselineView> {
     rows.into_iter()
         .map(|(id, name, mode, first)| {
             let status = match (mode.as_str(), first) {
-                ("full", Some(first)) if now_ms - first < LEARNING_MS => {
-                    let left = (LEARNING_MS - (now_ms - first) + DAY_MS - 1) / DAY_MS;
+                ("full", Some(first)) if now_ms - first < learning_ms => {
+                    let left = (learning_ms - (now_ms - first) + DAY_MS - 1) / DAY_MS;
                     format!("Learning, {left} day{} left", if left == 1 { "" } else { "s" })
                 }
                 ("full", Some(_)) => "Learned".to_string(),
@@ -270,7 +271,7 @@ pub(super) async fn save_rule(web: &Web, ctx: &Ctx) -> Response<Body> {
         enabled_by: None,
         enabled_at: None,
     };
-    let fresh = step_up::fresh(user.step_up_at, ctx.now_ms);
+    let fresh = step_up::fresh(&web.0.db, user.step_up_at, ctx.now_ms);
     match quarantine::put_rule(&web.0.db, &rule, &user.name, fresh, ctx.now_ms).await {
         Ok(()) => {
             let data = serde_json::json!({

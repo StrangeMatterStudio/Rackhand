@@ -10,7 +10,7 @@ use rackhand_proto::probe::{ConnRecord, ProbeEvent, Proto as WireProto};
 
 use super::conntable::Proto;
 
-/// The most destination records one report carries.
+/// The most destination records one report carries, unless the hub says otherwise (7.8.1 `connection_tuples`).
 pub const MAX_TUPLES: usize = 500;
 
 /// One socket seen, with its owner.
@@ -79,9 +79,9 @@ impl Window {
         self.tuples.is_empty()
     }
 
-    /// The window as report records, and starts the next one. With more than [`MAX_TUPLES`] tuples, the rest are folded
-    /// and a `conn.overflow` event comes with them.
-    pub fn take(&mut self, at_ms: i64) -> (Vec<ConnRecord>, Option<ProbeEvent>) {
+    /// The window as report records, and starts the next one. With more than `max_tuples` tuples (the hub's setting,
+    /// [`MAX_TUPLES`] by default), the rest are folded and a `conn.overflow` event comes with them.
+    pub fn take(&mut self, at_ms: i64, max_tuples: usize) -> (Vec<ConnRecord>, Option<ProbeEvent>) {
         let all = std::mem::take(&mut self.tuples);
         let mut records: Vec<ConnRecord> = all
             .into_iter()
@@ -98,12 +98,12 @@ impl Window {
                 folded: false,
             })
             .collect();
-        if records.len() <= MAX_TUPLES {
+        if records.len() <= max_tuples {
             return (records, None);
         }
         // the most bytes first, then the most sockets; the rest keep their order, so the choice is the same every time
         records.sort_by(|a, b| b.bytes.cmp(&a.bytes).then(b.count.cmp(&a.count)));
-        let rest = records.split_off(MAX_TUPLES);
+        let rest = records.split_off(max_tuples);
         let folded_tuples = rest.len();
         let mut folds: BTreeMap<(String, String), ConnRecord> = BTreeMap::new();
         for r in rest {
@@ -158,7 +158,7 @@ mod tests {
         for i in 0..600u32 {
             w.add(seen(i, ["a", "b", "c"][(i % 3) as usize], u64::from(i)));
         }
-        let (records, event) = w.take(1_000);
+        let (records, event) = w.take(1_000, MAX_TUPLES);
         let kept: Vec<&ConnRecord> = records.iter().filter(|r| !r.folded).collect();
         let folded: Vec<&ConnRecord> = records.iter().filter(|r| r.folded).collect();
         assert_eq!(kept.len(), 500);
@@ -177,8 +177,27 @@ mod tests {
         for i in 0..500u32 {
             w.add(seen(i, "a", 5));
         }
-        let (records, event) = w.take(2_000);
+        let (records, event) = w.take(2_000, MAX_TUPLES);
         assert_eq!((records.len(), records.iter().any(|r| r.folded), event), (500, false, None));
+    }
+
+    /// The hub's `connection_tuples` setting (7.8.1) is the cap, not 500.
+    #[test]
+    fn the_hubs_tuple_setting_is_the_cap() {
+        let mut w = Window::default();
+        for i in 0..600u32 {
+            w.add(seen(i, "a", u64::from(i)));
+        }
+        let (records, event) = w.take(1_000, 100);
+        let kept: Vec<&ConnRecord> = records.iter().filter(|r| !r.folded).collect();
+        assert_eq!(kept.len(), 100, "the 100 with the most bytes");
+        assert!(kept.iter().all(|r| r.bytes >= 500));
+        assert_eq!(event.expect("overflow").fields["folded_tuples"], "500");
+        for i in 0..600u32 {
+            w.add(seen(i, "a", u64::from(i)));
+        }
+        let (records, event) = w.take(2_000, 1_000);
+        assert_eq!((records.len(), event), (600, None), "a larger cap folds nothing");
     }
 
     #[test]
@@ -189,7 +208,7 @@ mod tests {
         let mut other = seen(1, "", 0);
         other.inode = 999;
         w.add(other);
-        let (records, _) = w.take(0);
+        let (records, _) = w.take(0, MAX_TUPLES);
         assert_eq!(records.len(), 1, "one destination");
         assert_eq!(records[0].count, 2, "two sockets to it");
         assert_eq!(records[0].dest_ip, vec![10, 0, 0, 1]);
@@ -206,7 +225,7 @@ mod tests {
         w.add(captured);
         w.add(seen(1, "", 0));
         w.add(seen(1, "", 0));
-        let (records, _) = w.take(0);
+        let (records, _) = w.take(0, MAX_TUPLES);
         assert_eq!(records.len(), 1, "one destination");
         assert_eq!(records[0].count, 6, "five connections the capture counted and one sampled socket");
     }

@@ -467,9 +467,16 @@ pub fn spawn_events(
     });
 }
 
-/// The probe settings a hub hands out until they are edited (7.8.1): 15 s, 500 tuples, a 64 MB buffer.
-pub fn probe_defaults() -> ProbeConfig {
-    ProbeConfig { interval_s: 15, max_connection_tuples: 500, buffer_max_mb: 64, ..Default::default() }
+/// The probe settings a hub hands out (7.8.1): the `[probe]` section of `config/hub.toml`, or its defaults.
+pub fn probe_config(db: &Db) -> ProbeConfig {
+    let p = rackhand_hub::library::config::hub_or_default(db).probe;
+    ProbeConfig {
+        interval_s: p.interval_s,
+        max_connection_tuples: p.connection_tuples,
+        buffer_max_mb: p.buffer_max_mb,
+        series_cap: p.series_cap,
+        ..Default::default()
+    }
 }
 
 /// This hub's own site, once first run has named it.
@@ -528,7 +535,7 @@ impl LazyJoin {
             version: crate::VERSION.into(),
             relays: self.relays.clone(),
             hub_addrs: (self.hub_addrs)(),
-            probe_config: probe_defaults(),
+            probe_config: probe_config(&self.db),
         };
         let (server, mut joins) = JoinServer::new(self.registry.clone(), self.setup.clone(), info);
         let tx = self.joined.clone();

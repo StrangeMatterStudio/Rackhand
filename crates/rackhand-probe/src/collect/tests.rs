@@ -133,6 +133,17 @@ fn series_cap_drops_extra_and_raises_event() {
     assert!(under.events.iter().all(|e| e.kind != "series_cap_reached"));
 }
 
+/// The hub's series cap (7.8.1) replaces the 200; 0 (a hub that doesn't send it) keeps the 200.
+#[test]
+fn series_cap_follows_the_hubs_setting() {
+    let c = two("mounts-300", &Config { series_cap: 120, ..Config::default() });
+    assert_eq!(c.series.len(), 120);
+    assert!(c.events.iter().any(|e| e.kind == "series_cap_reached" && e.detail.contains("120 kept")), "{:?}", c.events);
+    let all = two("mounts-300", &Config { series_cap: 2000, ..Config::default() });
+    assert!(all.series.len() > 200 && all.events.iter().all(|e| e.kind != "series_cap_reached"));
+    assert_eq!(two("mounts-300", &Config { series_cap: 0, ..Config::default() }).series.len(), 200);
+}
+
 #[test]
 fn series_cap_keeps_net_and_diskio_before_extra_mounts() {
     let c = two("mounts-300", &Config::default());
