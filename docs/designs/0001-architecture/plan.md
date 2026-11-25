@@ -4704,8 +4704,11 @@ Only additions to that list are written out below.
     (`run-cmd`, `run`), whose arguments are the wrapped command's; `set-hub` is in the probe's usage. Tests
     `help_tests::help_names_the_command_before_it` in both binaries (failed first: `help` missing; then 2 passed; 191
     passed in the two crates).
-  - No command turns the recovery code back into `master.key` (E34; L8's `recovery_procedure_restores_the_master_key`
-    depends on it), and a hub without its key doesn't start, where the design keeps monitoring going.
+  - (Closed 2026-11-25, the first half.) No command turned the recovery code back into `master.key` (E34).
+    `rackhand hub recover-key [--config <hub.toml>]` reads the code from standard input, checks the key opens every
+    secret of the vault and writes it 0600, never over an existing key. Tests `recover_key::tests::*` (2, failed first
+    against a stub; then passed). Still open: a hub without its key doesn't start, where the design keeps monitoring
+    going.
   - (Closed 2026-11-25.) Nothing set a machine's roles, so a hub's own host added as managed got `rackhand-ai`, against
     section 10. The Add page now has a Role (none, or one of the closed set: hub, hypervisor, operator, relay, storage,
     network, desktop); the token carries it, so the join leaves out the assistant's key for role `hub`. Test

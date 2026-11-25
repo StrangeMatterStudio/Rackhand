@@ -4,6 +4,7 @@ mod hub_cmd;
 mod logging;
 mod observations;
 mod operator_cmd;
+mod recover_key;
 mod relay_cmd;
 #[cfg(unix)]
 mod update;
@@ -35,6 +36,7 @@ const USAGE: &str = "usage: rackhand hub init [--config-dir <dir>] [--data-dir <
        rackhand hub metrics-token [--config <hub.toml>]
        rackhand hub peer-backup export <site> <file> [--config <hub.toml>]
        rackhand hub restore <file> --master-key <path> [--config-dir <dir>] [--data-dir <dir>]
+       rackhand hub recover-key [--config <hub.toml>]   (the recovery code on standard input)
        rackhand operator join|run|mcp-bridge ... (rackhand operator for the options)
        rackhand self-update [--config <hub.toml>] [--from <release dir>]
        rackhand relay self-update --from <release dir>
@@ -113,6 +115,7 @@ fn main() -> ExitCode {
         ["hub", "metrics-token", rest @ ..] => hub_metrics_token(rest),
         ["hub", "peer-backup", "export", site, file, rest @ ..] => peer_backup_export(site, file, rest),
         ["hub", "restore", file, rest @ ..] => hub_restore(file, rest),
+        ["hub", "recover-key", rest @ ..] => hub_recover_key(rest),
         #[cfg(feature = "lab-build")]
         ["hub", "lab-token", rest @ ..] => hub_lab_token(rest),
         _ => {
@@ -420,6 +423,42 @@ fn peer_backup_export(site: &str, file: &str, rest: &[&str]) -> ExitCode {
             println!(
                 "Wrote {file} ({bytes} bytes). Restore it on a new machine with `rackhand hub restore {file} --master-key <path>`."
             );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `hub recover-key [--config <hub.toml>]` (E34): the master key from the recovery code, read from standard input.
+fn hub_recover_key(rest: &[&str]) -> ExitCode {
+    let Some(o) = options(rest, &["config"]) else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    let path = PathBuf::from(o.get("config").copied().unwrap_or("/etc/rackhand/hub.toml"));
+    let config = match hub_cmd::HubConfig::load(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    eprintln!("Type the recovery code and press Enter:");
+    let mut code = String::new();
+    if std::io::stdin().read_line(&mut code).is_err() || code.trim().is_empty() {
+        eprintln!("error: no recovery code on standard input");
+        return ExitCode::FAILURE;
+    }
+    match recover_key::recover(&code, &config.master_key, &config.db_path()) {
+        Ok(0) => {
+            println!("Wrote {}. The vault has no secrets to check it against yet.", config.master_key.display());
+            ExitCode::SUCCESS
+        }
+        Ok(n) => {
+            println!("Wrote {}; it opens all {n} of the vault's secrets. Start the hub.", config.master_key.display());
             ExitCode::SUCCESS
         }
         Err(e) => {

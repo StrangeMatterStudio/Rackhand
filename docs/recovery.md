@@ -16,7 +16,8 @@ stops with "the master key ... can't be read").
 Keep, offline and apart from the hub:
 
 1. the recovery code, written down or in a password manager;
-2. a copy of `/etc/rackhand/master.key` itself. The restore command below takes the key as a file.
+2. a copy of `/etc/rackhand/master.key` itself. The restore command below takes the key as a file (the recovery code
+   can be turned back into one, below).
 
 ## Backups
 
@@ -75,8 +76,16 @@ If the hub's database is intact but `/etc/rackhand/master.key` is gone (a mistak
 offline copy of the key back as `/etc/rackhand/master.key`, owned by root with mode 0600, and start the hub
 (`systemctl start rackhand-hub`).
 
-If only the recovery code is left, the key can in principle be rebuilt from it: the code decodes to the 32 bytes of
-the key. **There is no command that does this yet**, so keep the copy of the key file described above.
+If only the recovery code is left, rebuild the key from it, as root on the hub:
+
+```sh
+rackhand hub recover-key
+```
+
+It asks for the code on standard input (type or paste it, then press Enter), so the code isn't kept in your shell
+history. It writes `/etc/rackhand/master.key` (root, 0600) only after the key opens every secret in the hub's vault,
+and never over a key file that is there. Then start the hub (`systemctl start rackhand-hub`). With `--config <hub.toml>`
+it reads where the key and the database are from another settings file.
 
 If both the key and the recovery code are lost, the secrets can't be recovered. A new hub has to be made with
 `install.sh --hub`, and machines enrolled to it again (as root on each, `rackhand-probe uninstall`, then the new hub's
